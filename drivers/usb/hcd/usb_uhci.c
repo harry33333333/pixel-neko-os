@@ -74,6 +74,9 @@ typedef struct {
 static uhci_controller_t g_uhci[UHCI_MAX_CONTROLLERS];
 static uint32_t g_uhci_count = 0;
 
+static void uhci_release_intr_slot(uhci_controller_t* controller,
+                                   usb_device_t* device);
+
 static uint32_t uhci_phys(uhci_controller_t* c, const void* pointer) {
     return (uint32_t)(c->dma.phys_addr +
                       ((const uint8_t*)pointer - (uint8_t*)c->mem));
