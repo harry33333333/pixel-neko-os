@@ -10,6 +10,7 @@ global arch_restore_trap_frame
 extern syscall_dispatcher
 extern syscall_reschedule
 extern syscall_bad_return
+extern per_cpu_set_gs_domain
 extern per_cpu_kernel_rsp0
 extern per_cpu_user_rsp
 extern per_cpu_need_resched
@@ -23,15 +24,14 @@ section .text
 ;   RCX carries user RIP and R11 carries user RFLAGS.
 ; IA32_FMASK has already cleared IF and DF.
 syscall_entry:
-    swapgs
-    mov [gs:8], rsp                 ; per_cpu_user_rsp
-    mov rsp, [gs:0]                 ; per_cpu_kernel_rsp0
-    inc qword [gs:48]               ; per_cpu_syscall_count
+    mov [rel per_cpu_user_rsp], rsp
+    mov rsp, [rel per_cpu_kernel_rsp0]
+    inc qword [rel per_cpu_syscall_count]
 
     ; Build a full trap_frame_t. This permits the same restore path to be
     ; used after an IRQ/syscall-triggered context switch.
     push qword 0x1B                 ; user SS (RPL 3)
-    push qword [gs:8]               ; user RSP
+    push qword [rel per_cpu_user_rsp]
     push r11                        ; user RFLAGS
     push qword 0x23                 ; user CS (RPL 3)
     push rcx                        ; user RIP
@@ -54,13 +54,16 @@ syscall_entry:
     push r14
     push r15
 
+    xor edi, edi
+    call per_cpu_set_gs_domain       ; deterministically enter kernel GS domain
+
     mov rdi, rsp
     cld
     call syscall_dispatcher
 
     ; frame->rax is at offset 14 * 8.
     mov [rsp + 14*8], rax
-    cmp qword [gs:16], 0
+    cmp qword [rel per_cpu_need_resched], 0
     jne .reschedule
 
     ; Reject non-canonical/user-half RIPs before using SYSRET.
@@ -83,6 +86,8 @@ syscall_entry:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov edi, 1
+    call per_cpu_set_gs_domain       ; restore the Ring 3 GS domain
 
     pop r15
     pop r14
@@ -104,7 +109,6 @@ syscall_entry:
     mov rcx, [rsp]
     mov r11, [rsp + 16]
     mov rsp, [rsp + 24]
-    swapgs
     o64 sysret
 
 .reschedule:

@@ -101,6 +101,7 @@ static void switch_to(thread_t* next, bool current_gs_is_kernel) {
         per_cpu_block.switch_gs = 0;
         g_current_thread = next;
     } else {
+        per_cpu_set_gs_domain(next->is_user);
         per_cpu_block.switch_gs = 0;
     }
 
