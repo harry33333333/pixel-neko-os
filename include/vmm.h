@@ -29,5 +29,6 @@ bool vmm_map_page(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, uint64_t
 bool vmm_unmap_page(pagetable_t pml4, virt_addr_t virt);
 void vmm_switch_pml4(pagetable_t pml4);
 void vmm_invlpg(virt_addr_t virt);
+void vmm_remap_framebuffer_wc(void);
 
 #endif /* _VMM_H */

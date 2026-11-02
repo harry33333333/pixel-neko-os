@@ -115,8 +115,8 @@ static void parse_madt(void) {
                     acpi_madt_entry_t header;
                     uint16_t reserved;
                     uint64_t lapic_phys_address;
-                } __attribute__((packed))* override = (void*)entry;
-                g_lapic_base = override->lapic_phys_address;
+                } __attribute__((packed))* madt_ovr = (void*)entry;
+                g_lapic_base = madt_ovr->lapic_phys_address;
                 log_printf("[ACPI] 64-bit LAPIC Base Override: 0x%016llx\n", g_lapic_base);
                 break;
             }

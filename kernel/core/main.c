@@ -409,6 +409,9 @@ void kmain(void) {
     if (framebuffer_request.response && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
         if (boot_framebuffer_init(fb)) {
+            // Accelerate Boot Framebuffer writes with PAT Write-Combining (WC)
+            vmm_remap_framebuffer_wc();
+
             // Draw classic Mac OS 50% checkerboard background
             boot_framebuffer_draw_checkerboard();
 

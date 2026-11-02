@@ -11,8 +11,6 @@
 #define ZONE_DMA_LIMIT    0x01000000ULL   // 16 MB (ISA DMA)
 #define ZONE_DMA32_LIMIT  0x100000000ULL  // 4 GB (32-bit PCI DMA)
 
-typedef uint64_t dma_addr_t;
-
 typedef struct {
     virt_addr_t virt_addr;      // CPU kernel virtual address
     phys_addr_t phys_addr;      // Host physical page frame address

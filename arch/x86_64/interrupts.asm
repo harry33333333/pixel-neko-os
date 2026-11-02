@@ -10,23 +10,23 @@ extern c_irq_handler
 %macro ISR_NOERRCODE 1
 global isr%1
 isr%1:
-    push qword 0            ; Push dummy error code
-    push qword %1           ; Push interrupt number
+    push 0                  ; Push dummy error code
+    push %1                 ; Push interrupt number
     jmp common_isr_stub
 %endmacro
 
 %macro ISR_ERRCODE 1
 global isr%1
 isr%1:
-    push qword %1           ; CPU already pushed error code, push interrupt number
+    push %1                 ; CPU already pushed error code, push interrupt number
     jmp common_isr_stub
 %endmacro
 
 %macro IRQ 2
 global irq%1
 irq%1:
-    push qword 0            ; Dummy error code
-    push qword %2           ; Interrupt vector number
+    push 0                  ; Dummy error code
+    push %2                 ; Interrupt vector number
     jmp common_irq_stub
 %endmacro
 

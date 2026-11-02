@@ -20,11 +20,11 @@ gdt_flush:
     mov fs, ax
     mov gs, ax
 
-    ; Reload 64-bit CS register via far return (push CS, push RIP, retfq)
-    push qword 0x08
+    ; Reload 64-bit CS register via far return (push CS, push RIP, far ret)
+    push 0x08
     lea rax, [rel .reload_cs]
     push rax
-    retfq
+    db 0x48, 0xCB ; 64-bit far return (REX.W + RETF)
 .reload_cs:
     ret
 

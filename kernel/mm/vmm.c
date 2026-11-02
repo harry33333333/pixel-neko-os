@@ -115,22 +115,28 @@ void vmm_init(void) {
 
     log_printf("[VMM] IA32_PAT MSR configured: PAT Entry 1 = 0x01 (Write-Combining WC enabled).\n");
 
-    // 3. Re-map boot framebuffer with WC attributes (PTE_PWT) for 5~10x write burst speedup
-    if (g_main_surface.framebuffer_virt && g_main_surface.framebuffer_phys) {
-        uint64_t fb_size = (uint64_t)g_main_surface.pitch * g_main_surface.height;
-        uint64_t fb_pages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
-
-        virt_addr_t fb_virt = (virt_addr_t)g_main_surface.framebuffer_virt;
-        phys_addr_t fb_phys = (phys_addr_t)g_main_surface.framebuffer_phys;
-
-        // Apply WC flag (PTE_PWT selects PAT entry 1)
-        uint64_t wc_flags = PTE_PRESENT | PTE_WRITABLE | PTE_PWT;
-
-        for (uint64_t p = 0; p < fb_pages; p++) {
-            vmm_map_page(g_kernel_pml4, fb_virt + p * PAGE_SIZE, fb_phys + p * PAGE_SIZE, wc_flags);
-        }
-
-        log_printf("[VMM] Boot Framebuffer (%llu KB, %llu pages) accelerated with PAT Write-Combining (WC)!\n",
-                   fb_size / 1024, fb_pages);
-    }
+    vmm_remap_framebuffer_wc();
 }
+
+void vmm_remap_framebuffer_wc(void) {
+    if (!g_kernel_pml4) return;
+    if (!g_main_surface.framebuffer_virt || !g_main_surface.framebuffer_phys) return;
+
+    uint64_t fb_size = (uint64_t)g_main_surface.pitch * g_main_surface.height;
+    if (fb_size == 0) return;
+    uint64_t fb_pages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    virt_addr_t fb_virt = (virt_addr_t)g_main_surface.framebuffer_virt;
+    phys_addr_t fb_phys = (phys_addr_t)g_main_surface.framebuffer_phys;
+
+    // Apply WC flag (PTE_PWT selects PAT entry 1)
+    uint64_t wc_flags = PTE_PRESENT | PTE_WRITABLE | PTE_PWT;
+
+    for (uint64_t p = 0; p < fb_pages; p++) {
+        vmm_map_page(g_kernel_pml4, fb_virt + p * PAGE_SIZE, fb_phys + p * PAGE_SIZE, wc_flags);
+    }
+
+    log_printf("[VMM] Boot Framebuffer (%llu KB, %llu pages) accelerated with PAT Write-Combining (WC)!\n",
+               fb_size / 1024, fb_pages);
+}
+
