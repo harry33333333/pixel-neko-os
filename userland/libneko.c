@@ -36,6 +36,37 @@ long neko_write(const char* text) {
                          (long)local_strlen(text), 0, 0, 0);
 }
 
+long neko_write_value(const char* label, long value) {
+    char output[96];
+    unsigned long cursor = 0;
+    while (label && label[cursor] && cursor < 48) {
+        output[cursor] = label[cursor];
+        cursor++;
+    }
+    output[cursor++] = ':';
+    output[cursor++] = ' ';
+    if (value < 0) {
+        output[cursor++] = '-';
+        value = -value;
+    }
+    output[cursor++] = '0';
+    output[cursor++] = 'x';
+
+    char digits[16];
+    unsigned long count = 0;
+    unsigned long raw = (unsigned long)value;
+    do {
+        unsigned long digit = raw & 0xF;
+        digits[count++] = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+        raw >>= 4;
+    } while (raw && count < sizeof(digits));
+    while (count > 0) {
+        output[cursor++] = digits[--count];
+    }
+    output[cursor] = '\0';
+    return neko_write(output);
+}
+
 long neko_getpid(void) {
     return neko_syscall6(NEKO_SYSCALL_GETPID, 0, 0, 0, 0, 0, 0);
 }

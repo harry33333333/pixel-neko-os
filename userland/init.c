@@ -1,6 +1,7 @@
 #include "neko_abi.h"
 
 long neko_write(const char* text);
+long neko_write_value(const char* label, long value);
 long neko_getpid(void);
 long neko_yield(void);
 long neko_sleep(unsigned long ticks);
@@ -66,6 +67,7 @@ static int init_main(void) {
 
     if (reply_result != 0) {
         neko_write("P3 IPC response receive FAILED");
+        neko_write_value("reply_result", reply_result);
         return 9;
     }
     if (reply.type != NEKO_TEST_PONG) {
