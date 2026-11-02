@@ -3,7 +3,6 @@
 
 static bool g_shift = false;
 static bool g_ctrl = false;
-static bool g_alt = false;
 static bool g_caps = false;
 static bool g_extended = false;
 static uint8_t g_e1_remaining = 0;
@@ -59,7 +58,6 @@ static uint32_t translate(uint8_t scancode) {
 void keyboard_init(void) {
     g_shift = false;
     g_ctrl = false;
-    g_alt = false;
     g_caps = false;
     g_extended = false;
     g_e1_remaining = 0;
@@ -88,7 +86,7 @@ void keyboard_handle_byte(uint8_t scancode) {
     if (g_extended) {
         switch (code) {
             case 0x1D: g_ctrl = !release; break;
-            case 0x38: g_alt = !release; break;
+            case 0x38: break;
             case 0x48: translated = INPUT_CODE_UP; break;
             case 0x50: translated = INPUT_CODE_DOWN; break;
             case 0x4B: translated = INPUT_CODE_LEFT; break;
@@ -111,7 +109,6 @@ void keyboard_handle_byte(uint8_t scancode) {
                 g_ctrl = !release;
                 break;
             case 0x38:
-                g_alt = !release;
                 break;
             case 0x3A:
                 if (!release) g_caps = !g_caps;

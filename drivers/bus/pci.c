@@ -15,6 +15,7 @@ static uint32_t g_pci_device_count = 0;
 static bool g_pci_scanned = false;
 static bool g_ecam_active = false;
 static uint64_t g_ecam_pages_mapped = 0;
+static uint64_t g_last_ecam_page = UINT64_MAX;
 
 static const acpi_ecam_range_t* ecam_find_range(uint8_t bus) {
     for (size_t i = 0; i < acpi_get_ecam_range_count(); i++) {
@@ -66,12 +67,14 @@ static bool ecam_address(uint8_t bus, uint8_t slot, uint8_t function,
 static bool ecam_ensure_mapped(uint64_t phys) {
     if (g_hhdm.hhdm_offset == 0) return false;
     uint64_t page = phys & PAGE_MASK;
+    if (page == g_last_ecam_page) return true;
     uint64_t virt = g_hhdm.hhdm_offset + page;
     if (!vmm_map_page(vmm_get_kernel_pml4(), virt, page,
                       PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_NX)) {
         return false;
     }
     g_ecam_pages_mapped++;
+    g_last_ecam_page = page;
     return true;
 }
 
@@ -301,6 +304,8 @@ void pci_scan_all(void) {
 
     g_pci_device_count = 0;
     g_ecam_active = acpi_get_ecam_range_count() > 0;
+    g_ecam_pages_mapped = 0;
+    g_last_ecam_page = UINT64_MAX;
     bus_t* pci_bus = bus_find(BUS_TYPE_PCI);
     if (!pci_bus) pci_bus = bus_register("pci", BUS_TYPE_PCI);
     if (!pci_bus) {
