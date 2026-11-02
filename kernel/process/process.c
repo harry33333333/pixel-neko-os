@@ -147,6 +147,8 @@ process_t* process_create_idle(void) {
     frame->rip = (uint64_t)scheduler_idle_entry;
     frame->cs = GDT_KERNEL_CODE_SEL;
     frame->rflags = 0x202;
+    frame->rsp = thread->kernel_stack_top;
+    frame->ss = GDT_KERNEL_DATA_SEL;
 
     thread->tid = 0;
     thread->process = process;
