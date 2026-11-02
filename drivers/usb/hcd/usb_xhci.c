@@ -504,7 +504,14 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
                                &event, 1) == 0) {
             uint8_t code = (uint8_t)(event.status >> 24);
             slot->interrupt_pending = false;
-            if (code != 1 && code != 13) return -1;
+            if (code != 1 && code != 13) {
+                xhci_command(c, 0, 0, (XHCI_TRB_STOP_ENDPOINT << 10) |
+                               ((uint32_t)slot->interrupt_dci << 16) |
+                               ((uint32_t)slot->slot_id << 24), NULL);
+                slot->interrupt_configured = false;
+                endpoint->hcd_priv = NULL;
+                return -1;
+            }
             int transfer_length = length > 64 ? 64 : length;
             int residual = (int)(event.status & 0xFFFFFF);
             int actual = transfer_length - residual;

@@ -63,6 +63,8 @@ typedef struct {
 static ehci_controller_t g_ehci[EHCI_MAX_CONTROLLERS];
 static uint32_t g_ehci_count = 0;
 
+static void ehci_release(usb_hci_t* hci, usb_device_t* device);
+
 #define EHCI_CMD_RUN       (1u << 0)
 #define EHCI_CMD_RESET     (1u << 1)
 #define EHCI_CMD_PERIODIC  (1u << 4)
@@ -261,7 +263,11 @@ static int ehci_intr_in(usb_hci_t* hci, usb_device_t* device,
 
     dma_sync_for_cpu(&c->dma);
     if (slot->qtd.token & EHCI_QTD_ACTIVE) return 0;
-    if (slot->qtd.token & EHCI_QTD_HALTED) return -1;
+    if (slot->qtd.token & EHCI_QTD_HALTED) {
+        endpoint->hcd_priv = NULL;
+        ehci_release(hci, device);
+        return -1;
+    }
     int transfer_length = length > 64 ? 64 : length;
     int remaining = (int)((slot->qtd.token >> 16) & 0x7FFF);
     int actual = transfer_length - remaining;

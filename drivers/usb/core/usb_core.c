@@ -67,6 +67,22 @@ uint32_t usb_get_controller_kinds(void) {
 
 void usb_release_device(usb_device_t* dev) {
     if (!dev) return;
+    uint8_t parent_address = dev->address;
+    usb_hci_t* hci = dev->hci;
+    if (parent_address && hci) {
+        bool removed;
+        do {
+            removed = false;
+            for (uint32_t i = 0; i < USB_MAX_DEVICES; i++) {
+                if (g_devices[i].hci == hci &&
+                    g_devices[i].parent_hub_address == parent_address) {
+                    usb_release_device(&g_devices[i]);
+                    removed = true;
+                    break;
+                }
+            }
+        } while (removed);
+    }
     if (dev->hci && dev->hci->device_release) {
         dev->hci->device_release(dev->hci, dev);
     }

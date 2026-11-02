@@ -233,6 +233,8 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     if (status & UHCI_TD_ERROR) {
         log_printf("[UHCI] interrupt endpoint 0x%02x stalled\n",
                    endpoint->address);
+        endpoint->hcd_priv = NULL;
+        uhci_release_intr_slot(c, device);
         return -1;
     }
     if (status & UHCI_TD_NAK) {
