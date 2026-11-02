@@ -72,7 +72,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > ⚠️ **Pre-release**: 64-bit AMD64 Long Mode & Limine v8.x Dual-Boot Milestone (P0/P1).
+          > ⚠️ **Pre-release**: 64-bit Kernel Infrastructure, ACPI & Modern APIC Architecture (Milestone P2 Complete).
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -91,13 +91,15 @@ jobs:
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
 
-          ### 🛠️ Architecture Highlights
-          - **Dual-Boot Limine v8.x**: El Torito UEFI CD + BIOS CD bootloader with hybrid MBR injection (`limine-uefi-cd.bin` + `BOOTX64.EFI`).
-          - **64-Bit AMD64 Long Mode**: Clean higher-half bootstrap (`0xffffffff80000000`) with 32KB kernel stack.
-          - **CPUID 4-Tier Feature Admission**: Strict verification of mandatory CPU capabilities (`LM`, `NX`, `APIC`, `SYSCALL` `0x80000001:EDX[11]`, `SSE2`).
-          - **Safe Checked HHDM**: Dynamic `phys_to_virt` and boundary-checked `virt_to_phys_checked` translation based on Limine HHDM responses.
-          - **Boot Framebuffer Engine**: Full color mask resolution, dynamic shifts, 50% checkerboard classic desktop pattern, and retro 3D Win3.1 / Mac OS 9 dialog box.
-          - **Permissive Licensing**: Completely clean of GPL code.
+          ### 🛠️ P2 Architecture Highlights
+          - **P2.1 64-Bit PMM**: Physical page frame bitmap allocator supporting >4GB RAM with zoned boundaries.
+          - **P2.2 VMM & Kernel Heap**: 4-level PML4 paging, checked HHDM translation, PAT MSR 0x277 Write-Combining (WC) video acceleration, and dynamic heap allocator (`kmalloc`/`kfree`).
+          - **P2.3 GDT & TSS**: 64-bit GDT, Per-CPU TSS, dedicated 16KB Double Fault (`#DF`) IST1 stack.
+          - **P2.4 IDT64 & Panic**: 256-entry IDT, 32 CPU exception stubs, classic Mac OS Bomb graphical panic window with register dump and 8042 reset.
+          - **P2.5 ACPI Parsing**: RSDP, RSDT/XSDT, MADT (LAPIC, IOAPIC, ISO redirection IRQ0->GSI2) and MCFG (PCIe ECAM).
+          - **P2.6 Modern APIC**: IMCR switch, 8259 PIC masking, Local APIC SVR/TPR, periodic LAPIC Timer (Vector 32), IOAPIC redirection.
+          - **P2.7 Unified 64-Bit DMA**: Three-tier architecture (`ZONE_DMA` <16MB with 64KB boundary check, `ZONE_DMA32` <4GB, `ZONE_NORMAL`).
+          - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
         draft: false
         prerelease: true
         make_latest: false
