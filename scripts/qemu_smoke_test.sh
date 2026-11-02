@@ -75,15 +75,17 @@ run_mode() {
         return 1
     fi
 
-    if ! grep -q "SYSTEM.*P4a milestone reached" "${log}" ||
+    if ! grep -q "SYSTEM.*P4b milestone reached" "${log}" ||
        ! grep -q "Ring 3 processes" "${log}" ||
        ! grep -q "P3 NMI GS_BASE safety test PASS" "${log}" ||
        ! grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}" ||
        ! grep -q "Enumerated [1-9][0-9]* PCI/PCIe function" "${log}" ||
        ! grep -q "\[INPUT\] KEY_DOWN code=0x70 'p'" "${log}" ||
        ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
-       ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}"; then
-        echo "QEMU ${mode} mode did not reach the P4a bus/input self-test" >&2
+       ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}" ||
+       ! grep -q "\[USBHID\] KEY_DOWN code=0x70 'p'" "${log}" ||
+       ! grep -q "\[USBHID\] MOUSE" "${log}"; then
+        echo "QEMU ${mode} mode did not reach the P4a/P4b bus/input self-test" >&2
         tail -n 250 "${log}" >&2 || true
         return 1
     fi
@@ -109,5 +111,11 @@ run_mode() {
     echo "QEMU ${mode} boot, P4a bus and PS/2 input self-test passed."
 }
 
-run_mode uefi q35 -bios "${UEFI_FW}"
-run_mode bios pc -boot d
+run_mode uefi q35 -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,id=usb-mouse
+run_mode bios pc -boot d \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,id=usb-kbd \
+    -device usb-mouse,bus=uhci.0,id=usb-mouse
