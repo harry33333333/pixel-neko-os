@@ -59,6 +59,9 @@ and requires real USB HID keyboard/mouse reports plus P3/P4a regressions:
 bash scripts/qemu_smoke_test.sh pixel-neko-os_26A130a.iso
 ```
 
+Controller and transfer architecture details are documented in
+[`docs/USB.md`](docs/USB.md).
+
 ---
 
 ## 📜 许可证
