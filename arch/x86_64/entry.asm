@@ -36,8 +36,7 @@ kentry:
     ; 4. Call C-level kernel entry point
     call kmain
 
-    ; 5. Halt if kmain ever returns
+    ; 5. Safe pause spin if kmain ever returns (avoids triggering VMware CPU disabled halt)
 .halt:
-    cli
-    hlt
+    pause
     jmp .halt

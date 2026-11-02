@@ -11,7 +11,7 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -ffreestanding -nostdlib -nostartfiles \
           -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
           -std=gnu11 -O2 -Wall -Wextra \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Idrivers/video
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Idrivers/video -Idrivers/audio
 
 NASMFLAGS ?= -f elf64
 
@@ -21,7 +21,8 @@ C_SRCS   = kernel/core/main.c \
            kernel/core/log.c \
            kernel/core/string.c \
            arch/x86_64/cpu.c \
-           drivers/video/boot_framebuffer.c
+           drivers/video/boot_framebuffer.c \
+           drivers/audio/speaker.c
 
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)

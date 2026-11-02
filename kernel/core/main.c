@@ -4,6 +4,8 @@
 #include "cpu.h"
 #include "mm.h"
 #include "boot_framebuffer.h"
+#include "port.h"
+#include "speaker.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -128,12 +130,79 @@ static void parse_memory_map(void) {
                usable_bytes / (1024 * 1024));
 }
 
+// --- Microsecond Delay Helpers ---
+
+static void delay_us(uint32_t us) {
+    for (uint32_t i = 0; i < us; i++) {
+        __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
+    }
+}
+
+static void delay_ms(uint32_t ms) {
+    for (uint32_t i = 0; i < ms; i++) {
+        delay_us(1000);
+    }
+}
+
+// Global UI interaction bounds
+static int g_btn_x = 0, g_btn_y = 0, g_btn_w = 90, g_btn_h = 24;
+static int g_bar_x = 0, g_bar_y = 0, g_bar_w = 0, g_bar_h = 16;
+
+static void draw_button(int x, int y, int w, int h, bool pressed) {
+    uint32_t c_white = boot_framebuffer_make_color(255, 255, 255);
+    uint32_t c_gray  = boot_framebuffer_make_color(192, 192, 192);
+    uint32_t c_black = boot_framebuffer_make_color(0, 0, 0);
+
+    boot_framebuffer_fill_rect(x, y, w, h, c_gray);
+    if (!pressed) {
+        boot_framebuffer_fill_rect(x, y, w, 2, c_white);
+        boot_framebuffer_fill_rect(x, y, 2, h, c_white);
+        boot_framebuffer_fill_rect(x + w - 2, y, 2, h, c_black);
+        boot_framebuffer_fill_rect(x, y + h - 2, w, 2, c_black);
+        boot_framebuffer_draw_string(x + 18, y + 4, "[ OK ]", c_black, c_gray);
+    } else {
+        boot_framebuffer_fill_rect(x, y, w, 2, c_black);
+        boot_framebuffer_fill_rect(x, y, 2, h, c_black);
+        boot_framebuffer_fill_rect(x + w - 2, y, 2, h, c_white);
+        boot_framebuffer_fill_rect(x, y + h - 2, w, 2, c_white);
+        boot_framebuffer_draw_string(x + 19, y + 5, "[ OK ]", c_black, c_gray);
+    }
+}
+
+// Draw animated 45-degree diagonal striped Barber-Pole progress bar (Classic Mac / Win3.1 style)
+static void draw_barber_pole(int x, int y, int w, int h, int frame) {
+    if (!g_main_surface.framebuffer_virt || w <= 0 || h <= 0) return;
+
+    uint32_t c_white  = boot_framebuffer_make_color(255, 255, 255);
+    uint32_t c_dgray  = boot_framebuffer_make_color(128, 128, 128);
+    uint32_t c_stripe = boot_framebuffer_make_color(0, 0, 160); // Classic Navy Blue
+
+    // 1-pixel Inset 3D border
+    boot_framebuffer_fill_rect(x, y, w, 1, c_dgray);
+    boot_framebuffer_fill_rect(x, y, 1, h, c_dgray);
+    boot_framebuffer_fill_rect(x, y + h - 1, w, 1, c_white);
+    boot_framebuffer_fill_rect(x + w - 1, y, 1, h, c_white);
+
+    int inner_x = x + 1;
+    int inner_y = y + 1;
+    int inner_w = w - 2;
+    int inner_h = h - 2;
+
+    for (int cy = inner_y; cy < inner_y + inner_h; cy++) {
+        for (int cx = 0; cx < inner_w; cx++) {
+            int pattern = (cx + (cy - inner_y) + frame) % 16;
+            uint32_t color = (pattern < 8) ? c_stripe : c_white;
+            boot_framebuffer_putpixel(inner_x + cx, cy, color);
+        }
+    }
+}
+
 // Draw a classic Windows 3.1 / Mac OS 9 style 3D modal window
 static void draw_welcome_window(void) {
     if (!g_main_surface.framebuffer_virt) return;
 
     int win_w = 540;
-    int win_h = 280;
+    int win_h = 320;
     int win_x = (int)(g_main_surface.width - win_w) / 2;
     int win_y = (int)(g_main_surface.height - win_h) / 2;
 
@@ -212,19 +281,25 @@ static void draw_welcome_window(void) {
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 1, c_dgray);
     boot_framebuffer_fill_rect(text_x, text_y, 1, 26, c_dgray);
     boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] Limine UEFI/BIOS Dual-Boot Verified!", c_green, c_white);
-    text_y += 36;
+    text_y += 34;
+
+    // Barber-Pole Progress Bar
+    g_bar_x = text_x;
+    g_bar_y = text_y;
+    g_bar_w = win_w - 40;
+    g_bar_h = 16;
+    draw_barber_pole(g_bar_x, g_bar_y, g_bar_w, g_bar_h, 0);
+    text_y += 22;
+
+    // Hint text
+    boot_framebuffer_draw_string(text_x, text_y, "System Active. Press [Enter] or [Space] on keyboard.", c_dgray, c_gray);
 
     // Button
-    int btn_w = 90;
-    int btn_h = 24;
-    int btn_x = win_x + (win_w - btn_w) / 2;
-    int btn_y = win_y + win_h - 36;
-    boot_framebuffer_fill_rect(btn_x, btn_y, btn_w, btn_h, c_gray);
-    boot_framebuffer_fill_rect(btn_x, btn_y, btn_w, 2, c_white);
-    boot_framebuffer_fill_rect(btn_x, btn_y, 2, btn_h, c_white);
-    boot_framebuffer_fill_rect(btn_x + btn_w - 2, btn_y, 2, btn_h, c_black);
-    boot_framebuffer_fill_rect(btn_x, btn_y + btn_h - 2, btn_w, 2, c_black);
-    boot_framebuffer_draw_string(btn_x + 18, btn_y + 4, "[ OK ]", c_black, c_gray);
+    g_btn_w = 90;
+    g_btn_h = 24;
+    g_btn_x = win_x + (win_w - g_btn_w) / 2;
+    g_btn_y = win_y + win_h - 34;
+    draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
 }
 
 // --- 64-Bit Kernel Main Entry Point ---
@@ -242,14 +317,14 @@ void kmain(void) {
     // 2. Validate Limine Base Revision
     if (!LIMINE_BASE_REVISION_SUPPORTED) {
         log_printf("[FATAL] Limine base revision 3 is NOT supported by bootloader!\n");
-        for (;;) { __asm__ volatile ("hlt"); }
+        for (;;) { __asm__ volatile ("pause"); }
     }
     log_printf("[BOOT] Limine Base Revision 3 handshake verified.\n");
 
     // 3. CPUID Feature Detection & Mandatory Feature Verification
     if (!cpu_detect_and_verify()) {
         log_printf("[FATAL] CPU failed mandatory admission check! Halting system.\n");
-        for (;;) { __asm__ volatile ("hlt"); }
+        for (;;) { __asm__ volatile ("pause"); }
     }
     log_printf("[CPU] All mandatory 64-bit features verified (LM, NX, APIC, SYSCALL, SSE2).\n");
 
@@ -259,7 +334,7 @@ void kmain(void) {
         log_printf("[MM] Limine HHDM Base Offset: 0x%016llx\n", g_hhdm.hhdm_offset);
     } else {
         log_printf("[FATAL] Limine HHDM response missing!\n");
-        for (;;) { __asm__ volatile ("hlt"); }
+        for (;;) { __asm__ volatile ("pause"); }
     }
 
     // 5. Parse Memory Map
@@ -293,10 +368,34 @@ void kmain(void) {
         log_printf("[BOOT WARN] No graphic framebuffer returned by Limine! Running in headless serial mode.\n");
     }
 
+    // 9. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
+    speaker_boot_chord();
+
     log_printf("[SYSTEM] P1 Milestone reached: 64-Bit Long Mode & Limine Dual-Boot active.\n");
 
-    // Main kernel idle loop
+    // 10. Interactive idle loop with Barber-Pole animation
+    // (Uses pause + delay_ms to prevent VMware/QEMU from detecting disabled CPU / msg.monitorevent.halt)
+    int frame = 0;
     for (;;) {
-        __asm__ volatile ("hlt");
+        // Poll keyboard port for user interaction
+        if (inb(0x64) & 1) {
+            uint8_t scancode = inb(0x60);
+            if (scancode == 0x1C || scancode == 0x39) { // Enter or Space key make-code
+                draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, true);
+                speaker_beep();
+                delay_ms(150);
+                draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
+                log_printf("[UI] User interaction received: [ OK ] button clicked.\n");
+            }
+        }
+
+        // Animate 45-degree Barber-Pole progress bar
+        if (g_bar_w > 0) {
+            draw_barber_pole(g_bar_x, g_bar_y, g_bar_w, g_bar_h, frame++);
+        }
+
+        // Smooth frame delay (~30 FPS) + pause instruction
+        delay_ms(33);
+        __asm__ volatile ("pause");
     }
 }
