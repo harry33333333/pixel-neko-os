@@ -354,7 +354,7 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                    (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
                    (1u << 6) | (1u << 4));
     if (length > 0) {
-        uint32_t flags = (1u << 5) | (1u << 4);
+        uint32_t flags = (1u << 4);
         if (direction == USB_DIR_IN) flags |= 1u << 16;
         xhci_ring_push(c, &slot->ep0_ring, data_phys,
                        (uint32_t)(length & 0x1FFFF),
