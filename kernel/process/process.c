@@ -88,6 +88,13 @@ thread_t* process_create_user_thread(process_t* process, uint64_t entry,
     frame->rsp = user_rsp;
     frame->ss = GDT_USER_DATA_SEL;
 
+    log_printf("[P3] Initial trap frame @ %p: RIP=0x%016llx CS=0x%llx RFLAGS=0x%llx RSP=0x%016llx SS=0x%llx\n",
+               (void*)frame, (unsigned long long)frame->rip,
+               (unsigned long long)frame->cs,
+               (unsigned long long)frame->rflags,
+               (unsigned long long)frame->rsp,
+               (unsigned long long)frame->ss);
+
     thread->tid = g_next_tid++;
     thread->process = process;
     thread->state = THREAD_READY;

@@ -87,6 +87,9 @@ void gdt_init(void) {
 
     log_printf("[GDT] 64-bit GDT installed (CS=0x%02x, DS=0x%02x, TSS=0x%02x).\n",
                GDT_KERNEL_CODE_SEL, GDT_KERNEL_DATA_SEL, GDT_TSS_SEL);
+    log_printf("[GDT] Ring 3 descriptors: UDS=0x%016llx UCS=0x%016llx\n",
+               (unsigned long long)g_gdt[GDT_USER_DATA_SEL / 8],
+               (unsigned long long)g_gdt[GDT_USER_CODE_SEL / 8]);
     log_printf("[GDT] TSS active. Dedicated Double Fault IST1 Stack @ 0x%016llx\n", ist1_top);
     log_printf("[GDT] Paranoid NMI IST2 Stack @ 0x%016llx\n", ist2_top);
 }
