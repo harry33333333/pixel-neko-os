@@ -221,7 +221,7 @@ static int xhci_command(xhci_controller_t* c, uint64_t parameter,
         return -1;
     }
     if (completed_event) *completed_event = event;
-    uint8_t code = (uint8_t)(event.control >> 24);
+    uint8_t code = (uint8_t)(event.status >> 24);
     if (code != 1) {
         log_printf("[xHCI] command failed completion=%u type=%u\n",
                    code, (event.control >> 10) & 0x3F);
@@ -253,7 +253,7 @@ static int xhci_enable_slot(xhci_controller_t* c, uint8_t* slot_id) {
     if (xhci_command(c, 0, 0, XHCI_TRB_ENABLE_SLOT << 10, &event) != 0) {
         return -1;
     }
-    uint8_t id = (uint8_t)(event.control & 0xFF);
+    uint8_t id = (uint8_t)((event.control >> 24) & 0xFF);
     if (id == 0 || id > c->max_slots) {
         log_printf("[xHCI] Enable Slot returned invalid slot %u\n", id);
         return -1;
@@ -338,11 +338,8 @@ static int xhci_address_device(xhci_controller_t* c, usb_device_t* device) {
 static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                                const uint8_t* setup, void* data, int length,
                                int direction) {
-    uint8_t* setup_buffer = xhci_arena_alloc(c, 8, 8, NULL);
-    if (!setup_buffer) return -1;
-    memcpy(setup_buffer, setup, 8);
-    uint64_t setup_phys = (uint64_t)((uint8_t*)setup_buffer - c->memory) +
-                          c->memory_phys;
+    uint64_t setup_parameter = 0;
+    memcpy(&setup_parameter, setup, 8);
     uint64_t data_phys = 0;
     if (length > 0) {
         uint8_t* staging = xhci_arena_alloc(c, 1024, 64, NULL);
@@ -363,7 +360,7 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
     log_printf("[xHCI] EP0 before state=%u deq=0x%08x%08x producer=%u\n",
                ep0_output[0] & 0x7, ep0_output[3], ep0_output[2],
                slot->ep0_ring.producer);
-    xhci_ring_push(c, &slot->ep0_ring, setup_phys, 8u,
+    xhci_ring_push(c, &slot->ep0_ring, setup_parameter, 8u,
                    (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
                    (1u << 6) | (1u << 4));
     if (length > 0) {
@@ -389,7 +386,7 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
         log_printf("[xHCI] control transfer timeout slot=%u\n", slot->slot_id);
         return -1;
     }
-    uint8_t code = (uint8_t)(event.control >> 24);
+    uint8_t code = (uint8_t)(event.status >> 24);
     if (code != 1 && code != 13) {
         log_printf("[xHCI] control completion=%u slot=%u\n",
                    code, slot->slot_id);
@@ -473,7 +470,7 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     if (slot->interrupt_pending) {
         xhci_trb_t event;
         if (xhci_wait_event(c, XHCI_TRB_TRANSFER_EVENT, &event, 1) == 0) {
-            uint8_t code = (uint8_t)(event.control >> 24);
+            uint8_t code = (uint8_t)(event.status >> 24);
             slot->interrupt_pending = false;
             if (code != 1 && code != 13) return -1;
             int transfer_length = length > 64 ? 64 : length;
