@@ -74,7 +74,7 @@ def main() -> int:
     response = command(
         connection,
         "input-send-event",
-        {"device": "usb-kbd", "events": key_events},
+        {"events": key_events},
     )
     if "return" not in response:
         print(f"QMP keyboard injection failed: {response}", file=sys.stderr)
@@ -89,7 +89,7 @@ def main() -> int:
     response = command(
         connection,
         "input-send-event",
-        {"device": "usb-mouse", "events": events},
+        {"events": events},
     )
     if "return" not in response:
         print(f"QMP input injection failed: {response}", file=sys.stderr)
@@ -109,7 +109,6 @@ def main() -> int:
             connection,
             "input-send-event",
             {
-                "device": "hotplug-kbd",
                 "events": [
                     {"type": "key", "data": {
                         "down": True,
