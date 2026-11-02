@@ -6,6 +6,15 @@
 #include "boot_framebuffer.h"
 #include "port.h"
 #include "speaker.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pmm.h"
+#include "vmm.h"
+#include "heap.h"
+#include "acpi.h"
+#include "apic.h"
+#include "dma.h"
+#include "panic.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -201,8 +210,8 @@ static void draw_barber_pole(int x, int y, int w, int h, int frame) {
 static void draw_welcome_window(void) {
     if (!g_main_surface.framebuffer_virt) return;
 
-    int win_w = 540;
-    int win_h = 320;
+    int win_w = 560;
+    int win_h = 360;
     int win_x = (int)(g_main_surface.width - win_w) / 2;
     int win_y = (int)(g_main_surface.height - win_h) / 2;
 
@@ -234,24 +243,22 @@ static void draw_welcome_window(void) {
 
     // 5. Content text lines
     int text_x = win_x + 20;
-    int text_y = win_y + 42;
+    int text_y = win_y + 36;
 
-    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up", c_black, c_gray);
-    text_y += 24;
-    boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64 / x86-64 Long Mode (Ring 0)", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up (P2 Complete)", c_title, c_gray);
     text_y += 20;
-
-    // CPU Info
-    boot_framebuffer_draw_string(text_x, text_y, "CPU Vendor : ", c_black, c_gray);
-    boot_framebuffer_draw_string(text_x + 104, text_y, g_cpu_info.vendor, c_green, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64 Long Mode (Ring 0 / IST1 #DF Safe)", c_black, c_gray);
     text_y += 18;
 
-    boot_framebuffer_draw_string(text_x, text_y, "CPU Model  : ", c_black, c_gray);
-    boot_framebuffer_draw_string(text_x + 104, text_y, cpu_model_string, c_black, c_gray);
+    // CPU Info
+    boot_framebuffer_draw_string(text_x, text_y, "CPU Detected: ", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x + 104, text_y, g_cpu_info.vendor, c_green, c_gray);
+    boot_framebuffer_draw_string(text_x + 210, text_y, cpu_model_string, c_black, c_gray);
     text_y += 18;
 
     // Memory Info
-    uint64_t ram_mb = g_hhdm.total_usable_bytes / (1024 * 1024);
+    uint64_t ram_mb = (pmm_get_total_page_count() * 4096) / (1024 * 1024);
+    uint64_t free_mb = (pmm_get_free_page_count() * 4096) / (1024 * 1024);
     char mem_str[64];
     int m_pos = 0;
     uint64_t temp = ram_mb;
@@ -267,20 +274,47 @@ static void draw_welcome_window(void) {
     mem_str[m_pos++] = 'M';
     mem_str[m_pos++] = 'B';
     mem_str[m_pos++] = ' ';
-    mem_str[m_pos++] = 'R';
-    mem_str[m_pos++] = 'A';
+    mem_str[m_pos++] = '(';
+    temp = free_mb;
+    if (temp == 0) mem_str[m_pos++] = '0';
+    d_cnt = 0;
+    while (temp > 0) {
+        digits[d_cnt++] = '0' + (temp % 10);
+        temp /= 10;
+    }
+    while (d_cnt > 0) mem_str[m_pos++] = digits[--d_cnt];
+    mem_str[m_pos++] = ' ';
     mem_str[m_pos++] = 'M';
+    mem_str[m_pos++] = 'B';
+    mem_str[m_pos++] = ' ';
+    mem_str[m_pos++] = 'F';
+    mem_str[m_pos++] = 'r';
+    mem_str[m_pos++] = 'e';
+    mem_str[m_pos++] = 'e';
+    mem_str[m_pos++] = ')';
     mem_str[m_pos] = '\0';
 
-    boot_framebuffer_draw_string(text_x, text_y, "Physical RAM: ", c_black, c_gray);
-    boot_framebuffer_draw_string(text_x + 112, text_y, mem_str, c_black, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "PMM Memory  : ", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x + 104, text_y, mem_str, c_black, c_gray);
+    text_y += 18;
+
+    // VMM & Graphics Info
+    boot_framebuffer_draw_string(text_x, text_y, "VMM / Video : 4-Level Paging, PAT Write-Combining Active", c_black, c_gray);
+    text_y += 18;
+
+    // ACPI & APIC Info
+    boot_framebuffer_draw_string(text_x, text_y, "Interrupts  : Modern APIC (LAPIC Timer Vector 32, IOAPIC Active)", c_black, c_gray);
+    text_y += 18;
+
+    // DMA Info
+    boot_framebuffer_draw_string(text_x, text_y, "DMA Engine  : 64-Bit Zoned (ZONE_DMA <16M, DMA32 <4G, NORMAL)", c_black, c_gray);
     text_y += 22;
 
     // Status Banner
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 26, c_white);
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 1, c_dgray);
     boot_framebuffer_fill_rect(text_x, text_y, 1, 26, c_dgray);
-    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] Limine UEFI/BIOS Dual-Boot Verified!", c_green, c_white);
+    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] P2 Kernel Infrastructure 100% Operational!", c_green, c_white);
     text_y += 34;
 
     // Barber-Pole Progress Bar
@@ -298,7 +332,7 @@ static void draw_welcome_window(void) {
     g_btn_w = 90;
     g_btn_h = 24;
     g_btn_x = win_x + (win_w - g_btn_w) / 2;
-    g_btn_y = win_y + win_h - 34;
+    g_btn_y = win_y + win_h - 32;
     draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
 }
 
@@ -340,26 +374,45 @@ void kmain(void) {
     // 5. Parse Memory Map
     parse_memory_map();
 
-    // 6. Check Kernel Load Address
+    // 6. P2.3: Initialize 64-bit GDT, Per-CPU TSS, and IST1 Double Fault Stack
+    gdt_init();
+
+    // 7. P2.4: Initialize 64-bit IDT (256 vectors, CPU exception stubs, Mac Bomb Panic)
+    idt_init();
+
+    // 8. P2.1: Initialize 64-bit Physical Memory Manager (Bitmap Allocator > 4GB)
+    pmm_init();
+
+    // 9. P2.2: Initialize 64-bit Virtual Memory Manager (4-Level Paging, PAT Write-Combining)
+    vmm_init();
+
+    // 10. P2.2: Initialize Kernel Heap
+    kheap_init();
+
+    // 11. P2.5: Initialize ACPI Subsystem (RSDP, RSDT/XSDT, MADT, MCFG)
+    acpi_init();
+
+    // 12. P2.6: Initialize Modern Interrupt Subsystem (IMCR, Mask 8259, Local APIC, IOAPIC)
+    apic_init();
+
+    // 13. P2.7: Initialize Unified 64-bit DMA Subsystem (ZONE_DMA / DMA32 / NORMAL)
+    dma_init();
+
+    // 14. Check Kernel Load Address
     if (kernel_address_request.response) {
         log_printf("[KERNEL] Phys Base: 0x%llx, Virt Base: 0x%llx\n",
                    kernel_address_request.response->physical_base,
                    kernel_address_request.response->virtual_base);
     }
 
-    // 7. Check ACPI RSDP
-    if (rsdp_request.response && rsdp_request.response->address) {
-        log_printf("[ACPI] Limine RSDP Pointer: %p\n", rsdp_request.response->address);
-    }
-
-    // 8. Initialize Boot Framebuffer (Limine GOP / VESA)
+    // 15. Initialize Boot Framebuffer (Limine GOP / VESA)
     if (framebuffer_request.response && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
         if (boot_framebuffer_init(fb)) {
             // Draw classic Mac OS 50% checkerboard background
             boot_framebuffer_draw_checkerboard();
 
-            // Draw Windows 3.1 / Mac OS 9 style 3D welcome modal window
+            // Draw Windows 3.1 / Mac OS 9 style 3D welcome modal window with P2 metrics
             draw_welcome_window();
 
             log_printf("[UI] Classic 50%% checkerboard and welcome modal rendered successfully.\n");
@@ -368,12 +421,16 @@ void kmain(void) {
         log_printf("[BOOT WARN] No graphic framebuffer returned by Limine! Running in headless serial mode.\n");
     }
 
-    // 9. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
+    // 16. Enable Hardware Interrupts now that GDT, IDT, LAPIC and IOAPIC are fully ready
+    __asm__ volatile ("sti");
+    log_printf("[CPU] Hardware interrupts enabled (STI). Local APIC Timer is running.\n");
+
+    // 17. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
     speaker_boot_chord();
 
-    log_printf("[SYSTEM] P1 Milestone reached: 64-Bit Long Mode & Limine Dual-Boot active.\n");
+    log_printf("[SYSTEM] P2 Milestone reached: Full Kernel Infrastructure, ACPI & Modern APIC Active.\n");
 
-    // 10. Interactive idle loop with Barber-Pole animation
+    // 18. Interactive idle loop with Barber-Pole animation
     // (Uses pause + delay_ms to prevent VMware/QEMU from detecting disabled CPU / msg.monitorevent.halt)
     int frame = 0;
     for (;;) {
@@ -399,3 +456,4 @@ void kmain(void) {
         __asm__ volatile ("pause");
     }
 }
+

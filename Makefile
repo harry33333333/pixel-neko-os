@@ -11,16 +11,28 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -ffreestanding -nostdlib -nostartfiles \
           -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
           -std=gnu11 -O2 -Wall -Wextra \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Idrivers/video -Idrivers/audio
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Idrivers/video -Idrivers/audio -Idrivers/acpi
 
 NASMFLAGS ?= -f elf64
 
 # Source Files
-ASM_SRCS = arch/x86_64/entry.asm
+ASM_SRCS = arch/x86_64/entry.asm \
+           arch/x86_64/gdt_flush.asm \
+           arch/x86_64/interrupts.asm
+
 C_SRCS   = kernel/core/main.c \
            kernel/core/log.c \
            kernel/core/string.c \
+           kernel/core/panic.c \
            arch/x86_64/cpu.c \
+           arch/x86_64/gdt.c \
+           arch/x86_64/idt.c \
+           arch/x86_64/apic.c \
+           kernel/mm/pmm.c \
+           kernel/mm/vmm.c \
+           kernel/mm/heap.c \
+           kernel/mm/dma.c \
+           drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
            drivers/audio/speaker.c
 
