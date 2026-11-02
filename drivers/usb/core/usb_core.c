@@ -253,16 +253,18 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         usb_release_device(dev);
         return -1;
     }
-    result = usb_control_msg(
-        dev,
-        USB_DIR_OUT | USB_RT_STANDARD | USB_RT_DEVICE,
-        USB_REQ_SET_ADDRESS, address, 0, NULL, 0);
-    if (result < 0) {
-        log_printf("[USB ] SET_ADDRESS %u failed (%d)\n", address, result);
-        usb_release_device(dev);
-        return -1;
+    if (!hci->skips_set_address) {
+        result = usb_control_msg(
+            dev,
+            USB_DIR_OUT | USB_RT_STANDARD | USB_RT_DEVICE,
+            USB_REQ_SET_ADDRESS, address, 0, NULL, 0);
+        if (result < 0) {
+            log_printf("[USB ] SET_ADDRESS %u failed (%d)\n", address, result);
+            usb_release_device(dev);
+            return -1;
+        }
+        usb_delay_ms(5);
     }
-    usb_delay_ms(5);
     dev->address = address;
 
     memset(&descriptor, 0, sizeof(descriptor));

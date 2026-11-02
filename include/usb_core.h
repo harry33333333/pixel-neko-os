@@ -142,6 +142,7 @@ typedef struct usb_hci {
     void* priv;
     uint8_t root_ports;
     bool supports_hubs;
+    bool skips_set_address;
     int (*control)(struct usb_hci* hci, usb_device_t* dev,
                    const usb_setup_packet_t* setup,
                    void* data, int length, int direction);

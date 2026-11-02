@@ -701,6 +701,7 @@ int xhci_probe(const pci_device_t* device) {
     c->hci.priv = c;
     c->hci.root_ports = (uint8_t)c->max_ports;
     c->hci.supports_hubs = true;
+    c->hci.skips_set_address = true;
     c->hci.control = xhci_control;
     c->hci.intr_in = xhci_intr_in;
     c->hci.port_reset = xhci_port_reset;
