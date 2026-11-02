@@ -108,6 +108,7 @@ typedef struct {
 
 static xhci_controller_t g_xhci[XHCI_MAX_CONTROLLERS];
 static uint32_t g_xhci_count = 0;
+static uint32_t g_xhci_event_logs = 0;
 
 static uint32_t xhci_read32(xhci_controller_t* c, uint32_t offset) {
     return *(volatile uint32_t*)(c->cap + offset);
@@ -190,6 +191,13 @@ static int xhci_wait_event(xhci_controller_t* c, uint8_t wanted_type,
         xhci_trb_t event;
         while (xhci_event_next(c, &event)) {
             uint8_t type = (event.control >> 10) & 0x3F;
+            if (g_xhci_event_logs++ < 24) {
+                log_printf("[xHCI] event type=%u status=0x%08x control=0x%08x code=%u slot=%u ep=%u\n",
+                           type, event.status, event.control,
+                           (event.control >> 24) & 0xFF,
+                           event.control & 0xFF,
+                           (event.control >> 16) & 0x1F);
+            }
             if (type == wanted_type) {
                 if (result) *result = event;
                 return 0;
@@ -364,6 +372,9 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
     if (direction != USB_DIR_IN || length == 0) status_flags |= 1u << 16;
     xhci_ring_push(c, &slot->ep0_ring, 0, 0,
                    (XHCI_TRB_STATUS << 10) | status_flags);
+    log_printf("[xHCI] submit slot=%u len=%d dir=%d next=%u cycle=%u\n",
+               slot->slot_id, length, direction,
+               slot->ep0_ring.producer, slot->ep0_ring.cycle);
     volatile uint32_t* doorbell = (volatile uint32_t*)
         (c->doorbell + 4u * slot->slot_id);
     *doorbell = 1;
