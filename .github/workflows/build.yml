@@ -41,6 +41,7 @@ jobs:
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
+        nm -n bin/kernel.elf > kernel-symbols.txt
         # Create source archive asset
         git archive --format=zip --output="pixel_neko_source_${VERSION}.zip" HEAD
 
@@ -62,6 +63,16 @@ jobs:
       with:
         name: make-build-log
         path: make.log
+        if-no-files-found: ignore
+
+    - name: Upload Debug Kernel Artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-kernel
+        path: |
+          bin/kernel.elf
+          kernel-symbols.txt
         if-no-files-found: ignore
 
     - name: QEMU UEFI and Legacy Smoke Test
