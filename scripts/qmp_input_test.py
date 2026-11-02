@@ -78,6 +78,7 @@ def main() -> int:
     )
     if "return" not in response:
         print(f"QMP keyboard injection failed: {response}", file=sys.stderr)
+        return 1
 
     events = [
         {"type": "rel", "axis": "x", "value": 16},
@@ -92,6 +93,7 @@ def main() -> int:
     )
     if "return" not in response:
         print(f"QMP input injection failed: {response}", file=sys.stderr)
+        return 1
 
     if mode == "hub":
         add_result = command(
@@ -101,8 +103,9 @@ def main() -> int:
         )
         if "return" not in add_result:
             print(f"USB hotplug add failed: {add_result}", file=sys.stderr)
+            return 1
         time.sleep(2)
-        command(
+        hotplug_input = command(
             connection,
             "input-send-event",
             {
@@ -115,6 +118,9 @@ def main() -> int:
                 ],
             },
         )
+        if "return" not in hotplug_input:
+            print(f"USB hotplug input failed: {hotplug_input}", file=sys.stderr)
+            return 1
         time.sleep(1)
         del_result = command(
             connection,
@@ -123,6 +129,7 @@ def main() -> int:
         )
         if "return" not in del_result:
             print(f"USB hotplug delete failed: {del_result}", file=sys.stderr)
+            return 1
         time.sleep(2)
 
     connection.close()

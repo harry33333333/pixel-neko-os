@@ -163,7 +163,7 @@ void usb_hub_detach(usb_device_t* hub) {
 
 void usb_hub_poll(void) {
     uint64_t now = apic_get_ticks();
-    if (now - g_last_poll_tick < 20) return;
+    if (now - g_last_poll_tick < 500) return;
     g_last_poll_tick = now;
 
     for (int i = 0; i < g_hub_count; i++) {
