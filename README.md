@@ -49,6 +49,16 @@ qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A115a.is
 qemu-system-x86_64 -cdrom pixel-neko-os_26A115a.iso -m 512M -serial stdio -boot d
 ```
 
+### P3 automated smoke test
+
+`scripts/qemu_smoke_test.sh` boots the ISO through both OVMF UEFI and Legacy
+BIOS, then requires the real-NMI, Ring 3, FPU context, blocking IPC and shared
+memory self-tests to pass:
+
+```bash
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A115a.iso
+```
+
 ---
 
 ## 📜 许可证
