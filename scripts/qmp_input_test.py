@@ -66,10 +66,10 @@ def main() -> int:
             print(f"HMP injection failed: {hmp}: {response}", file=sys.stderr)
 
     key_events = [
-        {"type": "key", "down": True,
-         "key": {"type": "qcode", "data": "p"}},
-        {"type": "key", "down": False,
-         "key": {"type": "qcode", "data": "p"}},
+        {"type": "key", "data": {
+            "down": True, "key": {"type": "qcode", "data": "p"}}},
+        {"type": "key", "data": {
+            "down": False, "key": {"type": "qcode", "data": "p"}}},
     ]
     response = command(
         connection,
@@ -81,10 +81,10 @@ def main() -> int:
         return 1
 
     events = [
-        {"type": "rel", "axis": "x", "value": 16},
-        {"type": "rel", "axis": "y", "value": -8},
-        {"type": "btn", "down": True, "button": "left"},
-        {"type": "btn", "down": False, "button": "left"},
+        {"type": "rel", "data": {"axis": "x", "value": 16}},
+        {"type": "rel", "data": {"axis": "y", "value": -8}},
+        {"type": "btn", "data": {"down": True, "button": "left"}},
+        {"type": "btn", "data": {"down": False, "button": "left"}},
     ]
     response = command(
         connection,
@@ -111,10 +111,12 @@ def main() -> int:
             {
                 "device": "hotplug-kbd",
                 "events": [
-                    {"type": "key", "down": True,
-                     "key": {"type": "qcode", "data": "a"}},
-                    {"type": "key", "down": False,
-                     "key": {"type": "qcode", "data": "a"}},
+                    {"type": "key", "data": {
+                        "down": True,
+                        "key": {"type": "qcode", "data": "a"}}},
+                    {"type": "key", "data": {
+                        "down": False,
+                        "key": {"type": "qcode", "data": "a"}}},
                 ],
             },
         )
