@@ -6,8 +6,8 @@
 
 #define GDT_KERNEL_CODE_SEL 0x08
 #define GDT_KERNEL_DATA_SEL 0x10
-#define GDT_USER_DATA_SEL   0x18
-#define GDT_USER_CODE_SEL   0x20
+#define GDT_USER_DATA_SEL   0x1B
+#define GDT_USER_CODE_SEL   0x23
 #define GDT_TSS_SEL         0x28
 
 // 64-bit Task State Segment (TSS)

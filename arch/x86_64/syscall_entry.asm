@@ -30,10 +30,10 @@ syscall_entry:
 
     ; Build a full trap_frame_t. This permits the same restore path to be
     ; used after an IRQ/syscall-triggered context switch.
-    push qword 0x18                 ; user SS
+    push qword 0x1B                 ; user SS (RPL 3)
     push qword [gs:8]               ; user RSP
     push r11                        ; user RFLAGS
-    push qword 0x20                 ; user CS
+    push qword 0x23                 ; user CS (RPL 3)
     push rcx                        ; user RIP
     push qword 0                    ; error code
     push qword 0x100                ; syscall frame marker
@@ -79,7 +79,7 @@ syscall_entry:
     mov [rsp + 19*8], r11
 
     ; Data selectors are loaded before restoring user registers.
-    mov ax, 0x18
+    mov ax, 0x1B
     mov ds, ax
     mov es, ax
     mov fs, ax
@@ -136,7 +136,7 @@ arch_restore_trap_frame:
 
     test byte [rsp + 18*8], 3       ; frame->cs
     jz .kernel_segments
-    mov ax, 0x18
+    mov ax, 0x1B
     jmp .load_segments
 .kernel_segments:
     mov ax, 0x10
