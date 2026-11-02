@@ -5,6 +5,7 @@
 
 typedef struct {
     usb_device_t* device;
+    usb_endpoint_t* status_endpoint;
     uint8_t ports;
     uint16_t power_good_ms;
     uint64_t retry_tick[USB_MAX_HUB_PORTS + 1];
@@ -141,6 +142,14 @@ int usb_hub_attach(usb_device_t* hub) {
 
     hub_state_t* state = &g_hubs[g_hub_count++];
     state->device = hub;
+    state->status_endpoint = NULL;
+    for (uint8_t endpoint = 0; endpoint < hub->endpoint_count; endpoint++) {
+        if (hub->endpoints[endpoint].direction == USB_DIR_IN &&
+            hub->endpoints[endpoint].type == USB_EP_TYPE_INTERRUPT) {
+            state->status_endpoint = &hub->endpoints[endpoint];
+            break;
+        }
+    }
     state->ports = ports;
     state->power_good_ms = power_good_ms;
     hub->hub_port_count = ports;
@@ -171,7 +180,21 @@ void usb_hub_detach(usb_device_t* hub) {
 
 void usb_hub_poll(void) {
     uint64_t now = apic_get_ticks();
-    if (now - g_last_poll_tick < 500) return;
+    bool status_change = false;
+    for (int i = 0; i < g_hub_count; i++) {
+        hub_state_t* state = &g_hubs[i];
+        if (!state->device || !state->status_endpoint ||
+            !state->device->hci || !state->device->hci->intr_in) {
+            continue;
+        }
+        uint8_t bitmap[8];
+        memset(bitmap, 0, sizeof(bitmap));
+        int length = state->device->hci->intr_in(
+            state->device->hci, state->device, state->status_endpoint,
+            bitmap, state->status_endpoint->max_packet);
+        if (length > 0) status_change = true;
+    }
+    if (!status_change && now - g_last_poll_tick < 500) return;
     g_last_poll_tick = now;
 
     for (int i = 0; i < g_hub_count; i++) {

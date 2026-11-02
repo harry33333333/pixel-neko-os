@@ -218,7 +218,8 @@ int usb_hid_attach(usb_device_t* device) {
             hid->has_wheel = report_descriptor_has_wheel(
                 report_descriptor, report_length);
         }
-        hid_send_class_request(device, 0x0B, 0, NULL, 0); /* Boot mouse */
+        hid_send_class_request(device, 0x0B,
+                               hid->has_wheel ? 1 : 0, NULL, 0);
         g_mice++;
         log_printf("[USBHID] Attached mouse address=%u endpoint=0x%02x report=%u wheel=%d\n",
                    device->address, endpoint->address, hid->report_length,
