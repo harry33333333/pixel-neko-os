@@ -213,7 +213,7 @@ static int xhci_command(xhci_controller_t* c, uint64_t parameter,
         return -1;
     }
     if (completed_event) *completed_event = event;
-    uint8_t code = (uint8_t)(event.status >> 24);
+    uint8_t code = (uint8_t)(event.control >> 24);
     if (code != 1) {
         log_printf("[xHCI] command failed completion=%u type=%u\n",
                    code, (event.control >> 10) & 0x3F);
@@ -245,7 +245,7 @@ static int xhci_enable_slot(xhci_controller_t* c, uint8_t* slot_id) {
     if (xhci_command(c, 0, 0, XHCI_TRB_ENABLE_SLOT << 10, &event) != 0) {
         return -1;
     }
-    uint8_t id = (uint8_t)((event.control >> 24) & 0xFF);
+    uint8_t id = (uint8_t)(event.control & 0xFF);
     if (id == 0 || id > c->max_slots) {
         log_printf("[xHCI] Enable Slot returned invalid slot %u\n", id);
         return -1;
@@ -373,7 +373,7 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
         log_printf("[xHCI] control transfer timeout slot=%u\n", slot->slot_id);
         return -1;
     }
-    uint8_t code = (uint8_t)(event.status >> 24);
+    uint8_t code = (uint8_t)(event.control >> 24);
     if (code != 1 && code != 13) {
         log_printf("[xHCI] control completion=%u slot=%u\n",
                    code, slot->slot_id);
@@ -454,7 +454,7 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     if (slot->interrupt_pending) {
         xhci_trb_t event;
         if (xhci_wait_event(c, XHCI_TRB_TRANSFER_EVENT, &event, 1) == 0) {
-            uint8_t code = (uint8_t)(event.status >> 24);
+            uint8_t code = (uint8_t)(event.control >> 24);
             slot->interrupt_pending = false;
             if (code != 1 && code != 13) return -1;
             int transfer_length = length > 64 ? 64 : length;
