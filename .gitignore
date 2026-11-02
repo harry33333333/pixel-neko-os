@@ -1,0 +1,15 @@
+*.o
+*.d
+bin/
+iso_root/
+*.iso
+*.log
+*.zip
+output*.txt
+.vscode/
+boot/limine/limine
+!boot/limine/*.bin
+!boot/limine/*.sys
+!boot/limine/*.EFI
+!boot/limine/*.c
+!boot/limine/*.exe

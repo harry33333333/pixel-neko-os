@@ -1,0 +1,102 @@
+name: Build and Release OS ISO
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        sudo apt-get update
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
+
+    - name: Ensure Unix line endings and script permissions
+      run: |
+        dos2unix scripts/*.sh || sed -i 's/\r$//' scripts/*.sh
+        chmod +x scripts/*.sh
+
+    - name: Build Kernel and Hybrid ISO
+      run: |
+        set -o pipefail
+        make iso 2>&1 | tee make.log
+        VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
+        if [ -z "$VERSION" ]; then
+          VERSION="26A1001a"
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
+        # Create source archive asset
+        git archive --format=zip --output="pixel_neko_source_${VERSION}.zip" HEAD
+
+    - name: Build Diagnostics and Summary
+      if: always()
+      run: |
+        if [ -f make.log ]; then
+          echo "### Build Log Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 120 make.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload Bootable ISO Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pixel-neko-os-iso
+        path: pixel-neko-os*.iso
+        if-no-files-found: error
+
+    - name: Publish GitHub Pre-release
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.TAG_NAME }}
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)"
+        body: |
+          ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
+
+          > ⚠️ **Pre-release**: 64-bit AMD64 Long Mode & Limine v8.x Dual-Boot Milestone (P0/P1).
+
+          ### 📦 Release Assets
+          - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
+          - **Source Code Archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
+          - **Commit**: `${{ github.sha }}`
+
+          ### 🚀 Running the ISO
+          #### 1. UEFI Mode (Recommended for modern hardware)
+          ```bash
+          qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_${{ env.VERSION }}.iso -m 512M -serial stdio
+          ```
+          #### 2. Legacy BIOS Mode (El Torito Hybrid MBR)
+          ```bash
+          qemu-system-x86_64 -cdrom pixel-neko-os_${{ env.VERSION }}.iso -m 512M -serial stdio -boot d
+          ```
+          #### 3. VMware / VirtualBox
+          Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
+
+          ### 🛠️ Architecture Highlights
+          - **Dual-Boot Limine v8.x**: El Torito UEFI CD + BIOS CD bootloader with hybrid MBR injection (`limine-uefi-cd.bin` + `BOOTX64.EFI`).
+          - **64-Bit AMD64 Long Mode**: Clean higher-half bootstrap (`0xffffffff80000000`) with 32KB kernel stack.
+          - **CPUID 4-Tier Feature Admission**: Strict verification of mandatory CPU capabilities (`LM`, `NX`, `APIC`, `SYSCALL` `0x80000001:EDX[11]`, `SSE2`).
+          - **Safe Checked HHDM**: Dynamic `phys_to_virt` and boundary-checked `virt_to_phys_checked` translation based on Limine HHDM responses.
+          - **Boot Framebuffer Engine**: Full color mask resolution, dynamic shifts, 50% checkerboard classic desktop pattern, and retro 3D Win3.1 / Mac OS 9 dialog box.
+          - **Permissive Licensing**: Completely clean of GPL code.
+        draft: false
+        prerelease: true
+        make_latest: false
+        files: |
+          pixel-neko-os*.iso
+          pixel_neko_source_*.zip
