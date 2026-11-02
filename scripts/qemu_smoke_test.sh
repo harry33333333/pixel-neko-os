@@ -40,7 +40,7 @@ run_mode() {
 
     rm -f "${log}" "${console}" "${qmp}"
     set +e
-    timeout --foreground 30s qemu-system-x86_64 \
+    timeout --foreground 28s qemu-system-x86_64 \
         -machine "${machine},accel=tcg" \
         -cpu max \
         -smp 1 \
@@ -90,13 +90,13 @@ run_mode() {
         return 1
     fi
 
-    if [ "${mode}" = "uefi" ] &&
+    if { [ "${mode}" = "uefi" ] || [ "${mode}" = "ehci" ]; } &&
        ! grep -q "Backend: PCIe ECAM" "${log}"; then
         echo "UEFI Q35 run did not use PCIe ECAM" >&2
         tail -n 250 "${log}" >&2
         return 1
     fi
-    if [ "${mode}" = "bios" ] &&
+    if { [ "${mode}" = "bios" ] || [ "${mode}" = "ohci" ]; } &&
        ! grep -q "Backend: legacy CF8/CFC" "${log}"; then
         echo "Legacy run did not use CF8/CFC configuration space" >&2
         tail -n 250 "${log}" >&2
@@ -119,3 +119,11 @@ run_mode bios pc -boot d \
     -device piix3-usb-uhci,id=uhci \
     -device usb-kbd,bus=uhci.0,id=usb-kbd \
     -device usb-mouse,bus=uhci.0,id=usb-mouse
+run_mode ohci pc -boot d \
+    -device pci-ohci,id=ohci \
+    -device usb-kbd,bus=ohci.0,id=usb-kbd \
+    -device usb-mouse,bus=ohci.0,id=usb-mouse
+run_mode ehci q35 -bios "${UEFI_FW}" \
+    -device ich9-usb-ehci1,id=ehci \
+    -device usb-kbd,bus=ehci.0,id=usb-kbd \
+    -device usb-mouse,bus=ehci.0,id=usb-mouse
