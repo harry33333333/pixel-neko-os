@@ -40,7 +40,7 @@ cp boot/limine/BOOTX64.EFI iso_root/EFI/BOOT/BOOTX64.EFI
 if [ ! -f "boot/limine/limine" ]; then
     if [ -f "boot/limine/limine.c" ]; then
         echo "Compiling host limine installer..."
-        gcc -O2 -o boot/limine/limine boot/limine/limine.c
+        gcc -O2 -Iboot/limine -o boot/limine/limine boot/limine/limine.c
         chmod +x boot/limine/limine
     elif command -v limine >/dev/null 2>&1; then
         cp "$(command -v limine)" boot/limine/limine

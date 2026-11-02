@@ -165,7 +165,6 @@ static void draw_welcome_window(void) {
     boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64 / x86-64 Long Mode (Ring 0)", c_black, c_gray);
     text_y += 20;
 
-    char buf[128];
     // CPU Info
     boot_framebuffer_draw_string(text_x, text_y, "CPU Vendor : ", c_black, c_gray);
     boot_framebuffer_draw_string(text_x + 104, text_y, g_cpu_info.vendor, c_green, c_gray);

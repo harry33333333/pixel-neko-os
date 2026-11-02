@@ -46,6 +46,8 @@ jobs:
       if: always()
       run: |
         if [ -f make.log ]; then
+          echo "=== MAKE.LOG CONSOLE OUTPUT ==="
+          cat make.log
           echo "### Build Log Summary" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           tail -n 120 make.log >> $GITHUB_STEP_SUMMARY

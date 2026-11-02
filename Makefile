@@ -45,9 +45,11 @@ version:
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+LDFLAGS ?= -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T link64.ld
+
 $(TARGET): $(OBJS) link64.ld
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -Wl,-m,elf_x86_64 -Wl,-T,link64.ld -Wl,-z,max-page-size=0x1000 -o $(TARGET) $(OBJS) -lgcc
+	$(LD) $(LDFLAGS) -o $(TARGET) $(OBJS)
 	@echo "Kernel successfully linked: $(TARGET)"
 
 iso: all
