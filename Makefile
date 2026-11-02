@@ -5,7 +5,7 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 115
+PIXEL_NEKO_BUILD_NUMBER ?= 118
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -45,6 +45,11 @@ C_SRCS   = kernel/core/main.c \
            kernel/process/scheduler.c \
            kernel/process/elf.c \
            kernel/process/ipc.c \
+           drivers/bus/device.c \
+           drivers/bus/pci.c \
+           drivers/input/input_manager.c \
+           drivers/input/keyboard.c \
+           drivers/input/mouse.c \
            drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
            drivers/audio/speaker.c

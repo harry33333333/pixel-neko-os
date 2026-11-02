@@ -67,8 +67,6 @@ void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t fla
     ioapic_write(IOAPIC_REDTBL(gsi) + 1, high);
 }
 
-static volatile uint8_t g_last_scancode = 0;
-
 static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
 }
@@ -80,19 +78,6 @@ static inline void wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
 static void apic_timer_handler(trap_frame_t* frame) {
     (void)frame;
     g_lapic_ticks++;
-}
-
-uint8_t keyboard_get_scancode(void) {
-    uint8_t sc = g_last_scancode;
-    g_last_scancode = 0;
-    return sc;
-}
-
-static void apic_keyboard_handler(trap_frame_t* frame) {
-    (void)frame;
-    // Read 8042 scancode to clear output buffer and store for consumer
-    uint8_t sc = inb(0x60);
-    g_last_scancode = sc;
 }
 
 uint64_t apic_get_ticks(void) {
@@ -163,12 +148,17 @@ void apic_init(void) {
     ioapic_set_entry(timer_gsi, 32, 0, timer_flags, false);
     log_printf("[APIC] Routed IRQ 0 (Timer) to GSI %u, Vector 32\n", timer_gsi);
 
-    // Configure Keyboard IRQ 1 -> GSI routing
+    // Configure PS/2 keyboard IRQ 1 and mouse IRQ 12 routing. Drivers install
+    // their handlers after the unified input stack is initialized.
     uint32_t kbd_gsi = acpi_remap_irq(1);
     uint16_t kbd_flags = acpi_get_irq_flags(1);
-    irq_install_handler(1, apic_keyboard_handler);
     ioapic_set_entry(kbd_gsi, 33, 0, kbd_flags, false);
     log_printf("[APIC] Routed IRQ 1 (Keyboard) to GSI %u, Vector 33\n", kbd_gsi);
+
+    uint32_t mouse_gsi = acpi_remap_irq(12);
+    uint16_t mouse_flags = acpi_get_irq_flags(12);
+    ioapic_set_entry(mouse_gsi, 44, 0, mouse_flags, false);
+    log_printf("[APIC] Routed IRQ 12 (Mouse) to GSI %u, Vector 44\n", mouse_gsi);
 
     log_printf("[APIC] Modern Interrupt Subsystem (LAPIC/IOAPIC) initialized successfully.\n");
 }

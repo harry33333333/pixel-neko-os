@@ -20,6 +20,9 @@
 #include "process.h"
 #include "ipc.h"
 #include "syscall.h"
+#include "device.h"
+#include "pci.h"
+#include "input.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -257,7 +260,7 @@ static void draw_welcome_window(void) {
     int text_x = win_x + 20;
     int text_y = win_y + 36;
 
-    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up (P3 Complete)", c_title, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up (P4a Complete)", c_title, c_gray);
     text_y += 20;
     boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64, Ring 0 / Ring 3, IST1 #DF, IST2 NMI", c_black, c_gray);
     text_y += 18;
@@ -319,14 +322,14 @@ static void draw_welcome_window(void) {
     text_y += 18;
 
     // DMA Info
-    boot_framebuffer_draw_string(text_x, text_y, "P3 Runtime  : TCB/PCB, APIC Preemption, FXSAVE, ELF, IPC", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "P4a Bus     : PCI/ECAM, 64-bit BAR, PS/2 Unified Input", c_black, c_gray);
     text_y += 22;
 
     // Status Banner
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 26, c_white);
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 1, c_dgray);
     boot_framebuffer_fill_rect(text_x, text_y, 1, 26, c_dgray);
-    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] P3 Process & Ring 3 Runtime Operational!", c_green, c_white);
+    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] P4a PCI Foundation & PS/2 Input Operational!", c_green, c_white);
     text_y += 34;
 
     // Barber-Pole Progress Bar
@@ -425,25 +428,38 @@ void kmain(void) {
     // 14. P2.7: Initialize Unified 64-bit DMA Subsystem (ZONE_DMA / DMA32 / NORMAL)
     dma_init();
 
-    // 15. Check Kernel Load Address
+    // 15. P4a.1/P4a.2: Build the bus/device/driver tree and enumerate PCIe
+    device_model_init();
+    bus_register("root", BUS_TYPE_ROOT);
+    pci_scan_all();
+
+    // 16. P4a.3: Initialize the unified input queue and PS/2 fallback devices
+    input_manager_init();
+    ps2_input_init();
+    int bound_drivers = driver_probe_all();
+    device_tree_dump();
+    log_printf("[P4A] PCI backend=%s, device(s)=%d, input drivers bound=%d.\n",
+               pci_get_backend_name(), pci_get_device_count(), bound_drivers);
+
+    // 17. Check Kernel Load Address
     if (kernel_address_request.response) {
         log_printf("[KERNEL] Phys Base: 0x%llx, Virt Base: 0x%llx\n",
                    kernel_address_request.response->physical_base,
                    kernel_address_request.response->virtual_base);
     }
 
-    // 16. P3.2: Enable native FPU/SSE state and initialize scheduler state
+    // 18. P3.2: Enable native FPU/SSE state and initialize scheduler state
     fpu_init();
     scheduler_init();
     process_subsystem_init();
 
-    // 17. P3.3: Configure SYSCALL/SYSRET MSRs and GS-based per-CPU state
+    // 19. P3.3: Configure SYSCALL/SYSRET MSRs and GS-based per-CPU state
     syscall_init();
 
-    // 18. P3.5: Create the message queue and shared-memory test objects
+    // 20. P3.5: Create the message queue and shared-memory test objects
     ipc_init();
 
-    // 19. P3.1: Create Idle and two independent Ring 3 ELF processes
+    // 21. P3.1: Create Idle and two independent Ring 3 ELF processes
     if (!process_create_idle()) {
         log_printf("[P3 FATAL] Failed to create Idle thread.\n");
         for (;;) __asm__ volatile ("pause");
@@ -470,18 +486,18 @@ void kmain(void) {
     log_printf("[P3] Loaded Ring 3 processes: init PID=%u, echo PID=%u.\n",
                init_process->pid, echo_process->pid);
 
-    // 20. Draw Windows 3.1 / Mac OS 9 style welcome window with P3 metrics
+    // 22. Draw Windows 3.1 / Mac OS 9 style welcome window with P4a metrics
     if (g_main_surface.framebuffer_virt) {
         draw_welcome_window();
-        log_printf("[UI] Welcome modal rendered successfully with full P3 status.\n");
+        log_printf("[UI] Welcome modal rendered successfully with full P4a status.\n");
     }
 
-    // 21. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
+    // 23. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
     speaker_boot_chord();
 
-    log_printf("[SYSTEM] P3 milestone reached: preemptive Ring 3 execution active.\n");
+    log_printf("[SYSTEM] P4a milestone reached: PCI/PCIe bus and PS/2 input active.\n");
 
-    // 22. Hardware IRQs are enabled by the initial IRET to the selected thread.
+    // 24. Hardware IRQs are enabled by the initial IRET to the selected thread.
     scheduler_start();
 }
 

@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A115a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A118a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -42,21 +42,21 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A115a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A118a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A115a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A118a.iso -m 512M -serial stdio -boot d
 ```
 
-### P3 automated smoke test
+### P4a automated smoke test
 
-`scripts/qemu_smoke_test.sh` boots the ISO through both OVMF UEFI and Legacy
-BIOS, then requires the real-NMI, Ring 3, FPU context, blocking IPC and shared
-memory self-tests to pass:
+`scripts/qemu_smoke_test.sh` boots the ISO through Q35/OVMF and Legacy BIOS,
+injects real PS/2 keyboard and mouse input, and requires PCIe ECAM, traditional
+PCI configuration, BAR probing, Ring 3 and input event checks to pass:
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A115a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A118a.iso
 ```
 
 ---

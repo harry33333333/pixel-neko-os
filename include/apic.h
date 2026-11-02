@@ -40,6 +40,5 @@ uint32_t ioapic_read(uint8_t reg);
 void ioapic_write(uint8_t reg, uint32_t val);
 void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t flags, bool masked);
 uint64_t apic_get_ticks(void);
-uint8_t keyboard_get_scancode(void);
 
 #endif /* _APIC_H */

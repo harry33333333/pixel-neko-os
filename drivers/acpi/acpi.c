@@ -11,6 +11,8 @@ static uint64_t g_lapic_base = 0xFEE00000;
 static uint64_t g_ioapic_base = 0xFEC00000;
 static uint32_t g_ioapic_gsi_base = 0;
 static uint64_t g_pcie_ecam_base = 0;
+static acpi_ecam_range_t g_ecam_ranges[MAX_ECAM_RANGES];
+static size_t g_ecam_range_count = 0;
 static bool g_has_pic = true;
 static uint32_t g_cpu_core_count = 0;
 
@@ -181,14 +183,39 @@ static void parse_mcfg(void) {
         log_printf("[ACPI WARN] MCFG checksum validation failed!\n");
     }
 
-    size_t entry_count = (mcfg->header.length - sizeof(acpi_mcfg_t)) / sizeof(acpi_mcfg_entry_t);
+    if (mcfg->header.length < sizeof(acpi_mcfg_t)) {
+        log_printf("[ACPI WARN] MCFG table is truncated.\n");
+        return;
+    }
+
+    size_t entry_count =
+        (mcfg->header.length - sizeof(acpi_mcfg_t)) /
+        sizeof(acpi_mcfg_entry_t);
     acpi_mcfg_entry_t* entries = (acpi_mcfg_entry_t*)(mcfg + 1);
 
-    if (entry_count > 0) {
-        g_pcie_ecam_base = entries[0].base_address;
-        log_printf("[ACPI] PCIe ECAM Base: 0x%016llx (Segment %u, Bus %u..%u)\n",
-                   g_pcie_ecam_base, entries[0].pci_segment,
-                   entries[0].start_bus, entries[0].end_bus);
+    for (size_t i = 0; i < entry_count && i < MAX_ECAM_RANGES; i++) {
+        if (entries[i].end_bus < entries[i].start_bus ||
+            entries[i].base_address == 0) {
+            log_printf("[ACPI WARN] Ignoring invalid MCFG range %llu.\n",
+                       (unsigned long long)i);
+            continue;
+        }
+        g_ecam_ranges[g_ecam_range_count].base_address =
+            entries[i].base_address;
+        g_ecam_ranges[g_ecam_range_count].pci_segment =
+            entries[i].pci_segment;
+        g_ecam_ranges[g_ecam_range_count].start_bus =
+            entries[i].start_bus;
+        g_ecam_ranges[g_ecam_range_count].end_bus =
+            entries[i].end_bus;
+        if (g_ecam_range_count == 0) {
+            g_pcie_ecam_base = entries[i].base_address;
+        }
+        log_printf("[ACPI] PCIe ECAM[%llu] Base: 0x%016llx (Segment %u, Bus %u..%u)\n",
+                   (unsigned long long)g_ecam_range_count,
+                   entries[i].base_address, entries[i].pci_segment,
+                   entries[i].start_bus, entries[i].end_bus);
+        g_ecam_range_count++;
     }
 }
 
@@ -280,6 +307,14 @@ uint16_t acpi_get_irq_flags(uint8_t irq) {
 
 uint64_t acpi_get_pcie_ecam_base(void) {
     return g_pcie_ecam_base;
+}
+
+size_t acpi_get_ecam_range_count(void) {
+    return g_ecam_range_count;
+}
+
+const acpi_ecam_range_t* acpi_get_ecam_range(size_t index) {
+    return index < g_ecam_range_count ? &g_ecam_ranges[index] : NULL;
 }
 
 bool acpi_has_pic(void) {

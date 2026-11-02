@@ -77,6 +77,14 @@ typedef struct {
 } __attribute__((packed)) acpi_mcfg_entry_t;
 
 #define MAX_ISO_ENTRIES 32
+#define MAX_ECAM_RANGES 8
+
+typedef struct {
+    uint64_t base_address;
+    uint16_t pci_segment;
+    uint8_t start_bus;
+    uint8_t end_bus;
+} acpi_ecam_range_t;
 
 void acpi_init(void);
 acpi_sdt_header_t* acpi_find_table(const char* signature);
@@ -86,6 +94,8 @@ uint32_t acpi_get_ioapic_gsi_base(void);
 uint32_t acpi_remap_irq(uint8_t irq);
 uint16_t acpi_get_irq_flags(uint8_t irq);
 uint64_t acpi_get_pcie_ecam_base(void);
+size_t acpi_get_ecam_range_count(void);
+const acpi_ecam_range_t* acpi_get_ecam_range(size_t index);
 bool acpi_has_pic(void);
 uint32_t acpi_get_core_count(void);
 

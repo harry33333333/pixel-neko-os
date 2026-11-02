@@ -1,8 +1,12 @@
-#ifndef KEYBOARD_H
-#define KEYBOARD_H
+#ifndef _KEYBOARD_H
+#define _KEYBOARD_H
 
-void keyboard_handle_byte(unsigned char scancode);
+#include <stdint.h>
+#include <stdbool.h>
+
+void keyboard_init(void);
+void keyboard_handle_byte(uint8_t scancode);
 int keyboard_get_key(void);
 int keyboard_get_ctrl(void);
 
-#endif
+#endif /* _KEYBOARD_H */

@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A115a"
+          VERSION="26A118a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -105,7 +105,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: Ring 3 process runtime, preemptive scheduling, NMI-safe syscalls and IPC (Milestone P3 Complete).
+          > **Pre-release**: Unified bus/device/driver tree, PCIe ECAM, safe 64-bit BAR probing and PS/2 input (Milestone P4a Complete).
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -124,13 +124,12 @@ jobs:
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
 
-          ### P3 Architecture Highlights
-          - **P3.1 TCB/PCB Scheduler**: Per-thread kernel stacks, idle thread, LAPIC preemptive round-robin scheduling and blocking sleep.
-          - **P3.2 FPU/SSE Context**: CR0.MP/NE, CR4.OSFXSR/OSXMMEXCPT and aligned 512-byte FXSAVE/FXRSTOR state per thread.
-          - **P3.3 SYSCALL/SYSRET**: FMASK=0x600, System V register ABI, canonical return validation and GS-aware paranoid NMI handling on IST2.
-          - **P3.4 Ring 3 ELF Loader**: Validated ELF64 PT_LOAD parsing, RX/RW/NX page permissions, isolated user PML4 and initial argc/argv stack.
-          - **P3.5 IPC**: Blocking message queues, wakeup delivery and shared-memory attachment between two independent Ring 3 processes.
-          - **Runtime Self-test**: The init and echo ELFs verify FPU state, syscalls, IPC and shared memory on every boot.
+          ### P4a Architecture Highlights
+          - **P4a.1 Unified Device Model**: Bus/device/driver tree with physical I/O, memory and IRQ reservations plus overlap rejection.
+          - **P4a.2 PCI/PCIe**: MCFG range validation, PCIe ECAM mapping, CF8/CFC fallback and complete function enumeration.
+          - **Safe 64-bit BAR Discovery**: Device decoding is disabled while BAR masks are probed and original COMMAND/BAR values are restored.
+          - **P4a.3 Unified Input**: Interrupt-driven PS/2 keyboard and mouse drivers feed a shared event queue with KEY/MOUSE event types.
+          - **Runtime Self-test**: Q35/OVMF verifies ECAM and Legacy BIOS verifies CF8/CFC; QMP injects real PS/2 keyboard and mouse input.
           - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
         draft: false
         prerelease: true
