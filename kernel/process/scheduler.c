@@ -244,6 +244,14 @@ trap_frame_t* scheduler_reschedule_from_syscall(trap_frame_t* frame) {
 
     if (current->state != THREAD_ZOMBIE) {
         current->resume_frame = frame;
+        if (current->state == THREAD_BLOCKED) {
+            log_printf("[SCHED] saved blocked PID %u frame=%p RIP=0x%016llx RAX=0x%llx RSP=0x%016llx\n",
+                       current->process ? current->process->pid : 0,
+                       (void*)frame,
+                       (unsigned long long)frame->rip,
+                       (unsigned long long)frame->rax,
+                       (unsigned long long)frame->rsp);
+        }
     }
     if (current->state == THREAD_RUNNING) {
         current->state = THREAD_READY;
