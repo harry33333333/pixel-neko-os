@@ -73,6 +73,9 @@ typedef struct {
     uint64_t report_buffer_phys;
     uint8_t* transfer_buffer;
     uint64_t transfer_buffer_phys;
+    bool ep_complete[32];
+    uint8_t ep_code[32];
+    uint32_t ep_residual[32];
 } xhci_slot_t;
 
 typedef struct {
@@ -185,16 +188,58 @@ static bool xhci_event_next(xhci_controller_t* c, xhci_trb_t* event) {
     return true;
 }
 
+static void xhci_route_transfer_event(xhci_controller_t* c,
+                                      const xhci_trb_t* event) {
+    uint8_t slot_id = (uint8_t)((event->control >> 24) & 0xFF);
+    uint8_t dci = (uint8_t)((event->control >> 16) & 0x1F);
+    if (slot_id == 0 || slot_id > c->max_slots || dci == 0 || dci >= 32) {
+        return;
+    }
+    xhci_slot_t* slot = &c->slots[slot_id - 1];
+    slot->ep_code[dci] = (uint8_t)(event->status >> 24);
+    slot->ep_residual[dci] = event->status & 0xFFFFFF;
+    slot->ep_complete[dci] = true;
+}
+
 static int xhci_wait_event(xhci_controller_t* c, uint8_t wanted_type,
                            xhci_trb_t* result, int timeout_ms) {
     for (int elapsed = 0; elapsed < timeout_ms; elapsed++) {
         xhci_trb_t event;
         while (xhci_event_next(c, &event)) {
             uint8_t type = (event.control >> 10) & 0x3F;
+            if (type == XHCI_TRB_TRANSFER_EVENT) {
+                xhci_route_transfer_event(c, &event);
+                continue;
+            }
             if (type == wanted_type) {
                 if (result) *result = event;
                 return 0;
             }
+        }
+        usb_delay_ms(1);
+    }
+    return -1;
+}
+
+static int xhci_wait_transfer(xhci_controller_t* c, xhci_slot_t* slot,
+                              uint8_t dci, xhci_trb_t* result,
+                              int timeout_ms) {
+    for (int elapsed = 0; elapsed < timeout_ms; elapsed++) {
+        xhci_trb_t event;
+        while (xhci_event_next(c, &event)) {
+            uint8_t type = (event.control >> 10) & 0x3F;
+            if (type == XHCI_TRB_TRANSFER_EVENT) {
+                xhci_route_transfer_event(c, &event);
+            }
+        }
+        if (slot->ep_complete[dci]) {
+            if (result) {
+                result->status = (uint32_t)slot->ep_code[dci] << 24 |
+                                 (slot->ep_residual[dci] & 0xFFFFFF);
+                result->control = 0;
+            }
+            slot->ep_complete[dci] = false;
+            return 0;
         }
         usb_delay_ms(1);
     }
@@ -365,12 +410,13 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
     if (direction != USB_DIR_IN || length == 0) status_flags |= 1u << 16;
     xhci_ring_push(c, &slot->ep0_ring, 0, 0,
                    (XHCI_TRB_STATUS << 10) | status_flags);
+    slot->ep_complete[1] = false;
     volatile uint32_t* doorbell = (volatile uint32_t*)
         (c->doorbell + 4u * slot->slot_id);
     *doorbell = 1;
 
     xhci_trb_t event;
-    if (xhci_wait_event(c, XHCI_TRB_TRANSFER_EVENT, &event, 500) != 0) {
+    if (xhci_wait_transfer(c, slot, 1, &event, 500) != 0) {
         log_printf("[xHCI] control transfer timeout slot=%u\n", slot->slot_id);
         return -1;
     }
@@ -454,7 +500,8 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
 
     if (slot->interrupt_pending) {
         xhci_trb_t event;
-        if (xhci_wait_event(c, XHCI_TRB_TRANSFER_EVENT, &event, 1) == 0) {
+        if (xhci_wait_transfer(c, slot, slot->interrupt_dci,
+                               &event, 1) == 0) {
             uint8_t code = (uint8_t)(event.status >> 24);
             slot->interrupt_pending = false;
             if (code != 1 && code != 13) return -1;
@@ -471,6 +518,7 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
 
     int transfer_length = length > 64 ? 64 : length;
     memset(slot->report_buffer, 0, 64);
+    slot->ep_complete[slot->interrupt_dci] = false;
     xhci_ring_push(c, &slot->interrupt_ring, slot->report_buffer_phys,
                    (uint32_t)transfer_length,
                    (XHCI_TRB_NORMAL << 10) | (1u << 16) | (1u << 5));
