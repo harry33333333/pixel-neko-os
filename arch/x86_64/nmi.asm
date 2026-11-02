@@ -62,10 +62,6 @@ nmi_entry:
     swapgs
 
 .restore:
-    test byte [rsp + 18*8], 3
-    jz .restore_kernel
-
-.restore_user:
     pop r15
     pop r14
     pop r13
@@ -83,21 +79,3 @@ nmi_entry:
     pop rax
     add rsp, 16
     iretq
-
-    ; IST always switches stacks, but IRETQ does not restore RSP when returning
-    ; to the same privilege. Redirect the IRET through a tiny trampoline that
-    ; pops the original RSP and returns to the interrupted kernel instruction.
-    ; IRET (rather than JMP) is required to unblock subsequent NMIs.
-.restore_kernel:
-    mov rax, [rsp + 17*8]           ; original RIP
-    mov rdx, [rsp + 20*8]           ; original RSP
-    sub rdx, 8
-    mov [rdx], rax                  ; return address below original RSP
-    lea rax, [rel nmi_kernel_resume]
-    mov [rsp + 17*8], rax           ; IRET returns through trampoline
-    mov [rsp + 20*8], rdx
-    jmp .restore_user
-
-nmi_kernel_resume:
-    pop rsp                         ; original RSP - 8
-    ret                             ; original RIP, restores original RSP
