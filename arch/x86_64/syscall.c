@@ -61,8 +61,8 @@ trap_frame_t* syscall_bad_return(trap_frame_t* frame) {
 }
 
 static int64_t syscall_write(trap_frame_t* frame) {
-    uint64_t user_ptr = frame->rdi;
-    size_t length = (size_t)frame->rsi;
+    uint64_t user_ptr = frame->rsi;
+    size_t length = (size_t)frame->rdx;
     if (length == 0) return 0;
     if (length >= sizeof(g_user_write_buffer)) {
         length = sizeof(g_user_write_buffer) - 1;
