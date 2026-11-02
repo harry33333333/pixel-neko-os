@@ -84,12 +84,10 @@ nmi_entry:
     add rsp, 16
     iretq
 
-    /*
-     * IST always switches stacks, but IRETQ does not restore RSP when returning
-     * to the same privilege. Redirect the IRET through a tiny trampoline that
-     * pops the original RSP and returns to the interrupted kernel instruction.
-     * IRET (rather than JMP) is required to unblock subsequent NMIs.
-     */
+    ; IST always switches stacks, but IRETQ does not restore RSP when returning
+    ; to the same privilege. Redirect the IRET through a tiny trampoline that
+    ; pops the original RSP and returns to the interrupted kernel instruction.
+    ; IRET (rather than JMP) is required to unblock subsequent NMIs.
 .restore_kernel:
     mov rax, [rsp + 17*8]           ; original RIP
     mov rdx, [rsp + 20*8]           ; original RSP
