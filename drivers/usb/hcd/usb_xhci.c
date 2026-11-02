@@ -361,7 +361,7 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                        (XHCI_TRB_DATA << 10) | flags);
     }
     uint32_t status_flags = (1u << 5);
-    if (direction == USB_DIR_OUT && length > 0) status_flags |= 1u << 16;
+    if (direction != USB_DIR_IN || length == 0) status_flags |= 1u << 16;
     xhci_ring_push(c, &slot->ep0_ring, 0, 0,
                    (XHCI_TRB_STATUS << 10) | status_flags);
     volatile uint32_t* doorbell = (volatile uint32_t*)
