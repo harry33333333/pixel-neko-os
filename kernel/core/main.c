@@ -24,6 +24,7 @@
 #include "pci.h"
 #include "input.h"
 #include "usb_core.h"
+#include "usb_hid.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
