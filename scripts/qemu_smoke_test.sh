@@ -113,14 +113,24 @@ run_mode() {
         grep "Resource conflict:" "${log}" >&2
         return 1
     fi
-    if [ "${mode}" = "hub" ] &&
-       { ! grep -q "\[HUB \] Attached" "${log}" ||
-         ! grep -q "\[USBHID\] Attached keyboard address=4" "${log}" ||
-         ! grep -q "\[USBHOT\] Root port" "${log}"; }; then
-        echo "Hub or USB hotplug validation failed" >&2
-        cat "${console}" >&2 || true
-        tail -n 300 "${log}" >&2
-        return 1
+    if [ "${mode}" = "hub" ]; then
+        attached_keyboards=$(
+            grep -c "\[USBHID\] Attached keyboard" "${log}" || true
+        )
+        if [ "${attached_keyboards}" -lt 2 ] ||
+           ! grep -q "\[HUB \] Attached" "${log}" ||
+           ! grep -q "\[HUB \] Device connected" "${log}" ||
+           ! grep -q "\[HUB \] Port enabled" "${log}" ||
+           ! grep -q "\[USBHID\] Attached mouse" "${log}" ||
+           ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
+           ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}" ||
+           ! grep -q "\[USBHID\] KEY_DOWN code=0x61 'a'" "${log}" ||
+           ! grep -q "\[USBHOT\] Root port .* disconnected address" "${log}"; then
+            echo "Hub or USB hotplug validation failed" >&2
+            cat "${console}" >&2 || true
+            tail -n 300 "${log}" >&2
+            return 1
+        fi
     fi
 
     echo "QEMU ${mode} boot, P4a bus and PS/2 input self-test passed."
