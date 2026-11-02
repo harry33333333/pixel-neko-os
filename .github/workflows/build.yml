@@ -24,7 +24,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -62,6 +62,19 @@ jobs:
       with:
         name: make-build-log
         path: make.log
+        if-no-files-found: ignore
+
+    - name: QEMU UEFI and Legacy Smoke Test
+      if: success()
+      run: |
+        bash scripts/qemu_smoke_test.sh "pixel-neko-os_${VERSION}.iso"
+
+    - name: Upload QEMU Serial Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: qemu-serial-logs
+        path: qemu-*-serial.log
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact
