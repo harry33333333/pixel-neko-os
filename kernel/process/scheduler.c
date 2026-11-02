@@ -87,6 +87,11 @@ static void switch_to(thread_t* next, bool current_gs_is_kernel) {
 
     thread_t* previous = g_current_thread;
     if (previous != next) {
+        if (previous && previous->is_idle &&
+            previous->state == THREAD_RUNNING) {
+            previous->state = THREAD_READY;
+            if (previous->process) previous->process->state = PROCESS_READY;
+        }
         log_printf("[SCHED] switch pid %u -> %u, resume RIP=0x%016llx RAX=0x%llx\n",
                    previous && previous->process ? previous->process->pid : 0,
                    next->process ? next->process->pid : 0,
