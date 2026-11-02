@@ -86,6 +86,11 @@ static void switch_to(thread_t* next, bool current_gs_is_kernel) {
 
     thread_t* previous = g_current_thread;
     if (previous != next) {
+        log_printf("[SCHED] switch pid %u -> %u, resume RIP=0x%016llx RAX=0x%llx\n",
+                   previous && previous->process ? previous->process->pid : 0,
+                   next->process ? next->process->pid : 0,
+                   next->resume_frame ? (unsigned long long)next->resume_frame->rip : 0,
+                   next->resume_frame ? (unsigned long long)next->resume_frame->rax : 0);
         if (previous) {
             fpu_save(previous->fpu_state);
         }
