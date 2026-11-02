@@ -294,6 +294,15 @@ static void ehci_release(usb_hci_t* hci, usb_device_t* device) {
         }
     }
     ehci_rebuild_periodic(c);
+    ehci_reg_write(c, c->operational + 0x08, EHCI_CMD_IAAD);
+    for (int timeout = 0; timeout < 20; timeout++) {
+        uint32_t status = ehci_reg_read(c, c->operational + 0x04);
+        if (status & EHCI_STS_IAAD) {
+            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
+            break;
+        }
+        usb_delay_ms(1);
+    }
 }
 
 static void ehci_write_portsc(ehci_controller_t* c, uint32_t reg,

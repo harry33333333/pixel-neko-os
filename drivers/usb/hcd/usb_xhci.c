@@ -41,6 +41,7 @@
 #define XHCI_TRB_ADDRESS_DEVICE 11u
 #define XHCI_TRB_CONFIGURE_ENDPOINT 12u
 #define XHCI_TRB_DISABLE_SLOT 10u
+#define XHCI_TRB_STOP_ENDPOINT 15u
 #define XHCI_TRB_TRANSFER_EVENT 32u
 #define XHCI_TRB_COMMAND_EVENT 33u
 
@@ -108,7 +109,6 @@ typedef struct {
 
 static xhci_controller_t g_xhci[XHCI_MAX_CONTROLLERS];
 static uint32_t g_xhci_count = 0;
-static uint32_t g_xhci_event_logs = 0;
 
 static uint32_t xhci_read32(xhci_controller_t* c, uint32_t offset) {
     return *(volatile uint32_t*)(c->cap + offset);
@@ -191,13 +191,6 @@ static int xhci_wait_event(xhci_controller_t* c, uint8_t wanted_type,
         xhci_trb_t event;
         while (xhci_event_next(c, &event)) {
             uint8_t type = (event.control >> 10) & 0x3F;
-            if (g_xhci_event_logs++ < 24) {
-                log_printf("[xHCI] event type=%u status=0x%08x control=0x%08x code=%u slot=%u ep=%u\n",
-                           type, event.status, event.control,
-                           (event.control >> 24) & 0xFF,
-                           event.control & 0xFF,
-                           (event.control >> 16) & 0x1F);
-            }
             if (type == wanted_type) {
                 if (result) *result = event;
                 return 0;
@@ -358,11 +351,6 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
 
     uint32_t transfer_type = length > 0 ?
         (direction == USB_DIR_IN ? 3u : 2u) : 0u;
-    uint32_t* ep0_output = (uint32_t*)(slot->output_context +
-        c->context_size * 2);
-    log_printf("[xHCI] EP0 before state=%u deq=0x%08x%08x producer=%u\n",
-               ep0_output[0] & 0x7, ep0_output[3], ep0_output[2],
-               slot->ep0_ring.producer);
     xhci_ring_push(c, &slot->ep0_ring, setup_parameter, 8u,
                    (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
                    (1u << 6) | (1u << 4));
@@ -377,9 +365,6 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
     if (direction != USB_DIR_IN || length == 0) status_flags |= 1u << 16;
     xhci_ring_push(c, &slot->ep0_ring, 0, 0,
                    (XHCI_TRB_STATUS << 10) | status_flags);
-    log_printf("[xHCI] submit slot=%u len=%d dir=%d next=%u cycle=%u\n",
-               slot->slot_id, length, direction,
-               slot->ep0_ring.producer, slot->ep0_ring.cycle);
     volatile uint32_t* doorbell = (volatile uint32_t*)
         (c->doorbell + 4u * slot->slot_id);
     *doorbell = 1;
@@ -395,9 +380,6 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                    code, slot->slot_id);
         return -1;
     }
-    log_printf("[xHCI] EP0 after state=%u deq=0x%08x%08x producer=%u\n",
-               ep0_output[0] & 0x7, ep0_output[3], ep0_output[2],
-               slot->ep0_ring.producer);
     if (length > 0 && direction == USB_DIR_IN && data) {
         int residual = (int)(event.status & 0xFFFFFF);
         int actual = length - residual;
@@ -504,6 +486,11 @@ static void xhci_release(usb_hci_t* hci, usb_device_t* device) {
     if (!c || !device) return;
     xhci_slot_t* slot = xhci_slot_for_device(c, device);
     if (!slot) return;
+    if (slot->interrupt_configured) {
+        xhci_command(c, 0, 0, (XHCI_TRB_STOP_ENDPOINT << 10) |
+                       ((uint32_t)slot->interrupt_dci << 16) |
+                       ((uint32_t)slot->slot_id << 24), NULL);
+    }
     xhci_command(c, 0, 0, (XHCI_TRB_DISABLE_SLOT << 10) |
                            ((uint32_t)slot->slot_id << 24), NULL);
     c->dcbaa[slot->slot_id] = 0;

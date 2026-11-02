@@ -89,6 +89,15 @@ static uint32_t uhci_length(int length) {
 }
 
 static void uhci_rebuild(uhci_controller_t* c) {
+    uint16_t command = inw(c->io_base);
+    bool was_running = (command & UHCI_CMD_RUN) != 0;
+    if (was_running) {
+        outw(c->io_base, (uint16_t)(command & ~UHCI_CMD_RUN));
+        for (int timeout = 0; timeout < 20; timeout++) {
+            if (inw(c->io_base + 0x02) & UHCI_STS_HALTED) break;
+            usb_delay_ms(1);
+        }
+    }
     uhci_qh_t* first = NULL;
     uhci_qh_t* previous = NULL;
     for (int i = 0; i < UHCI_MAX_INTR_SLOTS; i++) {
@@ -103,6 +112,7 @@ static void uhci_rebuild(uhci_controller_t* c) {
     for (int i = 0; i < 1024; i++) {
         c->mem->frame_list[i] = uhci_link_qh(c, &c->mem->control_qh);
     }
+    if (was_running) outw(c->io_base, (uint16_t)(command | UHCI_CMD_RUN));
 }
 
 static void uhci_program_td(uhci_controller_t* c, uhci_td_t* td,

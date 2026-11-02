@@ -42,7 +42,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A118a"
+          VERSION="26A130a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -114,7 +114,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: Unified bus/device/driver tree, PCIe ECAM, safe 64-bit BAR probing and PS/2 input (Milestone P4a Complete).
+          > **Pre-release**: UHCI/OHCI/EHCI/xHCI, USB hubs, HID input, hotplug and controller-specific DMA teardown (Milestone P4b Complete).
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -133,12 +133,13 @@ jobs:
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
 
-          ### P4a Architecture Highlights
-          - **P4a.1 Unified Device Model**: Bus/device/driver tree with physical I/O, memory and IRQ reservations plus overlap rejection.
-          - **P4a.2 PCI/PCIe**: MCFG range validation, PCIe ECAM mapping, CF8/CFC fallback and complete function enumeration.
-          - **Safe 64-bit BAR Discovery**: Device decoding is disabled while BAR masks are probed and original COMMAND/BAR values are restored.
-          - **P4a.3 Unified Input**: Interrupt-driven PS/2 keyboard and mouse drivers feed a shared event queue with KEY/MOUSE event types.
-          - **Runtime Self-test**: Q35/OVMF verifies ECAM and Legacy BIOS verifies CF8/CFC; QMP injects real PS/2 keyboard and mouse input.
+          ### P4b Architecture Highlights
+          - **USB 1.1**: UHCI I/O-port frame scheduling and OHCI HCCA/ED/TD control and interrupt transfers.
+          - **USB 2.0**: EHCI asynchronous/periodic queues, BIOS ownership handoff, port ownership and asynchronous-advance teardown.
+          - **USB 3.0**: Native xHCI command/event/transfer rings, DCBAA, Slot/Endpoint Contexts and interrupt endpoints.
+          - **Hub & HID**: Hub power/debounce/reset/recovery, downstream enumeration, Boot keyboard/mouse reports and wheel detection.
+          - **Hotplug & Recovery**: Runtime attach/detach, unified input delivery, controller-specific device teardown and PS/2 fallback.
+          - **Runtime Self-test**: QEMU validates UHCI, OHCI, EHCI, xHCI, a hub topology and repeated HID injection on every release.
           - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
         draft: false
         prerelease: true

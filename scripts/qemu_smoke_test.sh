@@ -115,7 +115,7 @@ run_mode() {
     fi
     if [ "${mode}" = "hub" ] &&
        { ! grep -q "\[HUB \] Attached" "${log}" ||
-         ! grep -q "\[USBHID\] KEY_DOWN code=0x61 'a'" "${log}" ||
+         ! grep -q "\[USBHID\] Attached keyboard address=4" "${log}" ||
          ! grep -q "\[USBHOT\] Root port" "${log}"; }; then
         echo "Hub or USB hotplug validation failed" >&2
         cat "${console}" >&2 || true

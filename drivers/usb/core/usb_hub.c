@@ -7,6 +7,7 @@ typedef struct {
     usb_device_t* device;
     uint8_t ports;
     uint16_t power_good_ms;
+    uint64_t retry_tick[USB_MAX_HUB_PORTS + 1];
 } hub_state_t;
 
 static hub_state_t g_hubs[USB_HUB_MAX_DEVICES];
@@ -73,6 +74,10 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
         hub_clear_changes(hub, port, change);
         return;
     }
+    if (state->retry_tick[port] > apic_get_ticks()) {
+        hub_clear_changes(hub, port, change);
+        return;
+    }
 
     log_printf("[HUB ] Device connected: hub=%u port=%u status=0x%04x\n",
                hub->address, port, status);
@@ -105,7 +110,10 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
         if (child) {
             hub->child_address[port] = child->address;
             hub->hub_ports_seen |= (uint16_t)(1u << port);
+            state->retry_tick[port] = 0;
         }
+    } else {
+        state->retry_tick[port] = apic_get_ticks() + 500;
     }
     (void)state;
 }
