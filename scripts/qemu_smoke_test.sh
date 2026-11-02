@@ -120,24 +120,43 @@ run_mode() {
     echo "QEMU ${mode} boot, P4a bus and PS/2 input self-test passed."
 }
 
+selected_mode() {
+    local wanted="$1"
+    [ "${QEMU_MODES:-all}" = "all" ] && return 0
+    case ",${QEMU_MODES}," in
+        *",${wanted},"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if selected_mode uefi; then
 run_mode uefi q35 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
     -device usb-kbd,bus=xhci.0,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,id=usb-mouse
+fi
+if selected_mode bios; then
 run_mode bios pc -boot d \
     -device piix3-usb-uhci,id=uhci \
     -device usb-kbd,bus=uhci.0,id=usb-kbd \
     -device usb-mouse,bus=uhci.0,id=usb-mouse
+fi
+if selected_mode ohci; then
 run_mode ohci pc -boot d \
     -device pci-ohci,id=ohci \
     -device usb-kbd,bus=ohci.0,id=usb-kbd \
     -device usb-mouse,bus=ohci.0,id=usb-mouse
+fi
+if selected_mode ehci; then
 run_mode ehci q35 -bios "${UEFI_FW}" \
     -device ich9-usb-ehci1,id=ehci \
     -device usb-kbd,bus=ehci.0,id=usb-kbd \
     -device usb-mouse,bus=ehci.0,id=usb-mouse
+fi
+if selected_mode hub; then
 run_mode hub q35 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
     -device usb-hub,bus=xhci.0,port=3,id=usbhub \
     -device usb-kbd,bus=xhci.0,port=3.1,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,port=3.2,id=usb-mouse
+fi

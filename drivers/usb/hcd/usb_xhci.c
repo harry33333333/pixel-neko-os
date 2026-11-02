@@ -291,6 +291,9 @@ static void xhci_build_address_context(xhci_controller_t* c,
         usb_device_t* hub = usb_find_device_by_address(
             device->parent_hub_address);
         xhci_slot_t* hub_slot = xhci_slot_for_device(c, hub);
+        if (hub) {
+            slot_dwords[1] = (uint32_t)(hub->port & 0xFF) << 16;
+        }
         if (hub_slot) {
             slot_dwords[2] = ((uint32_t)hub_slot->slot_id << 16) |
                              ((uint32_t)device->parent_port << 24);

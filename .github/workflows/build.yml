@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      qemu_modes:
+        description: "Comma-separated QEMU modes or 'all'"
+        required: false
+        default: "all"
 
 permissions:
   contents: write
@@ -77,6 +82,8 @@ jobs:
 
     - name: QEMU UEFI and Legacy Smoke Test
       if: success()
+      env:
+        QEMU_MODES: ${{ github.event.inputs.qemu_modes || 'all' }}
       run: |
         bash scripts/qemu_smoke_test.sh "pixel-neko-os_${VERSION}.iso"
 
