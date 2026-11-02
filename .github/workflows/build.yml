@@ -56,7 +56,16 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
 
+    - name: Upload Build Log Artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: make-build-log
+        path: make.log
+        if-no-files-found: ignore
+
     - name: Upload Bootable ISO Artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: pixel-neko-os-iso
