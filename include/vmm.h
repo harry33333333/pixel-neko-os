@@ -12,10 +12,11 @@
 #define PTE_PWT       (1ULL << 3)  // Page Write-Through (selects PAT Entry 1 when PCD=0, PAT=0)
 #define PTE_PCD       (1ULL << 4)  // Page Cache-Disable
 #define PTE_ACCESSED  (1ULL << 5)
-#define PTE_DIRTY     (1ULL << 6)
-#define PTE_PAT_4KB   (1ULL << 7)  // Page Attribute Table bit in 4KB PTE
-#define PTE_GLOBAL    (1ULL << 8)
-#define PTE_NX        (1ULL << 63) // No-Execute bit
+#define PTE_DIRTY      (1ULL << 6)
+#define PTE_LARGE_PAGE (1ULL << 7)  // Page Size (PS) bit in PDPTE / PDE (1GB / 2MB)
+#define PTE_PAT_4KB    (1ULL << 7)  // Page Attribute Table bit in 4KB PTE
+#define PTE_GLOBAL     (1ULL << 8)
+#define PTE_NX         (1ULL << 63) // No-Execute bit
 
 // Memory caching flags
 #define VMM_CACHE_DEFAULT 0
