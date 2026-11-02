@@ -3,8 +3,11 @@
 #include "log.h"
 #include "string.h"
 #include "boot_framebuffer.h"
+#include "limine.h"
 
 #define IA32_PAT_MSR 0x277
+
+extern volatile struct limine_memmap_request memmap_request;
 
 static pagetable_t g_kernel_pml4 = NULL;
 
@@ -37,6 +40,9 @@ static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool alloca
         if (entry & PTE_LARGE_PAGE) {
             return NULL; // Already mapped as large page (1GB / 2MB)
         }
+        if (flags & PTE_WRITABLE) {
+            table[index] |= PTE_WRITABLE;
+        }
         phys_addr_t phys = entry & ~0xFFFULL;
         return (pagetable_t)phys_to_virt(phys);
     }
@@ -62,16 +68,43 @@ bool vmm_map_page(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, uint64_t
     uint64_t pt_idx   = (virt >> 12) & 0x1FF;
 
     pagetable_t pdpt = get_next_level(pml4, pml4_idx, true, flags);
-    if (!pdpt) return false;
+    if (!pdpt) {
+        if (pml4[pml4_idx] & PTE_LARGE_PAGE) return true;
+        return false;
+    }
+
+    if (pdpt[pdpt_idx] & PTE_LARGE_PAGE) {
+        return true; // Covered by 1GB large page
+    }
 
     pagetable_t pd = get_next_level(pdpt, pdpt_idx, true, flags);
     if (!pd) return false;
+
+    if (pd[pd_idx] & PTE_LARGE_PAGE) {
+        return true; // Covered by 2MB large page
+    }
 
     pagetable_t pt = get_next_level(pd, pd_idx, true, flags);
     if (!pt) return false;
 
     pt[pt_idx] = (phys & ~0xFFFULL) | flags | PTE_PRESENT;
     vmm_invlpg(virt);
+    return true;
+}
+
+bool vmm_map_range(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, size_t size, uint64_t flags) {
+    if (!pml4 || size == 0) return false;
+    uint64_t page_offset = virt & 0xFFFULL;
+    uint64_t start_virt = virt & ~0xFFFULL;
+    uint64_t start_phys = phys & ~0xFFFULL;
+    uint64_t total_size = size + page_offset;
+    uint64_t page_count = (total_size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    for (uint64_t i = 0; i < page_count; i++) {
+        if (!vmm_map_page(pml4, start_virt + i * PAGE_SIZE, start_phys + i * PAGE_SIZE, flags)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -117,6 +150,44 @@ void vmm_init(void) {
     wrmsr(IA32_PAT_MSR, pat_lo, pat_hi);
 
     log_printf("[VMM] IA32_PAT MSR configured: PAT Entry 1 = 0x01 (Write-Combining WC enabled).\n");
+
+    // 3. Explicitly map low 1MB BIOS / EBDA / ROM area (0x00001000 .. 0x00100000)
+    // Page 0 (0x0..0x1000) is kept unmapped to trap NULL pointers!
+    for (uint64_t addr = PAGE_SIZE; addr < 0x100000; addr += PAGE_SIZE) {
+        vmm_map_page(g_kernel_pml4, g_hhdm.hhdm_offset + addr, addr, PTE_PRESENT | PTE_WRITABLE);
+        vmm_map_page(g_kernel_pml4, addr, addr, PTE_PRESENT | PTE_WRITABLE);
+    }
+    log_printf("[VMM] Low 1MB (0x00001000 - 0x00100000, 255 pages) mapped to HHDM & Identity.\n");
+
+    // 4. Explicitly map all ACPI_RECLAIMABLE, ACPI_NVS, and RESERVED ranges reported by Limine
+    if (memmap_request.response) {
+        uint64_t total_mapped_pages = 0;
+        for (uint64_t i = 0; i < memmap_request.response->entry_count; i++) {
+            struct limine_memmap_entry* e = memmap_request.response->entries[i];
+            if (e->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+                e->type == LIMINE_MEMMAP_ACPI_NVS ||
+                e->type == LIMINE_MEMMAP_RESERVED ||
+                e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+                
+                uint64_t start = e->base & ~0xFFFULL;
+                uint64_t end = (e->base + e->length + PAGE_SIZE - 1) & ~0xFFFULL;
+                for (uint64_t p = start; p < end; p += PAGE_SIZE) {
+                    if (p == 0) continue; // Keep NULL trap
+                    vmm_map_page(g_kernel_pml4, g_hhdm.hhdm_offset + p, p, PTE_PRESENT | PTE_WRITABLE);
+                    total_mapped_pages++;
+                }
+            }
+        }
+        log_printf("[VMM] ACPI & System Reserved tables (%llu pages) mapped to HHDM.\n", total_mapped_pages);
+    }
+
+    // 5. Explicitly map Local APIC (0xFEE00000) and IOAPIC (0xFEC00000) MMIO pages
+    vmm_map_page(g_kernel_pml4, g_hhdm.hhdm_offset + 0xFEE00000, 0xFEE00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
+    vmm_map_page(g_kernel_pml4, 0xFEE00000, 0xFEE00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
+
+    vmm_map_page(g_kernel_pml4, g_hhdm.hhdm_offset + 0xFEC00000, 0xFEC00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
+    vmm_map_page(g_kernel_pml4, 0xFEC00000, 0xFEC00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
+    log_printf("[VMM] LAPIC (0xFEE00000) & IOAPIC (0xFEC00000) MMIO pages mapped (PCD enabled).\n");
 
     vmm_remap_framebuffer_wc();
 }

@@ -27,6 +27,7 @@ typedef uint64_t* pagetable_t;
 void vmm_init(void);
 pagetable_t vmm_get_kernel_pml4(void);
 bool vmm_map_page(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, uint64_t flags);
+bool vmm_map_range(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, size_t size, uint64_t flags);
 bool vmm_unmap_page(pagetable_t pml4, virt_addr_t virt);
 void vmm_switch_pml4(pagetable_t pml4);
 void vmm_invlpg(virt_addr_t virt);

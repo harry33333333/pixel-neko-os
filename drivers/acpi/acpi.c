@@ -1,6 +1,7 @@
 #include "acpi.h"
 #include "limine.h"
 #include "mm.h"
+#include "vmm.h"
 #include "log.h"
 #include "string.h"
 
@@ -31,10 +32,37 @@ static bool acpi_validate_checksum(const void* table, size_t length) {
 
 static inline void* acpi_resolve_ptr(uint64_t addr) {
     if (addr == 0) return NULL;
+    uint64_t virt = addr;
+    uint64_t phys = addr;
     if (addr < g_hhdm.hhdm_offset) {
-        return (void*)phys_to_virt((phys_addr_t)addr);
+        virt = g_hhdm.hhdm_offset + addr;
+    } else {
+        phys = addr - g_hhdm.hhdm_offset;
     }
-    return (void*)addr;
+    pagetable_t pml4 = vmm_get_kernel_pml4();
+    if (pml4) {
+        vmm_map_page(pml4, virt & ~0xFFFULL, phys & ~0xFFFULL, PTE_PRESENT | PTE_WRITABLE);
+    }
+    return (void*)virt;
+}
+
+static void acpi_ensure_table_mapped(void* table_ptr) {
+    if (!table_ptr) return;
+    pagetable_t pml4 = vmm_get_kernel_pml4();
+    if (!pml4) return;
+    acpi_sdt_header_t* header = (acpi_sdt_header_t*)table_ptr;
+    uint64_t virt = (uint64_t)header;
+    if (virt < g_hhdm.hhdm_offset) return;
+    uint64_t phys = virt - g_hhdm.hhdm_offset;
+    uint32_t len = header->length;
+    if (len > 0 && len < 1024 * 1024) { // Valid table size check (< 1MB)
+        uint64_t start_virt = virt & ~0xFFFULL;
+        uint64_t end_virt = (virt + len + PAGE_SIZE - 1) & ~0xFFFULL;
+        uint64_t cur_phys = phys & ~0xFFFULL;
+        for (uint64_t v = start_virt; v < end_virt; v += PAGE_SIZE, cur_phys += PAGE_SIZE) {
+            vmm_map_page(pml4, v, cur_phys, PTE_PRESENT | PTE_WRITABLE);
+        }
+    }
 }
 
 acpi_sdt_header_t* acpi_find_table(const char* signature) {
@@ -51,6 +79,7 @@ acpi_sdt_header_t* acpi_find_table(const char* signature) {
             if (entries[i] == 0) continue;
             acpi_sdt_header_t* header = (acpi_sdt_header_t*)acpi_resolve_ptr(entries[i]);
             if (!header) continue;
+            acpi_ensure_table_mapped(header);
             if (memcmp(header->signature, signature, 4) == 0) {
                 return header;
             }
@@ -62,6 +91,7 @@ acpi_sdt_header_t* acpi_find_table(const char* signature) {
             if (entries[i] == 0) continue;
             acpi_sdt_header_t* header = (acpi_sdt_header_t*)acpi_resolve_ptr(entries[i]);
             if (!header) continue;
+            acpi_ensure_table_mapped(header);
             if (memcmp(header->signature, signature, 4) == 0) {
                 return header;
             }
@@ -204,6 +234,10 @@ void acpi_init(void) {
         g_is_xsdt = false;
         g_rsdt_or_xsdt = (acpi_sdt_header_t*)acpi_resolve_ptr(g_rsdp->rsdt_address);
         log_printf("[ACPI] Using 32-bit RSDT at 0x%08x\n", g_rsdp->rsdt_address);
+    }
+
+    if (g_rsdt_or_xsdt) {
+        acpi_ensure_table_mapped(g_rsdt_or_xsdt);
     }
 
     if (g_rsdt_or_xsdt && !acpi_validate_checksum(g_rsdt_or_xsdt, g_rsdt_or_xsdt->length)) {

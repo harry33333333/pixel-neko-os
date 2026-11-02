@@ -1,6 +1,7 @@
 #include "apic.h"
 #include "acpi.h"
 #include "mm.h"
+#include "vmm.h"
 #include "port.h"
 #include "log.h"
 #include "idt.h"
@@ -115,6 +116,7 @@ void apic_init(void) {
     // 4. Map Local APIC via HHDM
     uint64_t lapic_phys = acpi_get_lapic_base();
     g_lapic_virt = (volatile uint8_t*)phys_to_virt(lapic_phys);
+    vmm_map_page(vmm_get_kernel_pml4(), (virt_addr_t)g_lapic_virt, lapic_phys, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
     log_printf("[APIC] LAPIC mapped at Virt %p (Phys 0x%08llx)\n", g_lapic_virt, lapic_phys);
 
     // 4. Initialize LAPIC Registers
@@ -138,6 +140,7 @@ void apic_init(void) {
     // 6. Map and configure I/O APIC via HHDM
     uint64_t ioapic_phys = acpi_get_ioapic_base();
     g_ioapic_virt = (volatile uint8_t*)phys_to_virt(ioapic_phys);
+    vmm_map_page(vmm_get_kernel_pml4(), (virt_addr_t)g_ioapic_virt, ioapic_phys, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
     log_printf("[APIC] I/O APIC mapped at Virt %p (Phys 0x%08llx)\n", g_ioapic_virt, ioapic_phys);
 
     uint32_t ver = ioapic_read(IOAPIC_REG_VER);
