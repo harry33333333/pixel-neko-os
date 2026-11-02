@@ -81,12 +81,17 @@ run_mode() {
        ! grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}" ||
        ! grep -q "Enumerated [1-9][0-9]* PCI/PCIe function" "${log}" ||
        ! grep -q "\[INPUT\] KEY_DOWN code=0x70 'p'" "${log}" ||
-       ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
-       ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}" ||
-       ! grep -q "\[USBHID\] KEY_DOWN code=0x70 'p'" "${log}" ||
-       ! grep -q "\[USBHID\] MOUSE" "${log}"; then
+       ! grep -q "\[USBHID\] KEY_DOWN code=0x70 'p'" "${log}"; then
         echo "QEMU ${mode} mode did not reach the P4a/P4b bus/input self-test" >&2
         tail -n 250 "${log}" >&2 || true
+        return 1
+    fi
+    if [ "${mode}" != "hub" ] &&
+       { ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
+         ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}" ||
+         ! grep -q "\[USBHID\] MOUSE" "${log}"; }; then
+        echo "QEMU ${mode} mode did not receive USB mouse input" >&2
+        tail -n 250 "${log}" >&2
         return 1
     fi
 
@@ -110,6 +115,7 @@ run_mode() {
     fi
     if [ "${mode}" = "hub" ] &&
        { ! grep -q "\[HUB \] Attached" "${log}" ||
+         ! grep -q "\[USBHID\] KEY_DOWN code=0x61 'a'" "${log}" ||
          ! grep -q "\[USBHOT\] Root port" "${log}"; }; then
         echo "Hub or USB hotplug validation failed" >&2
         cat "${console}" >&2 || true
