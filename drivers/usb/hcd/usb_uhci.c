@@ -120,14 +120,6 @@ static void uhci_program_td(uhci_controller_t* c, uhci_td_t* td,
     (void)c;
 }
 
-static int uhci_wait_td(uhci_td_t* td, int timeout_ms) {
-    for (int i = 0; i < timeout_ms; i++) {
-        if (!(td->control & (UHCI_TD_ACTIVE | UHCI_TD_NAK))) return 0;
-        usb_delay_ms(1);
-    }
-    return -1;
-}
-
 static int uhci_control(usb_hci_t* hci, usb_device_t* device,
                         const usb_setup_packet_t* setup, void* data,
                         int length, int direction) {

@@ -153,20 +153,6 @@ static void parse_memory_map(void) {
                usable_bytes / (1024 * 1024));
 }
 
-// --- Microsecond Delay Helpers ---
-
-static void delay_us(uint32_t us) {
-    for (uint32_t i = 0; i < us; i++) {
-        __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
-    }
-}
-
-static void delay_ms(uint32_t ms) {
-    for (uint32_t i = 0; i < ms; i++) {
-        delay_us(1000);
-    }
-}
-
 // Global UI interaction bounds
 static int g_btn_x = 0, g_btn_y = 0, g_btn_w = 90, g_btn_h = 24;
 static int g_bar_x = 0, g_bar_y = 0, g_bar_w = 0, g_bar_h = 16;

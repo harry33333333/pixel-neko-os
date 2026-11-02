@@ -117,10 +117,6 @@ static void xhci_write32(xhci_controller_t* c, uint32_t offset, uint32_t value) 
     *(volatile uint32_t*)(c->cap + offset) = value;
 }
 
-static uint64_t xhci_read64(xhci_controller_t* c, uint32_t offset) {
-    return *(volatile uint64_t*)(c->cap + offset);
-}
-
 static void xhci_write64(xhci_controller_t* c, uint32_t offset, uint64_t value) {
     *(volatile uint64_t*)(c->cap + offset) = value;
 }
@@ -238,6 +234,7 @@ static uint8_t xhci_speed_code(uint8_t speed) {
 
 static xhci_slot_t* xhci_slot_for_device(xhci_controller_t* c,
                                          usb_device_t* device) {
+    (void)c;
     if (!device) return NULL;
     if (device->hcd_priv) return (xhci_slot_t*)device->hcd_priv;
     return NULL;
@@ -678,9 +675,9 @@ int xhci_probe(const pci_device_t* device) {
     xhci_write64(c, c->operational + 0x30, c->dcbaa_phys);
     xhci_write64(c, c->operational + 0x18,
                  c->command_ring.physical_base | 1u);
-    xhci_write32(c, c->runtime + 0x20 + 0x08, 1);
-    xhci_write64(c, c->runtime + 0x20 + 0x10, erst_phys);
-    xhci_write64(c, c->runtime + 0x20 + 0x18,
+    xhci_write32(c, c->runtime_offset + 0x20 + 0x08, 1);
+    xhci_write64(c, c->runtime_offset + 0x20 + 0x10, erst_phys);
+    xhci_write64(c, c->runtime_offset + 0x20 + 0x18,
                  c->event_ring_phys | (1u << 3));
     xhci_write32(c, c->operational, XHCI_CMD_RUN);
     for (int i = 0; i < 100; i++) {
