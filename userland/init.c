@@ -64,11 +64,19 @@ static int init_main(void) {
         neko_sleep(1);
     }
 
-    if (reply_result != 0 || reply.type != NEKO_TEST_PONG ||
-        shared[1] != 0x504f4e475245504cUL) {
-        neko_write("P3 IPC/shared-memory round trip FAILED");
+    if (reply_result != 0) {
+        neko_write("P3 IPC response receive FAILED");
         return 9;
     }
+    if (reply.type != NEKO_TEST_PONG) {
+        neko_write("P3 IPC response type FAILED");
+        return 9;
+    }
+    if (shared[1] != 0x504f4e475245504cUL) {
+        neko_write("P3 shared-memory visibility FAILED");
+        return 9;
+    }
+    neko_write("P3 IPC/shared-memory round trip PASS");
 
     int child_status = -1;
     for (int i = 0; i < 200; i++) {
