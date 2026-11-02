@@ -15,12 +15,11 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
 
 NASMFLAGS ?= -f elf64
 
-LDFLAGS ?= -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T link64.ld
-
 # Source Files
 ASM_SRCS = arch/x86_64/entry.asm
 C_SRCS   = kernel/core/main.c \
            kernel/core/log.c \
+           kernel/core/string.c \
            arch/x86_64/cpu.c \
            drivers/video/boot_framebuffer.c
 
@@ -48,7 +47,7 @@ version:
 
 $(TARGET): $(OBJS) link64.ld
 	@mkdir -p bin
-	$(LD) $(LDFLAGS) -o $(TARGET) $(OBJS)
+	$(CC) $(CFLAGS) -Wl,-m,elf_x86_64 -Wl,-T,link64.ld -Wl,-z,max-page-size=0x1000 -o $(TARGET) $(OBJS) -lgcc
 	@echo "Kernel successfully linked: $(TARGET)"
 
 iso: all

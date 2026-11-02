@@ -41,10 +41,13 @@ if [ ! -f "boot/limine/limine" ]; then
     if [ -f "boot/limine/limine.c" ]; then
         echo "Compiling host limine installer..."
         gcc -O2 -o boot/limine/limine boot/limine/limine.c
+        chmod +x boot/limine/limine
     elif command -v limine >/dev/null 2>&1; then
         cp "$(command -v limine)" boot/limine/limine
+        chmod +x boot/limine/limine
     fi
 fi
+chmod +x boot/limine/limine 2>/dev/null || true
 
 # 3. Create El Torito Dual-Boot Hybrid ISO via xorriso
 echo "Building Hybrid ISO with xorriso..."

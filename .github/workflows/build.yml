@@ -26,7 +26,7 @@ jobs:
 
     - name: Ensure Unix line endings and script permissions
       run: |
-        dos2unix scripts/*.sh || sed -i 's/\r$//' scripts/*.sh
+        dos2unix Makefile boot/limine.conf scripts/*.sh || sed -i 's/\r$//' Makefile boot/limine.conf scripts/*.sh
         chmod +x scripts/*.sh
 
     - name: Build Kernel and Hybrid ISO
