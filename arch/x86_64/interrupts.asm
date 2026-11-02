@@ -175,3 +175,9 @@ common_irq_stub:
 
     add rsp, 16
     iretq
+
+; Spurious interrupt handler (no EOI needed, just IRETQ)
+global isr_spurious
+isr_spurious:
+    iretq
+

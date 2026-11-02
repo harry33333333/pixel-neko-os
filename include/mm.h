@@ -23,18 +23,17 @@ extern hhdm_info_t g_hhdm;
 
 // Physical address to HHDM virtual address with safety checks
 static inline void* phys_to_virt(phys_addr_t phys) {
-    if (phys >= g_hhdm.physical_memory_limit) return NULL;
+    if (g_hhdm.hhdm_offset == 0) return NULL;
     if (phys > UINT64_MAX - g_hhdm.hhdm_offset) return NULL;
     return (void*)(phys + g_hhdm.hhdm_offset);
 }
 
 // Safety-checked virtual address to physical address conversion
 static inline bool virt_to_phys_checked(const void* virt, phys_addr_t* out_phys) {
-    if (!virt || !out_phys) return false;
+    if (!virt || !out_phys || g_hhdm.hhdm_offset == 0) return false;
     uint64_t v = (uint64_t)virt;
     if (v < g_hhdm.hhdm_offset) return false;
     uint64_t delta = v - g_hhdm.hhdm_offset;
-    if (delta >= g_hhdm.physical_memory_limit) return false;
     *out_phys = (phys_addr_t)delta;
     return true;
 }

@@ -29,6 +29,14 @@ static bool acpi_validate_checksum(const void* table, size_t length) {
     return sum == 0;
 }
 
+static inline void* acpi_resolve_ptr(uint64_t addr) {
+    if (addr == 0) return NULL;
+    if (addr < g_hhdm.hhdm_offset) {
+        return (void*)phys_to_virt((phys_addr_t)addr);
+    }
+    return (void*)addr;
+}
+
 acpi_sdt_header_t* acpi_find_table(const char* signature) {
     if (!g_rsdt_or_xsdt) return NULL;
 
@@ -41,7 +49,8 @@ acpi_sdt_header_t* acpi_find_table(const char* signature) {
         uint64_t* entries = (uint64_t*)((uint8_t*)g_rsdt_or_xsdt + header_len);
         for (size_t i = 0; i < entry_count; i++) {
             if (entries[i] == 0) continue;
-            acpi_sdt_header_t* header = (acpi_sdt_header_t*)phys_to_virt(entries[i]);
+            acpi_sdt_header_t* header = (acpi_sdt_header_t*)acpi_resolve_ptr(entries[i]);
+            if (!header) continue;
             if (memcmp(header->signature, signature, 4) == 0) {
                 return header;
             }
@@ -51,7 +60,8 @@ acpi_sdt_header_t* acpi_find_table(const char* signature) {
         uint32_t* entries = (uint32_t*)((uint8_t*)g_rsdt_or_xsdt + header_len);
         for (size_t i = 0; i < entry_count; i++) {
             if (entries[i] == 0) continue;
-            acpi_sdt_header_t* header = (acpi_sdt_header_t*)phys_to_virt(entries[i]);
+            acpi_sdt_header_t* header = (acpi_sdt_header_t*)acpi_resolve_ptr(entries[i]);
+            if (!header) continue;
             if (memcmp(header->signature, signature, 4) == 0) {
                 return header;
             }
@@ -83,7 +93,7 @@ static void parse_madt(void) {
 
     while (ptr < end) {
         acpi_madt_entry_t* entry = (acpi_madt_entry_t*)ptr;
-        if (entry->length == 0) break; // Avoid infinite loop on malformed table
+        if (entry->length < 2 || ptr + entry->length > end) break;
 
         switch (entry->type) {
             case 0: { // Processor Local APIC
@@ -158,7 +168,12 @@ void acpi_init(void) {
         return;
     }
 
-    g_rsdp = (acpi_rsdp_t*)rsdp_request.response->address;
+    uint64_t rsdp_addr = (uint64_t)rsdp_request.response->address;
+    g_rsdp = (acpi_rsdp_t*)acpi_resolve_ptr(rsdp_addr);
+    if (!g_rsdp) {
+        log_printf("[ACPI ERROR] Failed to resolve RSDP address (0x%016llx)!\n", rsdp_addr);
+        return;
+    }
 
     // Verify "RSD PTR " signature
     if (memcmp(g_rsdp->signature, "RSD PTR ", 8) != 0) {
@@ -172,23 +187,23 @@ void acpi_init(void) {
         return;
     }
 
-    log_printf("[ACPI] RSDP found at %p (Rev: %u, OEM: %.6s)\n",
-               g_rsdp, g_rsdp->revision, g_rsdp->oem_id);
+    log_printf("[ACPI] RSDP found at %p (Phys: 0x%016llx, Rev: %u, OEM: %.6s)\n",
+               g_rsdp, rsdp_addr, g_rsdp->revision, g_rsdp->oem_id);
 
     if (g_rsdp->revision >= 2 && g_rsdp->xsdt_address != 0) {
         if (!acpi_validate_checksum(g_rsdp, g_rsdp->length)) {
             log_printf("[ACPI WARN] RSDP v2 extended checksum error, falling back to RSDT\n");
             g_is_xsdt = false;
-            g_rsdt_or_xsdt = (acpi_sdt_header_t*)phys_to_virt(g_rsdp->rsdt_address);
+            g_rsdt_or_xsdt = (acpi_sdt_header_t*)acpi_resolve_ptr(g_rsdp->rsdt_address);
         } else {
             g_is_xsdt = true;
-            g_rsdt_or_xsdt = (acpi_sdt_header_t*)phys_to_virt(g_rsdp->xsdt_address);
-            log_printf("[ACPI] Using 64-bit XSDT at Phys 0x%016llx\n", g_rsdp->xsdt_address);
+            g_rsdt_or_xsdt = (acpi_sdt_header_t*)acpi_resolve_ptr(g_rsdp->xsdt_address);
+            log_printf("[ACPI] Using 64-bit XSDT at 0x%016llx\n", g_rsdp->xsdt_address);
         }
     } else {
         g_is_xsdt = false;
-        g_rsdt_or_xsdt = (acpi_sdt_header_t*)phys_to_virt(g_rsdp->rsdt_address);
-        log_printf("[ACPI] Using 32-bit RSDT at Phys 0x%08x\n", g_rsdp->rsdt_address);
+        g_rsdt_or_xsdt = (acpi_sdt_header_t*)acpi_resolve_ptr(g_rsdp->rsdt_address);
+        log_printf("[ACPI] Using 32-bit RSDT at 0x%08x\n", g_rsdp->rsdt_address);
     }
 
     if (g_rsdt_or_xsdt && !acpi_validate_checksum(g_rsdt_or_xsdt, g_rsdt_or_xsdt->length)) {

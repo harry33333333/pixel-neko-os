@@ -130,6 +130,10 @@ static void parse_memory_map(void) {
         }
     }
 
+    if (max_phys < 0x100000000ULL) {
+        max_phys = 0x100000000ULL;
+    }
+
     g_hhdm.physical_memory_limit = max_phys;
     g_hhdm.total_usable_bytes = usable_bytes;
     g_hhdm.total_memory_bytes = max_phys;
@@ -386,67 +390,70 @@ void kmain(void) {
     // 9. P2.2: Initialize 64-bit Virtual Memory Manager (4-Level Paging, PAT Write-Combining)
     vmm_init();
 
-    // 10. P2.2: Initialize Kernel Heap
-    kheap_init();
-
-    // 11. P2.5: Initialize ACPI Subsystem (RSDP, RSDT/XSDT, MADT, MCFG)
-    acpi_init();
-
-    // 12. P2.6: Initialize Modern Interrupt Subsystem (IMCR, Mask 8259, Local APIC, IOAPIC)
-    apic_init();
-
-    // 13. P2.7: Initialize Unified 64-bit DMA Subsystem (ZONE_DMA / DMA32 / NORMAL)
-    dma_init();
-
-    // 14. Check Kernel Load Address
-    if (kernel_address_request.response) {
-        log_printf("[KERNEL] Phys Base: 0x%llx, Virt Base: 0x%llx\n",
-                   kernel_address_request.response->physical_base,
-                   kernel_address_request.response->virtual_base);
-    }
-
-    // 15. Initialize Boot Framebuffer (Limine GOP / VESA)
+    // 10. Initialize Boot Framebuffer early so any fatal error/panic is immediately visible on screen!
     if (framebuffer_request.response && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
         if (boot_framebuffer_init(fb)) {
             // Accelerate Boot Framebuffer writes with PAT Write-Combining (WC)
             vmm_remap_framebuffer_wc();
 
-            // Draw classic Mac OS 50% checkerboard background
+            // Draw classic Mac OS 50% checkerboard background early
             boot_framebuffer_draw_checkerboard();
-
-            // Draw Windows 3.1 / Mac OS 9 style 3D welcome modal window with P2 metrics
-            draw_welcome_window();
-
-            log_printf("[UI] Classic 50%% checkerboard and welcome modal rendered successfully.\n");
+            log_printf("[UI] Early Boot Framebuffer active & 50%% checkerboard rendered.\n");
         }
     } else {
         log_printf("[BOOT WARN] No graphic framebuffer returned by Limine! Running in headless serial mode.\n");
     }
 
-    // 16. Enable Hardware Interrupts now that GDT, IDT, LAPIC and IOAPIC are fully ready
+    // 11. P2.2: Initialize Kernel Heap
+    kheap_init();
+
+    // 12. P2.5: Initialize ACPI Subsystem (RSDP, RSDT/XSDT, MADT, MCFG)
+    acpi_init();
+
+    // 13. P2.6: Initialize Modern Interrupt Subsystem (IMCR, Mask 8259, Local APIC, IOAPIC)
+    apic_init();
+
+    // 14. P2.7: Initialize Unified 64-bit DMA Subsystem (ZONE_DMA / DMA32 / NORMAL)
+    dma_init();
+
+    // 15. Check Kernel Load Address
+    if (kernel_address_request.response) {
+        log_printf("[KERNEL] Phys Base: 0x%llx, Virt Base: 0x%llx\n",
+                   kernel_address_request.response->physical_base,
+                   kernel_address_request.response->virtual_base);
+    }
+
+    // 16. Draw Windows 3.1 / Mac OS 9 style 3D welcome modal window with live P2 metrics
+    if (g_main_surface.framebuffer_virt) {
+        draw_welcome_window();
+        log_printf("[UI] Welcome modal rendered successfully with full P2 status.\n");
+    }
+
+    // 17. Enable Hardware Interrupts now that GDT, IDT, LAPIC and IOAPIC are fully ready
     __asm__ volatile ("sti");
     log_printf("[CPU] Hardware interrupts enabled (STI). Local APIC Timer is running.\n");
 
-    // 17. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
+    // 18. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
     speaker_boot_chord();
 
     log_printf("[SYSTEM] P2 Milestone reached: Full Kernel Infrastructure, ACPI & Modern APIC Active.\n");
 
-    // 18. Interactive idle loop with Barber-Pole animation
+    // 19. Interactive idle loop with Barber-Pole animation
     // (Uses pause + delay_ms to prevent VMware/QEMU from detecting disabled CPU / msg.monitorevent.halt)
     int frame = 0;
     for (;;) {
-        // Poll keyboard port for user interaction
-        if (inb(0x64) & 1) {
-            uint8_t scancode = inb(0x60);
-            if (scancode == 0x1C || scancode == 0x39) { // Enter or Space key make-code
-                draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, true);
-                speaker_beep();
-                delay_ms(150);
-                draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
-                log_printf("[UI] User interaction received: [ OK ] button clicked.\n");
-            }
+        // Poll keyboard port or check APIC IRQ1 buffer
+        uint8_t scancode = keyboard_get_scancode();
+        if (!scancode && (inb(0x64) & 1)) {
+            scancode = inb(0x60);
+        }
+        if (scancode == 0x1C || scancode == 0x39) { // Enter or Space key make-code
+            draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, true);
+            speaker_beep();
+            delay_ms(150);
+            draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
+            log_printf("[UI] User interaction received: [ OK ] button clicked.\n");
         }
 
         // Animate 45-degree Barber-Pole progress bar

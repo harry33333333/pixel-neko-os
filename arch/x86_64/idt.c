@@ -55,6 +55,7 @@ extern void irq12(void);
 extern void irq13(void);
 extern void irq14(void);
 extern void irq15(void);
+extern void isr_spurious(void);
 
 // 256-entry 64-bit IDT
 __attribute__((aligned(16)))
@@ -147,6 +148,11 @@ void c_irq_handler(trap_frame_t* frame) {
 
 void idt_init(void) {
     memset(g_idt, 0, sizeof(g_idt));
+
+    // Initialize all 256 gates with isr_spurious to safely handle spurious or unhandled vectors
+    for (int i = 0; i < 256; i++) {
+        idt_set_gate(i, (uint64_t)isr_spurious, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    }
 
     // 0x8E = 64-bit Interrupt Gate, DPL 0, Present
     // Vector 8 (#DF) uses IST 1 (Dedicated Double Fault stack in TSS)!

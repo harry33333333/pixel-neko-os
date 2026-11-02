@@ -61,15 +61,32 @@ void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t fla
     ioapic_write(IOAPIC_REDTBL(gsi) + 1, high);
 }
 
+static volatile uint8_t g_last_scancode = 0;
+
+static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
+    __asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
+}
+
+static inline void wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
+    __asm__ volatile ("wrmsr" : : "a"(lo), "d"(hi), "c"(msr));
+}
+
 static void apic_timer_handler(trap_frame_t* frame) {
     (void)frame;
     g_lapic_ticks++;
 }
 
+uint8_t keyboard_get_scancode(void) {
+    uint8_t sc = g_last_scancode;
+    g_last_scancode = 0;
+    return sc;
+}
+
 static void apic_keyboard_handler(trap_frame_t* frame) {
     (void)frame;
-    // Read 8042 scancode to clear output buffer
-    (void)inb(0x60);
+    // Read 8042 scancode to clear output buffer and store for consumer
+    uint8_t sc = inb(0x60);
+    g_last_scancode = sc;
 }
 
 uint64_t apic_get_ticks(void) {
@@ -77,16 +94,25 @@ uint64_t apic_get_ticks(void) {
 }
 
 void apic_init(void) {
-    // 1. Check and switch IMCR (Interrupt Mode Configuration Register) to APIC mode
+    // 1. Enable LAPIC globally in CPU via IA32_APIC_BASE MSR (0x1B)
+    uint32_t msr_lo = 0, msr_hi = 0;
+    rdmsr(0x1B, &msr_lo, &msr_hi);
+    if (!(msr_lo & (1 << 11))) {
+        msr_lo |= (1 << 11);
+        wrmsr(0x1B, msr_lo, msr_hi);
+        log_printf("[APIC] LAPIC hardware globally enabled via IA32_APIC_BASE MSR.\n");
+    }
+
+    // 2. Check and switch IMCR (Interrupt Mode Configuration Register) to APIC mode
     outb(0x22, 0x70);
     outb(0x23, 0x01);
 
-    // 2. Completely mask Legacy 8259 PIC on both Master and Slave
+    // 3. Completely mask Legacy 8259 PIC on both Master and Slave
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
     log_printf("[APIC] Legacy 8259 PIC disabled & masked.\n");
 
-    // 3. Map Local APIC via HHDM
+    // 4. Map Local APIC via HHDM
     uint64_t lapic_phys = acpi_get_lapic_base();
     g_lapic_virt = (volatile uint8_t*)phys_to_virt(lapic_phys);
     log_printf("[APIC] LAPIC mapped at Virt %p (Phys 0x%08llx)\n", g_lapic_virt, lapic_phys);

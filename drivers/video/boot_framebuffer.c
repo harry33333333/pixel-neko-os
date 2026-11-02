@@ -1,5 +1,6 @@
 #include "boot_framebuffer.h"
 #include "log.h"
+#include "mm.h"
 #include <stddef.h>
 
 gfx_surface_t g_main_surface = {0};
@@ -13,8 +14,14 @@ bool boot_framebuffer_init(struct limine_framebuffer* fb) {
         return false;
     }
 
-    g_main_surface.framebuffer_virt = (void*)fb->address;
-    g_main_surface.framebuffer_phys = (uint64_t)fb->address; // In HHDM or raw phys
+    uint64_t addr = (uint64_t)fb->address;
+    if (addr >= g_hhdm.hhdm_offset && g_hhdm.hhdm_offset > 0) {
+        g_main_surface.framebuffer_virt = (void*)addr;
+        g_main_surface.framebuffer_phys = addr - g_hhdm.hhdm_offset;
+    } else {
+        g_main_surface.framebuffer_phys = addr;
+        g_main_surface.framebuffer_virt = phys_to_virt(addr);
+    }
     g_main_surface.width = (uint32_t)fb->width;
     g_main_surface.height = (uint32_t)fb->height;
     g_main_surface.pitch = (uint32_t)fb->pitch;

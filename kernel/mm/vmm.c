@@ -34,6 +34,9 @@ pagetable_t vmm_get_kernel_pml4(void) {
 static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool allocate, uint64_t flags) {
     uint64_t entry = table[index];
     if (entry & PTE_PRESENT) {
+        if (entry & PTE_LARGE_PAGE) {
+            return NULL; // Already mapped as large page (1GB / 2MB)
+        }
         phys_addr_t phys = entry & ~0xFFFULL;
         return (pagetable_t)phys_to_virt(phys);
     }
@@ -128,6 +131,9 @@ void vmm_remap_framebuffer_wc(void) {
 
     virt_addr_t fb_virt = (virt_addr_t)g_main_surface.framebuffer_virt;
     phys_addr_t fb_phys = (phys_addr_t)g_main_surface.framebuffer_phys;
+    if (fb_phys >= g_hhdm.hhdm_offset && g_hhdm.hhdm_offset > 0) {
+        fb_phys -= g_hhdm.hhdm_offset;
+    }
 
     // Apply WC flag (PTE_PWT selects PAT entry 1)
     uint64_t wc_flags = PTE_PRESENT | PTE_WRITABLE | PTE_PWT;
