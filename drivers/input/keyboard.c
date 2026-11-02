@@ -89,15 +89,15 @@ void keyboard_handle_byte(uint8_t scancode) {
         switch (code) {
             case 0x1D: g_ctrl = !release; break;
             case 0x38: g_alt = !release; break;
-            case 0x48: translated = INPUT_KEY_UP; break;
-            case 0x50: translated = INPUT_KEY_DOWN; break;
-            case 0x4B: translated = INPUT_KEY_LEFT; break;
-            case 0x4D: translated = INPUT_KEY_RIGHT; break;
-            case 0x47: translated = INPUT_KEY_HOME; break;
-            case 0x4F: translated = INPUT_KEY_END; break;
-            case 0x49: translated = INPUT_KEY_PAGE_UP; break;
-            case 0x51: translated = INPUT_KEY_PAGE_DOWN; break;
-            case 0x53: translated = INPUT_KEY_DELETE; break;
+            case 0x48: translated = INPUT_CODE_UP; break;
+            case 0x50: translated = INPUT_CODE_DOWN; break;
+            case 0x4B: translated = INPUT_CODE_LEFT; break;
+            case 0x4D: translated = INPUT_CODE_RIGHT; break;
+            case 0x47: translated = INPUT_CODE_HOME; break;
+            case 0x4F: translated = INPUT_CODE_END; break;
+            case 0x49: translated = INPUT_CODE_PAGE_UP; break;
+            case 0x51: translated = INPUT_CODE_PAGE_DOWN; break;
+            case 0x53: translated = INPUT_CODE_DELETE; break;
             default: break;
         }
         g_extended = false;

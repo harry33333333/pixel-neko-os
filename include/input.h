@@ -7,19 +7,19 @@
 
 #define INPUT_QUEUE_SIZE 256
 
-#define INPUT_KEY_ESCAPE      0x1B
-#define INPUT_KEY_BACKSPACE   0x08
-#define INPUT_KEY_TAB         0x09
-#define INPUT_KEY_ENTER       0x0D
-#define INPUT_KEY_UP          0x1000
-#define INPUT_KEY_DOWN        0x1001
-#define INPUT_KEY_LEFT        0x1002
-#define INPUT_KEY_RIGHT       0x1003
-#define INPUT_KEY_HOME        0x1004
-#define INPUT_KEY_END         0x1005
-#define INPUT_KEY_PAGE_UP     0x1006
-#define INPUT_KEY_PAGE_DOWN   0x1007
-#define INPUT_KEY_DELETE      0x1008
+#define INPUT_CODE_ESCAPE      0x1B
+#define INPUT_CODE_BACKSPACE   0x08
+#define INPUT_CODE_TAB         0x09
+#define INPUT_CODE_ENTER       0x0D
+#define INPUT_CODE_UP          0x1000
+#define INPUT_CODE_DOWN        0x1001
+#define INPUT_CODE_LEFT        0x1002
+#define INPUT_CODE_RIGHT       0x1003
+#define INPUT_CODE_HOME        0x1004
+#define INPUT_CODE_END         0x1005
+#define INPUT_CODE_PAGE_UP     0x1006
+#define INPUT_CODE_PAGE_DOWN   0x1007
+#define INPUT_CODE_DELETE      0x1008
 
 #define INPUT_MOUSE_LEFT      0x01
 #define INPUT_MOUSE_RIGHT     0x02
