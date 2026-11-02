@@ -26,6 +26,7 @@ void per_cpu_init(void* percpu) {
     per_cpu_block.nmi_swapgs = 0;
     per_cpu_block.syscall_count = 0;
     per_cpu_block.nmi_count = 0;
+    per_cpu_nmi_test_pending = 0;
 }
 
 void per_cpu_set_kernel_stack(uint64_t rsp0) {

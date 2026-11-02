@@ -28,6 +28,7 @@ extern uint64_t per_cpu_need_resched;
 extern uint64_t per_cpu_switch_gs;
 extern uint64_t per_cpu_current_thread;
 extern uint64_t per_cpu_nmi_count;
+extern uint64_t per_cpu_nmi_test_pending;
 
 void per_cpu_init(void* percpu);
 void per_cpu_set_kernel_stack(uint64_t rsp0);

@@ -3,6 +3,7 @@
 #include "process.h"
 #include "percpu.h"
 #include "ipc.h"
+#include "apic.h"
 #include "cpu.h"
 #include "gdt.h"
 #include "log.h"
@@ -20,7 +21,7 @@ void syscall_init(void) {
 
     /*
      * STAR[47:32] = kernel CS (0x08); STAR[63:48] = user base (0x10).
-     * SYSRET therefore loads CS=0x20, SS=0x18.
+     * SYSRET applies RPL 3, loading CS=0x23 and SS=0x1b.
      */
     uint64_t star = ((uint64_t)0x10 << 48) | ((uint64_t)GDT_KERNEL_CODE_SEL << 32);
     wrmsr(MSR_IA32_STAR, star);
@@ -156,9 +157,6 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 
         case NEKO_SYSCALL_IPC_RECV: {
             result = ipc_recv_block(process, thread, frame->rdi, frame->rsi);
-            log_printf("[SYSCALL] PID %u recv(queue=%llu) -> %lld state=%u\n",
-                       process->pid, (unsigned long long)frame->rdi,
-                       (long long)result, (unsigned int)thread->state);
             if (thread->state == THREAD_BLOCKED) {
                 result = 0;
             }
@@ -171,6 +169,15 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 
         case NEKO_SYSCALL_WAITPID:
             result = syscall_waitpid(frame);
+            break;
+
+        case NEKO_SYSCALL_NMI_TEST:
+            per_cpu_nmi_test_pending = 1;
+            result = 0;
+            break;
+
+        case NEKO_SYSCALL_NMI_COUNT:
+            result = (int64_t)nmi_get_count();
             break;
 
         default:

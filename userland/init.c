@@ -10,6 +10,8 @@ long neko_ipc_send(unsigned long queue_id, const neko_message_t* message);
 long neko_ipc_recv(unsigned long queue_id, neko_message_t* message);
 long neko_shm_attach(unsigned long shm_id);
 long neko_waitpid(unsigned long pid, int* status);
+long neko_nmi_test(void);
+unsigned long neko_nmi_count(void);
 void neko_exit(int status);
 unsigned long neko_fpu_switch_test(unsigned long value);
 int user_strcmp(const char* left, const char* right);
@@ -22,6 +24,18 @@ static int fpu_arithmetic_test(void) {
 
 static int init_main(void) {
     long pid = neko_getpid();
+    unsigned long nmi_before = neko_nmi_count();
+    for (int i = 0; i < 4; i++) {
+        neko_nmi_test();
+    }
+    unsigned long nmi_after = neko_nmi_count();
+    if (nmi_after < nmi_before + 4) {
+        neko_write("P3 NMI GS_BASE safety test FAILED");
+        neko_write_value("nmi_count", (long)nmi_after);
+        return 16;
+    }
+    neko_write("P3 NMI GS_BASE safety test PASS");
+
     unsigned long fpu_magic = 0x1122334455667788UL;
     if (neko_fpu_switch_test(fpu_magic) != fpu_magic) {
         neko_write("P3 FPU context test FAILED in init process");

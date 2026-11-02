@@ -12,6 +12,7 @@ global per_cpu_current_thread
 global per_cpu_nmi_swapgs
 global per_cpu_syscall_count
 global per_cpu_nmi_count
+global per_cpu_nmi_test_pending
 
 section .bss
 align 64
@@ -24,3 +25,4 @@ per_cpu_current_thread: resq 1
 per_cpu_nmi_swapgs:     resq 1
 per_cpu_syscall_count:  resq 1
 per_cpu_nmi_count:      resq 1
+per_cpu_nmi_test_pending: resq 1

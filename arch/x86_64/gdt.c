@@ -65,11 +65,11 @@ void gdt_init(void) {
     // Granularity/Flags: 0xC0 (G=1, D=1, L=0 for a data segment)
     set_gdt_gate(2, 0, 0xFFFFF, 0x92, 0xC0);
 
-    // 3: User Data 64 (DPL 3, W=1, P=1, writable) -> Selector 0x18
+    // 3: User Data 64 (DPL 3, W=1, P=1, writable) -> Selector 0x1B
     // Access: 0xF2 (P=1, DPL=3, S=1, Type=2: Read/Write)
     set_gdt_gate(3, 0, 0xFFFFF, 0xF2, 0xC0);
 
-    // 4: User Code 64 (DPL 3, L=1, G=1, P=1, readable) -> Selector 0x20
+    // 4: User Code 64 (DPL 3, L=1, G=1, P=1, readable) -> Selector 0x23
     // Access: 0xFA (P=1, DPL=3, S=1, Type=10: Ex/Read)
     set_gdt_gate(4, 0, 0xFFFFF, 0xFA, 0xA0);
 

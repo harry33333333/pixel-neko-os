@@ -24,6 +24,11 @@ void lapic_eoi(void) {
     lapic_write(LAPIC_EOI, 0);
 }
 
+void lapic_send_nmi_self(void) {
+    // Delivery mode NMI (100b), destination shorthand self (01b).
+    lapic_write(LAPIC_ICR_LOW, (1u << 14) | (4u << 8) | (1u << 18));
+}
+
 uint32_t ioapic_read(uint8_t reg) {
     if (!g_ioapic_virt) return 0;
     *(volatile uint32_t*)(g_ioapic_virt + 0x00) = reg;

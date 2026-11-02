@@ -11,11 +11,13 @@ extern syscall_dispatcher
 extern syscall_reschedule
 extern syscall_bad_return
 extern per_cpu_set_gs_domain
+extern lapic_send_nmi_self
 extern per_cpu_kernel_rsp0
 extern per_cpu_user_rsp
 extern per_cpu_need_resched
 extern per_cpu_switch_gs
 extern per_cpu_syscall_count
+extern per_cpu_nmi_test_pending
 
 section .text
 
@@ -88,6 +90,18 @@ syscall_entry:
     mov fs, ax
     mov edi, 1
     call per_cpu_set_gs_domain       ; restore the Ring 3 GS domain
+
+    ; Exercise the narrow kernel-CPL/user-GS window before SYSRET. The
+    ; paranoid NMI stub must not leak the temporary SWAPGS state.
+    cmp qword [rel per_cpu_nmi_test_pending], 0
+    je .nmi_test_done
+    mov qword [rel per_cpu_nmi_test_pending], 0
+    call lapic_send_nmi_self
+    mov ecx, 4096
+.nmi_test_delay:
+    pause
+    loop .nmi_test_delay
+.nmi_test_done:
 
     pop r15
     pop r14

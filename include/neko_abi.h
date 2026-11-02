@@ -18,6 +18,8 @@
 #define NEKO_SYSCALL_IPC_RECV      7
 #define NEKO_SYSCALL_SHM_ATTACH    8
 #define NEKO_SYSCALL_WAITPID       9
+#define NEKO_SYSCALL_NMI_TEST      10
+#define NEKO_SYSCALL_NMI_COUNT     11
 
 #define NEKO_EPERM                 1
 #define NEKO_EFAULT                14

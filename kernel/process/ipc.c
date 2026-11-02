@@ -123,13 +123,6 @@ void ipc_wake_next_receiver(uint64_t queue_id) {
     if (waiter->resume_frame) {
         waiter->resume_frame->rax = delivered ? 0 : (uint64_t)-NEKO_EFAULT;
     }
-    log_printf("[IPC] Wake PID %u frame=%p RIP=0x%016llx RAX=0x%llx user_phys=0x%llx kernel_phys=0x%llx\n",
-               waiter->process ? waiter->process->pid : 0,
-               (void*)waiter->resume_frame,
-               waiter->resume_frame ? (unsigned long long)waiter->resume_frame->rip : 0,
-               waiter->resume_frame ? (unsigned long long)waiter->resume_frame->rax : 0,
-               (unsigned long long)process_user_phys(waiter->process, wait_user_dst),
-               (unsigned long long)waiter->kernel_stack_phys);
     scheduler_wake_thread(waiter);
 
     log_printf("[IPC] Delivered queued message to PID %u (%s).\n",

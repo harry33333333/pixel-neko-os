@@ -33,6 +33,7 @@
 
 void apic_init(void);
 void lapic_eoi(void);
+void lapic_send_nmi_self(void);
 uint32_t lapic_read(uint32_t reg);
 void lapic_write(uint32_t reg, uint32_t val);
 uint32_t ioapic_read(uint8_t reg);

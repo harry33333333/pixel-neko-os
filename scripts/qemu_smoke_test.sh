@@ -60,6 +60,7 @@ run_mode() {
 
     if ! grep -q "SYSTEM.*P3 milestone reached" "${log}" ||
        ! grep -q "Ring 3 processes" "${log}" ||
+       ! grep -q "P3 NMI GS_BASE safety test PASS" "${log}" ||
        ! grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}"; then
         echo "QEMU ${mode} mode did not reach the P3 runtime self-test" >&2
         tail -n 250 "${log}" >&2 || true

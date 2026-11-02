@@ -104,6 +104,15 @@ long neko_waitpid(unsigned long pid, int* status) {
                          0, 0, 0, 0);
 }
 
+long neko_nmi_test(void) {
+    return neko_syscall6(NEKO_SYSCALL_NMI_TEST, 0, 0, 0, 0, 0, 0);
+}
+
+unsigned long neko_nmi_count(void) {
+    return (unsigned long)neko_syscall6(NEKO_SYSCALL_NMI_COUNT,
+                                        0, 0, 0, 0, 0, 0);
+}
+
 void neko_exit(int status) {
     neko_syscall6(NEKO_SYSCALL_EXIT, status, 0, 0, 0, 0, 0);
     for (;;) __asm__ volatile ("pause");
