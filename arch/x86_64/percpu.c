@@ -36,6 +36,17 @@ void per_cpu_set_current(void* thread) {
     per_cpu_block.current_thread = (uint64_t)thread;
 }
 
+void per_cpu_set_gs_domain(bool user) {
+    if (user) {
+        wrmsr(MSR_GS_BASE, 0);
+        wrmsr(MSR_KERNEL_GS_BASE, (uint64_t)&per_cpu_block);
+    } else {
+        wrmsr(MSR_GS_BASE, (uint64_t)&per_cpu_block);
+        wrmsr(MSR_KERNEL_GS_BASE, 0);
+    }
+    per_cpu_block.switch_gs = 0;
+}
+
 void per_cpu_request_reschedule(void) {
     per_cpu_block.need_resched = 1;
 }

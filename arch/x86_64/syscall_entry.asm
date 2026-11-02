@@ -128,10 +128,6 @@ arch_enter_thread:
 ; Restore a trap_frame_t and return with IRETQ. This also handles an IST stack
 ; switch and same-CPL kernel frames correctly.
 arch_restore_trap_frame:
-    cmp qword [rel per_cpu_switch_gs], 0
-    je .gs_ready
-    swapgs
-.gs_ready:
     mov qword [rel per_cpu_switch_gs], 0
 
     test byte [rsp + 18*8], 3       ; frame->cs

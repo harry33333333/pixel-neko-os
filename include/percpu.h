@@ -32,6 +32,7 @@ extern uint64_t per_cpu_nmi_count;
 void per_cpu_init(void* percpu);
 void per_cpu_set_kernel_stack(uint64_t rsp0);
 void per_cpu_set_current(void* thread);
+void per_cpu_set_gs_domain(bool user);
 void per_cpu_request_reschedule(void);
 bool per_cpu_reschedule_requested(void);
 void per_cpu_clear_reschedule(void);

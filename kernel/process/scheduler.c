@@ -82,6 +82,7 @@ static thread_t* choose_next(thread_t* after, bool skip_after) {
 
 static void switch_to(thread_t* next, bool current_gs_is_kernel) {
     if (!next) return;
+    (void)current_gs_is_kernel;
 
     thread_t* previous = g_current_thread;
     if (previous != next) {
@@ -92,11 +93,12 @@ static void switch_to(thread_t* next, bool current_gs_is_kernel) {
         process_set_current(next->process);
         per_cpu_set_current(next);
         per_cpu_set_kernel_stack(next->kernel_stack_top);
+        per_cpu_set_gs_domain(next->is_user);
         tss_set_rsp0(next->kernel_stack_top);
         vmm_switch_pml4(next->process->pml4);
 
         fpu_restore(next->fpu_state);
-        per_cpu_block.switch_gs = current_gs_is_kernel != !next->is_user;
+        per_cpu_block.switch_gs = 0;
         g_current_thread = next;
     } else {
         per_cpu_block.switch_gs = 0;
