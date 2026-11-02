@@ -367,7 +367,7 @@ void usb_disconnect_port(usb_hci_t* hci, uint8_t root_port) {
             continue;
         }
         uint8_t address = dev->address;
-        log_printf("[USB ] Root port %u disconnected address %u\n",
+        log_printf("[USBHOT] Root port %u disconnected address %u\n",
                    root_port, address);
         usb_release_device(dev);
         for (uint32_t j = 0; j < USB_MAX_DEVICES; j++) {
