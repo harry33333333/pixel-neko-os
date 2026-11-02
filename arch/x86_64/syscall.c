@@ -155,6 +155,9 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 
         case NEKO_SYSCALL_IPC_RECV: {
             result = ipc_recv_block(process, thread, frame->rdi, frame->rsi);
+            log_printf("[SYSCALL] PID %u recv(queue=%llu) -> %lld state=%u\n",
+                       process->pid, (unsigned long long)frame->rdi,
+                       (long long)result, (unsigned int)thread->state);
             if (thread->state == THREAD_BLOCKED) {
                 frame->rip += 2;
                 result = 0;

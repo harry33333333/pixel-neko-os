@@ -132,6 +132,9 @@ void ipc_wake_next_receiver(uint64_t queue_id) {
 int64_t ipc_send(uint64_t queue_id, const neko_message_t* message,
                  uint32_t sender_pid) {
     ipc_queue_t* queue = find_queue(queue_id);
+    log_printf("[IPC] PID %u send queue=%llu type=0x%llx\n",
+               sender_pid, (unsigned long long)queue_id,
+               message ? (unsigned long long)message->type : 0);
     if (!queue) return -NEKO_ENOENT;
     if (!message) return -NEKO_EINVAL;
 
@@ -158,15 +161,24 @@ int64_t ipc_recv_block(process_t* process, thread_t* thread, uint64_t queue_id,
     }
 
     ipc_queue_t* queue = find_queue(queue_id);
-    if (!queue) return -NEKO_ENOENT;
+    if (!queue) {
+        log_printf("[IPC] PID %u receive missing queue=%llu\n",
+                   process->pid, (unsigned long long)queue_id);
+        return -NEKO_ENOENT;
+    }
 
     neko_message_t message;
     if (dequeue(queue, &message)) {
+        log_printf("[IPC] PID %u received queue=%llu immediately.\n",
+                   process->pid, (unsigned long long)queue_id);
         return process_copy_to_user(process, user_dst, &message, sizeof(message))
                    ? 0
                    : -NEKO_EFAULT;
     }
 
+    log_printf("[IPC] PID %u blocking on queue=%llu dst=0x%016llx\n",
+               process->pid, (unsigned long long)queue_id,
+               (unsigned long long)user_dst);
     thread->wait_queue_id = queue_id;
     thread->wait_user_dst = user_dst;
     thread->state = THREAD_BLOCKED;
