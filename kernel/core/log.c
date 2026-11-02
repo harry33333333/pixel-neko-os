@@ -60,20 +60,25 @@ static int append_char(char* dst, int pos, int max, char c) {
 }
 
 static int append_string(char* dst, int pos, int max, const char* text) {
-    if (!text) text = "(null)";
+    if (!text || (uintptr_t)text < 0x1000) {
+        text = "(null)";
+    }
     while (*text) pos = append_char(dst, pos, max, *text++);
     return pos;
 }
 
 static int append_unsigned64(char* dst, int pos, int max, uint64_t value,
-                             unsigned int base, int uppercase) {
+                             unsigned int base, int uppercase, int min_width, char pad_char) {
     const char* digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
-    char temporary[32];
+    char temporary[64];
     int count = 0;
     if (value == 0) temporary[count++] = '0';
     while (value && count < (int)sizeof(temporary)) {
         temporary[count++] = digits[value % base];
         value /= base;
+    }
+    while (count < min_width && count < (int)sizeof(temporary)) {
+        temporary[count++] = pad_char;
     }
     while (count > 0) pos = append_char(dst, pos, max, temporary[--count]);
     return pos;
@@ -107,21 +112,52 @@ void log_printf(const char* format, ...) {
             continue;
         }
 
-        format++;
+        format++; // Skip '%'
+        if (*format == '%') {
+            pos = append_char(line, pos, LOG_LINE_SIZE, '%');
+            format++;
+            continue;
+        }
+
+        // Parse zero-padding flag
+        char pad_char = ' ';
+        if (*format == '0') {
+            pad_char = '0';
+            format++;
+        }
+
+        // Parse minimum field width
+        int min_width = 0;
+        while (*format >= '0' && *format <= '9') {
+            min_width = min_width * 10 + (*format - '0');
+            format++;
+        }
+
+        // Parse length modifiers (l, ll, h, z)
         bool is_long = false;
         if (*format == 'l') {
             is_long = true;
             format++;
             if (*format == 'l') format++;
+        } else if (*format == 'z') {
+            is_long = true;
+            format++;
+        } else if (*format == 'h') {
+            format++;
+            if (*format == 'h') format++;
         }
 
         switch (*format) {
-            case 's':
-                pos = append_string(line, pos, LOG_LINE_SIZE, va_arg(args, const char*));
+            case 's': {
+                const char* s = va_arg(args, const char*);
+                pos = append_string(line, pos, LOG_LINE_SIZE, s);
                 break;
-            case 'c':
-                pos = append_char(line, pos, LOG_LINE_SIZE, (char)va_arg(args, int));
+            }
+            case 'c': {
+                char c = (char)va_arg(args, int);
+                pos = append_char(line, pos, LOG_LINE_SIZE, c);
                 break;
+            }
             case 'd':
             case 'i': {
                 int64_t value = is_long ? va_arg(args, int64_t) : va_arg(args, int);
@@ -132,33 +168,30 @@ void log_printf(const char* format, ...) {
                 } else {
                     magnitude = (uint64_t)value;
                 }
-                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, magnitude, 10, 0);
+                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, magnitude, 10, 0, min_width, pad_char);
                 break;
             }
             case 'u': {
                 uint64_t value = is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int);
-                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 10, 0);
+                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 10, 0, min_width, pad_char);
                 break;
             }
             case 'x': {
                 uint64_t value = is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int);
-                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 16, 0);
+                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 16, 0, min_width, pad_char);
                 break;
             }
             case 'X': {
                 uint64_t value = is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int);
-                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 16, 1);
+                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, value, 16, 1, min_width, pad_char);
                 break;
             }
             case 'p': {
                 pos = append_string(line, pos, LOG_LINE_SIZE, "0x");
                 uint64_t ptr_val = (uint64_t)va_arg(args, void*);
-                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, ptr_val, 16, 0);
+                pos = append_unsigned64(line, pos, LOG_LINE_SIZE, ptr_val, 16, 0, 16, '0');
                 break;
             }
-            case '%':
-                pos = append_char(line, pos, LOG_LINE_SIZE, '%');
-                break;
             case '\0':
                 format--;
                 break;

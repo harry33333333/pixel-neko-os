@@ -21,8 +21,14 @@ kentry:
     cli
     cld
 
-    ; 2. Load safe aligned 64-bit stack in higher half
+    ; 2. Ensure stack pointer is 16-byte aligned.
+    ; Limine guarantees RSP points to a valid 64-bit stack.
+    ; If RSP is null (should never happen), fall back to internal bootstrap stack.
+    test rsp, rsp
+    jnz .stack_ok
     lea rsp, [initial_stack_top]
+.stack_ok:
+    and rsp, -16
 
     ; 3. Reset frame pointer
     xor rbp, rbp
