@@ -132,7 +132,8 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
                 result = 0;
                 break;
             }
-            frame->rip += 2; // SYSCALL is a two-byte instruction.
+            // Resume at the instruction after SYSCALL; user wrappers execute
+            // their own RET immediately after the syscall instruction.
             scheduler_block_current(scheduler_get_ticks() + ticks);
             result = 0;
             break;
@@ -159,7 +160,6 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
                        process->pid, (unsigned long long)frame->rdi,
                        (long long)result, (unsigned int)thread->state);
             if (thread->state == THREAD_BLOCKED) {
-                frame->rip += 2;
                 result = 0;
             }
             break;
