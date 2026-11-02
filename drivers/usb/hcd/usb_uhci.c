@@ -75,7 +75,7 @@ static uhci_controller_t g_uhci[UHCI_MAX_CONTROLLERS];
 static uint32_t g_uhci_count = 0;
 
 static void uhci_release_intr_slot(uhci_controller_t* controller,
-                                   usb_device_t* device);
+                                   uhci_intr_t* slot);
 
 static uint32_t uhci_phys(uhci_controller_t* c, const void* pointer) {
     return (uint32_t)(c->dma.phys_addr +
@@ -91,16 +91,21 @@ static uint32_t uhci_length(int length) {
     return (uint32_t)(length - 1);
 }
 
-static void uhci_rebuild(uhci_controller_t* c) {
+static bool uhci_stop(uhci_controller_t* c, uint16_t* saved_command) {
     uint16_t command = inw(c->io_base);
-    bool was_running = (command & UHCI_CMD_RUN) != 0;
-    if (was_running) {
-        outw(c->io_base, (uint16_t)(command & ~UHCI_CMD_RUN));
-        for (int timeout = 0; timeout < 20; timeout++) {
-            if (inw(c->io_base + 0x02) & UHCI_STS_HALTED) break;
-            usb_delay_ms(1);
-        }
+    *saved_command = command;
+    if (!(command & UHCI_CMD_RUN)) return false;
+    outw(c->io_base, (uint16_t)(command & ~UHCI_CMD_RUN));
+    for (int timeout = 0; timeout < 20; timeout++) {
+        if (inw(c->io_base + 0x02) & UHCI_STS_HALTED) break;
+        usb_delay_ms(1);
     }
+    return true;
+}
+
+static void uhci_rebuild(uhci_controller_t* c) {
+    uint16_t command = 0;
+    bool was_running = uhci_stop(c, &command);
     uhci_qh_t* first = NULL;
     uhci_qh_t* previous = NULL;
     for (int i = 0; i < UHCI_MAX_INTR_SLOTS; i++) {
@@ -131,6 +136,19 @@ static void uhci_program_td(uhci_controller_t* c, uhci_td_t* td,
                 (uhci_length(length) << 21);
     td->buffer = data_phys;
     (void)c;
+}
+
+static void uhci_release_intr_slot(uhci_controller_t* controller,
+                                   uhci_intr_t* slot) {
+    if (!controller || !slot || !slot->used) return;
+    if (slot->endpoint) slot->endpoint->hcd_priv = NULL;
+    uint16_t command = 0;
+    bool was_running = uhci_stop(controller, &command);
+    memset(slot, 0, sizeof(*slot));
+    dma_sync_for_device(&controller->dma);
+    uhci_rebuild(controller);
+    if (was_running) outw(controller->io_base, (uint16_t)(command | UHCI_CMD_RUN));
+    dma_sync_for_device(&controller->dma);
 }
 
 static int uhci_control(usb_hci_t* hci, usb_device_t* device,
@@ -236,8 +254,7 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     if (status & UHCI_TD_ERROR) {
         log_printf("[UHCI] interrupt endpoint 0x%02x stalled\n",
                    endpoint->address);
-        endpoint->hcd_priv = NULL;
-        uhci_release_intr_slot(c, device);
+        uhci_release_intr_slot(c, slot);
         return -1;
     }
     if (status & UHCI_TD_NAK) {
@@ -264,14 +281,22 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
 static void uhci_device_release(usb_hci_t* hci, usb_device_t* device) {
     uhci_controller_t* c = hci->priv;
     if (!c || !device) return;
+    uint16_t command = 0;
+    bool was_running = uhci_stop(c, &command);
     for (int i = 0; i < UHCI_MAX_INTR_SLOTS; i++) {
         if (c->mem->interrupts[i].used &&
             c->mem->interrupts[i].device == device) {
+            if (c->mem->interrupts[i].endpoint) {
+                c->mem->interrupts[i].endpoint->hcd_priv = NULL;
+            }
             memset(&c->mem->interrupts[i], 0,
                    sizeof(c->mem->interrupts[i]));
         }
     }
+    dma_sync_for_device(&c->dma);
     uhci_rebuild(c);
+    if (was_running) outw(c->io_base, (uint16_t)(command | UHCI_CMD_RUN));
+    dma_sync_for_device(&c->dma);
 }
 
 static int uhci_port_reset(usb_hci_t* hci, uint8_t port) {
