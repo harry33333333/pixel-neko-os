@@ -62,12 +62,12 @@ void gdt_init(void) {
 
     // 2: Kernel Data 64 (DPL 0, W=1, P=1, writable) -> Selector 0x10
     // Access: 0x92 (P=1, DPL=0, S=1, Type=2: Read/Write)
-    // Granularity/Flags: 0xA0 (G=1, L=1)
-    set_gdt_gate(2, 0, 0xFFFFF, 0x92, 0xA0);
+    // Granularity/Flags: 0xC0 (G=1, D=1, L=0 for a data segment)
+    set_gdt_gate(2, 0, 0xFFFFF, 0x92, 0xC0);
 
     // 3: User Data 64 (DPL 3, W=1, P=1, writable) -> Selector 0x18
     // Access: 0xF2 (P=1, DPL=3, S=1, Type=2: Read/Write)
-    set_gdt_gate(3, 0, 0xFFFFF, 0xF2, 0xA0);
+    set_gdt_gate(3, 0, 0xFFFFF, 0xF2, 0xC0);
 
     // 4: User Code 64 (DPL 3, L=1, G=1, P=1, readable) -> Selector 0x20
     // Access: 0xFA (P=1, DPL=3, S=1, Type=10: Ex/Read)
