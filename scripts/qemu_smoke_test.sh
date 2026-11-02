@@ -112,6 +112,7 @@ run_mode() {
        { ! grep -q "\[HUB \] Attached" "${log}" ||
          ! grep -q "\[USBHOT\] Root port" "${log}"; }; then
         echo "Hub or USB hotplug validation failed" >&2
+        cat "${console}" >&2 || true
         tail -n 300 "${log}" >&2
         return 1
     fi
@@ -137,6 +138,6 @@ run_mode ehci q35 -bios "${UEFI_FW}" \
     -device usb-mouse,bus=ehci.0,id=usb-mouse
 run_mode hub q35 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
-    -device usb-hub,bus=xhci.0,port=3,id=usbhub \
-    -device usb-kbd,bus=usbhub.0,port=1,id=usb-kbd \
-    -device usb-mouse,bus=usbhub.0,port=2,id=usb-mouse
+    -device usb-hub,bus=xhci.0,id=usbhub \
+    -device usb-kbd,bus=usbhub.0,id=usb-kbd \
+    -device usb-mouse,bus=usbhub.0,id=usb-mouse
