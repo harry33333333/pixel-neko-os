@@ -6,6 +6,7 @@ default rel
 
 extern c_exception_handler
 extern c_irq_handler
+extern arch_restore_trap_frame
 
 %macro ISR_NOERRCODE 1
 global isr%1
@@ -156,25 +157,8 @@ common_irq_stub:
     mov rdi, rsp
     cld
     call c_irq_handler
-
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rbp
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-
-    add rsp, 16
-    iretq
+    mov rsp, rax
+    jmp arch_restore_trap_frame
 
 ; Spurious interrupt handler (no EOI needed, just IRETQ)
 global isr_spurious

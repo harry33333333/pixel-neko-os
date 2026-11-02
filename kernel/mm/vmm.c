@@ -34,6 +34,118 @@ pagetable_t vmm_get_kernel_pml4(void) {
     return g_kernel_pml4;
 }
 
+pagetable_t vmm_create_address_space(void) {
+    if (!g_kernel_pml4) return NULL;
+
+    phys_addr_t pml4_phys = pmm_alloc_page();
+    if (!pml4_phys) return NULL;
+
+    pagetable_t pml4 = (pagetable_t)phys_to_virt(pml4_phys);
+    if (!pml4) {
+        pmm_free_page(pml4_phys);
+        return NULL;
+    }
+
+    memset(pml4, 0, PAGE_SIZE);
+
+    /*
+     * Copy only the kernel half. The low half deliberately starts empty so
+     * Ring 3 never inherits the P2 identity maps.
+     */
+    for (uint32_t i = 256; i < 512; i++) {
+        pml4[i] = g_kernel_pml4[i];
+    }
+
+    return pml4;
+}
+
+bool vmm_virt_to_phys(pagetable_t pml4, virt_addr_t virt, phys_addr_t* phys) {
+    if (!pml4 || !phys) return false;
+
+    uint64_t pml4_idx = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (virt >> 30) & 0x1FF;
+    uint64_t pd_idx   = (virt >> 21) & 0x1FF;
+    uint64_t pt_idx   = (virt >> 12) & 0x1FF;
+
+    uint64_t pml4e = pml4[pml4_idx];
+    if (!(pml4e & PTE_PRESENT)) return false;
+    pagetable_t pdpt = (pagetable_t)phys_to_virt(pml4e & PAGE_MASK);
+    if (!pdpt) return false;
+
+    uint64_t pdpte = pdpt[pdpt_idx];
+    if (!(pdpte & PTE_PRESENT)) return false;
+    if (pdpte & PTE_LARGE_PAGE) {
+        *phys = (pdpte & ~((1ULL << 30) - 1)) | (virt & ((1ULL << 30) - 1));
+        return true;
+    }
+
+    pagetable_t pd = (pagetable_t)phys_to_virt(pdpte & PAGE_MASK);
+    if (!pd) return false;
+
+    uint64_t pde = pd[pd_idx];
+    if (!(pde & PTE_PRESENT)) return false;
+    if (pde & PTE_LARGE_PAGE) {
+        *phys = (pde & ~((1ULL << 21) - 1)) | (virt & ((1ULL << 21) - 1));
+        return true;
+    }
+
+    pagetable_t pt = (pagetable_t)phys_to_virt(pde & PAGE_MASK);
+    if (!pt) return false;
+
+    uint64_t pte = pt[pt_idx];
+    if (!(pte & PTE_PRESENT)) return false;
+    *phys = (pte & PAGE_MASK) | (virt & 0xFFFULL);
+    return true;
+}
+
+bool vmm_user_range_ok(pagetable_t pml4, virt_addr_t virt, size_t size, bool write) {
+    if (!pml4) return false;
+    if (size == 0) return true;
+    if (virt >= 0x0000800000000000ULL) return false;
+    if (size > UINT64_MAX - virt) return false;
+    if (virt + size - 1 >= 0x0000800000000000ULL) return false;
+
+    uint64_t first = virt & PAGE_MASK;
+    uint64_t last = (virt + size - 1) & PAGE_MASK;
+
+    for (uint64_t page = first; ; page += PAGE_SIZE) {
+        uint64_t pml4_idx = (page >> 39) & 0x1FF;
+        uint64_t pdpt_idx = (page >> 30) & 0x1FF;
+        uint64_t pd_idx   = (page >> 21) & 0x1FF;
+        uint64_t pt_idx   = (page >> 12) & 0x1FF;
+
+        uint64_t pml4e = pml4[pml4_idx];
+        if (!(pml4e & PTE_PRESENT) || !(pml4e & PTE_USER)) return false;
+        pagetable_t pdpt = (pagetable_t)phys_to_virt(pml4e & PAGE_MASK);
+        if (!pdpt) return false;
+
+        uint64_t pdpte = pdpt[pdpt_idx];
+        if (!(pdpte & PTE_PRESENT) || !(pdpte & PTE_USER)) return false;
+        if (pdpte & PTE_LARGE_PAGE) {
+            if (write && !(pdpte & PTE_WRITABLE)) return false;
+        } else {
+            pagetable_t pd = (pagetable_t)phys_to_virt(pdpte & PAGE_MASK);
+            if (!pd) return false;
+
+            uint64_t pde = pd[pd_idx];
+            if (!(pde & PTE_PRESENT) || !(pde & PTE_USER)) return false;
+            if (pde & PTE_LARGE_PAGE) {
+                if (write && !(pde & PTE_WRITABLE)) return false;
+            } else {
+                pagetable_t pt = (pagetable_t)phys_to_virt(pde & PAGE_MASK);
+                if (!pt) return false;
+                uint64_t pte = pt[pt_idx];
+                if (!(pte & PTE_PRESENT) || !(pte & PTE_USER)) return false;
+                if (write && !(pte & PTE_WRITABLE)) return false;
+            }
+        }
+
+        if (page == last) break;
+    }
+
+    return true;
+}
+
 static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool allocate, uint64_t flags) {
     uint64_t entry = table[index];
     if (entry & PTE_PRESENT) {
@@ -42,6 +154,9 @@ static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool alloca
         }
         if (flags & PTE_WRITABLE) {
             table[index] |= PTE_WRITABLE;
+        }
+        if (flags & PTE_USER) {
+            table[index] |= PTE_USER;
         }
         phys_addr_t phys = entry & ~0xFFFULL;
         return (pagetable_t)phys_to_virt(phys);
@@ -55,7 +170,8 @@ static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool alloca
     pagetable_t new_table = (pagetable_t)phys_to_virt(new_table_phys);
     memset(new_table, 0, PAGE_SIZE);
 
-    table[index] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    table[index] = new_table_phys | PTE_PRESENT | PTE_WRITABLE |
+                  (flags & (PTE_USER | PTE_WRITABLE));
     return new_table;
 }
 

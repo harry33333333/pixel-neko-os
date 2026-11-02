@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A1001a"
+          VERSION="26A115a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -81,7 +81,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > ⚠️ **Pre-release**: 64-bit Kernel Infrastructure, ACPI & Modern APIC Architecture (Milestone P2 Complete).
+          > **Pre-release**: Ring 3 process runtime, preemptive scheduling, NMI-safe syscalls and IPC (Milestone P3 Complete).
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -100,18 +100,17 @@ jobs:
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
 
-          ### 🛠️ P2 Architecture Highlights
-          - **P2.1 64-Bit PMM**: Physical page frame bitmap allocator supporting >4GB RAM with zoned boundaries.
-          - **P2.2 VMM & Kernel Heap**: 4-level PML4 paging, checked HHDM translation, PAT MSR 0x277 Write-Combining (WC) video acceleration, and dynamic heap allocator (`kmalloc`/`kfree`).
-          - **P2.3 GDT & TSS**: 64-bit GDT, Per-CPU TSS, dedicated 16KB Double Fault (`#DF`) IST1 stack.
-          - **P2.4 IDT64 & Panic**: 256-entry IDT, 32 CPU exception stubs, classic Mac OS Bomb graphical panic window with register dump and 8042 reset.
-          - **P2.5 ACPI Parsing**: RSDP, RSDT/XSDT, MADT (LAPIC, IOAPIC, ISO redirection IRQ0->GSI2) and MCFG (PCIe ECAM).
-          - **P2.6 Modern APIC**: IMCR switch, 8259 PIC masking, Local APIC SVR/TPR, periodic LAPIC Timer (Vector 32), IOAPIC redirection.
-          - **P2.7 Unified 64-Bit DMA**: Three-tier architecture (`ZONE_DMA` <16MB with 64KB boundary check, `ZONE_DMA32` <4GB, `ZONE_NORMAL`).
+          ### P3 Architecture Highlights
+          - **P3.1 TCB/PCB Scheduler**: Per-thread kernel stacks, idle thread, LAPIC preemptive round-robin scheduling and blocking sleep.
+          - **P3.2 FPU/SSE Context**: CR0.MP/NE, CR4.OSFXSR/OSXMMEXCPT and aligned 512-byte FXSAVE/FXRSTOR state per thread.
+          - **P3.3 SYSCALL/SYSRET**: FMASK=0x600, System V register ABI, canonical return validation and GS-aware paranoid NMI handling on IST2.
+          - **P3.4 Ring 3 ELF Loader**: Validated ELF64 PT_LOAD parsing, RX/RW/NX page permissions, isolated user PML4 and initial argc/argv stack.
+          - **P3.5 IPC**: Blocking message queues, wakeup delivery and shared-memory attachment between two independent Ring 3 processes.
+          - **Runtime Self-test**: The init and echo ELFs verify FPU state, syscalls, IPC and shared memory on every boot.
           - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
         draft: false
         prerelease: true
         make_latest: false
         files: |
-          pixel-neko-os*.iso
+          pixel-neko-os_${{ env.VERSION }}.iso
           pixel_neko_source_*.zip

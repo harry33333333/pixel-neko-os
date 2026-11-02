@@ -3,6 +3,8 @@
 #include "panic.h"
 #include "log.h"
 #include "string.h"
+#include "syscall.h"
+#include "scheduler.h"
 
 // External assembly ISR declarations (0..31)
 extern void isr0(void);
@@ -134,16 +136,17 @@ void c_exception_handler(trap_frame_t* frame) {
 }
 
 // C-level IRQ dispatcher called from common_irq_stub
-void c_irq_handler(trap_frame_t* frame) {
-    if (!frame) return;
+trap_frame_t* c_irq_handler(trap_frame_t* frame) {
+    if (!frame) return frame;
     int irq = (int)frame->int_no - 32;
 
     if (irq >= 0 && irq < 16 && g_irq_handlers[irq]) {
         g_irq_handlers[irq](frame);
     }
 
-    // Acknowledge interrupt to LAPIC
+    // Acknowledge before a possible address-space/context switch.
     lapic_eoi();
+    return scheduler_handle_irq(frame);
 }
 
 void idt_init(void) {
@@ -158,7 +161,7 @@ void idt_init(void) {
     // Vector 8 (#DF) uses IST 1 (Dedicated Double Fault stack in TSS)!
     idt_set_gate(0,  (uint64_t)isr0,  GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(1,  (uint64_t)isr1,  GDT_KERNEL_CODE_SEL, 0x8E, 0);
-    idt_set_gate(2,  (uint64_t)isr2,  GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(2,  (uint64_t)nmi_entry, GDT_KERNEL_CODE_SEL, 0x8E, 2);
     idt_set_gate(3,  (uint64_t)isr3,  GDT_KERNEL_CODE_SEL, 0xEE, 0); // User-callable breakpoint
     idt_set_gate(4,  (uint64_t)isr4,  GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(5,  (uint64_t)isr5,  GDT_KERNEL_CODE_SEL, 0x8E, 0);

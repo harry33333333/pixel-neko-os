@@ -15,6 +15,11 @@
 #include "apic.h"
 #include "dma.h"
 #include "panic.h"
+#include "fpu.h"
+#include "scheduler.h"
+#include "process.h"
+#include "ipc.h"
+#include "syscall.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -161,6 +166,9 @@ static void delay_ms(uint32_t ms) {
 static int g_btn_x = 0, g_btn_y = 0, g_btn_w = 90, g_btn_h = 24;
 static int g_bar_x = 0, g_bar_y = 0, g_bar_w = 0, g_bar_h = 16;
 
+extern const uint8_t _binary_bin_init_elf_start[];
+extern const uint8_t _binary_bin_init_elf_end[];
+
 static void draw_button(int x, int y, int w, int h, bool pressed) {
     uint32_t c_white = boot_framebuffer_make_color(255, 255, 255);
     uint32_t c_gray  = boot_framebuffer_make_color(192, 192, 192);
@@ -249,9 +257,9 @@ static void draw_welcome_window(void) {
     int text_x = win_x + 20;
     int text_y = win_y + 36;
 
-    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up (P2 Complete)", c_title, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Pixel Neko OS 64-Bit Core Bring-up (P3 Complete)", c_title, c_gray);
     text_y += 20;
-    boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64 Long Mode (Ring 0 / IST1 #DF Safe)", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Architecture: AMD64, Ring 0 / Ring 3, IST1 #DF, IST2 NMI", c_black, c_gray);
     text_y += 18;
 
     // CPU Info
@@ -311,14 +319,14 @@ static void draw_welcome_window(void) {
     text_y += 18;
 
     // DMA Info
-    boot_framebuffer_draw_string(text_x, text_y, "DMA Engine  : 64-Bit Zoned (ZONE_DMA <16M, DMA32 <4G, NORMAL)", c_black, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "P3 Runtime  : TCB/PCB, APIC Preemption, FXSAVE, ELF, IPC", c_black, c_gray);
     text_y += 22;
 
     // Status Banner
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 26, c_white);
     boot_framebuffer_fill_rect(text_x, text_y, win_w - 40, 1, c_dgray);
     boot_framebuffer_fill_rect(text_x, text_y, 1, 26, c_dgray);
-    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] P2 Kernel Infrastructure 100% Operational!", c_green, c_white);
+    boot_framebuffer_draw_string(text_x + 8, text_y + 5, "[OK] P3 Process & Ring 3 Runtime Operational!", c_green, c_white);
     text_y += 34;
 
     // Barber-Pole Progress Bar
@@ -330,7 +338,7 @@ static void draw_welcome_window(void) {
     text_y += 22;
 
     // Hint text
-    boot_framebuffer_draw_string(text_x, text_y, "System Active. Press [Enter] or [Space] on keyboard.", c_dgray, c_gray);
+    boot_framebuffer_draw_string(text_x, text_y, "Launching PID 1 ELF process and IPC echo service...", c_dgray, c_gray);
 
     // Button
     g_btn_w = 90;
@@ -424,46 +432,56 @@ void kmain(void) {
                    kernel_address_request.response->virtual_base);
     }
 
-    // 16. Draw Windows 3.1 / Mac OS 9 style 3D welcome modal window with live P2 metrics
+    // 16. P3.2: Enable native FPU/SSE state and initialize scheduler state
+    fpu_init();
+    scheduler_init();
+    process_subsystem_init();
+
+    // 17. P3.3: Configure SYSCALL/SYSRET MSRs and GS-based per-CPU state
+    syscall_init();
+
+    // 18. P3.5: Create the message queue and shared-memory test objects
+    ipc_init();
+
+    // 19. P3.1: Create Idle and two independent Ring 3 ELF processes
+    if (!process_create_idle()) {
+        log_printf("[P3 FATAL] Failed to create Idle thread.\n");
+        for (;;) __asm__ volatile ("pause");
+    }
+
+    const uint8_t* user_elf = _binary_bin_init_elf_start;
+    size_t user_elf_size =
+        (size_t)(_binary_bin_init_elf_end - _binary_bin_init_elf_start);
+    process_t* init_process =
+        process_create_user(user_elf, user_elf_size, "init", "init", NULL, NULL);
+    if (!init_process) {
+        log_printf("[P3 FATAL] Failed to load init ELF.\n");
+        for (;;) __asm__ volatile ("pause");
+    }
+
+    process_t* echo_process =
+        process_create_user(user_elf, user_elf_size, "ipc-echo", "init", "echo",
+                            init_process);
+    if (!echo_process) {
+        log_printf("[P3 FATAL] Failed to load IPC echo ELF.\n");
+        for (;;) __asm__ volatile ("pause");
+    }
+
+    log_printf("[P3] Loaded Ring 3 processes: init PID=%u, echo PID=%u.\n",
+               init_process->pid, echo_process->pid);
+
+    // 20. Draw Windows 3.1 / Mac OS 9 style welcome window with P3 metrics
     if (g_main_surface.framebuffer_virt) {
         draw_welcome_window();
-        log_printf("[UI] Welcome modal rendered successfully with full P2 status.\n");
+        log_printf("[UI] Welcome modal rendered successfully with full P3 status.\n");
     }
 
-    // 17. Enable Hardware Interrupts now that GDT, IDT, LAPIC and IOAPIC are fully ready
-    __asm__ volatile ("sti");
-    log_printf("[CPU] Hardware interrupts enabled (STI). Local APIC Timer is running.\n");
-
-    // 18. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
+    // 21. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
     speaker_boot_chord();
 
-    log_printf("[SYSTEM] P2 Milestone reached: Full Kernel Infrastructure, ACPI & Modern APIC Active.\n");
+    log_printf("[SYSTEM] P3 milestone reached: preemptive Ring 3 execution active.\n");
 
-    // 19. Interactive idle loop with Barber-Pole animation
-    // (Uses pause + delay_ms to prevent VMware/QEMU from detecting disabled CPU / msg.monitorevent.halt)
-    int frame = 0;
-    for (;;) {
-        // Poll keyboard port or check APIC IRQ1 buffer
-        uint8_t scancode = keyboard_get_scancode();
-        if (!scancode && (inb(0x64) & 1)) {
-            scancode = inb(0x60);
-        }
-        if (scancode == 0x1C || scancode == 0x39) { // Enter or Space key make-code
-            draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, true);
-            speaker_beep();
-            delay_ms(150);
-            draw_button(g_btn_x, g_btn_y, g_btn_w, g_btn_h, false);
-            log_printf("[UI] User interaction received: [ OK ] button clicked.\n");
-        }
-
-        // Animate 45-degree Barber-Pole progress bar
-        if (g_bar_w > 0) {
-            draw_barber_pole(g_bar_x, g_bar_y, g_bar_w, g_bar_h, frame++);
-        }
-
-        // Smooth frame delay (~30 FPS) + pause instruction
-        delay_ms(33);
-        __asm__ volatile ("pause");
-    }
+    // 22. Hardware IRQs are enabled by the initial IRET to the selected thread.
+    scheduler_start();
 }
 

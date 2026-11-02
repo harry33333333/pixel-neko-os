@@ -5,6 +5,8 @@
 // Dedicated 16KB stack for Double Fault (#DF) handler via IST 1
 __attribute__((aligned(16)))
 static uint8_t df_ist1_stack[16384];
+__attribute__((aligned(16)))
+static uint8_t nmi_ist2_stack[16384];
 
 // Global TSS instance
 static tss64_t g_tss = {0};
@@ -45,6 +47,9 @@ void gdt_init(void) {
     uint64_t ist1_top = (uint64_t)df_ist1_stack + sizeof(df_ist1_stack);
     ist1_top &= ~0xFULL;
     g_tss.ist1 = ist1_top;
+    uint64_t ist2_top = (uint64_t)nmi_ist2_stack + sizeof(nmi_ist2_stack);
+    ist2_top &= ~0xFULL;
+    g_tss.ist2 = ist2_top;
     g_tss.iomap_base = sizeof(tss64_t);
 
     // 0: Null Descriptor
@@ -83,4 +88,5 @@ void gdt_init(void) {
     log_printf("[GDT] 64-bit GDT installed (CS=0x%02x, DS=0x%02x, TSS=0x%02x).\n",
                GDT_KERNEL_CODE_SEL, GDT_KERNEL_DATA_SEL, GDT_TSS_SEL);
     log_printf("[GDT] TSS active. Dedicated Double Fault IST1 Stack @ 0x%016llx\n", ist1_top);
+    log_printf("[GDT] Paranoid NMI IST2 Stack @ 0x%016llx\n", ist2_top);
 }

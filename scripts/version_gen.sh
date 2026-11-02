@@ -11,17 +11,23 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_NUM_FILE="${SCRIPT_DIR}/build_number.txt"
 
 COUNT=101
-if [ -d "${ROOT_DIR}/.git" ]; then
-    GIT_COUNT=$(git -C "${ROOT_DIR}" rev-list --count HEAD 2>/dev/null || echo "")
-    if [ -n "$GIT_COUNT" ] && [ "$GIT_COUNT" -gt 0 ]; then
-        COUNT=$((100 + GIT_COUNT))
+if [ -n "${PIXEL_NEKO_BUILD_NUMBER:-}" ]; then
+    # Milestone releases pin the build number so every CI rebuild produces the
+    # same tag and ISO filename.
+    COUNT="${PIXEL_NEKO_BUILD_NUMBER}"
+else
+    if [ -d "${ROOT_DIR}/.git" ]; then
+        GIT_COUNT=$(git -C "${ROOT_DIR}" rev-list --count HEAD 2>/dev/null || echo "")
+        if [ -n "$GIT_COUNT" ] && [ "$GIT_COUNT" -gt 0 ]; then
+            COUNT=$((100 + GIT_COUNT))
+        fi
     fi
-fi
 
-if [ -f "$BUILD_NUM_FILE" ]; then
-    SAVED_COUNT=$(cat "$BUILD_NUM_FILE" 2>/dev/null || echo "")
-    if [ -n "$SAVED_COUNT" ] && [ "$SAVED_COUNT" -ge "$COUNT" ]; then
-        COUNT=$((SAVED_COUNT + 1))
+    if [ -f "$BUILD_NUM_FILE" ]; then
+        SAVED_COUNT=$(cat "$BUILD_NUM_FILE" 2>/dev/null || echo "")
+        if [ -n "$SAVED_COUNT" ] && [ "$SAVED_COUNT" -ge "$COUNT" ]; then
+            COUNT=$((SAVED_COUNT + 1))
+        fi
     fi
 fi
 echo "$COUNT" > "$BUILD_NUM_FILE"
