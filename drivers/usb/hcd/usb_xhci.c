@@ -358,6 +358,11 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
 
     uint32_t transfer_type = length > 0 ?
         (direction == USB_DIR_IN ? 3u : 2u) : 0u;
+    uint32_t* ep0_output = (uint32_t*)(slot->output_context +
+        c->context_size * 2);
+    log_printf("[xHCI] EP0 before state=%u deq=0x%08x%08x producer=%u\n",
+               ep0_output[0] & 0x7, ep0_output[3], ep0_output[2],
+               slot->ep0_ring.producer);
     xhci_ring_push(c, &slot->ep0_ring, setup_phys, 8u,
                    (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
                    (1u << 6) | (1u << 4));
@@ -390,6 +395,9 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                    code, slot->slot_id);
         return -1;
     }
+    log_printf("[xHCI] EP0 after state=%u deq=0x%08x%08x producer=%u\n",
+               ep0_output[0] & 0x7, ep0_output[3], ep0_output[2],
+               slot->ep0_ring.producer);
     if (length > 0 && direction == USB_DIR_IN && data) {
         int residual = (int)(event.status & 0xFFFFFF);
         int actual = length - residual;
