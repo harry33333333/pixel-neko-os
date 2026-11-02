@@ -17,6 +17,7 @@
 #define PTE_PAT_4KB    (1ULL << 7)  // Page Attribute Table bit in 4KB PTE
 #define PTE_GLOBAL     (1ULL << 8)
 #define PTE_NX         (1ULL << 63) // No-Execute bit
+#define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL
 
 // Memory caching flags
 #define VMM_CACHE_DEFAULT 0

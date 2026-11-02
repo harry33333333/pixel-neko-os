@@ -69,32 +69,34 @@ bool vmm_virt_to_phys(pagetable_t pml4, virt_addr_t virt, phys_addr_t* phys) {
 
     uint64_t pml4e = pml4[pml4_idx];
     if (!(pml4e & PTE_PRESENT)) return false;
-    pagetable_t pdpt = (pagetable_t)phys_to_virt(pml4e & PAGE_MASK);
+    pagetable_t pdpt = (pagetable_t)phys_to_virt(pml4e & PTE_ADDR_MASK);
     if (!pdpt) return false;
 
     uint64_t pdpte = pdpt[pdpt_idx];
     if (!(pdpte & PTE_PRESENT)) return false;
     if (pdpte & PTE_LARGE_PAGE) {
-        *phys = (pdpte & ~((1ULL << 30) - 1)) | (virt & ((1ULL << 30) - 1));
+        *phys = (pdpte & PTE_ADDR_MASK & ~((1ULL << 30) - 1)) |
+                (virt & ((1ULL << 30) - 1));
         return true;
     }
 
-    pagetable_t pd = (pagetable_t)phys_to_virt(pdpte & PAGE_MASK);
+    pagetable_t pd = (pagetable_t)phys_to_virt(pdpte & PTE_ADDR_MASK);
     if (!pd) return false;
 
     uint64_t pde = pd[pd_idx];
     if (!(pde & PTE_PRESENT)) return false;
     if (pde & PTE_LARGE_PAGE) {
-        *phys = (pde & ~((1ULL << 21) - 1)) | (virt & ((1ULL << 21) - 1));
+        *phys = (pde & PTE_ADDR_MASK & ~((1ULL << 21) - 1)) |
+                (virt & ((1ULL << 21) - 1));
         return true;
     }
 
-    pagetable_t pt = (pagetable_t)phys_to_virt(pde & PAGE_MASK);
+    pagetable_t pt = (pagetable_t)phys_to_virt(pde & PTE_ADDR_MASK);
     if (!pt) return false;
 
     uint64_t pte = pt[pt_idx];
     if (!(pte & PTE_PRESENT)) return false;
-    *phys = (pte & PAGE_MASK) | (virt & 0xFFFULL);
+    *phys = (pte & PTE_ADDR_MASK) | (virt & 0xFFFULL);
     return true;
 }
 

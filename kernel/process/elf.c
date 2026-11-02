@@ -136,7 +136,13 @@ static bool load_segment(process_t* process, const uint8_t* image, size_t image_
         size_t page_left = PAGE_SIZE - (virt & 0xFFFULL);
         size_t chunk = phdr->p_filesz - copied;
         if (chunk > page_left) chunk = page_left;
-        memcpy(phys_to_virt(phys), image + phdr->p_offset + copied, chunk);
+        void* destination = phys_to_virt(phys);
+        if (!destination) {
+            log_printf("[ELF] Invalid physical mapping: virt=0x%016llx phys=0x%016llx\n",
+                       virt, (unsigned long long)phys);
+            return false;
+        }
+        memcpy(destination, image + phdr->p_offset + copied, chunk);
         copied += chunk;
     }
 
