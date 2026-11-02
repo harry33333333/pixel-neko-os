@@ -26,22 +26,10 @@ void usb_memcpy(void* destination, const void* source, size_t length) {
 }
 
 void usb_delay_ms(uint32_t milliseconds) {
-    for (uint32_t elapsed = 0; elapsed < milliseconds; elapsed++) {
-        uint8_t gate = inb(0x61);
-        outb(0x61, (uint8_t)(gate & ~1u));
-        outb(0x43, 0xB0);
-        outb(0x42, 0xA9);
-        outb(0x42, 0x04);
-        outb(0x61, (uint8_t)((inb(0x61) & ~1u) | 1u));
-
-        for (uint32_t spin = 0; spin < 1000; spin++) {
-            __asm__ volatile ("pause");
+    for (uint32_t ms = 0; ms < milliseconds; ms++) {
+        for (uint32_t us = 0; us < 1000; us++) {
+            __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
         }
-        for (uint32_t timeout = 0; timeout < 100000; timeout++) {
-            if (inb(0x61) & 0x20u) break;
-            __asm__ volatile ("pause");
-        }
-        outb(0x61, (uint8_t)(inb(0x61) & ~1u));
     }
 }
 

@@ -209,6 +209,26 @@ static void draw_barber_pole(int x, int y, int w, int h, int frame) {
     }
 }
 
+// Render real-time bring-up progress badge at screen bottom
+static void boot_progress_notify(const char* step_msg) {
+    if (!g_main_surface.framebuffer_virt) return;
+
+    uint32_t c_white = boot_framebuffer_make_color(255, 255, 255);
+    uint32_t c_dgray = boot_framebuffer_make_color(128, 128, 128);
+    uint32_t c_blue  = boot_framebuffer_make_color(0, 0, 128);
+
+    int badge_w = 480;
+    int badge_h = 24;
+    int badge_x = (int)(g_main_surface.width - badge_w) / 2;
+    int badge_y = (int)g_main_surface.height - 36;
+    if (badge_y < 10) badge_y = 10;
+
+    boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, badge_h, c_white);
+    boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, 1, c_dgray);
+    boot_framebuffer_fill_rect(badge_x, badge_y, 1, badge_h, c_dgray);
+    boot_framebuffer_draw_string(badge_x + 12, badge_y + 4, step_msg, c_blue, c_white);
+}
+
 // Draw a classic Windows 3.1 / Mac OS 9 style 3D modal window
 static void draw_welcome_window(void) {
     if (!g_main_surface.framebuffer_virt) return;
@@ -398,6 +418,7 @@ void kmain(void) {
 
             // Draw classic Mac OS 50% checkerboard background early
             boot_framebuffer_draw_checkerboard();
+            boot_progress_notify("Pixel Neko OS :: Framebuffer Ready");
             log_printf("[UI] Early Boot Framebuffer active & 50%% checkerboard rendered.\n");
         }
     } else {
@@ -405,23 +426,29 @@ void kmain(void) {
     }
 
     // 11. P2.2: Initialize Kernel Heap
+    boot_progress_notify("Pixel Neko OS :: [11/23] Initializing Heap...");
     kheap_init();
 
     // 12. P2.5: Initialize ACPI Subsystem (RSDP, RSDT/XSDT, MADT, MCFG)
+    boot_progress_notify("Pixel Neko OS :: [12/23] Parsing ACPI Tables...");
     acpi_init();
 
     // 13. P2.6: Initialize Modern Interrupt Subsystem (IMCR, Mask 8259, Local APIC, IOAPIC)
+    boot_progress_notify("Pixel Neko OS :: [13/23] Configuring APIC & Interrupts...");
     apic_init();
 
     // 14. P2.7: Initialize Unified 64-bit DMA Subsystem (ZONE_DMA / DMA32 / NORMAL)
+    boot_progress_notify("Pixel Neko OS :: [14/23] Initializing DMA Subsystem...");
     dma_init();
 
     // 15. P4a.1/P4a.2: Build the bus/device/driver tree and enumerate PCIe
+    boot_progress_notify("Pixel Neko OS :: [15/23] Enumerating PCI Bus...");
     device_model_init();
     bus_register("root", BUS_TYPE_ROOT);
     pci_scan_all();
 
     // 16. P4a.3: Initialize the unified input queue and PS/2 fallback devices
+    boot_progress_notify("Pixel Neko OS :: [16/23] Probing PS/2 & Input Devices...");
     input_manager_init();
     ps2_input_init();
     int bound_drivers = driver_probe_all();
@@ -430,6 +457,7 @@ void kmain(void) {
                pci_get_backend_name(), pci_get_device_count(), bound_drivers);
 
     // 17. P4b: Probe the full USB host-controller matrix and enumerate devices
+    boot_progress_notify("Pixel Neko OS :: [17/23] Initializing USB Controllers...");
     usb_init();
     log_printf("[P4B] USB controllers=%u devices=%u summary=%s HID(K=%d M=%d)\n",
                usb_get_hci_count(), usb_get_device_count(),
@@ -444,18 +472,23 @@ void kmain(void) {
     }
 
     // 19. P3.2: Enable native FPU/SSE state and initialize scheduler state
+    boot_progress_notify("Pixel Neko OS :: [19/23] Initializing Scheduler...");
     fpu_init();
     scheduler_init();
     process_subsystem_init();
 
     // 20. P3.3: Configure SYSCALL/SYSRET MSRs and GS-based per-CPU state
+    boot_progress_notify("Pixel Neko OS :: [20/23] Configuring SYSCALL & MSRs...");
     syscall_init();
 
     // 21. P3.5: Create the message queue and shared-memory test objects
+    boot_progress_notify("Pixel Neko OS :: [21/23] Initializing IPC Subsystem...");
     ipc_init();
 
     // 22. P3.1: Create Idle and two independent Ring 3 ELF processes
+    boot_progress_notify("Pixel Neko OS :: [22/23] Spawning User ELF Processes...");
     if (!process_create_idle()) {
+        boot_progress_notify("FATAL: Failed to create Idle thread!");
         log_printf("[P3 FATAL] Failed to create Idle thread.\n");
         for (;;) __asm__ volatile ("pause");
     }
@@ -466,6 +499,7 @@ void kmain(void) {
     process_t* init_process =
         process_create_user(user_elf, user_elf_size, "init", "init", NULL, NULL);
     if (!init_process) {
+        boot_progress_notify("FATAL: Failed to load init ELF!");
         log_printf("[P3 FATAL] Failed to load init ELF.\n");
         for (;;) __asm__ volatile ("pause");
     }
@@ -474,6 +508,7 @@ void kmain(void) {
         process_create_user(user_elf, user_elf_size, "ipc-echo", "init", "echo",
                             init_process);
     if (!echo_process) {
+        boot_progress_notify("FATAL: Failed to load IPC echo ELF!");
         log_printf("[P3 FATAL] Failed to load IPC echo ELF.\n");
         for (;;) __asm__ volatile ("pause");
     }
@@ -484,6 +519,7 @@ void kmain(void) {
     // 23. Draw Windows 3.1 / Mac OS 9 style welcome window with P4b metrics
     if (g_main_surface.framebuffer_virt) {
         draw_welcome_window();
+        boot_progress_notify("Pixel Neko OS :: Core Bring-up Complete (Ready)");
         log_printf("[UI] Welcome modal rendered successfully with full P4b status.\n");
     }
 

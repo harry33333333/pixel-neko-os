@@ -101,16 +101,23 @@ static void pci_ecam_write(uint8_t bus, uint8_t slot, uint8_t function,
 
 uint32_t pci_config_read(uint8_t bus, uint8_t slot,
                          uint8_t function, uint8_t offset) {
+    if (offset < 256 || !g_ecam_active) {
+        return pci_port_read(bus, slot, function, offset);
+    }
     return pci_ecam_read(bus, slot, function, offset);
 }
 
 void pci_config_write(uint8_t bus, uint8_t slot, uint8_t function,
                       uint8_t offset, uint32_t value) {
+    if (offset < 256 || !g_ecam_active) {
+        pci_port_write(bus, slot, function, offset, value);
+        return;
+    }
     pci_ecam_write(bus, slot, function, offset, value);
 }
 
 const char* pci_get_backend_name(void) {
-    return g_ecam_active ? "PCIe ECAM" : "PCI I/O CF8/CFC";
+    return g_ecam_active ? "PCI I/O CF8/CFC + PCIe ECAM" : "PCI I/O CF8/CFC";
 }
 
 bool pci_ecam_active(void) {

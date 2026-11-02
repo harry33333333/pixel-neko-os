@@ -284,8 +284,8 @@ void vmm_init(void) {
             struct limine_memmap_entry* e = memmap_request.response->entries[i];
             if (e->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
                 e->type == LIMINE_MEMMAP_ACPI_NVS ||
-                e->type == LIMINE_MEMMAP_RESERVED ||
-                e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+                e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
+                (e->type == LIMINE_MEMMAP_RESERVED && e->length <= 16 * 1024 * 1024)) {
                 
                 uint64_t start = e->base & ~0xFFFULL;
                 uint64_t end = (e->base + e->length + PAGE_SIZE - 1) & ~0xFFFULL;
