@@ -229,7 +229,8 @@ void device_tree_dump(void) {
     for (bus_t* bus = g_buses; bus; bus = bus->next) {
         log_printf("[BUS ] %s (%s): %u device(s)\n", bus->name,
                    bus->type == BUS_TYPE_PCI ? "PCIe/PCI" :
-                   (bus->type == BUS_TYPE_ISA ? "ISA" : "ROOT"),
+                   (bus->type == BUS_TYPE_ISA ? "ISA" :
+                    (bus->type == BUS_TYPE_USB ? "USB" : "ROOT")),
                    bus->device_count);
         for (device_t* device = g_devices; device; device = device->next) {
             if (device->bus != bus) continue;

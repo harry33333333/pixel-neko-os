@@ -1,219 +1,214 @@
-/*
- * Pixel Neko Next - USB Core Definitions and Subsystem Interface
- *
- * Derived from FreeBSD sys/dev/usb/usb_core.h
- * Copyright (c) 2008 Hans Petter Selasky <hselasky@FreeBSD.org>
- * Copyright (c) 1998, 2004 Lennart Augustsson <lennart@augustsson.net>
- * Copyright (c) 2026 Pixel Neko Project
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
- */
+#ifndef _USB_CORE_H
+#define _USB_CORE_H
 
-#ifndef USB_CORE_H
-#define USB_CORE_H
-
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include "pci.h"
 
-/* USB Device Speeds */
-#define USB_SPEED_UNKNOWN 0
-#define USB_SPEED_LOW     1  /* 1.5 Mbps */
-#define USB_SPEED_FULL    2  /* 12 Mbps */
-#define USB_SPEED_HIGH    3  /* 480 Mbps */
+#define USB_MAX_HCIS       8
+#define USB_MAX_DEVICES    32
+#define USB_MAX_ENDPOINTS  4
+#define USB_MAX_HUB_PORTS  15
 
-/* USB Descriptor Types */
-#define USB_DT_DEVICE        0x01
-#define USB_DT_CONFIG        0x02
-#define USB_DT_STRING        0x03
-#define USB_DT_INTERFACE     0x04
-#define USB_DT_ENDPOINT      0x05
-#define USB_DT_HID           0x21
-#define USB_DT_REPORT        0x22
-#define USB_DT_HUB           0x29
+#define USB_SPEED_UNKNOWN  0
+#define USB_SPEED_LOW      1
+#define USB_SPEED_FULL     2
+#define USB_SPEED_HIGH     3
+#define USB_SPEED_SUPER    4
 
-/* USB Request Types */
-#define USB_DIR_OUT          0x00
-#define USB_DIR_IN           0x80
-#define USB_RT_STANDARD      0x00
-#define USB_RT_CLASS         0x20
-#define USB_RT_VENDOR        0x40
-#define USB_RT_DEVICE        0x00
-#define USB_RT_INTERFACE     0x01
-#define USB_RT_ENDPOINT      0x02
-#define USB_RT_OTHER         0x03
+#define USB_HCI_KIND_UHCI  (1U << 0)
+#define USB_HCI_KIND_OHCI  (1U << 1)
+#define USB_HCI_KIND_EHCI  (1U << 2)
+#define USB_HCI_KIND_XHCI  (1U << 3)
 
-/* Standard USB Requests */
-#define USB_REQ_GET_STATUS        0x00
-#define USB_REQ_CLEAR_FEATURE     0x01
-#define USB_REQ_SET_FEATURE       0x03
-#define USB_REQ_SET_ADDRESS       0x05
-#define USB_REQ_GET_DESCRIPTOR    0x06
-#define USB_REQ_SET_DESCRIPTOR    0x07
-#define USB_REQ_GET_CONFIGURATION 0x08
-#define USB_REQ_SET_CONFIGURATION 0x09
-#define USB_REQ_GET_INTERFACE     0x0A
-#define USB_REQ_SET_INTERFACE     0x0B
+#define USB_DIR_OUT 0x00U
+#define USB_DIR_IN  0x80U
 
-/* Endpoint Attributes */
-#define USB_EP_TYPE_CONTROL     0x00
-#define USB_EP_TYPE_ISOCHRONOUS 0x01
-#define USB_EP_TYPE_BULK        0x02
-#define USB_EP_TYPE_INTERRUPT   0x03
+#define USB_RT_STANDARD  0x00U
+#define USB_RT_CLASS     0x20U
+#define USB_RT_VENDOR    0x40U
+#define USB_RT_DEVICE    0x00U
+#define USB_RT_INTERFACE 0x01U
+#define USB_RT_ENDPOINT  0x02U
+#define USB_RT_OTHER     0x03U
 
-#pragma pack(push, 1)
+#define USB_REQ_GET_STATUS        0x00U
+#define USB_REQ_CLEAR_FEATURE     0x01U
+#define USB_REQ_SET_FEATURE       0x03U
+#define USB_REQ_SET_ADDRESS       0x05U
+#define USB_REQ_GET_DESCRIPTOR    0x06U
+#define USB_REQ_SET_DESCRIPTOR    0x07U
+#define USB_REQ_GET_CONFIGURATION 0x08U
+#define USB_REQ_SET_CONFIGURATION 0x09U
+#define USB_REQ_GET_INTERFACE     0x0AU
+#define USB_REQ_SET_INTERFACE     0x0BU
 
-typedef struct {
-    unsigned char  bmRequestType;
-    unsigned char  bRequest;
-    unsigned short wValue;
-    unsigned short wIndex;
-    unsigned short wLength;
-} usb_setup_packet_t;
+#define USB_DT_DEVICE     0x01U
+#define USB_DT_CONFIG     0x02U
+#define USB_DT_STRING     0x03U
+#define USB_DT_INTERFACE  0x04U
+#define USB_DT_ENDPOINT   0x05U
+#define USB_DT_BOS        0x0FU
+#define USB_DT_HID        0x21U
+#define USB_DT_REPORT     0x22U
+#define USB_DT_HUB        0x29U
 
-typedef struct {
-    unsigned char  bLength;
-    unsigned char  bDescriptorType;
-    unsigned short bcdUSB;
-    unsigned char  bDeviceClass;
-    unsigned char  bDeviceSubClass;
-    unsigned char  bDeviceProtocol;
-    unsigned char  bMaxPacketSize0;
-    unsigned short idVendor;
-    unsigned short idProduct;
-    unsigned short bcdDevice;
-    unsigned char  iManufacturer;
-    unsigned char  iProduct;
-    unsigned char  iSerialNumber;
-    unsigned char  bNumConfigurations;
-} usb_device_desc_t;
+#define USB_CLASS_HID     0x03U
+#define USB_CLASS_HUB     0x09U
+#define USB_HID_SUBCLASS_BOOT 0x01U
+#define USB_HID_PROTOCOL_KBD  0x01U
+#define USB_HID_PROTOCOL_MOUSE 0x02U
+
+#define USB_EP_TYPE_CONTROL     0x00U
+#define USB_EP_TYPE_ISOCHRONOUS 0x01U
+#define USB_EP_TYPE_BULK        0x02U
+#define USB_EP_TYPE_INTERRUPT   0x03U
 
 typedef struct {
-    unsigned char  bLength;
-    unsigned char  bDescriptorType;
-    unsigned short wTotalLength;
-    unsigned char  bNumInterfaces;
-    unsigned char  bConfigurationValue;
-    unsigned char  iConfiguration;
-    unsigned char  bmAttributes;
-    unsigned char  bMaxPower;
-} usb_config_desc_t;
+    uint8_t bmRequestType;
+    uint8_t bRequest;
+    uint16_t wValue;
+    uint16_t wIndex;
+    uint16_t wLength;
+} __attribute__((packed)) usb_setup_packet_t;
 
 typedef struct {
-    unsigned char bLength;
-    unsigned char bDescriptorType;
-    unsigned char bInterfaceNumber;
-    unsigned char bAlternateSetting;
-    unsigned char bNumEndpoints;
-    unsigned char bInterfaceClass;
-    unsigned char bInterfaceSubClass;
-    unsigned char bInterfaceProtocol;
-    unsigned char iInterface;
-} usb_interface_desc_t;
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint16_t bcdUSB;
+    uint8_t bDeviceClass;
+    uint8_t bDeviceSubClass;
+    uint8_t bDeviceProtocol;
+    uint8_t bMaxPacketSize0;
+    uint16_t idVendor;
+    uint16_t idProduct;
+    uint16_t bcdDevice;
+    uint8_t iManufacturer;
+    uint8_t iProduct;
+    uint8_t iSerialNumber;
+    uint8_t bNumConfigurations;
+} __attribute__((packed)) usb_device_desc_t;
 
 typedef struct {
-    unsigned char  bLength;
-    unsigned char  bDescriptorType;
-    unsigned char  bEndpointAddress;
-    unsigned char  bmAttributes;
-    unsigned short wMaxPacketSize;
-    unsigned char  bInterval;
-} usb_endpoint_desc_t;
-
-#pragma pack(pop)
-
-#define USB_MAX_ENDPOINTS 8
-#define USB_MAX_DEVICES   16
-#define USB_MAX_HCIS      8
-
-#define USB_HCI_KIND_UHCI 1U
-#define USB_HCI_KIND_EHCI 2U
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint16_t wTotalLength;
+    uint8_t bNumInterfaces;
+    uint8_t bConfigurationValue;
+    uint8_t iConfiguration;
+    uint8_t bmAttributes;
+    uint8_t bMaxPower;
+} __attribute__((packed)) usb_config_desc_t;
 
 typedef struct {
-    unsigned char  address;
-    unsigned char  direction; /* USB_DIR_IN or USB_DIR_OUT */
-    unsigned char  type;      /* USB_EP_TYPE_* */
-    unsigned char  interval;
-    unsigned short max_packet;
-    unsigned char  toggle;
-    void*          hcd_priv;
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bInterfaceNumber;
+    uint8_t bAlternateSetting;
+    uint8_t bNumEndpoints;
+    uint8_t bInterfaceClass;
+    uint8_t bInterfaceSubClass;
+    uint8_t bInterfaceProtocol;
+    uint8_t iInterface;
+} __attribute__((packed)) usb_interface_desc_t;
+
+typedef struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bEndpointAddress;
+    uint8_t bmAttributes;
+    uint16_t wMaxPacketSize;
+    uint8_t bInterval;
+} __attribute__((packed)) usb_endpoint_desc_t;
+
+typedef struct {
+    uint8_t address;
+    uint8_t number;
+    uint8_t direction;
+    uint8_t type;
+    uint8_t interval;
+    uint16_t max_packet;
+    uint8_t toggle;
+    void* hcd_priv;
 } usb_endpoint_t;
 
-struct usb_device;
 struct usb_hci;
-
-typedef struct usb_device {
-    struct usb_hci*  hci;
-    unsigned char    address;
-    unsigned char    speed;        /* USB_SPEED_* */
-    unsigned char    port;         /* Port on root or hub */
-    unsigned char    parent_hub;   /* Address of parent hub (0 if root) */
-    unsigned char    parent_port;  /* 1-based port on parent hub */
-    unsigned char    hub_depth;
-    unsigned char    max_packet0;
-    unsigned char    config_value;
-    unsigned short   vendor;
-    unsigned short   product;
-    unsigned char    class_code;
-    unsigned char    subclass;
-    unsigned char    protocol;
-    unsigned char    interface_number;
-    unsigned char    interface_protocol;
-    int              endpoint_count;
-    usb_endpoint_t   endpoints[USB_MAX_ENDPOINTS];
-} usb_device_t;
+typedef struct usb_device usb_device_t;
 
 typedef struct usb_hci {
     const char* name;
-    unsigned int kind;
-    void*       priv;
-    int         supports_hubs;
-    int  (*control)(struct usb_hci* hci, usb_device_t* dev,
-                    const usb_setup_packet_t* setup, void* data, int len, int dir);
-    int  (*intr_in)(struct usb_hci* hci, usb_device_t* dev, usb_endpoint_t* ep,
-                    void* data, int len);
-    int  (*bulk)(struct usb_hci* hci, usb_device_t* dev, usb_endpoint_t* ep,
-                 void* data, int len, int dir);
-    int  (*port_reset)(struct usb_hci* hci, int port);
+    uint32_t kind;
+    void* priv;
+    uint8_t root_ports;
+    bool supports_hubs;
+    int (*control)(struct usb_hci* hci, usb_device_t* dev,
+                   const usb_setup_packet_t* setup,
+                   void* data, int length, int direction);
+    int (*intr_in)(struct usb_hci* hci, usb_device_t* dev,
+                   usb_endpoint_t* endpoint, void* data, int length);
+    int (*bulk)(struct usb_hci* hci, usb_device_t* dev,
+                usb_endpoint_t* endpoint, void* data, int length,
+                int direction);
+    int (*port_reset)(struct usb_hci* hci, uint8_t port);
     void (*device_release)(struct usb_hci* hci, usb_device_t* dev);
     void (*poll)(struct usb_hci* hci);
 } usb_hci_t;
 
+struct usb_device {
+    usb_hci_t* hci;
+    uint8_t address;
+    uint8_t speed;
+    uint8_t port;
+    uint8_t parent_hub_address;
+    uint8_t parent_port;
+    uint8_t hub_depth;
+    uint8_t max_packet0;
+    uint8_t configuration;
+    uint16_t vendor;
+    uint16_t product;
+    uint8_t class_code;
+    uint8_t subclass;
+    uint8_t protocol;
+    uint8_t interface_number;
+    uint8_t interface_subclass;
+    uint8_t interface_protocol;
+    uint8_t endpoint_count;
+    uint8_t configuration_value;
+    uint16_t route;
+    bool is_hub;
+    uint8_t hub_port_count;
+    uint16_t hub_ports_seen;
+    uint8_t child_address[USB_MAX_HUB_PORTS + 1];
+    usb_endpoint_t endpoints[USB_MAX_ENDPOINTS];
+    void* hcd_priv;
+};
+
 void usb_init(void);
 void usb_poll(void);
-int usb_firmware_legacy_active(void);
-const char* usb_host_controller_summary(void);
+void usb_delay_ms(uint32_t milliseconds);
 
 void usb_register_hci(usb_hci_t* hci);
 usb_device_t* usb_alloc_device(void);
 void usb_release_device(usb_device_t* dev);
+usb_device_t* usb_find_device_by_address(uint8_t address);
+usb_device_t* usb_find_child(usb_device_t* hub, uint8_t port);
 
-int usb_control_msg(usb_device_t* dev, int dir, unsigned char request,
-                    unsigned short value, unsigned short index,
-                    void* data, int len);
+int usb_control_msg(usb_device_t* dev, int direction, uint8_t request,
+                    uint16_t value, uint16_t index, void* data, int length);
+int usb_enumerate(usb_hci_t* hci, uint8_t port, uint8_t speed);
+int usb_enumerate_hub(usb_hci_t* hci, usb_device_t* hub,
+                      uint8_t port, uint8_t speed);
+void usb_disconnect_port(usb_hci_t* hci, uint8_t root_port);
+void usb_disconnect_child(usb_device_t* hub, uint8_t port);
 
-int usb_enumerate(usb_hci_t* hci, int port, int speed);
-int usb_enumerate_hub(usb_hci_t* hci, usb_device_t* hub, int port, int speed);
-void usb_disconnect_port(usb_hci_t* hci, int root_port);
+uint32_t usb_get_hci_count(void);
+uint32_t usb_get_device_count(void);
+uint32_t usb_get_controller_kinds(void);
+const char* usb_host_controller_summary(void);
+const char* usb_speed_name(uint8_t speed);
 
-void usb_memset(void* dst, unsigned char c, unsigned int n);
-void usb_memcpy(void* dst, const void* src, unsigned int n);
+void usb_memset(void* destination, uint8_t value, size_t length);
+void usb_memcpy(void* destination, const void* source, size_t length);
 
-#endif /* USB_CORE_H */
+#endif /* _USB_CORE_H */

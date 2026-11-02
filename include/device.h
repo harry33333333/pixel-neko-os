@@ -13,7 +13,8 @@
 typedef enum {
     BUS_TYPE_ROOT = 0,
     BUS_TYPE_PCI,
-    BUS_TYPE_ISA
+    BUS_TYPE_ISA,
+    BUS_TYPE_USB
 } bus_type_t;
 
 typedef enum {
