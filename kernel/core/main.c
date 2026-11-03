@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 // Global HHDM and memory limits
 hhdm_info_t g_hhdm = {0};
