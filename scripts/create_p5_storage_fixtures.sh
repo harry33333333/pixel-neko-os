@@ -31,6 +31,9 @@ copy_fat_test_file "${IMAGE_DIR}/p5-data.img" \
 
 create_fat_image "${IMAGE_DIR}/p5-format16.img" 64 16 P5FMT16
 create_fat_image "${IMAGE_DIR}/p5-format32.img" 512 32 P5FMT32
+sfdisk -d "${IMAGE_DIR}/p5-data.img"
+sfdisk -d "${IMAGE_DIR}/p5-format16.img"
+sfdisk -d "${IMAGE_DIR}/p5-format32.img"
 
 truncate -s 128M "${IMAGE_DIR}/p5-exfat.img"
 mkfs.exfat -n P5USB "${IMAGE_DIR}/p5-exfat.img"

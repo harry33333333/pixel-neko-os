@@ -228,6 +228,8 @@ static void scan_device(blkdev_t* dev) {
     uint8_t mbr[512];
     if (block_read(dev, 0, 1, mbr) != 0) return;
     bool has_signature = mbr[510] == 0x55 && mbr[511] == 0xAA;
+    log_printf("[PART] %s sector0 signature=%02x%02x type0=%02x\n",
+               dev->name, mbr[511], mbr[510], mbr[0x1BE + 4]);
     bool has_entry = false;
     if (has_signature) {
         for (int i = 0; i < 4; i++) {
