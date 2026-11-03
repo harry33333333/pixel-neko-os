@@ -68,7 +68,7 @@ static bool exfat_name_equal(const char* left, const char* right) {
 }
 
 static uint32_t checksum_rotate(uint32_t checksum, uint8_t value) {
-    return (checksum >> 1) | (checksum << 31);
+    return ((checksum >> 1) | (checksum << 31)) + value;
 }
 
 static bool verify_boot_region(exfat_fs_t* fs, uint64_t start_lba) {
