@@ -220,6 +220,12 @@ void enable_fpu(void) {
     cr0 &= ~(1ULL << 3);
     cr0 |=  (1ULL << 5);
     __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9);  // OSFXSR
+    cr4 |= (1ULL << 10); // OSXMMEXCPT
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
 }
 
 void audio_init(void) {
@@ -525,7 +531,7 @@ int audio_play_file(const char* filepath) {
         g_active_driver->silence_half(1);
     }
 
-    static unsigned char dec_temp_buf[16384];
+    static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     for (int pre = 0;
          pre < 32 && g_queue_bytes < AUDIO_DMA_HALF_BYTES && !g_eof_reached;
          pre++) {
@@ -551,7 +557,7 @@ int audio_play_file(const char* filepath) {
     }
 
     if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
-        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)];
+        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
         for (unsigned int i = 0; i < samples_needed; i++) {
             dma_copy_buf[i] = g_pcm_queue[g_queue_read_idx];
@@ -769,7 +775,7 @@ void audio_poll(void) {
     if (!audio_has_hardware() || !g_active_driver) return;
 
     int dec_count = 0;
-    static unsigned char dec_temp_buf[16384];
+    static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 16384) &&
            dec_count < 6) {
         dec_count++;
@@ -799,7 +805,7 @@ void audio_poll(void) {
 
     int half_needed = g_active_driver->poll_half_needed();
     if (half_needed >= 0) {
-        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)];
+        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
             unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
             for (unsigned int i = 0; i < samples_needed; i++) {

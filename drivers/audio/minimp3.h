@@ -18,11 +18,11 @@ typedef struct
     int frame_bytes, frame_offset, channels, hz, layer, bitrate_kbps;
 } mp3dec_frame_info_t;
 
-typedef struct
+typedef struct __attribute__((aligned(16)))
 {
-    float mdct_overlap[2][9*32], qmf_state[15*2*32];
+    float mdct_overlap[2][9*32] __attribute__((aligned(16))), qmf_state[15*2*32] __attribute__((aligned(16)));
     int reserv, free_format_bytes;
-    unsigned char header[4], reserv_buf[511];
+    unsigned char header[4], reserv_buf[512] __attribute__((aligned(16)));
 } mp3dec_t;
 
 #ifdef __cplusplus
@@ -260,13 +260,13 @@ typedef struct
     uint8_t preflag, scalefac_scale, count1_table, scfsi;
 } L3_gr_info_t;
 
-typedef struct
+typedef struct __attribute__((aligned(16)))
 {
     bs_t bs;
-    uint8_t maindata[MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES];
-    L3_gr_info_t gr_info[4];
-    float grbuf[2][576], scf[40], syn[18 + 15][2*32];
-    uint8_t ist_pos[2][39];
+    uint8_t maindata[MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES] __attribute__((aligned(16)));
+    L3_gr_info_t gr_info[4] __attribute__((aligned(16)));
+    float grbuf[2][576] __attribute__((aligned(16))), scf[40] __attribute__((aligned(16))), syn[18 + 15][2*32] __attribute__((aligned(16)));
+    uint8_t ist_pos[2][39] __attribute__((aligned(16)));
 } mp3dec_scratch_t;
 
 static void bs_init(bs_t *bs, const uint8_t *data, int bytes)
@@ -1746,7 +1746,7 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     int i = 0, igr, frame_size = 0, success = 1;
     const uint8_t *hdr;
     bs_t bs_frame[1];
-    static mp3dec_scratch_t scratch;
+    static mp3dec_scratch_t scratch __attribute__((aligned(16)));
 
     if (mp3_bytes > 4 && dec->header[0] == 0xff && hdr_compare(dec->header, mp3))
     {

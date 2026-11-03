@@ -5,8 +5,8 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 170
-PIXEL_NEKO_BUILD_SUFFIX ?= b
+PIXEL_NEKO_BUILD_NUMBER ?= 173
+PIXEL_NEKO_BUILD_SUFFIX ?= c
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -137,7 +137,7 @@ version:
 
 drivers/audio/mp3_dec.o: drivers/audio/mp3_dec.c
 	@mkdir -p $(dir $@)
-	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -c -o $@ $<
+	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -fno-tree-vectorize -mstackrealign -c -o $@ $<
 
 %.o: %.c
 	@mkdir -p $(dir $@)

@@ -28,6 +28,7 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "vfs.h"
 #include "cpu.h"
 #include "ui_compat.h"
+#include "part.h"
 
 extern void check_revert_timer(void);
 
@@ -138,6 +139,9 @@ static int resizing=0;
 static int rs_active=0, rs_bx=0, rs_by=0, rs_bw=0, rs_bh=0;
 static int power_confirm=0;
 static int power_cancel_pressed=0, power_ok_pressed=0;
+static int uninit_dialog_active=0;
+static int uninit_dialog_checked=0;
+static int uninit_ignore_pressed=0, uninit_init_pressed=0;
 
 static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* lb, int sel);
 
@@ -471,6 +475,33 @@ static void draw_power_dialog(unsigned char* v)
     font_draw_text(v,bx+32,by+3,"OK",15);
 }
 
+static void draw_uninit_disk_dialog(unsigned char* v)
+{
+    int dw = 260, dh = 86;
+    int dx = (screen_w - dw) / 2;
+    int dy = (screen_h - dh) / 2;
+
+    for(int y=dy;y<dy+dh;y++)for(int x=dx;x<dx+dw;x++)PUT_PIXEL(v, x, y, 8);
+    for(int y=dy+2;y<dy+dh-2;y++)for(int x=dx+2;x<dx+dw-2;x++)PUT_PIXEL(v, x, y, 7);
+    for(int x=dx+2;x<dx+dw-2;x++){PUT_PIXEL(v, x, dy+2, 15);PUT_PIXEL(v, x, dy+dh-3, 0);}
+    for(int y=dy+2;y<dy+dh-2;y++){PUT_PIXEL(v, dx+2, y, 15);PUT_PIXEL(v, dx+dw-3, y, 0);}
+    
+    font_draw_text(v, dx+26, dy+12, "Uninitialized Disk Detected", 0);
+    font_draw_text(v, dx+32, dy+28, "Initialize this drive now?", 0);
+
+    int cbx = dx + 20, oby = dy + 52;
+    for(int y=oby;y<oby+22;y++)for(int x=cbx;x<cbx+100;x++)PUT_PIXEL(v, x, y, uninit_ignore_pressed?0:7);
+    for(int x=cbx;x<cbx+100;x++){PUT_PIXEL(v, x, oby, uninit_ignore_pressed?0:15);PUT_PIXEL(v, x, oby+21, uninit_ignore_pressed?15:0);}
+    for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, cbx, y, uninit_ignore_pressed?0:15);PUT_PIXEL(v, cbx+99, y, uninit_ignore_pressed?15:0);}
+    font_draw_text(v, cbx+28, oby+3, "Ignore", uninit_ignore_pressed?15:0);
+
+    int obx = dx + 140;
+    for(int y=oby;y<oby+22;y++)for(int x=obx;x<obx+100;x++)PUT_PIXEL(v, x, y, uninit_init_pressed?0:7);
+    for(int x=obx;x<obx+100;x++){PUT_PIXEL(v, x, oby, uninit_init_pressed?0:15);PUT_PIXEL(v, x, oby+21, uninit_init_pressed?15:0);}
+    for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, obx, y, uninit_init_pressed?0:15);PUT_PIXEL(v, obx+99, y, uninit_init_pressed?15:0);}
+    font_draw_text(v, obx+18, oby+3, "Initialize", uninit_init_pressed?15:0);
+}
+
 static void draw_others(unsigned char* v, int dgw)
 {
     for (int i=0; i<11; i++) {
@@ -782,6 +813,13 @@ void wm_draw(unsigned char* v){
         }
         draw_all(v);
         draw_menubar(v);
+        if (!uninit_dialog_checked && !ui_install_mode_requested()) {
+            uninit_dialog_checked = 1;
+            if (part_get_uninit_disk() != NULL) {
+                uninit_dialog_active = 1;
+            }
+        }
+        if(uninit_dialog_active) { draw_uninit_disk_dialog(v); }
         if(power_confirm) {  draw_power_dialog(v); }
     }
     redraw=0;
@@ -931,6 +969,38 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     sys_shutdown();
                 }
             }else{redraw=1;}}
+        if(redraw) { need_mr=1; }
+        return;
+    }
+
+    if(uninit_dialog_active){
+        int dw = 260, dh = 86;
+        int dx = (screen_w - dw) / 2;
+        int dy = (screen_h - dh) / 2;
+        int cbx = dx + 20, obx = dx + 140, oby = dy + 52;
+
+        if(mb_press && mx>=cbx && mx<cbx+100 && my>=oby && my<oby+22){uninit_ignore_pressed=1;need_mr=1;}
+        if(mb_release && uninit_ignore_pressed){uninit_ignore_pressed=0;
+            if(mx>=cbx && mx<cbx+100 && my>=oby && my<oby+22){
+                part_clear_uninit_disk();
+                uninit_dialog_active=0;
+                redraw=1;
+            } else {redraw=1;}
+        }
+        if(mb_press && mx>=obx && mx<obx+100 && my>=oby && my<oby+22){uninit_init_pressed=1;need_mr=1;}
+        if(mb_release && uninit_init_pressed){uninit_init_pressed=0;
+            if(mx>=obx && mx<obx+100 && my>=oby && my<oby+22){
+                blkdev_t* d = part_get_uninit_disk();
+                if (d) {
+                    part_initialize_disk(d);
+                    part_clear_uninit_disk();
+                    vfs_init();
+                }
+                uninit_dialog_active=0;
+                redraw=1;
+                show_opened("Disk Initialized");
+            } else {redraw=1;}
+        }
         if(redraw) { need_mr=1; }
         return;
     }

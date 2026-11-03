@@ -33,4 +33,8 @@ void part_scan_all(void);
 partition_entry_t* part_get(int index);
 partition_entry_t* part_find_by_start(blkdev_t* dev, uint64_t start_lba);
 
+blkdev_t* part_get_uninit_disk(void);
+void part_clear_uninit_disk(void);
+void part_initialize_disk(blkdev_t* dev);
+
 #endif

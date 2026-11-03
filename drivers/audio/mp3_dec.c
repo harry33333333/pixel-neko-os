@@ -1,3 +1,4 @@
+#pragma GCC optimize ("no-tree-vectorize")
 #include "mp3_dec.h"
 #include "audio.h"
 #include "vfs.h"
@@ -6,7 +7,7 @@
 #define MINIMP3_NO_SIMD
 #include "minimp3.h"
 
-static mp3dec_t g_mp3d;
+static mp3dec_t g_mp3d __attribute__((aligned(16)));
 
 // MP3 (MPEG-1/2 Audio Layer III) Decoder
 
@@ -17,7 +18,7 @@ static unsigned int g_first_frame_pos = 0;
 static unsigned int g_cur_frame_idx = 0;
 static unsigned char g_vbr_toc[100];
 static int g_has_vbr_toc = 0;
-static unsigned char s_mp3_buf[16384];
+static unsigned char s_mp3_buf[16384] __attribute__((aligned(16)));
 static int s_mp3_buf_pos = 0;
 static int s_mp3_buf_len = 0;
 
@@ -183,7 +184,7 @@ static int find_first_frame(unsigned int search_start) {
     unsigned int max_search = search_start + 65536;
     if (max_search > g_mp3_stream.size) max_search = g_mp3_stream.size;
 
-    static unsigned char scan_buf[4096];
+    static unsigned char scan_buf[4096] __attribute__((aligned(16)));
     while (pos + 4 < max_search) {
         vfs_stream_seek(&g_mp3_stream, pos);
         int chunk = vfs_stream_read(&g_mp3_stream, scan_buf, sizeof(scan_buf));
@@ -200,13 +201,12 @@ static int find_first_frame(unsigned int search_start) {
                     g_mp3_info.channels = ch;
                     g_mp3_info.bitrate_kbps = kbps;
 
-                    unsigned char fbuf[128];
+                    unsigned char fbuf[256];
                     vfs_stream_seek(&g_mp3_stream, pos + (unsigned int)k);
-                    int r = vfs_stream_read(&g_mp3_stream, fbuf, 128);
+                    int r = vfs_stream_read(&g_mp3_stream, fbuf, sizeof(fbuf));
                     if (r >= 64) {
                         int xing_off = (ch == 2 && rate >= 32000) ? 36 : 21;
-                        if (pos + (unsigned int)k + (unsigned int)xing_off + 8 <
-                            g_mp3_stream.size) {
+                        if (xing_off + 8 <= r) {
                             const unsigned char* xp = fbuf + xing_off;
                             if ((xp[0] == 'X' && xp[1] == 'i' &&
                                  xp[2] == 'n' && xp[3] == 'g') ||
@@ -219,7 +219,7 @@ static int find_first_frame(unsigned int search_start) {
                                     ((unsigned int)xp[6] << 8) |
                                     (unsigned int)xp[7];
                                 int cur = 8;
-                                if (flags & 1U) {
+                                if ((flags & 1U) && cur + 4 <= r - xing_off) {
                                     g_mp3_info.total_frames =
                                         ((unsigned int)xp[cur] << 24) |
                                         ((unsigned int)xp[cur + 1] << 16) |
@@ -227,10 +227,10 @@ static int find_first_frame(unsigned int search_start) {
                                         (unsigned int)xp[cur + 3];
                                     cur += 4;
                                 }
-                                if (flags & 2U) {
+                                if ((flags & 2U) && cur + 4 <= r - xing_off) {
                                     cur += 4;
                                 }
-                                if (flags & 4U) {
+                                if ((flags & 4U) && cur + 100 <= r - xing_off) {
                                     for (int t = 0; t < 100; t++) {
                                         g_vbr_toc[t] = xp[cur + t];
                                     }
@@ -270,6 +270,7 @@ static int find_first_frame(unsigned int search_start) {
     return -1;
 }
 
+__attribute__((force_align_arg_pointer))
 int mp3_dec_open(const char* path, mp3_info_t* out_info) {
     mp3_dec_close();
 
@@ -320,6 +321,7 @@ int mp3_dec_open(const char* path, mp3_info_t* out_info) {
     return 0;
 }
 
+__attribute__((force_align_arg_pointer))
 int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
     if (!g_mp3_is_open) return -1;
 
@@ -350,7 +352,7 @@ int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
 
         mp3dec_frame_info_t info;
         info.frame_bytes = 0;
-        static short pcm_frame[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        static short pcm_frame[MINIMP3_MAX_SAMPLES_PER_FRAME] __attribute__((aligned(16)));
         int samples = mp3dec_decode_frame(
             &g_mp3d, s_mp3_buf + s_mp3_buf_pos, avail, pcm_frame, &info);
 
@@ -396,6 +398,7 @@ int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
     return 0;
 }
 
+__attribute__((force_align_arg_pointer))
 int mp3_dec_seek(unsigned int seconds) {
     if (!g_mp3_is_open) return -1;
     if (g_mp3_info.duration_s <= 0) return -1;
@@ -436,6 +439,7 @@ int mp3_dec_seek(unsigned int seconds) {
     return 0;
 }
 
+__attribute__((force_align_arg_pointer))
 void mp3_dec_close(void) {
     if (g_mp3_is_open) {
         vfs_stream_close(&g_mp3_stream);

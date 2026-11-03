@@ -276,42 +276,58 @@ static void scan_device(blkdev_t* dev) {
             }
         }
         if (blank_mbr) {
-            uint64_t start_lba = 2048;
-            uint64_t avail = dev->total_sectors - start_lba;
-            uint32_t part_sectors = avail > 0xFFFFFFFFull
-                                        ? 0xFFFFFFFFu
-                                        : (uint32_t)avail;
-            uint8_t sys_id = part_sectors >= 65536 ? 0x0C : 0x06;
-            part_fs_type_t fmt_type =
-                part_sectors >= 65536 ? PART_FS_FAT32 : PART_FS_FAT16;
-
-            memset(mbr, 0, sizeof(mbr));
-            uint8_t* p1 = mbr + 0x1BE;
-            p1[0] = 0x80;
-            p1[1] = 0x20;
-            p1[2] = 0x21;
-            p1[3] = 0x00;
-            p1[4] = sys_id;
-            p1[5] = 0xFE;
-            p1[6] = 0xFF;
-            p1[7] = 0xFF;
-            write_le32_part(p1 + 8, (uint32_t)start_lba);
-            write_le32_part(p1 + 12, part_sectors);
-            mbr[510] = 0x55;
-            mbr[511] = 0xAA;
-
-            if (block_write(dev, 0, 1, mbr) == 0) {
-                log_printf("[PART] Auto-initialized MBR on blank disk %s (%u sectors)\n",
-                           dev->name, part_sectors);
-                partition_entry_t check_fs;
-                memset(&check_fs, 0, sizeof(check_fs));
-                probe_filesystem(dev, start_lba, &check_fs);
-                if (!check_fs.is_supported) {
-                    (void)format_partition(dev, start_lba, part_sectors, fmt_type);
-                }
-                add_partition(dev, start_lba, part_sectors, sys_id, NULL);
+            log_printf("[PART] Disk %s is uninitialized, skipping automatic partition and format\n",
+                       dev->name);
+            if (!g_uninit_disk_dev) {
+                g_uninit_disk_dev = dev;
             }
+            return;
         }
+    }
+}
+
+static blkdev_t* g_uninit_disk_dev = NULL;
+
+blkdev_t* part_get_uninit_disk(void) {
+    return g_uninit_disk_dev;
+}
+
+void part_clear_uninit_disk(void) {
+    g_uninit_disk_dev = NULL;
+}
+
+void part_initialize_disk(blkdev_t* dev) {
+    if (!dev || dev->is_readonly || dev->total_sectors < 8192) return;
+    uint8_t mbr[512];
+    memset(mbr, 0, sizeof(mbr));
+    uint64_t start_lba = 2048;
+    uint64_t avail = dev->total_sectors - start_lba;
+    uint32_t part_sectors = avail > 0xFFFFFFFFull
+                                ? 0xFFFFFFFFu
+                                : (uint32_t)avail;
+    uint8_t sys_id = part_sectors >= 65536 ? 0x0C : 0x06;
+    part_fs_type_t fmt_type =
+        part_sectors >= 65536 ? PART_FS_FAT32 : PART_FS_FAT16;
+
+    uint8_t* p1 = mbr + 0x1BE;
+    p1[0] = 0x80;
+    p1[1] = 0x20;
+    p1[2] = 0x21;
+    p1[3] = 0x00;
+    p1[4] = sys_id;
+    p1[5] = 0xFE;
+    p1[6] = 0xFF;
+    p1[7] = 0xFF;
+    write_le32_part(p1 + 8, (uint32_t)start_lba);
+    write_le32_part(p1 + 12, part_sectors);
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+
+    if (block_write(dev, 0, 1, mbr) == 0) {
+        log_printf("[PART] User-initiated MBR initialization on disk %s (%u sectors)\n",
+                   dev->name, part_sectors);
+        (void)format_partition(dev, start_lba, part_sectors, fmt_type);
+        add_partition(dev, start_lba, part_sectors, sys_id, NULL);
     }
 }
 
