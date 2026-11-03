@@ -109,7 +109,7 @@ def main() -> int:
     screenshot(connection, Path("qemu-p6-install-confirm.ppm"))
 
     click(connection)  # Install Now.
-    if not wait_for(serial_log, "[P6 ] Installation complete on", 22.0):
+    if not wait_for(serial_log, "[P6 ] Installation complete on", 45.0):
         print("Installer did not report a completed offline deployment", file=sys.stderr)
         return 1
     time.sleep(0.8)

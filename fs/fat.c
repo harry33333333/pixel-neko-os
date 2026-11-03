@@ -953,6 +953,7 @@ struct lfn_slot {
 
 static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
                                const char* long_name, int is_dir) {
+    log_printf("[FAT ] Creating LFN entry %s\n", long_name);
     unsigned char short_name[8], short_ext[3];
     make_short_alias(vol, dir_cluster, long_name, short_name, short_ext);
     int name_length = str_len((char*)long_name);
@@ -1027,6 +1028,7 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
         }
     }
     if (!found) return -1;
+    log_printf("[FAT ] LFN slots reserved for %s\n", long_name);
 
     unsigned char checksum = calc_lfn_checksum(short_name);
     int physical = 0;
@@ -1099,6 +1101,7 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
     if (vol_read_sec(vol, sector, buffer) != 0) return -1;
     memcpy(&buffer[offset], entry, sizeof(entry));
     if (vol_write_sec(vol, sector, buffer) != 0) return -1;
+    log_printf("[FAT ] LFN entry committed %s\n", long_name);
     return 0;
 }
 
