@@ -160,16 +160,17 @@ static void build_fis(ahci_port_t* port, uint8_t command, uint64_t lba,
     fis[0] = 0x27;
     fis[1] = 0x80;
     fis[2] = command;
-    fis[3] = port->packet ? 0x01 : 0;
+    fis[3] = 0;
     fis[4] = (uint8_t)lba;
     fis[5] = (uint8_t)(lba >> 8);
     fis[6] = (uint8_t)(lba >> 16);
-    fis[7] = port->packet ? 0 : 1;
+    fis[7] = 0x40;
     fis[8] = (uint8_t)(lba >> 24);
     fis[9] = (uint8_t)(lba >> 32);
     fis[10] = (uint8_t)(lba >> 40);
     fis[12] = (uint8_t)count;
     fis[13] = (uint8_t)(count >> 8);
+    fis[15] = 0x02;
 }
 
 static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
@@ -182,7 +183,12 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
     memset(port->memory->command_list, 0, 1024);
     memset(port->memory->command_table, 0, sizeof(port->memory->command_table));
     build_fis(port, command, lba, count);
-    if (packet) memcpy(port->memory->command_table + 0x40, packet, 16);
+    if (packet) {
+        uint8_t* fis = port->memory->command_table;
+        fis[5] = (uint8_t)bytes;
+        fis[6] = (uint8_t)(bytes >> 8);
+        memcpy(port->memory->command_table + 0x40, packet, 16);
+    }
     if (write_data && bytes) {
         memcpy(port->memory->data, write_data, bytes);
     } else if (bytes) {
@@ -191,7 +197,7 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
 
     ahci_command_header_t* header =
         (ahci_command_header_t*)port->memory->command_list;
-    header->flags = (uint16_t)(5u | (1u << 7) |
+    header->flags = (uint16_t)(5u | (packet ? (1u << 7) : 0) |
                                ((bytes && write_data) ? (1u << 6) : 0) |
                                (packet ? (1u << 5) : 0));
     header->prdt_length = bytes ? 1 : 0;
