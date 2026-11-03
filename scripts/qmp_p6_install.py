@@ -125,9 +125,20 @@ def main() -> int:
     screenshot(connection, Path("qemu-p6-install-filesystem.ppm"))
 
     if choose_fat16:
-        click(connection, 100, 181)
+        option_x, option_y = 100, 181
+        move_relative(
+            connection,
+            option_x - next_x,
+            -(option_y - next_y),
+        )
+        click(connection)
         time.sleep(0.5)
-    click(connection)  # FAT32 -> confirmation.
+        move_relative(
+            connection,
+            next_x - option_x,
+            option_y - next_y,
+        )
+    click(connection)  # Filesystem -> confirmation.
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-confirm.ppm"))
 
