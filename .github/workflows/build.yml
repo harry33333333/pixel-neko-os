@@ -104,6 +104,7 @@ jobs:
           qemu-*-screen.ppm
           qemu-p6-install-*.ppm
           qemu-p6-disk-head.bin
+          qemu-p6-mbr-disk-head.bin
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact

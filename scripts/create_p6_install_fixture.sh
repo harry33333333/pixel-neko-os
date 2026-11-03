@@ -5,7 +5,9 @@ IMAGE_DIR="${1:-.p6-images}"
 mkdir -p "${IMAGE_DIR}"
 
 IMAGE="${IMAGE_DIR}/p6-target.img"
+MbrImage="${IMAGE_DIR}/p6-mbr.img"
 truncate -s 1G "${IMAGE}"
+truncate -s 512M "${MbrImage}"
 
 sfdisk --quiet --label gpt "${IMAGE}" <<'EOF'
 label: gpt
@@ -14,10 +16,19 @@ EOF
 
 mkfs.fat -F32 -n P6TARGET --offset=2048 "${IMAGE}"
 
+sfdisk --quiet --label dos "${MbrImage}" <<'EOF'
+label: dos
+start=2048, size=1046527, type=0c, bootable
+EOF
+mkfs.fat -F32 -n P6MBR --offset=2048 "${MbrImage}"
+
 MARKER="$(mktemp)"
 trap 'rm -f "${MARKER}"' EXIT
 printf 'MUST-BE-ERASED-BY-INSTALLER\n' > "${MARKER}"
 mcopy -o -i "${IMAGE}@@1048576" "${MARKER}" ::OLD.TXT
+mcopy -o -i "${MbrImage}@@1048576" "${MARKER}" ::OLD.TXT
 
 sfdisk -d "${IMAGE}"
 mdir -i "${IMAGE}@@1048576" ::/
+sfdisk -d "${MbrImage}"
+mdir -i "${MbrImage}@@1048576" ::/

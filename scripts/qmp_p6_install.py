@@ -132,6 +132,10 @@ def main() -> int:
         return 1
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-screen.ppm"), allow_sparse=True)
+    try:
+        connection.sendall(b'{"execute":"quit"}\n')
+    except OSError:
+        pass
     connection.close()
     return 0
 

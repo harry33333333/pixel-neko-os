@@ -92,6 +92,19 @@ run_mode() {
                 -boot order=d
             )
             ;;
+        p6-mbr)
+            if [ ! -f ".p6-images/p6-mbr.img" ]; then
+                echo "P6 MBR installation fixture is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6bootcd,format=raw,readonly=on,file=${ISO}"
+                -device ide-cd,drive=p6bootcd,bus=ide.0
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-mbr.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=d
+            )
+            ;;
         p6-disk)
             if [ ! -f ".p6-images/p6-target.img" ]; then
                 echo "P6 installed disk fixture is missing" >&2
@@ -103,13 +116,13 @@ run_mode() {
                 -boot order=c
             )
             ;;
-        p6-disk-official)
-            if [ ! -f ".p6-images/p6-official.img" ]; then
-                echo "Official Limine comparison disk is missing" >&2
+        p6-disk-mbr)
+            if [ ! -f ".p6-images/p6-mbr.img" ]; then
+                echo "P6 installed MBR disk is missing" >&2
                 return 2
             fi
             boot_args=(
-                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-official.img"
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-mbr.img"
                 -device ide-hd,drive=p6target,bus=ide.1
                 -boot order=c
             )
@@ -122,7 +135,8 @@ run_mode() {
 
     rm -f "${log}" "${console}" "${qmp}"
     local timeout_seconds=28
-    if [ "${mode}" = "p6-install" ]; then
+    if [ "${mode}" = "p6-install" ] ||
+       [ "${mode}" = "p6-install-mbr" ]; then
         timeout_seconds=65
     fi
     set +e
@@ -141,13 +155,8 @@ run_mode() {
     local qemu_pid=$!
     set -e
 
-    if [ "${mode}" = "p6-disk-bios" ] ||
-       [ "${mode}" = "p6-disk-official" ]; then
-        python3 scripts/qmp_screenshot.py "${qmp}" \
-            "qemu-${mode}-screen.ppm" 8 &
-    fi
-
-    if [ "${mode}" = "p6-install" ]; then
+    if [ "${mode}" = "p6-install" ] ||
+       [ "${mode}" = "p6-install-mbr" ]; then
         if ! python3 scripts/qmp_boot_menu.py "${qmp}"; then
             echo "Could not select the Limine graphical installer entry" >&2
             kill "${qemu_pid}" 2>/dev/null || true
@@ -157,7 +166,8 @@ run_mode() {
     fi
 
     for _ in $(seq 1 300); do
-        if [ "${mode}" = "p6-install" ]; then
+        if [ "${mode}" = "p6-install" ] ||
+           [ "${mode}" = "p6-install-mbr" ]; then
             if grep -q "\[P6 \] Graphical installer mode active" "${log}" 2>/dev/null; then
                 if ! python3 scripts/qmp_p6_install.py "${qmp}" "${log}"; then
                     echo "P6 graphical installation automation failed" >&2
@@ -211,7 +221,9 @@ run_mode() {
          [ "${mode}" = "hub" ] || [ "${mode}" = "generic" ] ||
          [ "${mode}" = "p5-ehci" ] || [ "${mode}" = "p5-xhci-hs" ] ||
          [ "${mode}" = "p5" ] || [ "${mode}" = "p6-live" ] ||
-         [ "${mode}" = "p6-install" ] || [ "${mode}" = "p6-disk-uefi" ] ||
+         [ "${mode}" = "p6-install" ] ||
+         [ "${mode}" = "p6-install-mbr" ] ||
+         [ "${mode}" = "p6-disk-uefi" ] ||
          [ "${mode}" = "usb-modern" ]; } &&
        ! grep -q "PCI backend=.*PCIe ECAM" "${log}"; then
         echo "UEFI Q35 run did not use PCIe ECAM" >&2
@@ -221,7 +233,7 @@ run_mode() {
     if { [ "${mode}" = "bios" ] || [ "${mode}" = "ohci" ] ||
          [ "${mode}" = "usb-legacy" ] ||
          [ "${mode}" = "p6-disk-bios" ] ||
-         [ "${mode}" = "p6-disk-official" ]; } &&
+         [ "${mode}" = "p6-disk-mbr" ]; } &&
        ! grep -q "PCI backend=.*CF8/CFC" "${log}"; then
         echo "Legacy run did not use CF8/CFC configuration space" >&2
         tail -n 250 "${log}" >&2
@@ -272,7 +284,8 @@ run_mode() {
         tail -n 350 "${log}" >&2
         return 1
     fi
-    if [ "${mode}" = "p6-install" ]; then
+    if [ "${mode}" = "p6-install" ] ||
+       [ "${mode}" = "p6-install-mbr" ]; then
         if ! grep -q "\[P6 \] Installer scan found [1-9]" "${log}" ||
            ! grep -q "\[P6 \] Installer target selected" "${log}" ||
            ! grep -q "\[P6 \] Limine BIOS deployed" "${log}" ||
@@ -284,7 +297,7 @@ run_mode() {
     elif [ "${mode}" = "p6-live" ] ||
          [ "${mode}" = "p6-disk-uefi" ] ||
          [ "${mode}" = "p6-disk-bios" ] ||
-         [ "${mode}" = "p6-disk-official" ]; then
+         [ "${mode}" = "p6-disk-mbr" ]; then
         if ! grep -q "\[P6 \] Full desktop, splash and nine applications ready" "${log}"; then
             echo "P6 full desktop was not reached" >&2
             tail -n 350 "${log}" >&2
@@ -306,6 +319,20 @@ selected_mode() {
         *",${wanted},"*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+verify_p6_disk() {
+    local image="$1"
+    local label="$2"
+    mcopy -o -i "${image}@@1048576" \
+        "::/boot/limine/limine-bios.sys" p6-deployed-limine.sys
+    if ! cmp -s boot/limine/limine-bios.sys p6-deployed-limine.sys; then
+        echo "Installed limine-bios.sys does not match the source payload" >&2
+        exit 1
+    fi
+    dd if="${image}" of="qemu-${label}-disk-head.bin" \
+        bs=512 count=256 status=none
+    mdir -i "${image}@@1048576" ::/boot/limine
 }
 
 if selected_mode uefi; then
@@ -381,23 +408,14 @@ run_mode p6-install q35 p6 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
     -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
-mcopy -o -i ".p6-images/p6-target.img@@1048576" \
-    "::/boot/limine/limine-bios.sys" p6-deployed-limine.sys
-if ! cmp -s boot/limine/limine-bios.sys p6-deployed-limine.sys; then
-    echo "Installed limine-bios.sys does not match the source payload" >&2
-    exit 1
+verify_p6_disk .p6-images/p6-target.img p6
 fi
-dd if=.p6-images/p6-target.img of=qemu-p6-disk-head.bin \
-    bs=512 count=256 status=none
-mdir -i ".p6-images/p6-target.img@@1048576" ::/boot/limine
-cp .p6-images/p6-target.img .p6-images/p6-official.img
-./boot/limine/limine bios-install .p6-images/p6-official.img
-fi
-if selected_mode p6-disk-official; then
-run_mode p6-disk-official pc p6-disk-official \
-    -device piix3-usb-uhci,id=uhci \
-    -device usb-kbd,bus=uhci.0,id=usb-kbd \
-    -device usb-mouse,bus=uhci.0,id=usb-mouse
+if selected_mode p6-install-mbr; then
+run_mode p6-install-mbr q35 p6-mbr -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
+verify_p6_disk .p6-images/p6-mbr.img p6-mbr
 fi
 if selected_mode p6-disk-uefi; then
 run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
@@ -407,6 +425,12 @@ run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
 fi
 if selected_mode p6-disk-bios; then
 run_mode p6-disk-bios pc p6-disk \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,id=usb-kbd \
+    -device usb-mouse,bus=uhci.0,id=usb-mouse
+fi
+if selected_mode p6-disk-mbr; then
+run_mode p6-disk-mbr pc p6-disk-mbr \
     -device piix3-usb-uhci,id=uhci \
     -device usb-kbd,bus=uhci.0,id=usb-kbd \
     -device usb-mouse,bus=uhci.0,id=usb-mouse
