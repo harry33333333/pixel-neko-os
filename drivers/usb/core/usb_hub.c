@@ -43,6 +43,14 @@ static void hub_clear_changes(usb_device_t* hub, uint8_t port,
         hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
                     HUB_FEATURE_C_ENABLE, port, NULL, 0);
     }
+    if (changes & (1u << 2)) { /* C_PORT_SUSPEND */
+        hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
+                    18, port, NULL, 0);
+    }
+    if (changes & (1u << 3)) { /* C_PORT_OVER_CURRENT */
+        hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
+                    19, port, NULL, 0);
+    }
     if (changes & HUB_C_PORT_RESET) {
         hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
                     HUB_FEATURE_C_RESET, port, NULL, 0);
@@ -50,9 +58,9 @@ static void hub_clear_changes(usb_device_t* hub, uint8_t port,
 }
 
 static uint8_t hub_port_speed(usb_device_t* hub, uint16_t status) {
+    if (hub->speed == USB_SPEED_SUPER) return USB_SPEED_SUPER;
     if (status & HUB_PORT_LOW_SPEED) return USB_SPEED_LOW;
     if (status & HUB_PORT_HIGH_SPEED) return USB_SPEED_HIGH;
-    if (hub->speed == USB_SPEED_SUPER) return USB_SPEED_SUPER;
     return USB_SPEED_FULL;
 }
 
@@ -82,7 +90,7 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
 
     log_printf("[HUB ] Device connected: hub=%u port=%u status=0x%04x\n",
                hub->address, port, status);
-    for (int debounce = 0; debounce < 10; debounce++) {
+    for (int debounce = 0; debounce < 5; debounce++) {
         usb_delay_ms(10);
         uint16_t next_status = 0;
         if (hub_get_port_status(hub, port, &next_status, NULL) != 0 ||
@@ -93,7 +101,7 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
 
     hub_request(hub, USB_DIR_OUT, USB_REQ_SET_FEATURE,
                 HUB_FEATURE_PORT_RESET, port, NULL, 0);
-    usb_delay_ms(20);
+    usb_delay_ms(50);
     for (int timeout = 0; timeout < 100; timeout++) {
         if (hub_get_port_status(hub, port, &status, &change) != 0) return;
         if (!(status & HUB_PORT_RESET)) break;
@@ -124,11 +132,21 @@ int usb_hub_attach(usb_device_t* hub) {
 
     uint8_t descriptor[16];
     memset(descriptor, 0, sizeof(descriptor));
-    int result = usb_control_msg(
-        hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
-        USB_REQ_GET_DESCRIPTOR, USB_DT_HUB << 8, 0,
-        descriptor, sizeof(descriptor));
-    if (result < 7 || descriptor[1] != USB_DT_HUB) {
+    int result = -1;
+    if (hub->speed == USB_SPEED_SUPER) {
+        result = usb_control_msg(
+            hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
+            USB_REQ_GET_DESCRIPTOR, USB_DT_SS_HUB << 8, 0,
+            descriptor, sizeof(descriptor));
+    }
+    if (result < 7 || (descriptor[1] != USB_DT_HUB && descriptor[1] != USB_DT_SS_HUB)) {
+        memset(descriptor, 0, sizeof(descriptor));
+        result = usb_control_msg(
+            hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
+            USB_REQ_GET_DESCRIPTOR, USB_DT_HUB << 8, 0,
+            descriptor, sizeof(descriptor));
+    }
+    if (result < 7 || (descriptor[1] != USB_DT_HUB && descriptor[1] != USB_DT_SS_HUB)) {
         log_printf("[HUB ] Invalid hub descriptor (result=%d)\n", result);
         return -1;
     }

@@ -6,7 +6,7 @@
 #include "string.h"
 
 #define EHCI_MAX_CONTROLLERS 4
-#define EHCI_MAX_INTR_SLOTS 6
+#define EHCI_MAX_INTR_SLOTS  12
 
 typedef struct {
     volatile uint32_t next;
@@ -30,6 +30,7 @@ typedef struct {
     bool used;
     usb_device_t* device;
     usb_endpoint_t* endpoint;
+    int transfer_length;
     ehci_qh_t qh;
     ehci_qtd_t qtd;
     ehci_qtd_t dummy;
@@ -82,9 +83,11 @@ static void ehci_release(usb_hci_t* hci, usb_device_t* device);
 #define EHCI_PORT_PEC       (1u << 3)
 #define EHCI_PORT_OVER      (1u << 5)
 #define EHCI_PORT_RESET     (1u << 8)
+#define EHCI_PORT_LINE_MASK (3u << 10)
+#define EHCI_PORT_LINE_LOW  (1u << 10)
 #define EHCI_PORT_POWER     (1u << 12)
 #define EHCI_PORT_OWNER     (1u << 13)
-#define EHCI_PORT_RWC       (EHCI_PORT_CSC | EHCI_PORT_PEC | (1u << 5))
+#define EHCI_PORT_RWC       (EHCI_PORT_CSC | EHCI_PORT_PEC | EHCI_PORT_OVER)
 
 #define EHCI_QTD_ACTIVE     (1u << 7)
 #define EHCI_QTD_HALTED     (1u << 6)
@@ -133,6 +136,40 @@ static int ehci_qtd_complete(const ehci_qtd_t* qtd) {
            !(qtd->token & EHCI_QTD_HALTED);
 }
 
+static void ehci_program_qh_caps(ehci_qh_t* qh, usb_device_t* device,
+                                 uint8_t ep_num, uint16_t max_pkt,
+                                 bool is_control, bool is_intr) {
+    uint32_t speed = device->speed == USB_SPEED_HIGH ? 2u :
+                     (device->speed == USB_SPEED_LOW ? 1u : 0u);
+    uint32_t c_flag = (device->speed != USB_SPEED_HIGH && is_control)
+                          ? (1u << 27)
+                          : 0u;
+    uint32_t rl = is_intr ? 0u : (8u << 28);
+    /* Bit 14 (DTC): use data toggle from qTD */
+    qh->epchar = (device->address & 0x7Fu) |
+                 ((uint32_t)(ep_num & 0x0Fu) << 8) |
+                 (speed << 12) |
+                 (1u << 14) |
+                 ((uint32_t)(max_pkt & 0x7FFu) << 16) |
+                 c_flag | rl;
+
+    if (device->speed == USB_SPEED_HIGH) {
+        qh->epcap = (1u << 30) | (is_intr ? 0x01u : 0x00u);
+    } else {
+        uint8_t hub_addr = device->hs_hub_address ? device->hs_hub_address
+                                                  : device->parent_hub_address;
+        uint8_t port_num = device->hs_port_number ? device->hs_port_number
+                                                  : device->parent_port;
+        uint32_t split = ((uint32_t)(hub_addr & 0x7Fu) << 16) |
+                         ((uint32_t)(port_num & 0x7Fu) << 23);
+        if (is_intr) {
+            qh->epcap = (1u << 30) | split | (0x1Cu << 8) | 0x01u;
+        } else {
+            qh->epcap = (1u << 30) | split;
+        }
+    }
+}
+
 static void ehci_rebuild_periodic(ehci_controller_t* c) {
     ehci_qh_t* first = NULL;
     ehci_qh_t* previous = NULL;
@@ -146,6 +183,19 @@ static void ehci_rebuild_periodic(ehci_controller_t* c) {
     }
     uint32_t head = first ? ehci_qh_link(c, first) : 1;
     for (int i = 0; i < 1024; i++) c->mem->periodic[i] = head;
+    dma_sync_for_device(&c->dma);
+}
+
+static void ehci_doorbell_wait(ehci_controller_t* c) {
+    uint32_t cmd = ehci_reg_read(c, c->operational);
+    ehci_reg_write(c, c->operational, cmd | EHCI_CMD_IAAD);
+    for (int timeout = 0; timeout < 20; timeout++) {
+        if (ehci_reg_read(c, c->operational + 0x04) & EHCI_STS_IAAD) {
+            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
+            break;
+        }
+        usb_delay_ms(1);
+    }
 }
 
 static int ehci_control(usb_hci_t* hci, usb_device_t* device,
@@ -166,22 +216,19 @@ static int ehci_control(usb_hci_t* hci, usb_device_t* device,
                       c->mem->data_buffer, length, true);
         c->mem->setup_qtd.next = ehci_phys(c, &c->mem->data_qtd);
         c->mem->data_qtd.next = ehci_phys(c, &c->mem->status_qtd);
+        c->mem->data_qtd.alt_next = ehci_phys(c, &c->mem->status_qtd);
     } else {
         c->mem->setup_qtd.next = ehci_phys(c, &c->mem->status_qtd);
     }
     ehci_qtd_init(c, &c->mem->status_qtd,
-                  direction == USB_DIR_IN ? EHCI_QTD_PID_OUT : EHCI_QTD_PID_IN,
+                  (length > 0 && direction == USB_DIR_IN) ? EHCI_QTD_PID_OUT : EHCI_QTD_PID_IN,
                   NULL, 0, true);
 
     ehci_qh_t* qh = &c->mem->control_qh;
     memset(qh, 0, sizeof(*qh));
-    uint32_t speed = device->speed == USB_SPEED_HIGH ? 2u :
-                     (device->speed == USB_SPEED_LOW ? 1u : 0u);
-    qh->epchar = (device->address & 0x7F) | (speed << 12) |
-                 ((uint32_t)(device->max_packet0 & 0x7FF) << 16) |
-                 (1u << 27) | (1u << 30);
-    uint32_t cmask = device->speed == USB_SPEED_HIGH ? 0 : 0xE0u;
-    qh->epcap = (1u << 30) | (cmask & 0xFF);
+    ehci_program_qh_caps(qh, device, 0,
+                         device->max_packet0 ? device->max_packet0 : 8,
+                         true, false);
     qh->next_qtd = ehci_phys(c, &c->mem->setup_qtd);
     qh->alt_qtd = 1;
     qh->token = 0;
@@ -192,7 +239,11 @@ static int ehci_control(usb_hci_t* hci, usb_device_t* device,
     int result = -1;
     for (int timeout = 0; timeout < 500; timeout++) {
         dma_sync_for_cpu(&c->dma);
-        if (c->mem->status_qtd.token & EHCI_QTD_HALTED) break;
+        if ((c->mem->setup_qtd.token & EHCI_QTD_HALTED) ||
+            (length > 0 && (c->mem->data_qtd.token & EHCI_QTD_HALTED)) ||
+            (c->mem->status_qtd.token & EHCI_QTD_HALTED)) {
+            break;
+        }
         if (ehci_qtd_complete(&c->mem->status_qtd)) {
             result = 0;
             break;
@@ -201,15 +252,9 @@ static int ehci_control(usb_hci_t* hci, usb_device_t* device,
     }
 
     c->mem->async_qh.head = ehci_qh_link(c, &c->mem->async_qh);
-    ehci_reg_write(c, c->operational + 0x08, EHCI_CMD_IAAD);
-    for (int timeout = 0; timeout < 20; timeout++) {
-        if (ehci_reg_read(c, c->operational + 0x04) & EHCI_STS_IAAD) {
-            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
-            break;
-        }
-        usb_delay_ms(1);
-    }
     dma_sync_for_device(&c->dma);
+    ehci_doorbell_wait(c);
+
     if (result != 0) {
         log_printf("[EHCI] control failed setup=0x%08x data=0x%08x status=0x%08x\n",
                    c->mem->setup_qtd.token, c->mem->data_qtd.token,
@@ -232,6 +277,11 @@ static int ehci_intr_in(usb_hci_t* hci, usb_device_t* device,
                         usb_endpoint_t* endpoint, void* data, int length) {
     ehci_controller_t* c = hci->priv;
     if (!c || !device || !endpoint || !data || length <= 0) return -1;
+    int transfer_length = length > 64 ? 64 : length;
+    if (endpoint->max_packet > 0 && transfer_length > (int)endpoint->max_packet) {
+        transfer_length = (int)endpoint->max_packet;
+    }
+
     ehci_intr_t* slot = endpoint->hcd_priv;
     if (!slot || !slot->used) {
         for (int i = 0; i < EHCI_MAX_INTR_SLOTS; i++) {
@@ -245,41 +295,38 @@ static int ehci_intr_in(usb_hci_t* hci, usb_device_t* device,
         slot->used = true;
         slot->device = device;
         slot->endpoint = endpoint;
+        slot->transfer_length = transfer_length;
         endpoint->hcd_priv = slot;
 
-        uint32_t speed = device->speed == USB_SPEED_HIGH ? 2u :
-                         (device->speed == USB_SPEED_LOW ? 1u : 0u);
-        slot->qh.epchar = (device->address & 0x7F) |
-                          ((uint32_t)endpoint->number << 8) |
-                          (speed << 12) |
-                          ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
-                          (1u << 27);
-        uint32_t cmask = device->speed == USB_SPEED_HIGH ? 0 : 0xE0u;
-        slot->qh.epcap = (1u << 30) | ((uint32_t)0x08 << 8) | cmask;
+        ehci_program_qh_caps(&slot->qh, device, endpoint->number,
+                             endpoint->max_packet ? endpoint->max_packet : 8,
+                             false, true);
         memset(&slot->dummy, 0, sizeof(slot->dummy));
         slot->dummy.next = 1;
         slot->dummy.alt_next = 1;
         ehci_qtd_init(c, &slot->qtd, EHCI_QTD_PID_IN, slot->buffer,
-                      length > 64 ? 64 : length, false);
+                      transfer_length, endpoint->toggle != 0);
         slot->qtd.next = ehci_phys(c, &slot->dummy);
         slot->qh.next_qtd = ehci_phys(c, &slot->qtd);
         slot->qh.alt_qtd = 1;
         slot->qh.token = 0;
         ehci_rebuild_periodic(c);
+        return 0;
     }
 
     dma_sync_for_cpu(&c->dma);
     if (slot->qtd.token & EHCI_QTD_ACTIVE) return 0;
     if (slot->qtd.token & EHCI_QTD_HALTED) {
         endpoint->hcd_priv = NULL;
-        ehci_release(hci, device);
+        slot->used = false;
+        ehci_rebuild_periodic(c);
         return -1;
     }
-    int transfer_length = length > 64 ? 64 : length;
     int remaining = (int)((slot->qtd.token >> 16) & 0x7FFF);
-    int actual = transfer_length - remaining;
+    int actual = slot->transfer_length - remaining;
     if (actual < 0) actual = 0;
     if (actual > length) actual = length;
+    if (actual > 64) actual = 64;
     if (actual > 0) memcpy(data, slot->buffer, (size_t)actual);
     endpoint->toggle ^= 1;
 
@@ -287,7 +334,7 @@ static int ehci_intr_in(usb_hci_t* hci, usb_device_t* device,
     slot->dummy.next = 1;
     slot->dummy.alt_next = 1;
     ehci_qtd_init(c, &slot->qtd, EHCI_QTD_PID_IN, slot->buffer,
-                  transfer_length, endpoint->toggle);
+                  slot->transfer_length, endpoint->toggle != 0);
     slot->qtd.next = ehci_phys(c, &slot->dummy);
     slot->qh.next_qtd = ehci_phys(c, &slot->qtd);
     slot->qh.alt_qtd = 1;
@@ -310,7 +357,7 @@ static int ehci_bulk(usb_hci_t* hci, usb_device_t* device,
     ehci_qtd_init(c, &c->mem->bulk_qtd,
                   direction == USB_DIR_IN ? EHCI_QTD_PID_IN :
                                             EHCI_QTD_PID_OUT,
-                  c->mem->data_buffer, length, endpoint->toggle);
+                  c->mem->data_buffer, length, endpoint->toggle != 0);
     memset(&c->mem->bulk_dummy, 0, sizeof(c->mem->bulk_dummy));
     c->mem->bulk_dummy.next = 1;
     c->mem->bulk_dummy.alt_next = 1;
@@ -318,14 +365,9 @@ static int ehci_bulk(usb_hci_t* hci, usb_device_t* device,
 
     ehci_qh_t* qh = &c->mem->bulk_qh;
     memset(qh, 0, sizeof(*qh));
-    uint32_t speed = device->speed == USB_SPEED_HIGH ? 2u :
-                     (device->speed == USB_SPEED_LOW ? 1u : 0u);
-    qh->epchar = (device->address & 0x7F) |
-                 ((uint32_t)(endpoint->number & 0x0F) << 8) |
-                 (speed << 12) |
-                 ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
-                 (1u << 27);
-    qh->epcap = (1u << 30) | ((uint32_t)0x08 << 8);
+    ehci_program_qh_caps(qh, device, endpoint->number,
+                         endpoint->max_packet ? endpoint->max_packet : 64,
+                         false, false);
     qh->next_qtd = ehci_phys(c, &c->mem->bulk_qtd);
     qh->alt_qtd = 1;
     qh->head = c->mem->async_qh.head;
@@ -343,15 +385,9 @@ static int ehci_bulk(usb_hci_t* hci, usb_device_t* device,
         usb_delay_ms(1);
     }
     c->mem->async_qh.head = ehci_qh_link(c, &c->mem->async_qh);
-    ehci_reg_write(c, c->operational + 0x08, EHCI_CMD_IAAD);
-    for (int timeout = 0; timeout < 20; timeout++) {
-        uint32_t status = ehci_reg_read(c, c->operational + 0x04);
-        if (status & EHCI_STS_IAAD) {
-            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
-            break;
-        }
-        usb_delay_ms(1);
-    }
+    dma_sync_for_device(&c->dma);
+    ehci_doorbell_wait(c);
+
     if (result != 0) return -1;
     endpoint->toggle ^= 1;
     if (direction == USB_DIR_IN) {
@@ -370,20 +406,15 @@ static void ehci_release(usb_hci_t* hci, usb_device_t* device) {
     for (int i = 0; i < EHCI_MAX_INTR_SLOTS; i++) {
         if (c->mem->interrupts[i].used &&
             c->mem->interrupts[i].device == device) {
+            if (c->mem->interrupts[i].endpoint) {
+                c->mem->interrupts[i].endpoint->hcd_priv = NULL;
+            }
             memset(&c->mem->interrupts[i], 0,
                    sizeof(c->mem->interrupts[i]));
         }
     }
     ehci_rebuild_periodic(c);
-    ehci_reg_write(c, c->operational + 0x08, EHCI_CMD_IAAD);
-    for (int timeout = 0; timeout < 20; timeout++) {
-        uint32_t status = ehci_reg_read(c, c->operational + 0x04);
-        if (status & EHCI_STS_IAAD) {
-            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
-            break;
-        }
-        usb_delay_ms(1);
-    }
+    ehci_doorbell_wait(c);
 }
 
 static void ehci_write_portsc(ehci_controller_t* c, uint32_t reg,
@@ -400,7 +431,13 @@ static int ehci_port_reset(usb_hci_t* hci, uint8_t port) {
     if (!(value & EHCI_PORT_CONNECT) || (value & EHCI_PORT_OWNER)) {
         return USB_SPEED_UNKNOWN;
     }
-    ehci_write_portsc(c, reg, value | EHCI_PORT_POWER | EHCI_PORT_RESET,
+    /* FreeBSD ehci.c: Low-Speed K-state check before reset */
+    if ((value & EHCI_PORT_LINE_MASK) == EHCI_PORT_LINE_LOW &&
+        c->companion_present) {
+        return USB_SPEED_UNKNOWN;
+    }
+    ehci_write_portsc(c, reg,
+                      (value & ~EHCI_PORT_ENABLED) | EHCI_PORT_POWER | EHCI_PORT_RESET,
                       value & EHCI_PORT_RWC);
     usb_delay_ms(50);
     value = ehci_reg_read(c, reg);
@@ -530,7 +567,7 @@ int ehci_probe(const pci_device_t* device) {
     ehci_reg_write(c, c->operational + 0x10, 0);
     ehci_reg_write(c, c->operational + 0x40, 1);
     ehci_reg_write(c, c->operational,
-                   EHCI_CMD_RUN | EHCI_CMD_PERIODIC | EHCI_CMD_ASYNC);
+                   (8u << 16) | EHCI_CMD_RUN | EHCI_CMD_PERIODIC | EHCI_CMD_ASYNC);
     usb_delay_ms(20);
 
     for (uint8_t port = 1; port <= c->ports; port++) {

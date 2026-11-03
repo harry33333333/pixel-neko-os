@@ -7,10 +7,12 @@
 #include "string.h"
 
 #define UHCI_MAX_CONTROLLERS 4
-#define UHCI_MAX_INTR_SLOTS 6
+#define UHCI_MAX_INTR_SLOTS  12
+#define UHCI_MAX_DATA_TDS    64
 
 #define UHCI_CMD_RUN      0x0001
 #define UHCI_CMD_RESET    0x0002
+#define UHCI_CMD_GRESET   0x0004
 #define UHCI_CMD_MAXPACK  0x0080
 #define UHCI_STS_HALTED   0x0020
 
@@ -20,13 +22,17 @@
 #define UHCI_PORT_EN_CHG   0x0008
 #define UHCI_PORT_LOW      0x0100
 #define UHCI_PORT_RESET    0x0200
+#define UHCI_PORT_SUSPEND  0x1000
 #define UHCI_PORT_CHANGES  (UHCI_PORT_CONN_CHG | UHCI_PORT_EN_CHG)
 
 #define UHCI_TD_ACTIVE  (1u << 23)
 #define UHCI_TD_STALLED (1u << 22)
+#define UHCI_TD_DBUFFER (1u << 21)
 #define UHCI_TD_BABBLE  (1u << 20)
 #define UHCI_TD_NAK     (1u << 19)
-#define UHCI_TD_ERROR   (UHCI_TD_STALLED | UHCI_TD_BABBLE)
+#define UHCI_TD_CRCTO   (1u << 18)
+#define UHCI_TD_BITSTUFF (1u << 17)
+#define UHCI_TD_ERROR   (UHCI_TD_STALLED | UHCI_TD_DBUFFER | UHCI_TD_BABBLE | UHCI_TD_CRCTO | UHCI_TD_BITSTUFF)
 
 typedef struct {
     volatile uint32_t link;
@@ -46,6 +52,7 @@ typedef struct {
     bool used;
     usb_device_t* device;
     usb_endpoint_t* endpoint;
+    int req_length;
     uhci_qh_t qh;
     uhci_td_t td;
     uint8_t buffer[64] __attribute__((aligned(16)));
@@ -55,7 +62,7 @@ typedef struct {
     uint32_t frame_list[1024] __attribute__((aligned(4096)));
     uhci_qh_t control_qh;
     uhci_td_t setup_td;
-    uhci_td_t data_td;
+    uhci_td_t data_tds[UHCI_MAX_DATA_TDS];
     uhci_td_t status_td;
     uint8_t setup_buffer[8] __attribute__((aligned(16)));
     uint8_t data_buffer[1024] __attribute__((aligned(16)));
@@ -125,11 +132,12 @@ static void uhci_rebuild(uhci_controller_t* c) {
 
 static void uhci_program_td(uhci_controller_t* c, uhci_td_t* td,
                             uint8_t pid, uint8_t address, uint8_t endpoint,
-                            bool toggle, bool low_speed, uint32_t data_phys,
-                            int length) {
+                            bool toggle, bool low_speed, bool spd,
+                            uint32_t data_phys, int length) {
     memset((void*)td, 0, sizeof(*td));
-    td->control = UHCI_TD_ACTIVE | (3u << 27) | (1u << 29) |
-                  (low_speed ? (1u << 26) : 0);
+    td->control = UHCI_TD_ACTIVE | (3u << 27) |
+                  (spd ? (1u << 29) : 0u) |
+                  (low_speed ? (1u << 26) : 0u);
     td->token = pid | ((uint32_t)(address & 0x7F) << 8) |
                 ((uint32_t)(endpoint & 0x0F) << 15) |
                 ((toggle ? 1u : 0u) << 19) |
@@ -159,60 +167,127 @@ static int uhci_control(usb_hci_t* hci, usb_device_t* device,
     dma_sync_for_device(&c->dma);
 
     memcpy(c->mem->setup_buffer, setup, 8);
-    if (length && data && direction == USB_DIR_OUT) {
+    if (length > 0 && data && direction == USB_DIR_OUT) {
         memcpy(c->mem->data_buffer, data, (size_t)length);
     }
 
     bool low = device->speed == USB_SPEED_LOW;
+    int max_pkt = device->max_packet0 ? (int)device->max_packet0 : (low ? 8 : 64);
+    if (max_pkt < 8) max_pkt = 8;
+    if (max_pkt > 64) max_pkt = 64;
+
     uhci_program_td(c, &c->mem->setup_td, 0x2D, device->address, 0,
-                    false, low, uhci_phys(c, c->mem->setup_buffer), 8);
+                    false, low, false, uhci_phys(c, c->mem->setup_buffer), 8);
+
+    int num_data_tds = 0;
     if (length > 0) {
         uint8_t pid = direction == USB_DIR_IN ? 0x69 : 0xE1;
-        uhci_program_td(c, &c->mem->data_td, pid, device->address, 0,
-                        true, low, uhci_phys(c, c->mem->data_buffer), length);
-        c->mem->setup_td.link = uhci_phys(c, &c->mem->data_td) & ~0x0Fu;
-        c->mem->data_td.link = uhci_phys(c, &c->mem->status_td) & ~0x0Fu;
+        bool toggle = true;
+        int offset = 0;
+        while (offset < length && num_data_tds < UHCI_MAX_DATA_TDS) {
+            int chunk = length - offset;
+            if (chunk > max_pkt) chunk = max_pkt;
+            uhci_td_t* td = &c->mem->data_tds[num_data_tds];
+            uhci_program_td(c, td, pid, device->address, 0,
+                            toggle, low, direction == USB_DIR_IN,
+                            uhci_phys(c, c->mem->data_buffer + offset), chunk);
+            if (num_data_tds > 0) {
+                c->mem->data_tds[num_data_tds - 1].link =
+                    (uhci_phys(c, td) & ~0x0Fu) | 4u;
+            }
+            toggle = !toggle;
+            offset += chunk;
+            num_data_tds++;
+        }
+        c->mem->setup_td.link = (uhci_phys(c, &c->mem->data_tds[0]) & ~0x0Fu) | 4u;
+        c->mem->data_tds[num_data_tds - 1].link =
+            (uhci_phys(c, &c->mem->status_td) & ~0x0Fu) | 4u;
     } else {
-        c->mem->setup_td.link = uhci_phys(c, &c->mem->status_td) & ~0x0Fu;
+        c->mem->setup_td.link = (uhci_phys(c, &c->mem->status_td) & ~0x0Fu) | 4u;
     }
+
     uhci_program_td(c, &c->mem->status_td,
-                    direction == USB_DIR_IN ? 0xE1 : 0x69,
-                    device->address, 0, true, low, 0, 0);
+                    (length > 0 && direction == USB_DIR_IN) ? 0xE1 : 0x69,
+                    device->address, 0, true, low, false, 0, 0);
     c->mem->status_td.link = 1;
     c->mem->control_qh.element = uhci_phys(c, &c->mem->setup_td) & ~0x0Fu;
     dma_sync_for_device(&c->dma);
 
     outw(c->io_base, (uint16_t)(inw(c->io_base) | UHCI_CMD_RUN));
     int result = -1;
+    bool failed = false;
     for (int timeout = 0; timeout < 500; timeout++) {
-        if (c->mem->setup_td.control & UHCI_TD_ERROR) break;
-        if (length > 0 && (c->mem->data_td.control & UHCI_TD_ERROR)) break;
-        if (c->mem->status_td.control & UHCI_TD_ERROR) break;
-        if (!(c->mem->status_td.control & UHCI_TD_ACTIVE)) {
-            result = length;
+        dma_sync_for_cpu(&c->dma);
+        if (c->mem->setup_td.control & UHCI_TD_ERROR) {
+            failed = true;
             break;
         }
-        if (length > 0 && !(c->mem->data_td.control & UHCI_TD_ACTIVE) &&
-            (c->mem->status_td.control & UHCI_TD_ACTIVE)) {
-            c->mem->control_qh.element =
-                uhci_phys(c, &c->mem->status_td) & ~0x0Fu;
+        for (int k = 0; k < num_data_tds; k++) {
+            uint32_t ctrl = c->mem->data_tds[k].control;
+            if (ctrl & UHCI_TD_ERROR) {
+                failed = true;
+                break;
+            }
+            if (!(ctrl & UHCI_TD_ACTIVE)) {
+                int act = (int)((ctrl + 1u) & 0x7FFu);
+                int expected = (k == num_data_tds - 1)
+                                   ? (length - k * max_pkt)
+                                   : max_pkt;
+                if (act < expected &&
+                    (c->mem->status_td.control & UHCI_TD_ACTIVE)) {
+                    /* Short packet: jump QH directly to status stage */
+                    c->mem->control_qh.element =
+                        uhci_phys(c, &c->mem->status_td) & ~0x0Fu;
+                    dma_sync_for_device(&c->dma);
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if (failed) break;
+        if (c->mem->status_td.control & UHCI_TD_ERROR) {
+            failed = true;
+            break;
+        }
+        if (!(c->mem->status_td.control & UHCI_TD_ACTIVE)) {
+            result = 0;
+            break;
         }
         usb_delay_ms(1);
     }
     c->mem->control_qh.element = 1;
     dma_sync_for_cpu(&c->dma);
     if (result < 0) {
+        uint32_t d_ctrl = num_data_tds > 0 ? c->mem->data_tds[0].control : 0;
+        for (int k = 0; k < num_data_tds; k++) {
+            if (c->mem->data_tds[k].control & UHCI_TD_ERROR) {
+                d_ctrl = c->mem->data_tds[k].control;
+                break;
+            }
+        }
         log_printf("[UHCI] control failed setup=0x%08x data=0x%08x status=0x%08x\n",
-                   c->mem->setup_td.control, c->mem->data_td.control,
+                   c->mem->setup_td.control, d_ctrl,
                    c->mem->status_td.control);
         return -1;
     }
 
     if (length > 0 && direction == USB_DIR_IN && data) {
-        int actual = (int)((c->mem->data_td.control + 1u) & 0x7FFu);
-        if (actual > length) actual = length;
-        memcpy(data, c->mem->data_buffer, (size_t)actual);
-        result = actual;
+        int total_actual = 0;
+        for (int k = 0; k < num_data_tds; k++) {
+            uint32_t ctrl = c->mem->data_tds[k].control;
+            if (ctrl & UHCI_TD_ACTIVE) break;
+            int act = (int)((ctrl + 1u) & 0x7FFu);
+            int expected = (k == num_data_tds - 1)
+                               ? (length - k * max_pkt)
+                               : max_pkt;
+            if (act > expected) act = expected;
+            total_actual += act;
+            if (act < expected) break;
+        }
+        if (total_actual > length) total_actual = length;
+        memcpy(data, c->mem->data_buffer, (size_t)total_actual);
+        result = total_actual;
     } else {
         result = length;
     }
@@ -223,6 +298,11 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
                         usb_endpoint_t* endpoint, void* data, int length) {
     uhci_controller_t* c = hci->priv;
     if (!c || !device || !endpoint || !data || length <= 0) return -1;
+    int xfer_len = length > 64 ? 64 : length;
+    if (endpoint->max_packet > 0 && xfer_len > (int)endpoint->max_packet) {
+        xfer_len = (int)endpoint->max_packet;
+    }
+
     uhci_intr_t* slot = endpoint->hcd_priv;
     if (!slot || !slot->used) {
         for (int i = 0; i < UHCI_MAX_INTR_SLOTS; i++) {
@@ -236,12 +316,13 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
         slot->used = true;
         slot->device = device;
         slot->endpoint = endpoint;
+        slot->req_length = xfer_len;
         endpoint->hcd_priv = slot;
         uint32_t phys = uhci_phys(c, slot->buffer);
         uhci_program_td(c, &slot->td, 0x69, device->address,
                         endpoint->number, endpoint->toggle,
-                        device->speed == USB_SPEED_LOW, phys,
-                        length > 64 ? 64 : length);
+                        device->speed == USB_SPEED_LOW, true, phys,
+                        xfer_len);
         slot->td.link = 1;
         slot->qh.element = uhci_phys(c, &slot->td) & ~0x0Fu;
         uhci_rebuild(c);
@@ -252,16 +333,24 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     uint32_t status = slot->td.control;
     if (status & UHCI_TD_ACTIVE) return 0;
     if (status & UHCI_TD_ERROR) {
-        log_printf("[UHCI] interrupt endpoint 0x%02x stalled\n",
-                   endpoint->address);
-        uhci_release_intr_slot(c, slot);
-        return -1;
-    }
-    if (status & UHCI_TD_NAK) {
-        slot->td.control = (status & ~UHCI_TD_NAK) | UHCI_TD_ACTIVE;
+        if (status & UHCI_TD_STALLED) {
+            log_printf("[UHCI] interrupt endpoint 0x%02x stalled\n",
+                       endpoint->address);
+            uhci_release_intr_slot(c, slot);
+            return -1;
+        }
+        /* Recover from transient CRC/bitstuff error */
+        uint32_t phys = uhci_phys(c, slot->buffer);
+        uhci_program_td(c, &slot->td, 0x69, device->address,
+                        endpoint->number, endpoint->toggle,
+                        device->speed == USB_SPEED_LOW, true, phys,
+                        slot->req_length);
+        slot->td.link = 1;
+        slot->qh.element = uhci_phys(c, &slot->td) & ~0x0Fu;
         dma_sync_for_device(&c->dma);
         return 0;
     }
+
     int actual = (int)((status + 1u) & 0x7FFu);
     if (actual > length) actual = length;
     if (actual > 64) actual = 64;
@@ -270,8 +359,8 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     uint32_t phys = uhci_phys(c, slot->buffer);
     uhci_program_td(c, &slot->td, 0x69, device->address,
                     endpoint->number, endpoint->toggle,
-                    device->speed == USB_SPEED_LOW, phys,
-                    length > 64 ? 64 : length);
+                    device->speed == USB_SPEED_LOW, true, phys,
+                    slot->req_length);
     slot->td.link = 1;
     slot->qh.element = uhci_phys(c, &slot->td) & ~0x0Fu;
     dma_sync_for_device(&c->dma);
@@ -289,20 +378,60 @@ static int uhci_bulk(usb_hci_t* hci, usb_device_t* device,
     if (direction == USB_DIR_OUT) {
         memcpy(c->mem->data_buffer, data, (size_t)length);
     }
-    uhci_program_td(c, &c->mem->data_td,
-                    direction == USB_DIR_IN ? 0x69 : 0xE1,
-                    device->address, endpoint->number, endpoint->toggle,
-                    device->speed == USB_SPEED_LOW,
-                    uhci_phys(c, c->mem->data_buffer), length);
-    c->mem->data_td.link = 1;
+    int max_pkt = endpoint->max_packet ? (int)endpoint->max_packet : 64;
+    if (max_pkt < 8) max_pkt = 8;
+    if (max_pkt > 64) max_pkt = 64;
+
+    uint8_t pid = direction == USB_DIR_IN ? 0x69 : 0xE1;
+    int num_tds = 0;
+    int offset = 0;
+    uint8_t toggle = endpoint->toggle;
+    while (offset < length && num_tds < UHCI_MAX_DATA_TDS) {
+        int chunk = length - offset;
+        if (chunk > max_pkt) chunk = max_pkt;
+        uhci_td_t* td = &c->mem->data_tds[num_tds];
+        uhci_program_td(c, td, pid, device->address, endpoint->number,
+                        toggle != 0, device->speed == USB_SPEED_LOW,
+                        direction == USB_DIR_IN,
+                        uhci_phys(c, c->mem->data_buffer + offset), chunk);
+        if (num_tds > 0) {
+            c->mem->data_tds[num_tds - 1].link =
+                (uhci_phys(c, td) & ~0x0Fu) | 4u;
+        }
+        toggle ^= 1;
+        offset += chunk;
+        num_tds++;
+    }
+    c->mem->data_tds[num_tds - 1].link = 1;
     c->mem->control_qh.element =
-        uhci_phys(c, &c->mem->data_td) & ~0x0Fu;
+        uhci_phys(c, &c->mem->data_tds[0]) & ~0x0Fu;
     dma_sync_for_device(&c->dma);
     outw(c->io_base, (uint16_t)(inw(c->io_base) | UHCI_CMD_RUN));
+
     int result = -1;
+    bool failed = false;
     for (int timeout = 0; timeout < 500; timeout++) {
-        if (c->mem->data_td.control & UHCI_TD_ERROR) break;
-        if (!(c->mem->data_td.control & UHCI_TD_ACTIVE)) {
+        dma_sync_for_cpu(&c->dma);
+        bool all_done = true;
+        for (int k = 0; k < num_tds; k++) {
+            uint32_t ctrl = c->mem->data_tds[k].control;
+            if (ctrl & UHCI_TD_ERROR) {
+                failed = true;
+                break;
+            }
+            if (ctrl & UHCI_TD_ACTIVE) {
+                all_done = false;
+                break;
+            }
+            int act = (int)((ctrl + 1u) & 0x7FFu);
+            int expected = (k == num_tds - 1) ? (length - k * max_pkt) : max_pkt;
+            if (act < expected) {
+                all_done = true;
+                break;
+            }
+        }
+        if (failed) break;
+        if (all_done) {
             result = 0;
             break;
         }
@@ -311,12 +440,22 @@ static int uhci_bulk(usb_hci_t* hci, usb_device_t* device,
     c->mem->control_qh.element = 1;
     dma_sync_for_cpu(&c->dma);
     if (result != 0) return -1;
-    endpoint->toggle ^= 1;
+
+    int total_actual = 0;
+    for (int k = 0; k < num_tds; k++) {
+        uint32_t ctrl = c->mem->data_tds[k].control;
+        if (ctrl & UHCI_TD_ACTIVE) break;
+        endpoint->toggle ^= 1;
+        int act = (int)((ctrl + 1u) & 0x7FFu);
+        int expected = (k == num_tds - 1) ? (length - k * max_pkt) : max_pkt;
+        if (act > expected) act = expected;
+        total_actual += act;
+        if (act < expected) break;
+    }
     if (direction == USB_DIR_IN) {
-        int actual = (int)((c->mem->data_td.control + 1u) & 0x7FFu);
-        if (actual > length) actual = length;
-        memcpy(data, c->mem->data_buffer, (size_t)actual);
-        return actual;
+        if (total_actual > length) total_actual = length;
+        memcpy(data, c->mem->data_buffer, (size_t)total_actual);
+        return total_actual;
     }
     return length;
 }
@@ -349,24 +488,27 @@ static int uhci_port_reset(usb_hci_t* hci, uint8_t port) {
     uint16_t status = inw(reg);
     if (!(status & UHCI_PORT_CONNECT)) return USB_SPEED_UNKNOWN;
 
-    if (status & UHCI_PORT_CHANGES) {
-        outw(reg, (uint16_t)UHCI_PORT_CHANGES);
-        usb_delay_ms(2);
-    }
-    status = inw(reg);
-    outw(reg, (uint16_t)((status & ~(UHCI_PORT_LOW | UHCI_PORT_RESET)) |
-                         UHCI_PORT_RESET));
+    /* FreeBSD uhci.c port reset sequence (RWC bits masked properly) */
+    outw(reg, (uint16_t)(UHCI_PORT_RESET));
     usb_delay_ms(50);
-    status = inw(reg);
-    outw(reg, (uint16_t)((status & ~UHCI_PORT_RESET) | UHCI_PORT_CHANGES));
-    usb_delay_ms(20);
-    status = inw(reg);
-    if (!(status & UHCI_PORT_ENABLED) && (status & UHCI_PORT_CONNECT)) {
-        outw(reg, (uint16_t)(status | UHCI_PORT_ENABLED));
+    outw(reg, (uint16_t)0);
+    usb_delay_ms(10);
+
+    for (int i = 0; i < 10; i++) {
+        outw(reg, (uint16_t)(UHCI_PORT_ENABLED | UHCI_PORT_CHANGES));
         usb_delay_ms(5);
         status = inw(reg);
+        if (!(status & UHCI_PORT_CONNECT)) return USB_SPEED_UNKNOWN;
+        if (status & UHCI_PORT_ENABLED) break;
     }
-    if (!(status & UHCI_PORT_CONNECT)) return USB_SPEED_UNKNOWN;
+    if (status & UHCI_PORT_CHANGES) {
+        outw(reg, (uint16_t)((status & ~UHCI_PORT_SUSPEND) | UHCI_PORT_CHANGES));
+    }
+    usb_delay_ms(10);
+    status = inw(reg);
+    if (!(status & UHCI_PORT_CONNECT) || !(status & UHCI_PORT_ENABLED)) {
+        return USB_SPEED_UNKNOWN;
+    }
     return (status & UHCI_PORT_LOW) ? USB_SPEED_LOW : USB_SPEED_FULL;
 }
 
@@ -378,7 +520,7 @@ static void uhci_poll(usb_hci_t* hci) {
         uint32_t bit = 1u << (port - 1);
         uint16_t status = inw(reg);
         if (status & UHCI_PORT_CHANGES) {
-            outw(reg, (uint16_t)UHCI_PORT_CHANGES);
+            outw(reg, (uint16_t)((status & ~UHCI_PORT_SUSPEND) | UHCI_PORT_CHANGES));
         }
         if (!(status & UHCI_PORT_CONNECT)) {
             if (c->ports_seen & bit) {
@@ -414,6 +556,12 @@ int uhci_probe(const pci_device_t* device) {
         return -1;
     }
 
+    /* FreeBSD uhci_pci.c: Disable UHCI Legacy Support SMI at PCI reg 0xC0 */
+    uint32_t legsup = pci_config_read(device->bus, device->slot,
+                                      device->function, 0xC0);
+    pci_config_write(device->bus, device->slot, device->function,
+                     0xC0, (legsup & 0xFFFF0000u) | 0x8F00u);
+
     uhci_controller_t* c = &g_uhci[g_uhci_count];
     memset(c, 0, sizeof(*c));
     c->pci = device;
@@ -426,6 +574,12 @@ int uhci_probe(const pci_device_t* device) {
     c->mem = (uhci_dma_t*)c->dma.virt_addr;
     pci_enable_io(device);
     pci_enable_bus_master(device);
+
+    /* FreeBSD uhci_init: Global reset followed by Host Controller Reset */
+    outw(c->io_base, UHCI_CMD_GRESET);
+    usb_delay_ms(20);
+    outw(c->io_base, 0);
+    usb_delay_ms(10);
 
     outw(c->io_base, UHCI_CMD_RESET);
     for (int i = 0; i < 100 && (inw(c->io_base) & UHCI_CMD_RESET); i++) {

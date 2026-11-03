@@ -59,12 +59,20 @@ static int append_char(char* dst, int pos, int max, char c) {
     return pos;
 }
 
-static int append_string(char* dst, int pos, int max, const char* text) {
+static int append_string_len(char* dst, int pos, int max, const char* text, int max_chars) {
     if (!text || (uintptr_t)text < 0x1000) {
         text = "(null)";
     }
-    while (*text) pos = append_char(dst, pos, max, *text++);
+    int count = 0;
+    while (*text && (max_chars < 0 || count < max_chars)) {
+        pos = append_char(dst, pos, max, *text++);
+        count++;
+    }
     return pos;
+}
+
+static int append_string(char* dst, int pos, int max, const char* text) {
+    return append_string_len(dst, pos, max, text, -1);
 }
 
 static int append_unsigned64(char* dst, int pos, int max, uint64_t value,
@@ -133,6 +141,17 @@ void log_printf(const char* format, ...) {
             format++;
         }
 
+        // Parse precision (e.g. %.6s)
+        int precision = -1;
+        if (*format == '.') {
+            format++;
+            precision = 0;
+            while (*format >= '0' && *format <= '9') {
+                precision = precision * 10 + (*format - '0');
+                format++;
+            }
+        }
+
         // Parse length modifiers (l, ll, h, z)
         bool is_long = false;
         if (*format == 'l') {
@@ -150,7 +169,7 @@ void log_printf(const char* format, ...) {
         switch (*format) {
             case 's': {
                 const char* s = va_arg(args, const char*);
-                pos = append_string(line, pos, LOG_LINE_SIZE, s);
+                pos = append_string_len(line, pos, LOG_LINE_SIZE, s, precision);
                 break;
             }
             case 'c': {

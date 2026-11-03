@@ -38,6 +38,9 @@ typedef struct {
     uint32_t code;
     int32_t dx;
     int32_t dy;
+    int32_t abs_x;
+    int32_t abs_y;
+    bool is_absolute;
     uint32_t buttons;
     int32_t wheel;
     uint64_t timestamp;
@@ -53,6 +56,9 @@ uint64_t input_get_dropped_count(void);
 void input_emit_key(uint32_t code, bool pressed);
 void input_emit_mouse_move(int32_t dx, int32_t dy,
                            uint32_t buttons, int32_t wheel);
+void input_emit_mouse_abs(int32_t abs_x, int32_t abs_y,
+                          int32_t dx, int32_t dy,
+                          uint32_t buttons, int32_t wheel);
 void input_emit_mouse_button(uint32_t buttons);
 
 void ps2_input_init(void);

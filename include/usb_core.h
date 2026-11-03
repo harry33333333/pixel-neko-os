@@ -8,7 +8,7 @@
 
 #define USB_MAX_HCIS       8
 #define USB_MAX_DEVICES    32
-#define USB_MAX_ENDPOINTS  4
+#define USB_MAX_ENDPOINTS  8
 #define USB_MAX_HUB_PORTS  15
 
 #define USB_SPEED_UNKNOWN  0
@@ -53,12 +53,13 @@
 #define USB_DT_HID        0x21U
 #define USB_DT_REPORT     0x22U
 #define USB_DT_HUB        0x29U
+#define USB_DT_SS_HUB     0x2AU
 
-#define USB_CLASS_HID     0x03U
+#define USB_CLASS_HID          0x03U
 #define USB_CLASS_MASS_STORAGE 0x08U
-#define USB_CLASS_HUB     0x09U
-#define USB_HID_SUBCLASS_BOOT 0x01U
-#define USB_HID_PROTOCOL_KBD  0x01U
+#define USB_CLASS_HUB          0x09U
+#define USB_HID_SUBCLASS_BOOT  0x01U
+#define USB_HID_PROTOCOL_KBD   0x01U
 #define USB_HID_PROTOCOL_MOUSE 0x02U
 
 #define USB_EP_TYPE_CONTROL     0x00U
@@ -131,6 +132,11 @@ typedef struct {
     uint8_t interval;
     uint16_t max_packet;
     uint8_t toggle;
+    uint8_t interface_number;
+    uint8_t interface_class;
+    uint8_t interface_subclass;
+    uint8_t interface_protocol;
+    uint16_t hid_report_desc_len;
     void* hcd_priv;
 } usb_endpoint_t;
 
@@ -165,6 +171,8 @@ struct usb_device {
     uint8_t parent_hub_address;
     uint8_t parent_port;
     uint8_t hub_depth;
+    uint8_t hs_hub_address;
+    uint8_t hs_port_number;
     uint16_t max_packet0;
     uint8_t configuration;
     uint16_t vendor;

@@ -49,6 +49,50 @@ uint64_t usb_phys32(const void* virtual_address) {
 
 int usb_legacy_handoff(const pci_device_t* device) {
     if (!device) return -1;
+
+    /*
+     * EHCI (prog_if == 0x20): FreeBSD ehci_pci_take_controller()
+     * Read EECP (bits 15:8 of HCCPARAMS at BAR0 + 0x08) and walk extended
+     * capabilities in PCI config space looking for USBLEGSUP (ID == 0x01).
+     */
+    if (device->class_code == 0x0C && device->subclass == 0x03 &&
+        device->prog_if == 0x20 && device->bar[0].valid &&
+        !device->bar[0].is_io && device->bar[0].address) {
+        volatile uint8_t* mmio = (volatile uint8_t*)usb_map_mmio(
+            device->bar[0].address, 0x100);
+        if (mmio) {
+            uint32_t hccparams = *(volatile uint32_t*)(mmio + 0x08);
+            uint8_t eecp = (uint8_t)((hccparams >> 8) & 0xFFu);
+            for (int i = 0; i < 48 && eecp >= 0x40; i++) {
+                uint32_t legsup = pci_config_read(
+                    device->bus, device->slot, device->function, eecp);
+                uint8_t cap_id = (uint8_t)(legsup & 0xFFu);
+                uint8_t next = (uint8_t)((legsup >> 8) & 0xFFu);
+                if (cap_id == 0x01u) {
+                    if (legsup & (1u << 16)) {
+                        pci_config_write(device->bus, device->slot,
+                                         device->function, eecp,
+                                         legsup | (1u << 24));
+                        for (int t = 0; t < 500; t++) {
+                            legsup = pci_config_read(
+                                device->bus, device->slot,
+                                device->function, eecp);
+                            if (!(legsup & (1u << 16))) break;
+                            usb_delay_ms(1);
+                        }
+                    }
+                    /* Disable SMI in USBLEGCTLSTS (eecp + 4) */
+                    pci_config_write(device->bus, device->slot,
+                                     device->function, (uint8_t)(eecp + 4), 0);
+                    log_printf("[USB ] EHCI BIOS ownership hand-off complete at EECP 0x%02x\n",
+                               eecp);
+                    return 0;
+                }
+                eecp = next;
+            }
+        }
+    }
+
     uint32_t command_status = pci_config_read(
         device->bus, device->slot, device->function, 0x04);
     if (!(command_status & (1u << 20))) return 0;

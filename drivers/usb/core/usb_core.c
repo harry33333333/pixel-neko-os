@@ -209,55 +209,75 @@ int usb_control_msg(usb_device_t* dev, int direction, uint8_t request,
 static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
                                 int length) {
     int offset = 0;
-    int selected_interface = -1;
     int selected_score = -1;
     uint8_t device_class = dev->class_code;
     uint8_t device_subclass = dev->subclass;
     uint8_t device_protocol = dev->protocol;
+
+    uint8_t cur_if_num = 0;
+    uint8_t cur_if_alt = 0;
+    uint8_t cur_if_class = device_class;
+    uint8_t cur_if_subclass = device_subclass;
+    uint8_t cur_if_proto = device_protocol;
+    uint16_t cur_hid_report_len = 0;
+    bool have_interface = false;
+
     while (offset + 2 <= length) {
         uint8_t item_length = buffer[offset];
         uint8_t item_type = buffer[offset + 1];
         if (item_length < 2 || offset + item_length > length) break;
+
         if (item_type == USB_DT_INTERFACE && item_length >= 9) {
             const usb_interface_desc_t* interface =
                 (const usb_interface_desc_t*)(buffer + offset);
-            uint8_t interface_class = interface->bInterfaceClass;
-            uint8_t interface_subclass = interface->bInterfaceSubClass;
-            uint8_t interface_protocol = interface->bInterfaceProtocol;
-            if (interface_class == 0 && device_class) {
-                interface_class = device_class;
-                interface_subclass = device_subclass;
-                interface_protocol = device_protocol;
-            }
-            int score = 0;
-            if (interface_class == USB_CLASS_HID) score = 3;
-            else if (interface_class == USB_CLASS_HUB) score = 2;
-            else score = 1;
-            if (score > selected_score) {
-                selected_score = score;
-                selected_interface = interface->bInterfaceNumber;
-                dev->class_code = interface_class;
-                dev->subclass = interface_subclass;
-                dev->protocol = interface_protocol;
-                dev->interface_number = interface->bInterfaceNumber;
-                dev->interface_subclass = interface_subclass;
-                dev->interface_protocol = interface_protocol;
-            }
-        }
-        offset += item_length;
-    }
+            cur_if_num = interface->bInterfaceNumber;
+            cur_if_alt = interface->bAlternateSetting;
+            cur_if_class = interface->bInterfaceClass;
+            cur_if_subclass = interface->bInterfaceSubClass;
+            cur_if_proto = interface->bInterfaceProtocol;
+            cur_hid_report_len = 0;
+            have_interface = true;
 
-    if (selected_interface < 0) return;
-    int current_interface = -1;
-    offset = 0;
-    while (offset + 2 <= length && dev->endpoint_count < USB_MAX_ENDPOINTS) {
-        uint8_t item_length = buffer[offset];
-        uint8_t item_type = buffer[offset + 1];
-        if (item_length < 2 || offset + item_length > length) break;
-        if (item_type == USB_DT_INTERFACE && item_length >= 9) {
-            current_interface = buffer[offset + 2];
+            if (cur_if_class == 0 && device_class) {
+                cur_if_class = device_class;
+                cur_if_subclass = device_subclass;
+                cur_if_proto = device_protocol;
+            }
+            if (cur_if_alt == 0) {
+                int score = 1;
+                if (cur_if_class == USB_CLASS_HID) {
+                    if (cur_if_proto == USB_HID_PROTOCOL_MOUSE) score = 5;
+                    else if (cur_if_proto == USB_HID_PROTOCOL_KBD) score = 4;
+                    else score = 3;
+                } else if (cur_if_class == USB_CLASS_HUB) {
+                    score = 2;
+                }
+                if (score > selected_score) {
+                    selected_score = score;
+                    dev->class_code = cur_if_class;
+                    dev->subclass = cur_if_subclass;
+                    dev->protocol = cur_if_proto;
+                    dev->interface_number = cur_if_num;
+                    dev->interface_subclass = cur_if_subclass;
+                    dev->interface_protocol = cur_if_proto;
+                }
+            }
+        } else if (item_type == USB_DT_HID && item_length >= 9 &&
+                   have_interface && cur_if_alt == 0) {
+            if (buffer[offset + 6] == USB_DT_REPORT) {
+                cur_hid_report_len = (uint16_t)buffer[offset + 7] |
+                                     ((uint16_t)buffer[offset + 8] << 8);
+                /* Update any endpoints already parsed for this interface */
+                for (uint8_t ep = 0; ep < dev->endpoint_count; ep++) {
+                    if (dev->endpoints[ep].interface_number == cur_if_num &&
+                        dev->endpoints[ep].hid_report_desc_len == 0) {
+                        dev->endpoints[ep].hid_report_desc_len = cur_hid_report_len;
+                    }
+                }
+            }
         } else if (item_type == USB_DT_ENDPOINT && item_length >= 7 &&
-                   current_interface == selected_interface) {
+                   have_interface && cur_if_alt == 0 &&
+                   dev->endpoint_count < USB_MAX_ENDPOINTS) {
             const usb_endpoint_desc_t* descriptor =
                 (const usb_endpoint_desc_t*)(buffer + offset);
             usb_endpoint_t* endpoint =
@@ -271,6 +291,11 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
             endpoint->type = descriptor->bmAttributes & 0x03;
             endpoint->interval = descriptor->bInterval;
             endpoint->max_packet = descriptor->wMaxPacketSize & 0x07FFu;
+            endpoint->interface_number = cur_if_num;
+            endpoint->interface_class = cur_if_class;
+            endpoint->interface_subclass = cur_if_subclass;
+            endpoint->interface_protocol = cur_if_proto;
+            endpoint->hid_report_desc_len = cur_hid_report_len;
         }
         offset += item_length;
     }
@@ -304,22 +329,37 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
     dev->hci = hci;
     dev->speed = speed;
     dev->port = port;
-    dev->max_packet0 = speed >= USB_SPEED_HIGH ? 64 : 8;
+    dev->max_packet0 = (speed == USB_SPEED_SUPER) ? 512 :
+                       (speed == USB_SPEED_HIGH) ? 64 : 8;
     if (parent_hub) {
         dev->parent_hub_address = parent_hub->address;
         dev->parent_port = port;
         dev->hub_depth = (uint8_t)(parent_hub->hub_depth + 1);
         dev->route = (uint16_t)(parent_hub->route |
-                     ((uint16_t)(port & 0x0F) << (parent_hub->hub_depth * 4)));
+                     ((uint16_t)(port & 0x0F) << ((parent_hub->hub_depth > 3 ? 3 : parent_hub->hub_depth) * 4)));
+        if (speed < USB_SPEED_HIGH) {
+            if (parent_hub->speed == USB_SPEED_HIGH) {
+                dev->hs_hub_address = parent_hub->address;
+                dev->hs_port_number = port;
+            } else {
+                dev->hs_hub_address = parent_hub->hs_hub_address;
+                dev->hs_port_number = parent_hub->hs_port_number;
+            }
+        }
     }
 
     usb_device_desc_t descriptor;
-    memset(&descriptor, 0, sizeof(descriptor));
-    int result = usb_control_msg(
-        dev,
-        USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
-        USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE << 8, 0,
-        &descriptor, 8);
+    int result = -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        memset(&descriptor, 0, sizeof(descriptor));
+        result = usb_control_msg(
+            dev,
+            USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
+            USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE << 8, 0,
+            &descriptor, 8);
+        if (result >= 8) break;
+        usb_delay_ms(10);
+    }
     if (result < 8) {
         log_printf("[USB ] Initial device descriptor failed on port %u (%d)\n",
                    port, result);
@@ -353,7 +393,7 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
             usb_release_device(dev);
             return -1;
         }
-        usb_delay_ms(5);
+        usb_delay_ms(10);
     }
     dev->address = address;
 
@@ -382,6 +422,7 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
     if (result >= 9) {
         usb_config_desc_t* config = (usb_config_desc_t*)config_buffer;
         uint16_t total = config->wTotalLength;
+        if (total < 9) total = 9;
         if (total > sizeof(config_buffer)) total = sizeof(config_buffer);
         dev->configuration_value = config->bConfigurationValue;
         result = usb_control_msg(
@@ -405,7 +446,7 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         usb_release_device(dev);
         return -1;
     }
-    usb_delay_ms(5);
+    usb_delay_ms(10);
     dev->configuration = dev->configuration_value;
 
     log_printf("[USB ] Device %u %s port=%u VID:PID=%04x:%04x class=%02x:%02x endpoints=%u\n",

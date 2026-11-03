@@ -120,6 +120,31 @@ void input_emit_mouse_move(int32_t dx, int32_t dy,
         .type = INPUT_MOUSE_MOVE,
         .dx = dx,
         .dy = dy,
+        .is_absolute = false,
+        .buttons = buttons
+    };
+    if (input_push_event(&move)) input_log_event(&move);
+
+    if (wheel != 0) {
+        input_event_t scroll = {
+            .type = INPUT_MOUSE_SCROLL,
+            .buttons = buttons,
+            .wheel = wheel
+        };
+        if (input_push_event(&scroll)) input_log_event(&scroll);
+    }
+}
+
+void input_emit_mouse_abs(int32_t abs_x, int32_t abs_y,
+                          int32_t dx, int32_t dy,
+                          uint32_t buttons, int32_t wheel) {
+    input_event_t move = {
+        .type = INPUT_MOUSE_MOVE,
+        .dx = dx,
+        .dy = dy,
+        .abs_x = abs_x,
+        .abs_y = abs_y,
+        .is_absolute = true,
         .buttons = buttons
     };
     if (input_push_event(&move)) input_log_event(&move);

@@ -3,6 +3,7 @@
 #include "boot_framebuffer.h"
 #include "input.h"
 #include "keyboard.h"
+#include "mm.h"
 #include "pmm.h"
 #include "port.h"
 #include "scheduler.h"
@@ -12,6 +13,9 @@
 
 #define UI_MAX_WIDTH 1280
 #define UI_MAX_HEIGHT 1024
+
+#define CURSOR_W 12
+#define CURSOR_H 17
 
 int screen_w;
 int screen_h;
@@ -29,6 +33,12 @@ static int g_mouse_y;
 static uint32_t g_mouse_buttons;
 static bool g_started;
 static bool g_install_mode;
+
+static uint32_t g_cursor_saved[CURSOR_H][CURSOR_W];
+static int g_cursor_saved_x = -1;
+static int g_cursor_saved_y = -1;
+static bool g_cursor_saved_valid = false;
+static bool g_cursor_invalidated = false;
 
 static const uint8_t g_vga_palette[16][3] = {
     {0, 0, 0}, {0, 0, 128}, {0, 128, 0}, {0, 128, 128},
@@ -75,11 +85,22 @@ void ui_compat_init(void) {
     lfb = (unsigned char*)g_main_surface.framebuffer_virt;
     ui_build_palette();
     memset(backbuffer, 0, (size_t)screen_pitch * (size_t)screen_h);
-    total_ram_mb =
-        (int)((pmm_get_total_page_count() * PAGE_SIZE) / (1024 * 1024));
-    usable_ram_mb = total_ram_mb;
+
+    if (g_hhdm.total_memory_bytes > 0) {
+        total_ram_mb = (int)((g_hhdm.total_memory_bytes + 0x7FFFFULL) / (1024 * 1024));
+    } else {
+        total_ram_mb = (int)((pmm_get_total_page_count() * PAGE_SIZE) / (1024 * 1024));
+    }
+    if (g_hhdm.total_usable_bytes > 0) {
+        usable_ram_mb = (int)(g_hhdm.total_usable_bytes / (1024 * 1024));
+    } else {
+        usable_ram_mb = total_ram_mb;
+    }
+
     g_mouse_x = screen_w / 2;
     g_mouse_y = screen_h / 2;
+    g_cursor_saved_valid = false;
+    g_cursor_invalidated = false;
     g_started = false;
 }
 
@@ -121,14 +142,28 @@ void set_resolution(int width, int height, int bpp) {
 }
 
 void mouse_invalidate(void) {
+    g_cursor_saved_valid = false;
+    g_cursor_invalidated = true;
 }
 
 void mouse_reset(unsigned char* surface) {
-    (void)surface;
+    if (!surface || !g_cursor_saved_valid) return;
+    for (int row = 0; row < CURSOR_H; row++) {
+        int py = g_cursor_saved_y + row;
+        if (py < 0 || py >= screen_h) continue;
+        uint32_t* dst = (uint32_t*)(surface + (size_t)py * screen_pitch);
+        for (int col = 0; col < CURSOR_W; col++) {
+            int px = g_cursor_saved_x + col;
+            if (px >= 0 && px < screen_w) {
+                dst[px] = g_cursor_saved[row][col];
+            }
+        }
+    }
+    g_cursor_saved_valid = false;
 }
 
 static void ui_draw_cursor(unsigned char* surface) {
-    static const char* cursor[] = {
+    static const char* cursor[CURSOR_H] = {
         "X",
         "XX",
         "X.X",
@@ -147,15 +182,36 @@ static void ui_draw_cursor(unsigned char* surface) {
         "     X..X",
         "      XX"
     };
-    for (int row = 0; row < 17; row++) {
+    if (!surface) return;
+    if (g_cursor_saved_valid) {
+        mouse_reset(surface);
+    }
+    for (int row = 0; row < CURSOR_H; row++) {
+        int py = g_mouse_y + row;
+        if (py < 0 || py >= screen_h) continue;
+        const uint32_t* src = (const uint32_t*)(surface + (size_t)py * screen_pitch);
+        for (int col = 0; col < CURSOR_W; col++) {
+            int px = g_mouse_x + col;
+            if (px >= 0 && px < screen_w) {
+                g_cursor_saved[row][col] = src[px];
+            }
+        }
+    }
+    g_cursor_saved_x = g_mouse_x;
+    g_cursor_saved_y = g_mouse_y;
+    g_cursor_saved_valid = true;
+
+    for (int row = 0; row < CURSOR_H; row++) {
+        int py = g_mouse_y + row;
+        if (py < 0 || py >= screen_h) continue;
+        uint32_t* dst = (uint32_t*)(surface + (size_t)py * screen_pitch);
         for (int column = 0; cursor[row][column]; column++) {
+            int px = g_mouse_x + column;
+            if (px < 0 || px >= screen_w) continue;
             if (cursor[row][column] == 'X') {
-                int px = g_mouse_x + column;
-                int py = g_mouse_y + row;
-                if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
-                    ((uint32_t*)(surface + (size_t)py * screen_pitch))[px] =
-                        palette32[0];
-                }
+                dst[px] = palette32[0];
+            } else if (cursor[row][column] == '.') {
+                dst[px] = palette32[15];
             }
         }
     }
@@ -176,8 +232,13 @@ void ui_desktop_start(void) {
 
 static void ui_update_pointer(input_event_t* event) {
     if (event->type == INPUT_MOUSE_MOVE) {
-        g_mouse_x += event->dx;
-        g_mouse_y += event->dy;
+        if (event->is_absolute) {
+            g_mouse_x = event->abs_x;
+            g_mouse_y = event->abs_y;
+        } else {
+            g_mouse_x += event->dx;
+            g_mouse_y += event->dy;
+        }
         if (g_mouse_x < 0) g_mouse_x = 0;
         if (g_mouse_y < 0) g_mouse_y = 0;
         if (g_mouse_x >= screen_w) g_mouse_x = screen_w - 1;
@@ -189,6 +250,15 @@ static void ui_update_pointer(input_event_t* event) {
 void ui_desktop_poll(void) {
     if (!g_started) return;
     timer_update();
+
+    int prev_mx = g_cursor_saved_x;
+    int prev_my = g_cursor_saved_y;
+    bool had_cursor = g_cursor_saved_valid;
+    g_cursor_invalidated = false;
+
+    /* Remove cursor from backbuffer before WM updates or redraws */
+    mouse_reset(backbuffer);
+
     input_event_t event;
     while (input_poll_event(&event)) {
         if (event.type == INPUT_KEY_DOWN) {
@@ -216,8 +286,21 @@ void ui_desktop_poll(void) {
     wm_set_input_event_tick((int)apic_get_ticks());
     wm_update(backbuffer, g_mouse_x, g_mouse_y, (int)g_mouse_buttons, 0, 0);
     wm_draw(backbuffer);
+
+    bool full_sync = g_cursor_invalidated || (wm_need_mouse_reset() != 0);
+    bool moved = (!had_cursor) || (g_mouse_x != prev_mx) || (g_mouse_y != prev_my);
+
+    if (!full_sync && moved && had_cursor) {
+        copy_rect_to_lfb(backbuffer, prev_mx, prev_my, CURSOR_W, CURSOR_H);
+    }
+
     ui_draw_cursor(backbuffer);
-    copy_fullscreen_to_lfb(backbuffer);
+
+    if (full_sync) {
+        copy_fullscreen_to_lfb(backbuffer);
+    } else if (moved) {
+        copy_rect_to_lfb(backbuffer, g_mouse_x, g_mouse_y, CURSOR_W, CURSOR_H);
+    }
 }
 
 bool ui_install_mode_requested(void) {

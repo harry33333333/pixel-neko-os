@@ -107,6 +107,7 @@ static void parse_memory_map(void) {
 
     uint64_t max_phys = 0;
     uint64_t usable_bytes = 0;
+    uint64_t high_ram_bytes = 0;
 
     log_printf("[MM] Limine MemMap provided %llu entries:\n", entry_count);
     for (uint64_t i = 0; i < entry_count; i++) {
@@ -119,33 +120,44 @@ static void parse_memory_map(void) {
             max_phys = end;
         }
 
+        bool is_ram = false;
         const char* type_str = "UNKNOWN";
         switch (e->type) {
             case LIMINE_MEMMAP_USABLE:
                 type_str = "USABLE";
                 usable_bytes += length;
+                is_ram = true;
                 break;
             case LIMINE_MEMMAP_RESERVED:
                 type_str = "RESERVED";
                 break;
             case LIMINE_MEMMAP_ACPI_RECLAIMABLE:
                 type_str = "ACPI_RECLAIMABLE";
+                is_ram = true;
                 break;
             case LIMINE_MEMMAP_ACPI_NVS:
                 type_str = "ACPI_NVS";
+                is_ram = true;
                 break;
             case LIMINE_MEMMAP_BAD_MEMORY:
                 type_str = "BAD_MEMORY";
                 break;
             case LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE:
                 type_str = "BOOTLOADER_RECLAIMABLE";
+                is_ram = true;
                 break;
             case LIMINE_MEMMAP_KERNEL_AND_MODULES:
                 type_str = "KERNEL_AND_MODULES";
+                is_ram = true;
                 break;
             case LIMINE_MEMMAP_FRAMEBUFFER:
                 type_str = "FRAMEBUFFER";
                 break;
+        }
+
+        if (is_ram && end > 0x100000ULL) {
+            uint64_t high_start = (base < 0x100000ULL) ? 0x100000ULL : base;
+            high_ram_bytes += (end - high_start);
         }
 
         if (i < 16) {
@@ -158,12 +170,18 @@ static void parse_memory_map(void) {
         max_phys = 0x100000000ULL;
     }
 
+    uint64_t total_ram_bytes = 0x100000ULL + high_ram_bytes;
+    if (total_ram_bytes < usable_bytes) {
+        total_ram_bytes = usable_bytes;
+    }
+
     g_hhdm.physical_memory_limit = max_phys;
     g_hhdm.total_usable_bytes = usable_bytes;
-    g_hhdm.total_memory_bytes = max_phys;
+    g_hhdm.total_memory_bytes = total_ram_bytes;
 
-    log_printf("[MM] Physical Memory Limit: 0x%llx (%llu MB), Usable RAM: %llu MB\n",
+    log_printf("[MM] Physical Memory Limit: 0x%llx (%llu MB), Installed RAM: %llu MB, Usable RAM: %llu MB\n",
                g_hhdm.physical_memory_limit, g_hhdm.physical_memory_limit / (1024 * 1024),
+               (total_ram_bytes + 0x7FFFFULL) / (1024 * 1024),
                usable_bytes / (1024 * 1024));
 }
 
@@ -573,4 +591,3 @@ void kmain(void) {
     // 25. Hardware IRQs are enabled by the initial IRET to the selected thread.
     scheduler_start();
 }
-

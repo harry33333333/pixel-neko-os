@@ -41,8 +41,21 @@ void pmm_init(void) {
 
     uint64_t max_phys = 0;
     for (uint64_t i = 0; i < entry_count; i++) {
-        uint64_t end = entries[i]->base + entries[i]->length;
-        if (end > max_phys) max_phys = end;
+        uint64_t type = entries[i]->type;
+        if (type == LIMINE_MEMMAP_USABLE ||
+            type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
+            type == LIMINE_MEMMAP_KERNEL_AND_MODULES ||
+            type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+            type == LIMINE_MEMMAP_ACPI_NVS) {
+            uint64_t end = entries[i]->base + entries[i]->length;
+            if (end > max_phys) max_phys = end;
+        }
+    }
+    if (max_phys == 0) {
+        for (uint64_t i = 0; i < entry_count; i++) {
+            uint64_t end = entries[i]->base + entries[i]->length;
+            if (end > max_phys) max_phys = end;
+        }
     }
 
     g_pmm_total_pages = max_phys / PAGE_SIZE;
@@ -210,4 +223,3 @@ phys_addr_t pmm_alloc_pages_zoned(size_t count, uint64_t max_addr, size_t alignm
                (uint64_t)count, max_addr, (uint64_t)alignment);
     return 0;
 }
-

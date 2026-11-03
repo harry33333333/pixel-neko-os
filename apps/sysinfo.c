@@ -248,8 +248,32 @@ void sysinfo_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
 
         ly += 16;
         font_draw_text(v, lx, ly, "Features:", 0);
+        char feat_buf[64];
+        int fi = 0;
+        const char* feats[10];
+        int fcnt = 0;
+        if (g_cpu_info.has_fpu)        feats[fcnt++] = "FPU";
+        if (g_cpu_info.has_tsc)        feats[fcnt++] = "TSC";
+        if (g_cpu_info.has_msr)        feats[fcnt++] = "MSR";
+        if (g_cpu_info.has_pae)        feats[fcnt++] = "PAE";
+        if (g_cpu_info.has_apic)       feats[fcnt++] = "APIC";
+        if (g_cpu_info.has_sse2)       feats[fcnt++] = "SSE2";
+        if (g_cpu_info.has_sse3)       feats[fcnt++] = "SSE3";
+        if (g_cpu_info.has_cmpxchg16b) feats[fcnt++] = "CX16";
+        if (g_cpu_info.has_lm)         feats[fcnt++] = "LM";
+        if (g_cpu_info.has_nx)         feats[fcnt++] = "NX";
+        for (int i = 0; i < fcnt; i++) {
+            if (i > 0 && fi + 2 < (int)sizeof(feat_buf) - 1) {
+                feat_buf[fi++] = ',';
+                feat_buf[fi++] = ' ';
+            }
+            for (int j = 0; feats[i][j] && fi < (int)sizeof(feat_buf) - 1; j++) {
+                feat_buf[fi++] = feats[i][j];
+            }
+        }
+        feat_buf[fi] = '\0';
         draw_text_fitted(v, value_x, ly, max_value_chars,
-                         "FPU, TSC, MSR, PAE, APIC, CMOV", 8);
+                         fi > 0 ? feat_buf : "FPU, TSC, MSR, PAE, APIC, SSE2", 8);
 
         ly += 16;
         font_draw_text(v, lx, ly, "Installed RAM:", 0);
