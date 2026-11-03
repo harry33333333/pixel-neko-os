@@ -829,16 +829,13 @@ static int prepare_gpt_bios_embedding(blkdev_t* dev, uint16_t size_a,
     uint64_t raw_a = (entries_lba + 32ull) * 512ull - size_a;
     uint64_t raw_b =
         (secondary_entries_lba + 32ull) * 512ull - size_b;
-    *location_a = raw_a & ~511ull;
-    *location_b = raw_b & ~511ull;
-    if (*location_a < entries_lba * 512ull ||
-        *location_a % 512ull ||
-        *location_b < secondary_entries_lba * 512ull ||
-        *location_b % 512ull) {
+    *location_a = (raw_a & ~511ull) / 512ull;
+    *location_b = (raw_b & ~511ull) / 512ull;
+    if (*location_a < entries_lba || *location_b < secondary_entries_lba) {
         return -12;
     }
 
-    uint64_t new_entry_sectors = *location_a / 512ull - entries_lba;
+    uint64_t new_entry_sectors = *location_a - entries_lba;
     uint32_t new_count = (uint32_t)(new_entry_sectors * per_sector);
     if (new_count <= max_used || new_count > entry_count) return -12;
 
@@ -873,8 +870,8 @@ static int prepare_gpt_bios_embedding(blkdev_t* dev, uint16_t size_a,
     if (block_write(dev, backup_lba, 1, secondary) != 0) return -12;
 
     log_printf("[P6 ] GPT embedded Limine stage2 at LBA=%llu/%llu, entries=%u\n",
-               (unsigned long long)(*location_a / 512ull),
-               (unsigned long long)(*location_b / 512ull), new_count);
+               (unsigned long long)*location_a,
+               (unsigned long long)*location_b, new_count);
     return 0;
 }
 
