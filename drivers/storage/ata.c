@@ -262,19 +262,30 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
     outb(drive->base + ATA_REG_LBA2, (uint8_t)(bytes >> 8));
     outb(drive->base + ATA_REG_COMMAND, ATA_CMD_PACKET);
     if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
+        log_printf("[ATA ] ATAPI packet command: status=%02x error=%02x\n",
+                   inb(drive->base + ATA_REG_STATUS),
+                   inb(drive->base + ATA_REG_ERROR));
         return -1;
     }
     ata_write_words(drive->base + ATA_REG_DATA, packet, 6);
     ata_delay400(drive);
     if (bytes) {
         if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
+            log_printf("[ATA ] ATAPI data wait: status=%02x error=%02x bytes=%u\n",
+                       inb(drive->base + ATA_REG_STATUS),
+                       inb(drive->base + ATA_REG_ERROR), bytes);
             return -1;
         }
         if (input) ata_read_words(drive->base + ATA_REG_DATA, buffer,
                                   bytes / 2);
         else ata_write_words(drive->base + ATA_REG_DATA, buffer, bytes / 2);
     }
-    if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) return -1;
+    if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) {
+        log_printf("[ATA ] ATAPI completion: status=%02x error=%02x\n",
+                   inb(drive->base + ATA_REG_STATUS),
+                   inb(drive->base + ATA_REG_ERROR));
+        return -1;
+    }
     return 0;
 }
 
