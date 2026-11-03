@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stddef.h>
 #include "wallpaper.h"
 #include "ui_memory.h"
 

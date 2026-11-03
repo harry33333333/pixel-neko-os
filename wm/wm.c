@@ -1,4 +1,7 @@
 // wm.c - 完整版（含文件管理器）
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include "wm.h"
 static int in_ok(int mx, int my, int bx, int by);
 static int in_cl(int mx, int my, int cx, int cy);

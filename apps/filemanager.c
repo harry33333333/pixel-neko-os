@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stddef.h>
 #include "filemanager.h"
 #include "font.h"
 #include "fat.h"
@@ -23,7 +25,6 @@ static char err_msg1[36] = "Action failed";
 static char err_msg2[36] = "Or unsupported.";
 static int last_click_idx = -1;
 static int last_click_time = 0;
-static int last_mb = 0;
 static int last_max_display = 10;
 
 // Scrollbar interaction state

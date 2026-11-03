@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stddef.h>
 #include "image_dec.h"
 #include "ui_memory.h"
 #include "vfs.h"

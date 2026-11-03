@@ -1,4 +1,6 @@
 // apps/audioplayer.c - NekoPlayer 复古 Hi-Fi 音频播放器
+#include <stdint.h>
+#include <stddef.h>
 #include "audioplayer.h"
 #include "audio.h"
 #include "font.h"

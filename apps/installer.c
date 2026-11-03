@@ -1,3 +1,6 @@
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include "installer.h"
 #include "blkdev.h"
 #include "fat.h"

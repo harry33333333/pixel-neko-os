@@ -24,6 +24,7 @@ static int fpu_arithmetic_test(void) {
 
 static int init_main(void) {
     long pid = neko_getpid();
+    (void)pid;
     unsigned long nmi_before = neko_nmi_count();
     for (int i = 0; i < 4; i++) {
         neko_nmi_test();

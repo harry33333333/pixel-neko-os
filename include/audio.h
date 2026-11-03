@@ -1,6 +1,10 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
 // Unified Kernel Audio Engine & DSP Processor
 // Supported hardware: Intel HDA, C-Media CMI8738, Ensoniq ES1371/CT4810
 

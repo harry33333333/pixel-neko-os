@@ -1,6 +1,9 @@
 #ifndef DRIVER_H
 #define DRIVER_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #define DRIVER_MAX 16
 
 #define DRIVER_CATEGORY_DISPLAY 1

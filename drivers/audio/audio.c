@@ -1,4 +1,7 @@
 // drivers/audio/audio.c - Unified 64-Bit Audio Engine, DSP & Stream Scheduler
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include "audio.h"
 #include "ac97.h"
 #include "cmi8738.h"

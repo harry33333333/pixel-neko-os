@@ -44,7 +44,9 @@ static int available_resolution_count(void)
 static unsigned char cmos_get_sec(void) {
     int timeout = 10000;
     outb(0x70, 0x0A);
-    while ((inb(0x71) & 0x80) && --timeout);
+    while ((inb(0x71) & 0x80) && --timeout) {
+        /* wait */
+    }
     outb(0x70, 0x00);
     return inb(0x71);
 }

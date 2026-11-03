@@ -203,7 +203,7 @@ int ac97_init(void) {
         g_ac97_bdl = (volatile ac97_bdl_entry_t*)g_ac97_bdl_dma.virt;
     }
 
-    for (int i = 0; i < AC97_DMA_BUFFER_BYTES; i++) g_ac97_buf[i] = 0;
+    for (unsigned int i = 0; i < AC97_DMA_BUFFER_BYTES; i++) g_ac97_buf[i] = 0;
     ac97_setup_bdl();
 
     /* Take AC-link out of cold reset */
@@ -292,7 +292,7 @@ void ac97_stop_dma(void) {
     g_ac97_half_filled[0] = 0;
     g_ac97_half_filled[1] = 0;
     if (g_ac97_buf) {
-        for (int i = 0; i < AC97_DMA_BUFFER_BYTES; i++) g_ac97_buf[i] = 0;
+        for (unsigned int i = 0; i < AC97_DMA_BUFFER_BYTES; i++) g_ac97_buf[i] = 0;
     }
 }
 
