@@ -56,6 +56,7 @@ static int g_target_count;
 static target_part_t g_targets[INSTALL_MAX_TARGETS];
 static target_part_t* g_target;
 static part_fs_type_t g_format_type = PART_FS_FAT32;
+static int g_skip_format = 0;
 static int g_install_error;
 static int g_progress_percent;
 static char g_progress_text[72];
@@ -150,6 +151,13 @@ static int target_supports_format(const target_part_t* target,
     return 0;
 }
 
+static int target_supports_skip_format(const target_part_t* target) {
+    if (!target || !target->part) return 0;
+    return target->part->is_supported &&
+           (target->part->fs_type == PART_FS_FAT32 ||
+            target->part->fs_type == PART_FS_FAT16);
+}
+
 static void scan_targets(void) {
     int disk_ids[INSTALL_MAX_TARGETS];
     int disk_count = 0;
@@ -214,6 +222,7 @@ void installer_init(void) {
     g_target = NULL;
     g_install_error = 0;
     g_format_type = PART_FS_FAT32;
+    g_skip_format = 0;
     g_progress_percent = 0;
     text_copy(g_progress_text, "Preparing installation...",
               sizeof(g_progress_text));
@@ -369,44 +378,55 @@ void installer_draw(unsigned char* surface, int wx, int wy,
         draw_button(surface, wx + 14, next_button_y(wy, wh),
                     78, 23, "Refresh", 1);
     } else if (g_step == STEP_FORMAT) {
-        font_draw_text(surface, wx + 14, wy + 28,
-                       "Choose the destination filesystem", 0);
-        font_draw_text(surface, wx + 14, wy + 48,
-                       "Formatting removes every file on the selected partition.", 12);
+        font_draw_text(surface, wx + 14, wy + 26,
+                       "Choose the destination filesystem or skip formatting", 0);
+        font_draw_text(surface, wx + 14, wy + 44,
+                       g_skip_format
+                           ? "Direct release keeps existing files on the selected partition."
+                           : "Formatting removes every file on the selected partition.",
+                       g_skip_format ? 2 : 12);
 
         int box_x = wx + 14;
         int box_width = ww - 28;
-        int fat32_y = wy + 76;
-        int fat16_y = wy + 130;
-        draw_inset(surface, box_x, fat32_y, box_width, 42);
-        draw_inset(surface, box_x, fat16_y, box_width, 42);
-        if (g_format_type == PART_FS_FAT32) {
-            for (int py = fat32_y + 2; py < fat32_y + 40; py++) {
-                for (int px = box_x + 2; px < box_x + box_width - 2; px++) {
-                    PUT_PIXEL(surface, px, py, 1);
-                }
-            }
-        } else {
-            for (int py = fat16_y + 2; py < fat16_y + 40; py++) {
-                for (int px = box_x + 2; px < box_x + box_width - 2; px++) {
-                    PUT_PIXEL(surface, px, py, 1);
-                }
+        int fat32_y = wy + 64;
+        int fat16_y = wy + 106;
+        int skip_y  = wy + 148;
+        draw_inset(surface, box_x, fat32_y, box_width, 38);
+        draw_inset(surface, box_x, fat16_y, box_width, 38);
+        draw_inset(surface, box_x, skip_y,  box_width, 38);
+        int sel_y = g_skip_format ? skip_y :
+                    (g_format_type == PART_FS_FAT32 ? fat32_y : fat16_y);
+        for (int py = sel_y + 2; py < sel_y + 36; py++) {
+            for (int px = box_x + 2; px < box_x + box_width - 2; px++) {
+                PUT_PIXEL(surface, px, py, 1);
             }
         }
-        font_draw_text(surface, box_x + 12, fat32_y + 8,
-                       "FAT32 (recommended for large and modern disks)",
-                       g_format_type == PART_FS_FAT32 ? 15 : 0);
-        font_draw_text(surface, box_x + 12, fat32_y + 24,
-                       "Supports this target",
-                       g_format_type == PART_FS_FAT32 ? 15 : 8);
-        font_draw_text(surface, box_x + 12, fat16_y + 8,
-                       "FAT16 (maximum target size approximately 2 GB)",
-                       g_format_type == PART_FS_FAT16 ? 15 : 0);
-        font_draw_text(surface, box_x + 12, fat16_y + 24,
+        int sel_fat32 = (!g_skip_format && g_format_type == PART_FS_FAT32);
+        int sel_fat16 = (!g_skip_format && g_format_type == PART_FS_FAT16);
+        int sel_skip  = (g_skip_format != 0);
+        font_draw_text(surface, box_x + 12, fat32_y + 6,
+                       "Format as FAT32 (recommended for modern disks)",
+                       sel_fat32 ? 15 : 0);
+        font_draw_text(surface, box_x + 12, fat32_y + 22,
+                       target_supports_format(g_target, PART_FS_FAT32)
+                           ? "Clean format and install" : "Partition too small for FAT32",
+                       sel_fat32 ? 15 : 8);
+        font_draw_text(surface, box_x + 12, fat16_y + 6,
+                       "Format as FAT16 (maximum target size ~2 GB)",
+                       sel_fat16 ? 15 : 0);
+        font_draw_text(surface, box_x + 12, fat16_y + 22,
                        target_supports_format(g_target, PART_FS_FAT16)
                            ? "Compatible legacy filesystem" :
                              "Not available for this partition size",
-                       g_format_type == PART_FS_FAT16 ? 15 : 8);
+                       sel_fat16 ? 15 : 8);
+        font_draw_text(surface, box_x + 12, skip_y + 6,
+                       "Do not format (Keep existing filesystem, direct release)",
+                       sel_skip ? 15 : 0);
+        font_draw_text(surface, box_x + 12, skip_y + 22,
+                       target_supports_skip_format(g_target)
+                           ? "Directly release system files without formatting" :
+                             "Requires an existing FAT16 or FAT32 filesystem",
+                       sel_skip ? 15 : 8);
 
         draw_button(surface, next_button_x(wx, ww),
                     next_button_y(wy, wh), 78, 23, "Next >", 1);
@@ -414,21 +434,35 @@ void installer_draw(unsigned char* surface, int wx, int wy,
                     next_button_y(wy, wh), 78, 23, "< Back", 1);
     } else if (g_step == STEP_CONFIRM) {
         font_draw_text(surface, wx + 14, wy + 28,
-                       "Confirm installation and erase this partition", 12);
+                       g_skip_format
+                           ? "Confirm direct installation (no formatting)"
+                           : "Confirm installation and erase this partition",
+                       g_skip_format ? 2 : 12);
 
         char target_line[96];
         target_description(target_line, sizeof(target_line), g_target, 0);
         font_draw_text(surface, wx + 14, wy + 54, target_line, 0);
         font_draw_text(surface, wx + 14, wy + 78,
                        "The installer will now:", 8);
-        font_draw_text(surface, wx + 24, wy + 100,
-                       "1. Write a new FAT16/FAT32 VBR/BPB and empty FAT tables.", 0);
-        font_draw_text(surface, wx + 24, wy + 120,
-                       "2. Recursively copy the complete system payload.", 0);
-        font_draw_text(surface, wx + 24, wy + 140,
-                       "3. Install Limine UEFI and BIOS offline boot files.", 0);
-        font_draw_text(surface, wx + 14, wy + 168,
-                       "ALL EXISTING DATA ON THIS PARTITION WILL BE ERASED.", 12);
+        if (g_skip_format) {
+            font_draw_text(surface, wx + 24, wy + 100,
+                           "1. Keep existing FAT16/FAT32 volume without formatting.", 0);
+            font_draw_text(surface, wx + 24, wy + 120,
+                           "2. Directly release the complete system payload files.", 0);
+            font_draw_text(surface, wx + 24, wy + 140,
+                           "3. Install Limine UEFI and BIOS offline boot files.", 0);
+            font_draw_text(surface, wx + 14, wy + 168,
+                           "EXISTING USER FILES ON THIS PARTITION ARE PRESERVED.", 2);
+        } else {
+            font_draw_text(surface, wx + 24, wy + 100,
+                           "1. Write a new FAT16/FAT32 VBR/BPB and empty FAT tables.", 0);
+            font_draw_text(surface, wx + 24, wy + 120,
+                           "2. Recursively copy the complete system payload.", 0);
+            font_draw_text(surface, wx + 24, wy + 140,
+                           "3. Install Limine UEFI and BIOS offline boot files.", 0);
+            font_draw_text(surface, wx + 14, wy + 168,
+                           "ALL EXISTING DATA ON THIS PARTITION WILL BE ERASED.", 12);
+        }
         font_draw_text(surface, wx + 14, wy + 186,
                        "The GPT/MBR partition table itself is not modified.", 8);
 
@@ -951,27 +985,43 @@ static int install_limine_bios(blkdev_t* dev) {
 static int do_installation(target_part_t* target, part_fs_type_t type) {
     if (!target || !target->part || !target->part->dev) return -1;
     block_device_t* dev = target->part->dev;
-    if (!target_supports_format(target, type)) return -2;
+    char target_letter = 0;
 
-    update_progress_ui(5, "Formatting the selected partition...",
-                       type == PART_FS_FAT32
-                           ? "Creating FAT32 VBR, BPB, FSInfo and mirrored FAT"
-                           : "Creating FAT16 VBR, BPB and mirrored FAT");
-    log_printf("[P6 ] Format target disk=%s lba=%llu sectors=%llu as %s\n",
-               dev->name,
-               (unsigned long long)target->part->start_lba,
-               (unsigned long long)target->part->total_sectors,
-               type == PART_FS_FAT32 ? "FAT32" : "FAT16");
-    if (format_partition(dev, target->part->start_lba,
-                         target->part->total_sectors, type) != 0) {
-        return -2;
+    if (g_skip_format) {
+        if (!target_supports_skip_format(target)) return -2;
+        part_fs_type_t existing_type = target->part->fs_type;
+        update_progress_ui(12, "Skipping format (keeping existing filesystem)...",
+                           "Mounting existing FAT volume for direct file release");
+        log_printf("[P6 ] Direct release on existing %s target disk=%s lba=%llu\n",
+                   existing_type == PART_FS_FAT32 ? "FAT32" : "FAT16",
+                   dev->name,
+                   (unsigned long long)target->part->start_lba);
+        target_letter = mount_formatted_target(target, existing_type);
+        if (!target_letter) return -13;
+        log_printf("[P6 ] Existing target mounted as %c:\n", target_letter);
+    } else {
+        if (!target_supports_format(target, type)) return -2;
+
+        update_progress_ui(5, "Formatting the selected partition...",
+                           type == PART_FS_FAT32
+                               ? "Creating FAT32 VBR, BPB, FSInfo and mirrored FAT"
+                               : "Creating FAT16 VBR, BPB and mirrored FAT");
+        log_printf("[P6 ] Format target disk=%s lba=%llu sectors=%llu as %s\n",
+                   dev->name,
+                   (unsigned long long)target->part->start_lba,
+                   (unsigned long long)target->part->total_sectors,
+                   type == PART_FS_FAT32 ? "FAT32" : "FAT16");
+        if (format_partition(dev, target->part->start_lba,
+                             target->part->total_sectors, type) != 0) {
+            return -2;
+        }
+
+        update_progress_ui(16, "Mounting the new filesystem...",
+                           "Refreshing VFS volume metadata");
+        target_letter = mount_formatted_target(target, type);
+        if (!target_letter) return -13;
+        log_printf("[P6 ] Formatted target mounted as %c:\n", target_letter);
     }
-
-    update_progress_ui(16, "Mounting the new filesystem...",
-                       "Refreshing VFS volume metadata");
-    char target_letter = mount_formatted_target(target, type);
-    if (!target_letter) return -13;
-    log_printf("[P6 ] Formatted target mounted as %c:\n", target_letter);
 
     char source_letter = vfs_get_boot_cdrom_letter();
     if (!source_letter) {
@@ -1071,6 +1121,7 @@ void installer_click(unsigned char* surface, int mx, int my,
                           next_button_y(wy, wh), 78, 23) &&
             g_target_count > 0) {
             g_target = &g_targets[g_selected_idx];
+            g_skip_format = 0;
             g_format_type =
                 target_supports_format(g_target, PART_FS_FAT32)
                     ? PART_FS_FAT32 : PART_FS_FAT16;
@@ -1090,15 +1141,24 @@ void installer_click(unsigned char* surface, int mx, int my,
     } else if (g_step == STEP_FORMAT) {
         int box_x = wx + 14;
         int box_width = ww - 28;
-        if (point_in_rect(mx, my, box_x, wy + 76, box_width, 42) &&
+        if (point_in_rect(mx, my, box_x, wy + 64, box_width, 38) &&
             target_supports_format(g_target, PART_FS_FAT32)) {
+            g_skip_format = 0;
             g_format_type = PART_FS_FAT32;
             redraw = 1;
             return;
         }
-        if (point_in_rect(mx, my, box_x, wy + 130, box_width, 42) &&
+        if (point_in_rect(mx, my, box_x, wy + 106, box_width, 38) &&
             target_supports_format(g_target, PART_FS_FAT16)) {
+            g_skip_format = 0;
             g_format_type = PART_FS_FAT16;
+            redraw = 1;
+            return;
+        }
+        if (point_in_rect(mx, my, box_x, wy + 148, box_width, 38) &&
+            target_supports_skip_format(g_target)) {
+            g_skip_format = 1;
+            g_format_type = g_target->part->fs_type;
             redraw = 1;
             return;
         }

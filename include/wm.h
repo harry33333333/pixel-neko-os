@@ -9,6 +9,7 @@ void wm_on_resolution_change(int w, int h);
 void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_release);
 void wm_draw(unsigned char* v);
 int wm_is_dragging(void);
+int wm_get_drag_box(int* x, int* y, int* w, int* h);
 int wm_need_mouse_reset(void);
 void wm_set_input_event_tick(int tick);
 int wm_get_input_event_tick(void);

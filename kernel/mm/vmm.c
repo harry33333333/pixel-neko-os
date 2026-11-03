@@ -266,6 +266,7 @@ void vmm_init(void) {
     pat_lo &= ~(0xFF << 8);
     pat_lo |= (0x01 << 8);
     wrmsr(IA32_PAT_MSR, pat_lo, pat_hi);
+    vmm_switch_pml4(g_kernel_pml4);
 
     log_printf("[VMM] IA32_PAT MSR configured: PAT Entry 1 = 0x01 (Write-Combining WC enabled).\n");
 

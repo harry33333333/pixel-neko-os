@@ -1,6 +1,8 @@
 #include "ui_compat.h"
 #include "apic.h"
+#include "audio.h"
 #include "boot_framebuffer.h"
+#include "gfx_accel.h"
 #include "input.h"
 #include "keyboard.h"
 #include "mm.h"
@@ -39,6 +41,12 @@ static int g_cursor_saved_x = -1;
 static int g_cursor_saved_y = -1;
 static bool g_cursor_saved_valid = false;
 static bool g_cursor_invalidated = false;
+
+static bool g_drag_box_saved = false;
+static int g_drag_bx = 0;
+static int g_drag_by = 0;
+static int g_drag_bw = 0;
+static int g_drag_bh = 0;
 
 static const uint8_t g_vga_palette[16][3] = {
     {0, 0, 0}, {0, 0, 128}, {0, 128, 0}, {0, 128, 128},
@@ -231,7 +239,11 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
                 dst[dx] = surface_pixel_to_rgb32(source, sx, sy);
             }
         }
+        gfx_accel_present_rect(dst_x0, dst_y0, dst_x1 - dst_x0, dst_y1 - dst_y0);
+        boot_framebuffer_flush();
+        return;
     }
+    gfx_accel_present_rect(x, y, width, height);
     boot_framebuffer_flush();
 }
 
@@ -259,6 +271,47 @@ void mouse_reset(unsigned char* surface) {
     g_cursor_saved_valid = false;
 }
 
+static void ui_xor_pixel(unsigned char* surface, int px, int py) {
+    if (px < 0 || px >= screen_w || py < 0 || py >= screen_h) return;
+    if (((px + py) & 1) != 0) return;
+    uint32_t mask = (screen_bpp <= 8) ? 0x0Fu :
+                    ((screen_bpp <= 16) ? 0xFFFFu : 0x00FFFFFFu);
+    uint32_t raw = surface_read_raw(surface, px, py);
+    surface_write_raw(surface, px, py, raw ^ mask);
+}
+
+static void ui_xor_drag_box(unsigned char* surface,
+                            int bx, int by, int bw, int bh) {
+    if (!surface || bw <= 0 || bh <= 0) return;
+    for (int i = 0; i < bw; i++) {
+        ui_xor_pixel(surface, bx + i, by);
+        if (bh > 1) {
+            ui_xor_pixel(surface, bx + i, by + bh - 1);
+        }
+    }
+    for (int i = 1; i < bh - 1; i++) {
+        ui_xor_pixel(surface, bx, by + i);
+        if (bw > 1) {
+            ui_xor_pixel(surface, bx + bw - 1, by + i);
+        }
+    }
+}
+
+static void ui_sync_drag_box_to_lfb(const unsigned char* surface,
+                                    int bx, int by, int bw, int bh) {
+    if (!surface || bw <= 0 || bh <= 0) return;
+    copy_rect_to_lfb(surface, bx, by, bw, 1);
+    if (bh > 1) {
+        copy_rect_to_lfb(surface, bx, by + bh - 1, bw, 1);
+    }
+    if (bh > 2) {
+        copy_rect_to_lfb(surface, bx, by + 1, 1, bh - 2);
+        if (bw > 1) {
+            copy_rect_to_lfb(surface, bx + bw - 1, by + 1, 1, bh - 2);
+        }
+    }
+}
+
 void set_resolution(int width, int height, int bpp) {
     if (width < 320) width = 320;
     if (width > UI_MAX_WIDTH) width = UI_MAX_WIDTH;
@@ -268,6 +321,10 @@ void set_resolution(int width, int height, int bpp) {
 
     if (g_cursor_saved_valid) {
         mouse_reset(backbuffer);
+    }
+    if (g_drag_box_saved) {
+        ui_xor_drag_box(backbuffer, g_drag_bx, g_drag_by, g_drag_bw, g_drag_bh);
+        g_drag_box_saved = false;
     }
 
     screen_w = width;
@@ -345,6 +402,8 @@ void mouse_draw(unsigned char* surface) {
 
 void ui_desktop_start(void) {
     if (g_started) return;
+    gfx_accel_init();
+    audio_init();
     wm_init();
     wm_draw(backbuffer);
     ui_draw_cursor(backbuffer);
@@ -372,14 +431,25 @@ static void ui_update_pointer(input_event_t* event) {
 void ui_desktop_poll(void) {
     if (!g_started) return;
     timer_update();
+    audio_poll();
 
     int prev_mx = g_cursor_saved_x;
     int prev_my = g_cursor_saved_y;
     bool had_cursor = g_cursor_saved_valid;
     g_cursor_invalidated = false;
 
-    /* Remove cursor from backbuffer before WM updates or redraws */
+    bool had_drag_box = g_drag_box_saved;
+    int prev_bx = g_drag_bx;
+    int prev_by = g_drag_by;
+    int prev_bw = g_drag_bw;
+    int prev_bh = g_drag_bh;
+
+    /* Remove cursor and drag box from backbuffer before WM updates or redraws */
     mouse_reset(backbuffer);
+    if (g_drag_box_saved) {
+        ui_xor_drag_box(backbuffer, g_drag_bx, g_drag_by, g_drag_bw, g_drag_bh);
+        g_drag_box_saved = false;
+    }
 
     input_event_t event;
     while (input_poll_event(&event)) {
@@ -409,19 +479,44 @@ void ui_desktop_poll(void) {
     wm_update(backbuffer, g_mouse_x, g_mouse_y, (int)g_mouse_buttons, 0, 0);
     wm_draw(backbuffer);
 
+    int bx = 0, by = 0, bw = 0, bh = 0;
+    bool has_drag_box = (wm_get_drag_box(&bx, &by, &bw, &bh) != 0);
+    bool box_changed = (had_drag_box != has_drag_box) ||
+                       (has_drag_box && (bx != prev_bx || by != prev_by ||
+                                         bw != prev_bw || bh != prev_bh));
+
     bool full_sync = g_cursor_invalidated || (wm_need_mouse_reset() != 0);
     bool moved = (!had_cursor) || (g_mouse_x != prev_mx) || (g_mouse_y != prev_my);
 
-    if (!full_sync && moved && had_cursor) {
-        copy_rect_to_lfb(backbuffer, prev_mx, prev_my, CURSOR_W, CURSOR_H);
+    if (!full_sync) {
+        if (had_drag_box && (box_changed || moved)) {
+            ui_sync_drag_box_to_lfb(backbuffer, prev_bx, prev_by, prev_bw, prev_bh);
+        }
+        if ((moved || box_changed) && had_cursor) {
+            copy_rect_to_lfb(backbuffer, prev_mx, prev_my, CURSOR_W, CURSOR_H);
+        }
+    }
+
+    if (has_drag_box) {
+        ui_xor_drag_box(backbuffer, bx, by, bw, bh);
+        g_drag_box_saved = true;
+        g_drag_bx = bx;
+        g_drag_by = by;
+        g_drag_bw = bw;
+        g_drag_bh = bh;
     }
 
     ui_draw_cursor(backbuffer);
 
     if (full_sync) {
         copy_fullscreen_to_lfb(backbuffer);
-    } else if (moved) {
-        copy_rect_to_lfb(backbuffer, g_mouse_x, g_mouse_y, CURSOR_W, CURSOR_H);
+    } else {
+        if (has_drag_box && (box_changed || moved)) {
+            ui_sync_drag_box_to_lfb(backbuffer, bx, by, bw, bh);
+        }
+        if (moved || box_changed) {
+            copy_rect_to_lfb(backbuffer, g_mouse_x, g_mouse_y, CURSOR_W, CURSOR_H);
+        }
     }
 }
 

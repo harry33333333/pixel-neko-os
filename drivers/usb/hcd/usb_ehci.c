@@ -8,12 +8,23 @@
 #define EHCI_MAX_CONTROLLERS 4
 #define EHCI_MAX_INTR_SLOTS  12
 
+/*
+ * Per Intel EHCI Specification 1.0 Appendix B (64-bit Data Structures):
+ * When HCCPARAMS.AC64 == 1 (e.g. Intel 5 Series / H55 Express 8086:3b34 & 3b3c),
+ * hardware unconditionally accesses the 5 extended buffer pointer dwords
+ * (offsets 0x20..0x33 in qTD and offsets 0x30..0x43 in QH).
+ * Including ext_buffer[5] and aligning to 64 bytes is valid for both 32-bit
+ * (AC64 == 0) and 64-bit (AC64 == 1) EHCI controllers and prevents setup_qtd's
+ * extended pointers from overlapping data_qtd!
+ */
 typedef struct {
     volatile uint32_t next;
     volatile uint32_t alt_next;
     volatile uint32_t token;
     volatile uint32_t buffer[5];
-} __attribute__((aligned(32))) ehci_qtd_t;
+    volatile uint32_t ext_buffer[5];
+    uint32_t pad[3];
+} __attribute__((aligned(64))) ehci_qtd_t;
 
 typedef struct {
     volatile uint32_t head;
@@ -24,7 +35,9 @@ typedef struct {
     volatile uint32_t alt_qtd;
     volatile uint32_t token;
     volatile uint32_t buffer[5];
-} __attribute__((aligned(32))) ehci_qh_t;
+    volatile uint32_t ext_buffer[5];
+    uint32_t pad[5];
+} __attribute__((aligned(64))) ehci_qh_t;
 
 typedef struct {
     bool used;
@@ -473,10 +486,11 @@ static void ehci_poll(usb_hci_t* hci) {
             continue;
         }
         if (c->ports_seen & bit) continue;
+        c->ports_seen |= bit;
         uint8_t speed = (uint8_t)ehci_port_reset(hci, port);
         if (speed == USB_SPEED_HIGH) {
             log_printf("[EHCI] root port %u High-Speed connected\n", port);
-            if (usb_enumerate(hci, port, speed) == 0) c->ports_seen |= bit;
+            (void)usb_enumerate(hci, port, speed);
         } else if (c->companion_present) {
             value = ehci_reg_read(c, reg);
             if (value & EHCI_PORT_CONNECT) {
@@ -529,7 +543,9 @@ int ehci_probe(const pci_device_t* device) {
     uint32_t hcsparams = ehci_reg_read(c, 0x04);
     c->ports = hcsparams & 0x0F;
     if (!c->ports) return -1;
-    c->companion_present = ehci_companion_exists();
+    /* Check HCSPARAMS N_CC (bits 15:12): Intel H55 RMH has N_CC == 0 */
+    uint32_t n_cc = (hcsparams >> 12) & 0x0Fu;
+    c->companion_present = (n_cc > 0) && ehci_companion_exists();
     if (usb_dma_alloc_zero(sizeof(ehci_dma_t), UINT32_MAX, PAGE_SIZE,
                            &c->dma) != 0) {
         return -1;
@@ -540,13 +556,17 @@ int ehci_probe(const pci_device_t* device) {
     ehci_reg_write(c, c->operational + 0x08, 0);
     uint32_t command = ehci_reg_read(c, c->operational);
     ehci_reg_write(c, c->operational, command & ~EHCI_CMD_RUN);
-    usb_delay_ms(10);
+    for (int i = 0; i < 20; i++) {
+        if (ehci_reg_read(c, c->operational + 0x04) & EHCI_STS_HALTED) break;
+        usb_delay_ms(1);
+    }
     ehci_reg_write(c, c->operational, EHCI_CMD_RESET);
     for (int i = 0; i < 100; i++) {
         if (!(ehci_reg_read(c, c->operational) & EHCI_CMD_RESET)) break;
         usb_delay_ms(1);
     }
     if (ehci_reg_read(c, c->operational) & EHCI_CMD_RESET) return -1;
+    ehci_reg_write(c, c->operational + 0x10, 0); /* CTRLDSSEGMENT = 0 */
     ehci_reg_write(c, c->operational + 0x04, 0x3F);
     ehci_reg_write(c, c->operational + 0x08, 0);
     ehci_reg_write(c, c->operational + 0x0C, 0);
@@ -562,9 +582,11 @@ int ehci_probe(const pci_device_t* device) {
     c->mem->async_qh.epchar = (1u << 15);
     c->mem->async_qh.next_qtd = 1;
     c->mem->async_qh.alt_qtd = 1;
+    c->mem->async_qh.token = EHCI_QTD_HALTED;
+    dma_sync_for_device(&c->dma);
+
     ehci_reg_write(c, c->operational + 0x18,
                    ehci_phys(c, &c->mem->async_qh));
-    ehci_reg_write(c, c->operational + 0x10, 0);
     ehci_reg_write(c, c->operational + 0x40, 1);
     ehci_reg_write(c, c->operational,
                    (8u << 16) | EHCI_CMD_RUN | EHCI_CMD_PERIODIC | EHCI_CMD_ASYNC);
@@ -573,10 +595,11 @@ int ehci_probe(const pci_device_t* device) {
     for (uint8_t port = 1; port <= c->ports; port++) {
         uint32_t reg = c->operational + 0x44 + 4u * (port - 1);
         uint32_t value = ehci_reg_read(c, reg);
-        ehci_write_portsc(c, reg, value | EHCI_PORT_POWER,
+        ehci_write_portsc(c, reg, (value & ~EHCI_PORT_OWNER) | EHCI_PORT_POWER,
                           value & EHCI_PORT_RWC);
     }
-    usb_delay_ms(100);
+    /* Wait 150ms for root ports and integrated Rate Matching Hub (RMH) to power up */
+    usb_delay_ms(150);
 
     c->hci.name = "EHCI 2.0";
     c->hci.kind = USB_HCI_KIND_EHCI;

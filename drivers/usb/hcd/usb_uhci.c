@@ -530,13 +530,12 @@ static void uhci_poll(usb_hci_t* hci) {
             continue;
         }
         if (c->ports_seen & bit) continue;
+        c->ports_seen |= bit;
         uint8_t speed = (uint8_t)uhci_port_reset(hci, port);
         if (speed) {
             log_printf("[UHCI] root port %u %s connected\n",
                        port, usb_speed_name(speed));
-            if (usb_enumerate(hci, port, speed) == 0) {
-                c->ports_seen |= bit;
-            }
+            (void)usb_enumerate(hci, port, speed);
         }
     }
 }

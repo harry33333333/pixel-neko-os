@@ -98,5 +98,7 @@ size_t acpi_get_ecam_range_count(void);
 const acpi_ecam_range_t* acpi_get_ecam_range(size_t index);
 bool acpi_has_pic(void);
 uint32_t acpi_get_core_count(void);
+void acpi_shutdown(void);
+void acpi_reboot(void);
 
 #endif /* _ACPI_H */

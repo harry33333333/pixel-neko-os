@@ -84,7 +84,55 @@ uint64_t apic_get_ticks(void) {
     return g_lapic_ticks;
 }
 
+static void pit_init_100hz(void) {
+    // Program 8254 PIT Channel 0 to 100 Hz (1193182 / 100 = 11932)
+    uint16_t divisor = 11932;
+    outb(0x43, 0x34); // Channel 0, lo/hi byte, rate generator (mode 2), binary
+    outb(0x40, (uint8_t)(divisor & 0xFF));
+    outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+}
+
+static uint32_t calibrate_lapic_timer_100hz(void) {
+    // Use 8254 PIT Channel 2 in one-shot mode to measure 10ms (1/100th sec = 11932 PIT ticks)
+    uint16_t pit_ticks = 11932;
+    uint8_t gate = inb(0x61);
+    outb(0x61, (uint8_t)((gate & 0xFD) | 0x01)); // Disable speaker, enable PIT Ch2 gate
+    outb(0x43, 0xB0);                             // Channel 2, lo/hi, mode 0 (interrupt on terminal count)
+    outb(0x42, (uint8_t)(pit_ticks & 0xFF));
+    outb(0x42, (uint8_t)((pit_ticks >> 8) & 0xFF));
+
+    // Reset PIT Ch2 gate trigger
+    gate = inb(0x61) & 0xFE;
+    outb(0x61, gate);
+    outb(0x61, (uint8_t)(gate | 0x01));
+
+    // Start LAPIC timer in one-shot mode (masked) from 0xFFFFFFFF with divider 16
+    lapic_write(LAPIC_TIMER_DIV, 0x03);
+    lapic_write(LAPIC_LVT_TIMER, 0x10000 | 32);
+    lapic_write(LAPIC_TIMER_INITCNT, 0xFFFFFFFF);
+
+    // Wait for PIT Channel 2 output (bit 5 of port 0x61) to go high, with safety timeout
+    uint32_t spins = 0;
+    while (!(inb(0x61) & 0x20) && spins < 5000000u) {
+        spins++;
+    }
+
+    uint32_t curr = lapic_read(LAPIC_TIMER_CURRCNT);
+    lapic_write(LAPIC_LVT_TIMER, 0x10000);
+    outb(0x61, (uint8_t)(gate & 0xFC));
+
+    uint32_t elapsed = 0xFFFFFFFFu - curr;
+    // Clamp to sane bounds if PIT Ch2 is not emulated or fast
+    if (elapsed < 10000u || spins >= 5000000u) {
+        elapsed = 0;
+    }
+    return elapsed;
+}
+
 void apic_init(void) {
+    // 0. Always program 8254 PIT Channel 0 to 100 Hz (Legacy BIOS leaves it at 18.2 Hz)
+    pit_init_100hz();
+
     // 1. Enable LAPIC globally in CPU via IA32_APIC_BASE MSR (0x1B)
     uint32_t msr_lo = 0, msr_hi = 0;
     rdmsr(0x1B, &msr_lo, &msr_hi);
@@ -119,13 +167,21 @@ void apic_init(void) {
     lapic_write(LAPIC_LVT_LINT1, 0x00400); // LINT1 = NMI
     lapic_write(LAPIC_LVT_ERROR, 0x10000); // Mask error interrupt
 
-    // 5. Configure LAPIC Timer (Periodic mode at Vector 32)
-    lapic_write(LAPIC_TIMER_DIV, 0x03);           // Divide by 16
-    lapic_write(LAPIC_LVT_TIMER, (1 << 17) | 32); // Periodic mode, Vector 32
-    lapic_write(LAPIC_TIMER_INITCNT, 0x200000);   // Periodic countdown interval
+    // 5. Calibrate and configure LAPIC Timer (Periodic mode at 100 Hz on Vector 32)
+    uint32_t calibrated_cnt = calibrate_lapic_timer_100hz();
+    bool use_ioapic_pit = false;
+    if (calibrated_cnt >= 10000u) {
+        lapic_write(LAPIC_TIMER_DIV, 0x03);           // Divide by 16
+        lapic_write(LAPIC_LVT_TIMER, (1 << 17) | 32); // Periodic mode, Vector 32
+        lapic_write(LAPIC_TIMER_INITCNT, calibrated_cnt);
+        log_printf("[APIC] LAPIC Timer calibrated to 100 Hz (initcnt=%u, Vector 32)\n", calibrated_cnt);
+    } else {
+        lapic_write(LAPIC_LVT_TIMER, 0x10000); // Mask LAPIC timer, rely on 100 Hz PIT via IOAPIC
+        use_ioapic_pit = true;
+        log_printf("[APIC] LAPIC Timer calibration fallback to 100 Hz IOAPIC PIT (Vector 32)\n");
+    }
 
     irq_install_handler(0, apic_timer_handler);
-    log_printf("[APIC] LAPIC Timer configured in periodic mode (Vector 32)\n");
 
     // 6. Map and configure I/O APIC via HHDM
     uint64_t ioapic_phys = acpi_get_ioapic_base();
@@ -142,11 +198,12 @@ void apic_init(void) {
         ioapic_set_entry(i, 32 + i, 0, 0, true);
     }
 
-    // Configure Timer IRQ 0 -> GSI routing via ACPI ISO table
+    // Configure Timer IRQ 0 -> GSI routing via ACPI ISO table (unmasked only if LAPIC timer fallback)
     uint32_t timer_gsi = acpi_remap_irq(0);
     uint16_t timer_flags = acpi_get_irq_flags(0);
-    ioapic_set_entry(timer_gsi, 32, 0, timer_flags, false);
-    log_printf("[APIC] Routed IRQ 0 (Timer) to GSI %u, Vector 32\n", timer_gsi);
+    ioapic_set_entry(timer_gsi, 32, 0, timer_flags, !use_ioapic_pit);
+    log_printf("[APIC] Routed IRQ 0 (Timer) to GSI %u, Vector 32 (%s)\n",
+               timer_gsi, use_ioapic_pit ? "active" : "masked, using calibrated LAPIC timer");
 
     // Configure PS/2 keyboard IRQ 1 and mouse IRQ 12 routing. Drivers install
     // their handlers after the unified input stack is initialized.

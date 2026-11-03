@@ -5,7 +5,7 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 152
+PIXEL_NEKO_BUILD_NUMBER ?= 170
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -46,6 +46,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/process/elf.c \
            kernel/process/ipc.c \
            kernel/splash.c \
+           kernel/driver.c \
            kernel/ui_compat.c \
            kernel/ui_timer.c \
            kernel/ui_settings.c \
@@ -77,9 +78,19 @@ C_SRCS   = kernel/core/main.c \
            fs/p5_test.c \
            drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
+           drivers/video/ati_mach64.c \
+           drivers/video/nvidia_g7x.c \
+           drivers/video/vmware_svga.c \
+           drivers/video/gfx_accel.c \
            drivers/audio/speaker.c \
-           drivers/audio/audio_compat.c \
-           drivers/video/gfx_accel_compat.c \
+           drivers/audio/cmi8738.c \
+           drivers/audio/ct4810.c \
+           drivers/audio/ac97.c \
+           drivers/audio/hdaudio.c \
+           drivers/audio/wav_dec.c \
+           drivers/audio/flac_dec.c \
+           drivers/audio/mp3_dec.c \
+           drivers/audio/audio.c \
            wm/font.c \
            wm/wallpaper.c \
            wm/image_dec.c \
@@ -122,6 +133,10 @@ version:
 %.o: %.asm
 	@mkdir -p $(dir $@)
 	$(NASM) $(NASMFLAGS) -o $@ $<
+
+drivers/audio/mp3_dec.o: drivers/audio/mp3_dec.c
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -c -o $@ $<
 
 %.o: %.c
 	@mkdir -p $(dir $@)

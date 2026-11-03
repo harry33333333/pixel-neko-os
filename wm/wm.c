@@ -75,7 +75,7 @@ static int wx=80, wy=52, ww=420, wh=200;
 static int desk_icon_x[11] = {0}, desk_icon_y[11] = {0};
 static int icon_dragging = -1;
 static int icon_drag_ox = 0, icon_drag_oy = 0;
-static int icon_drag_active = 0;
+static int icon_drag_active = 0, icon_drag_bx = 0, icon_drag_by = 0;
 static int icon_pressed = -1;
 static int icon_press_ox = 0, icon_press_oy = 0;
 static int icon_press_moved = 0;
@@ -126,13 +126,13 @@ void bring_to_top(int id) {
     }
 }
 static int dragging=0, dgo=0, dgoy=0, dgw=0;
-static int drag_active=0;
+static int drag_active=0, drag_bx=0, drag_by=0, drag_bw=0, drag_bh=0;
 static int okp=0, okbx=0, okby=0;
 static int clp=0, clcx=0, clcy=0, clw=0;
 static int mip=0, miw=0;
 
 static int resizing=0;
-static int rs_active=0;
+static int rs_active=0, rs_bx=0, rs_by=0, rs_bw=0, rs_bh=0;
 static int power_confirm=0;
 static int power_cancel_pressed=0, power_ok_pressed=0;
 
@@ -819,7 +819,31 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh) {
     if(mx>=wx+ww-10 && mx<wx+ww && my>=wy+wh-10 && my<wy+wh) return 1;
     return 0;
 }
-int wm_is_dragging(void){return dragging;}
+int wm_is_dragging(void){return dragging || resizing || (icon_dragging != -1);}
+int wm_get_drag_box(int* x, int* y, int* w, int* h){
+    if (drag_active) {
+        if (x) *x = drag_bx;
+        if (y) *y = drag_by;
+        if (w) *w = drag_bw;
+        if (h) *h = drag_bh;
+        return 1;
+    }
+    if (rs_active) {
+        if (x) *x = rs_bx;
+        if (y) *y = rs_by;
+        if (w) *w = rs_bw;
+        if (h) *h = rs_bh;
+        return 1;
+    }
+    if (icon_drag_active) {
+        if (x) *x = icon_drag_bx;
+        if (y) *y = icon_drag_by;
+        if (w) *w = 36;
+        if (h) *h = 48;
+        return 1;
+    }
+    return 0;
+}
 int wm_need_mouse_reset(void){int r=need_mr;need_mr=0;return r;}
 void wm_set_input_event_tick(int tick){input_event_tick=tick;}
 int wm_get_input_event_tick(void){
@@ -1021,7 +1045,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         key = keyboard_get_key();
     }
 
-    // Handle active desktop icon drag
+    // Handle active desktop icon drag (fast outline box)
     if (icon_dragging != -1) {
         if (mb & 1) {
             int nix = mx - icon_drag_ox;
@@ -1030,13 +1054,14 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (nix + 36 > screen_w) nix = screen_w - 36;
             if (niy < 20) niy = 20;
             if (niy + 48 > screen_h) niy = screen_h - 48;
-            if (nix != desk_icon_x[icon_dragging] || niy != desk_icon_y[icon_dragging]) {
-                desk_icon_x[icon_dragging] = nix;
-                desk_icon_y[icon_dragging] = niy;
-                redraw = 1;
-                need_mr = 1;
-            }
+            icon_drag_bx = nix;
+            icon_drag_by = niy;
+            icon_drag_active = 1;
         } else {
+            if (icon_drag_active) {
+                desk_icon_x[icon_dragging] = icon_drag_bx;
+                desk_icon_y[icon_dragging] = icon_drag_by;
+            }
             icon_dragging = -1;
             icon_drag_active = 0;
             redraw = 1;
@@ -1056,10 +1081,11 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 icon_dragging = icon_pressed;
                 icon_drag_ox = icon_press_ox;
                 icon_drag_oy = icon_press_oy;
+                icon_drag_bx = desk_icon_x[icon_pressed];
+                icon_drag_by = desk_icon_y[icon_pressed];
+                icon_drag_active = 1;
                 icon_pressed = -1;
                 icon_press_moved = 1;
-                redraw = 1;
-                need_mr = 1;
                 return;
             }
         } else {
@@ -1080,7 +1106,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Handle active window resize
+    // Handle active window resize (fast outline box)
     if (resizing) {
         if (mb & 1) {
             int nw = 0, nh = 0, rx = 0, ry = 0;
@@ -1096,16 +1122,19 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (rx + nw > screen_w) nw = screen_w - rx;
             if (ry + nh > screen_h) nh = screen_h - ry;
 
-            if (dgw == 1 && (nw != ww2 || nh != wh2)) { ww2 = nw; wh2 = nh; redraw = 1; }
-            else if (dgw == 2 && (nw != wcw || nh != wch)) { wcw = nw; wch = nh; redraw = 1; }
-            else if (dgw == 3 && (nw != cpw || nh != cph)) { cpw = nw; cph = nh; redraw = 1; }
-            else if (dgw == 4 && (nw != fmw || nh != fmh)) { fmw = nw; fmh = nh; redraw = 1; }
-            else if (dgw == 5 && (nw != edw || nh != edh)) { edw = nw; edh = nh; redraw = 1; }
-            else if (dgw == 6 && (nw != siw || nh != sih)) { siw = nw; sih = nh; redraw = 1; }
-            else if (dgw == 7 && (nw != pzw || nh != pzh)) { pzw = nw; pzh = nh; redraw = 1; }
-            else if (dgw == 9 && (nw != imw || nh != imh)) { imw = nw; imh = nh; redraw = 1; }
-            need_mr = 1;
+            rs_bx = rx; rs_by = ry; rs_bw = nw; rs_bh = nh;
+            rs_active = 1;
         } else {
+            if (rs_active) {
+                if (dgw == 1) { ww2 = rs_bw; wh2 = rs_bh; }
+                else if (dgw == 2) { wcw = rs_bw; wch = rs_bh; }
+                else if (dgw == 3) { cpw = rs_bw; cph = rs_bh; }
+                else if (dgw == 4) { fmw = rs_bw; fmh = rs_bh; }
+                else if (dgw == 5) { edw = rs_bw; edh = rs_bh; }
+                else if (dgw == 6) { siw = rs_bw; sih = rs_bh; }
+                else if (dgw == 7) { pzw = rs_bw; pzh = rs_bh; }
+                else if (dgw == 9) { imw = rs_bw; imh = rs_bh; }
+            }
             resizing = 0;
             rs_active = 0;
             dgw = 0;
@@ -1115,7 +1144,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
-    // Handle active window title-bar drag
+    // Handle active window title-bar drag (fast outline box)
     if (dragging) {
         if (mb & 1) {
             int nwx = mx - dgo;
@@ -1138,15 +1167,18 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (nwx + nww > screen_w) nwx = screen_w - nww;
             if (nwy + nwh > screen_h) nwy = screen_h - nwh;
 
-            int* cwx = dgw==1?&wx:dgw==2?&wx2:dgw==3?&wcx:dgw==4?&cpx:dgw==5?&fmx:dgw==6?&edx:dgw==7?&six:dgw==8?&pzx:dgw==9?&imx:dgw==10?&npx:&insx;
-            int* cwy = dgw==1?&wy:dgw==2?&wy2:dgw==3?&wcy:dgw==4?&cpy:dgw==5?&fmy:dgw==6?&edy:dgw==7?&siy:dgw==8?&pzy:dgw==9?&imy:dgw==10?&npy:&insy;
-            if (*cwx != nwx || *cwy != nwy) {
-                *cwx = nwx;
-                *cwy = nwy;
-                redraw = 1;
-                need_mr = 1;
-            }
+            drag_bx = nwx;
+            drag_by = nwy;
+            drag_bw = nww;
+            drag_bh = nwh;
+            drag_active = 1;
         } else {
+            if (drag_active) {
+                int* cwx = dgw==1?&wx:dgw==2?&wx2:dgw==3?&wcx:dgw==4?&cpx:dgw==5?&fmx:dgw==6?&edx:dgw==7?&six:dgw==8?&pzx:dgw==9?&imx:dgw==10?&npx:&insx;
+                int* cwy = dgw==1?&wy:dgw==2?&wy2:dgw==3?&wcy:dgw==4?&cpy:dgw==5?&fmy:dgw==6?&edy:dgw==7?&siy:dgw==8?&pzy:dgw==9?&imy:dgw==10?&npy:&insy;
+                *cwx = drag_bx;
+                *cwy = drag_by;
+            }
             dragging = 0;
             drag_active = 0;
             dgw = 0;
@@ -1250,9 +1282,14 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             // 2. Check Title Bar for Window Dragging (full 19px height)
             if (my >= win_y && my < win_y + 19) {
                 dragging = 1;
+                drag_active = 0;
                 dgw = top_id + 1;
                 dgo = mx - win_x;
                 dgoy = my - win_y;
+                drag_bx = win_x;
+                drag_by = win_y;
+                drag_bw = win_w;
+                drag_bh = win_h;
                 return;
             }
 
@@ -1264,6 +1301,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     rs_dir(mx, my, win_x, win_y, win_w, real_h)) {
                     resizing = 1;
                     rs_active = 0;
+                    rs_bx = win_x;
+                    rs_by = win_y;
+                    rs_bw = win_w;
+                    rs_bh = real_h;
                     dgw = (top_id == 8) ? 9 : top_id;
                     return;
                 }

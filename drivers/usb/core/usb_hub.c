@@ -90,14 +90,8 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
 
     log_printf("[HUB ] Device connected: hub=%u port=%u status=0x%04x\n",
                hub->address, port, status);
-    for (int debounce = 0; debounce < 5; debounce++) {
-        usb_delay_ms(10);
-        uint16_t next_status = 0;
-        if (hub_get_port_status(hub, port, &next_status, NULL) != 0 ||
-            !(next_status & HUB_PORT_CONNECTION)) {
-            return;
-        }
-    }
+    usb_delay_ms(20);
+    hub_clear_changes(hub, port, change);
 
     hub_request(hub, USB_DIR_OUT, USB_REQ_SET_FEATURE,
                 HUB_FEATURE_PORT_RESET, port, NULL, 0);
@@ -107,8 +101,9 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
         if (!(status & HUB_PORT_RESET)) break;
         usb_delay_ms(1);
     }
-    usb_delay_ms(10);
+    usb_delay_ms(20);
     hub_clear_changes(hub, port, change);
+    if (hub_get_port_status(hub, port, &status, &change) != 0) return;
     if (!(status & HUB_PORT_CONNECTION)) return;
 
     uint8_t speed = hub_port_speed(hub, status);
@@ -122,7 +117,7 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
             state->retry_tick[port] = 0;
         }
     } else {
-        state->retry_tick[port] = apic_get_ticks() + 500;
+        state->retry_tick[port] = apic_get_ticks() + 100;
     }
     (void)state;
 }
@@ -137,14 +132,22 @@ int usb_hub_attach(usb_device_t* hub) {
         result = usb_control_msg(
             hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
             USB_REQ_GET_DESCRIPTOR, USB_DT_SS_HUB << 8, 0,
-            descriptor, sizeof(descriptor));
+            descriptor, 12);
     }
     if (result < 7 || (descriptor[1] != USB_DT_HUB && descriptor[1] != USB_DT_SS_HUB)) {
         memset(descriptor, 0, sizeof(descriptor));
         result = usb_control_msg(
             hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
             USB_REQ_GET_DESCRIPTOR, USB_DT_HUB << 8, 0,
-            descriptor, sizeof(descriptor));
+            descriptor, 8);
+        if (result >= 7 && descriptor[0] > 8 &&
+            descriptor[0] <= sizeof(descriptor)) {
+            int full_len = descriptor[0];
+            (void)usb_control_msg(
+                hub, USB_DIR_IN | USB_RT_CLASS | USB_RT_DEVICE,
+                USB_REQ_GET_DESCRIPTOR, USB_DT_HUB << 8, 0,
+                descriptor, full_len);
+        }
     }
     if (result < 7 || (descriptor[1] != USB_DT_HUB && descriptor[1] != USB_DT_SS_HUB)) {
         log_printf("[HUB ] Invalid hub descriptor (result=%d)\n", result);
@@ -176,7 +179,7 @@ int usb_hub_attach(usb_device_t* hub) {
         hub_request(hub, USB_DIR_OUT, USB_REQ_SET_FEATURE,
                     HUB_FEATURE_PORT_POWER, port, NULL, 0);
     }
-    uint32_t delay = power_good_ms < 100 ? 100 : power_good_ms;
+    uint32_t delay = power_good_ms < 150 ? 150 : power_good_ms;
     usb_delay_ms(delay);
     log_printf("[HUB ] Attached address=%u ports=%u power_good=%ums\n",
                hub->address, ports, power_good_ms);
@@ -212,7 +215,7 @@ void usb_hub_poll(void) {
             bitmap, state->status_endpoint->max_packet);
         if (length > 0) status_change = true;
     }
-    if (!status_change && now - g_last_poll_tick < 500) return;
+    if (!status_change && now - g_last_poll_tick < 50) return;
     g_last_poll_tick = now;
 
     for (int i = 0; i < g_hub_count; i++) {

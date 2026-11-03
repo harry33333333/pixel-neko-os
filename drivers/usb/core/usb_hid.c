@@ -593,7 +593,7 @@ static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
         hid->last_y = abs_y;
         hid->have_absolute_position = true;
 
-        if (dx || dy) {
+        if ((dx || dy) && hid->reports <= 8) {
             log_printf("[USBHID] MOUSE dx=%d dy=%d buttons=%u\n",
                        dx, dy, buttons);
         }
@@ -605,7 +605,7 @@ static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
          */
         x = clamp_i32(x, -32767, 32767);
         y = clamp_i32(y, -32767, 32767);
-        if (x || y) {
+        if ((x || y) && hid->reports <= 8) {
             log_printf("[USBHID] MOUSE dx=%d dy=%d buttons=%u\n",
                        x, y, buttons);
         }
@@ -613,7 +613,9 @@ static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
     }
 
     if (buttons != g_last_combined_buttons) {
-        log_printf("[USBHID] BUTTON buttons=%u\n", buttons);
+        if (hid->reports <= 8) {
+            log_printf("[USBHID] BUTTON buttons=%u\n", buttons);
+        }
         input_emit_mouse_button(buttons);
         g_last_combined_buttons = buttons;
     }
@@ -832,31 +834,33 @@ void usb_hid_poll(void) {
             !hid->device->hci->intr_in) {
             continue;
         }
-        uint8_t report[HID_REPORT_MAX_BYTES];
-        memset(report, 0, sizeof(report));
-        int length = hid->device->hci->intr_in(
-            hid->device->hci, hid->device, hid->endpoint, report,
-            hid->report_length);
-        if (length <= 0) continue;
-        hid->reports++;
-        if (hid->reports <= 8) {
-            log_printf("[USBHID] report address=%u len=%d data=%02x %02x %02x %02x\n",
-                       hid->device->address, length, report[0], report[1],
-                       report[2], report[3]);
-        }
+        for (int pkt = 0; pkt < 4; pkt++) {
+            uint8_t report[HID_REPORT_MAX_BYTES];
+            memset(report, 0, sizeof(report));
+            int length = hid->device->hci->intr_in(
+                hid->device->hci, hid->device, hid->endpoint, report,
+                hid->report_length);
+            if (length <= 0) break;
+            hid->reports++;
+            if (hid->reports <= 8) {
+                log_printf("[USBHID] report address=%u len=%d data=%02x %02x %02x %02x\n",
+                           hid->device->address, length, report[0], report[1],
+                           report[2], report[3]);
+            }
 
-        int payload_offset = 0;
-        hid_report_layout_t* layout =
-            layout_for_report(hid, report, length, &payload_offset);
-        if (!layout) continue;
-        const uint8_t* payload = report + payload_offset;
-        int payload_length = length - payload_offset;
-        if (hid->keyboard && layout->keys_count) {
-            process_keyboard(hid, layout, payload, payload_length);
-        }
-        if (hid->mouse && (layout->buttons_count || layout->x_size ||
-                           layout->y_size)) {
-            process_mouse(hid, layout, payload, payload_length);
+            int payload_offset = 0;
+            hid_report_layout_t* layout =
+                layout_for_report(hid, report, length, &payload_offset);
+            if (!layout) continue;
+            const uint8_t* payload = report + payload_offset;
+            int payload_length = length - payload_offset;
+            if (hid->keyboard && layout->keys_count) {
+                process_keyboard(hid, layout, payload, payload_length);
+            }
+            if (hid->mouse && (layout->buttons_count || layout->x_size ||
+                               layout->y_size)) {
+                process_mouse(hid, layout, payload, payload_length);
+            }
         }
     }
 }

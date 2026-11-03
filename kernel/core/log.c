@@ -14,18 +14,24 @@ static char g_history[LOG_HISTORY_LINES][LOG_LINE_SIZE];
 static int g_history_count = 0;
 static int g_history_next = 0;
 
+static bool g_serial_present = true;
+
 static void serial_init(void) {
     outb(0x3F8 + 1, 0x00); // Disable all interrupts
     outb(0x3F8 + 3, 0x80); // Enable DLAB (set baud rate divisor)
-    outb(0x3F8 + 0, 0x03); // Set divisor to 3 (lo byte) 38400 baud
+    outb(0x3F8 + 0, 0x01); // Set divisor to 1 (lo byte) 115200 baud
     outb(0x3F8 + 1, 0x00); //                  (hi byte)
     outb(0x3F8 + 3, 0x03); // 8 bits, no parity, one stop bit
     outb(0x3F8 + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
     outb(0x3F8 + 4, 0x03); // RTS/DSR set
+    if (inb(0x3F8 + 5) == 0xFF) {
+        g_serial_present = false;
+    }
 }
 
 static void serial_putc(char c) {
-    int timeout = 100000;
+    if (!g_serial_present) return;
+    int timeout = 4096;
     while (!(inb(0x3F8 + 5) & 0x20) && --timeout) {
     }
     outb(0x3F8, (unsigned char)c);

@@ -58,6 +58,8 @@ int usb_legacy_handoff(const pci_device_t* device) {
     if (device->class_code == 0x0C && device->subclass == 0x03 &&
         device->prog_if == 0x20 && device->bar[0].valid &&
         !device->bar[0].is_io && device->bar[0].address) {
+        pci_enable_memory(device);
+        pci_enable_bus_master(device);
         volatile uint8_t* mmio = (volatile uint8_t*)usb_map_mmio(
             device->bar[0].address, 0x100);
         if (mmio) {
@@ -69,21 +71,29 @@ int usb_legacy_handoff(const pci_device_t* device) {
                 uint8_t cap_id = (uint8_t)(legsup & 0xFFu);
                 uint8_t next = (uint8_t)((legsup >> 8) & 0xFFu);
                 if (cap_id == 0x01u) {
+                    /* Always assert OS Owned semaphore (bit 24) */
+                    pci_config_write(device->bus, device->slot,
+                                     device->function, eecp,
+                                     legsup | (1u << 24));
                     if (legsup & (1u << 16)) {
-                        pci_config_write(device->bus, device->slot,
-                                         device->function, eecp,
-                                         legsup | (1u << 24));
-                        for (int t = 0; t < 500; t++) {
+                        for (int t = 0; t < 1000; t++) {
                             legsup = pci_config_read(
                                 device->bus, device->slot,
                                 device->function, eecp);
                             if (!(legsup & (1u << 16))) break;
                             usb_delay_ms(1);
                         }
+                        if (legsup & (1u << 16)) {
+                            /* Force-clear BIOS Owned if SMM did not respond */
+                            pci_config_write(device->bus, device->slot,
+                                             device->function, eecp,
+                                             (legsup & ~(1u << 16)) | (1u << 24));
+                        }
                     }
-                    /* Disable SMI in USBLEGCTLSTS (eecp + 4) */
+                    /* Clear SMI enables (15:0) and W1C SMI status bits (31:29) in USBLEGCTLSTS */
                     pci_config_write(device->bus, device->slot,
-                                     device->function, (uint8_t)(eecp + 4), 0);
+                                     device->function, (uint8_t)(eecp + 4),
+                                     0xE0000000u);
                     log_printf("[USB ] EHCI BIOS ownership hand-off complete at EECP 0x%02x\n",
                                eecp);
                     return 0;
