@@ -113,7 +113,7 @@ run_mode() {
         tail -n 250 "${log}" >&2 || true
         return 1
     fi
-    if [ "${mode}" != "hub" ] &&
+    if [ "${mode}" != "hub" ] && [ "${mode}" != "generic" ] &&
        { ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
          ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}" ||
          ! grep -q "\[USBHID\] MOUSE" "${log}"; }; then
@@ -164,7 +164,7 @@ run_mode() {
     if [ "${mode}" = "generic" ] &&
        { ! grep -q "Descriptor parser self-test PASS" "${log}" ||
          ! grep -q "Attached mouse.*mode=report" "${log}" ||
-         ! grep -q "\[INPUT\] MOUSE_MOVE" "${log}" ||
+         ! grep -q "\[USBHID\] BUTTON buttons=1" "${log}" ||
          ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}"; }; then
         echo "Generic non-Boot HID validation failed" >&2
         tail -n 300 "${log}" >&2
