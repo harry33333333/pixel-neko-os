@@ -134,3 +134,7 @@ int keyboard_get_key(void) {
 int keyboard_get_ctrl(void) {
     return g_ctrl ? 1 : 0;
 }
+
+void keyboard_push_virtual(int key) {
+    if (key) legacy_push(key);
+}

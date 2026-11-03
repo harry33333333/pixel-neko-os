@@ -46,6 +46,7 @@ cat <<EOF > "${ROOT_DIR}/include/version.h"
 #define OS_VERSION      "2.0-alpha"
 #define OS_BUILD_DATE   "${BUILD_DATE}"
 #define OS_FULL_STRING  "Pixel Neko OS (Darwin ${BUILD_ID} - Codename Snow Neko)"
+#define KERNEL_BUILD    OS_BUILD
 
 #endif /* _VERSION_H */
 EOF

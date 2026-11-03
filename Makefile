@@ -13,7 +13,7 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -ffreestanding -nostdlib -nostartfiles \
           -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
           -std=gnu11 -O2 -Wall -Wextra \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm -Iapps -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage
 
 NASMFLAGS ?= -f elf64
 
@@ -45,6 +45,11 @@ C_SRCS   = kernel/core/main.c \
            kernel/process/scheduler.c \
            kernel/process/elf.c \
            kernel/process/ipc.c \
+           kernel/splash.c \
+           kernel/ui_compat.c \
+           kernel/ui_timer.c \
+           kernel/ui_settings.c \
+           kernel/ui_power.c \
            drivers/bus/device.c \
            drivers/bus/pci.c \
            drivers/input/input_manager.c \
@@ -72,7 +77,22 @@ C_SRCS   = kernel/core/main.c \
            fs/p5_test.c \
            drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
-           drivers/audio/speaker.c
+           drivers/audio/speaker.c \
+           drivers/audio/audio_compat.c \
+           drivers/video/gfx_accel_compat.c \
+           wm/font.c \
+           wm/wallpaper.c \
+           wm/image_dec.c \
+           wm/wm.c \
+           apps/calc.c \
+           apps/cpanel.c \
+           apps/editor.c \
+           apps/filemanager.c \
+           apps/sysinfo.c \
+           apps/puzzle.c \
+           apps/imageviewer.c \
+           apps/audioplayer.c \
+           apps/installer.c
 
 USER_CFLAGS ?= -m64 -march=core2 -msse2 -mno-red-zone \
                -ffreestanding -nostdlib -nostartfiles \
