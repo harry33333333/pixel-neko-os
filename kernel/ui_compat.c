@@ -239,6 +239,26 @@ void copy_fullscreen_to_lfb(const unsigned char* source) {
     copy_rect_to_lfb(source, 0, 0, screen_w, screen_h);
 }
 
+void mouse_invalidate(void) {
+    g_cursor_saved_valid = false;
+    g_cursor_invalidated = true;
+}
+
+void mouse_reset(unsigned char* surface) {
+    if (!surface || !g_cursor_saved_valid) return;
+    for (int row = 0; row < CURSOR_H; row++) {
+        int py = g_cursor_saved_y + row;
+        if (py < 0 || py >= screen_h) continue;
+        for (int col = 0; col < CURSOR_W; col++) {
+            int px = g_cursor_saved_x + col;
+            if (px >= 0 && px < screen_w) {
+                surface_write_raw(surface, px, py, g_cursor_saved[row][col]);
+            }
+        }
+    }
+    g_cursor_saved_valid = false;
+}
+
 void set_resolution(int width, int height, int bpp) {
     if (width < 320) width = 320;
     if (width > UI_MAX_WIDTH) width = UI_MAX_WIDTH;
@@ -264,26 +284,6 @@ void set_resolution(int width, int height, int bpp) {
     mouse_invalidate();
     memset(backbuffer, 0, (size_t)screen_pitch * (size_t)screen_h);
     wm_on_resolution_change(screen_w, screen_h);
-}
-
-void mouse_invalidate(void) {
-    g_cursor_saved_valid = false;
-    g_cursor_invalidated = true;
-}
-
-void mouse_reset(unsigned char* surface) {
-    if (!surface || !g_cursor_saved_valid) return;
-    for (int row = 0; row < CURSOR_H; row++) {
-        int py = g_cursor_saved_y + row;
-        if (py < 0 || py >= screen_h) continue;
-        for (int col = 0; col < CURSOR_W; col++) {
-            int px = g_cursor_saved_x + col;
-            if (px >= 0 && px < screen_w) {
-                surface_write_raw(surface, px, py, g_cursor_saved[row][col]);
-            }
-        }
-    }
-    g_cursor_saved_valid = false;
 }
 
 static void ui_draw_cursor(unsigned char* surface) {
