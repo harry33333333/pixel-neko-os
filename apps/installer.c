@@ -114,22 +114,22 @@ static uint64_t read_le64(const unsigned char* data) {
            ((uint64_t)read_le32(data + 4) << 32);
 }
 
-static void put_be16(unsigned char* data, uint16_t value) {
-    data[0] = (unsigned char)(value >> 8);
-    data[1] = (unsigned char)value;
-}
-
-static void put_be64(unsigned char* data, uint64_t value) {
-    for (int index = 0; index < 8; index++) {
-        data[index] = (unsigned char)(value >> (56 - index * 8));
-    }
-}
-
 static void put_le32(unsigned char* data, uint32_t value) {
     data[0] = (unsigned char)value;
     data[1] = (unsigned char)(value >> 8);
     data[2] = (unsigned char)(value >> 16);
     data[3] = (unsigned char)(value >> 24);
+}
+
+static void put_le16(unsigned char* data, uint16_t value) {
+    data[0] = (unsigned char)value;
+    data[1] = (unsigned char)(value >> 8);
+}
+
+static void put_le64(unsigned char* data, uint64_t value) {
+    for (int index = 0; index < 8; index++) {
+        data[index] = (unsigned char)(value >> (index * 8));
+    }
 }
 
 static uint32_t crc32_update(uint32_t crc, const unsigned char* data,
@@ -918,10 +918,10 @@ static int install_limine_bios(blkdev_t* dev) {
     unsigned char bootsector[512];
     memcpy(bootsector, image, sizeof(bootsector));
     memcpy(bootsector + 440, original_mbr + 440, 70);
-    put_be16(bootsector + 0x1A4, size_a);
-    put_be16(bootsector + 0x1A6, size_b);
-    put_be64(bootsector + 0x1A8, location_a * 512ull);
-    put_be64(bootsector + 0x1B0, location_b * 512ull);
+    put_le16(bootsector + 0x1A4, size_a);
+    put_le16(bootsector + 0x1A6, size_b);
+    put_le64(bootsector + 0x1A8, location_a * 512ull);
+    put_le64(bootsector + 0x1B0, location_b * 512ull);
 
     log_printf("[P6 ] Writing Limine stage2 first half at LBA %llu\n",
                (unsigned long long)location_a);
