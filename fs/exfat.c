@@ -87,8 +87,13 @@ static bool verify_boot_region(exfat_fs_t* fs, uint64_t start_lba) {
         }
     }
     if (block_read(fs->dev, start_lba + 11, 1, sector) != 0) return false;
+    uint32_t stored = le32(sector);
     for (uint32_t offset = 0; offset < sizeof(sector); offset += 4) {
-        if (le32(sector + offset) != checksum) return false;
+        if (le32(sector + offset) != checksum) {
+            log_printf("[EXFAT] Checksum expected=%08x stored=%08x mismatch_offset=%u\n",
+                       checksum, stored, offset);
+            return false;
+        }
     }
     return true;
 }
