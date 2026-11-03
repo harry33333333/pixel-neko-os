@@ -910,18 +910,18 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
         if (current_path[0] == 0) {
             vfs_drive_t* d = vfs_get_drive(files[idx].name[0]);
             if (d) {
-                unsigned int tot_k = 0, fre_k = 0;
+                uint64_t tot_k = 0, fre_k = 0;
                 int is_known = 0;
                 vfs_get_drive_space(d->letter, &tot_k, &fre_k, &is_known);
 
                 char tot_str[24], fre_str[24];
-                format_kb(tot_k, tot_str);
+                format_kb((unsigned int)tot_k, tot_str);
 
                 if (d->drv_type == VFS_DRV_FLOPPY) {
                     font_draw_text(v, wx+70, y, "FAT12", fg);
                     font_draw_text(v, item_max_x - 145, y, tot_str, fg);
                     if (is_known) {
-                        format_kb(fre_k, fre_str);
+                        format_kb((unsigned int)fre_k, fre_str);
                         font_draw_text(v, item_max_x - 70, y, fre_str, fg);
                     } else {
                         font_draw_text(v, item_max_x - 70, y, "--", fg);
@@ -935,7 +935,7 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
                     font_draw_text(v, wx+70, y, fs_nm, fg);
                     font_draw_text(v, item_max_x - 145, y, tot_str, fg);
                     if (is_known) {
-                        format_kb(fre_k, fre_str);
+                        format_kb((unsigned int)fre_k, fre_str);
                         font_draw_text(v, item_max_x - 70, y, fre_str, fg);
                     } else {
                         font_draw_text(v, item_max_x - 70, y, "-- (N/A)", fg);
@@ -966,10 +966,10 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
         font_draw_text(v, wx + 8, status_y, "Drives Root | Double-click to open drive", 8);
     } else {
         char cur_drv = current_path[0];
-        unsigned int tot_k = 0, fre_k = 0; int is_known = 0;
+        uint64_t tot_k = 0, fre_k = 0; int is_known = 0;
         vfs_get_drive_space(cur_drv, &tot_k, &fre_k, &is_known);
         char t_str[24], f_str[24];
-        format_kb(tot_k, t_str);
+        format_kb((unsigned int)tot_k, t_str);
         status_txt[0] = 0;
         my_strcat(status_txt, "Drive ");
         char dstr[4] = { cur_drv, ':', '\\', 0 };
@@ -977,7 +977,7 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
         my_strcat(status_txt, " | Total: ");
         my_strcat(status_txt, t_str);
         if (is_known) {
-            format_kb(fre_k, f_str);
+            format_kb((unsigned int)fre_k, f_str);
             my_strcat(status_txt, " | Free: ");
             my_strcat(status_txt, f_str);
         }
