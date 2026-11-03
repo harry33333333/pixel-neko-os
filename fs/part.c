@@ -231,6 +231,8 @@ static void write_le32_part(uint8_t* data, uint32_t value) {
     data[3] = (uint8_t)(value >> 24);
 }
 
+static blkdev_t* g_uninit_disk_dev = NULL;
+
 static void scan_device(blkdev_t* dev) {
     if (!dev || dev->is_readonly || dev->sector_size != 512) return;
     uint8_t mbr[512];
@@ -285,8 +287,6 @@ static void scan_device(blkdev_t* dev) {
         }
     }
 }
-
-static blkdev_t* g_uninit_disk_dev = NULL;
 
 blkdev_t* part_get_uninit_disk(void) {
     return g_uninit_disk_dev;
