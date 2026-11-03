@@ -42,7 +42,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A140a"
+          VERSION="26A150a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -83,6 +83,9 @@ jobs:
     - name: Create P5 Storage Fixtures
       run: bash scripts/create_p5_storage_fixtures.sh .p5-images
 
+    - name: Create P6 Existing-Partition Fixture
+      run: bash scripts/create_p6_install_fixture.sh .p6-images
+
     - name: QEMU UEFI and Legacy Smoke Test
       if: success()
       env:
@@ -99,6 +102,7 @@ jobs:
           qemu-*-serial.log
           qemu-*-console.log
           qemu-*-screen.ppm
+          qemu-p6-install-*.ppm
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact

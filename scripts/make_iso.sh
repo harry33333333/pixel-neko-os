@@ -13,7 +13,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A140a"
+    BUILD_ID="26A150a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -21,6 +21,8 @@ ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
 mkdir -p iso_root/boot/limine iso_root/EFI/BOOT
+mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT
+mkdir -p iso_root/payload/system
 
 # Copy kernel
 if [ ! -f "bin/kernel.elf" ]; then
@@ -28,6 +30,7 @@ if [ ! -f "bin/kernel.elf" ]; then
     exit 1
 fi
 cp bin/kernel.elf iso_root/boot/
+cp boot/limine.conf iso_root/boot/limine.conf
 cp boot/limine.conf iso_root/boot/limine/
 
 # Copy Limine BIOS & UEFI CD boot images
@@ -35,6 +38,38 @@ cp boot/limine/limine-bios.sys iso_root/boot/limine/
 cp boot/limine/limine-bios-cd.bin iso_root/boot/limine/
 cp boot/limine/limine-uefi-cd.bin iso_root/boot/limine/
 cp boot/limine/BOOTX64.EFI iso_root/EFI/BOOT/BOOTX64.EFI
+
+# Build the offline install payload. The desktop, nine applications, fonts,
+# bitmap assets and splash animation are statically linked into kernel.elf;
+# the manifest makes that payload contract explicit for the installer.
+cp bin/kernel.elf iso_root/payload/boot/kernel.elf
+cp boot/limine.conf iso_root/payload/limine.conf
+cp boot/limine.conf iso_root/payload/boot/limine.conf
+cp boot/limine.conf iso_root/payload/boot/limine/limine.conf
+cp boot/limine/limine-bios.sys iso_root/payload/boot/limine/limine-bios.sys
+cp boot/limine/BOOTX64.EFI iso_root/payload/EFI/BOOT/BOOTX64.EFI
+cp LICENSE iso_root/payload/system/LICENSE.TXT
+cp THIRD_PARTY_LICENSES.md iso_root/payload/system/THIRDPARTY.TXT
+cp README.md iso_root/payload/system/README.TXT
+cat > iso_root/payload/system/PAYLOAD.TXT <<EOF
+Pixel Neko OS ${BUILD_ID} complete offline payload
+
+Static system executable: boot/kernel.elf
+UEFI boot executable: EFI/BOOT/BOOTX64.EFI
+BIOS Limine stage 2: boot/limine/limine-bios.sys
+Boot configuration: boot/limine.conf
+Legacy compatibility configuration: boot/limine/limine.conf
+
+Embedded in kernel.elf:
+- Classic window manager and desktop
+- Nine built-in applications: FileManager, Editor, Calc, CPanel,
+  AudioPlayer, ImageViewer, SysInfo, Puzzle and Installer
+- Font, wallpaper bitmap assets and splash animation resources
+
+The installer recursively releases this tree to the selected existing
+partition, then deploys Limine UEFI and BIOS boot files. The partition table
+is not repartitioned or rewritten.
+EOF
 
 # 2. Build host limine utility if needed
 if [ ! -f "boot/limine/limine" ]; then

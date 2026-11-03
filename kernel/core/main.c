@@ -562,7 +562,7 @@ void kmain(void) {
     if (g_main_surface.framebuffer_virt) {
         ui_desktop_start();
         if (ui_install_mode_requested()) {
-            installer_open();
+            wm_installer_activate();
             log_printf("[P6 ] Graphical installer mode active.\n");
         }
         log_printf("[P6 ] Full desktop, splash and nine applications ready.\n");

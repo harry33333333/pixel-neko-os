@@ -102,6 +102,16 @@ static bool mount_partition(partition_entry_t* part, char letter) {
     return drive->mounted;
 }
 
+int vfs_mount_partition(partition_entry_t* part, char letter) {
+    letter = normalize_letter(letter);
+    if (!part || letter < 'A' || letter > 'Z' ||
+        g_vfs_drives[letter - 'A'].present) {
+        return VFS_ERR_NO_DRIVE;
+    }
+    if (!part->dev || !part->is_supported) return VFS_ERR_UNSUPPORTED;
+    return mount_partition(part, letter) ? VFS_OK : VFS_ERR_UNSUPPORTED;
+}
+
 static void mount_optical(blkdev_t* dev, char letter) {
     vfs_drive_t* drive = initialize_drive(letter);
     if (!drive) return;

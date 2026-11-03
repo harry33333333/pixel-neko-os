@@ -79,6 +79,30 @@ run_mode() {
                 -boot order=d
             )
             ;;
+        p6)
+            if [ ! -f ".p6-images/p6-target.img" ]; then
+                echo "P6 installation target fixture is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6bootcd,format=raw,readonly=on,file=${ISO}"
+                -device ide-cd,drive=p6bootcd,bus=ide.0
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-target.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=d
+            )
+            ;;
+        p6-disk)
+            if [ ! -f ".p6-images/p6-target.img" ]; then
+                echo "P6 installed disk fixture is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-target.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=c
+            )
+            ;;
         *)
             echo "Unknown boot source: ${boot_source}" >&2
             return 2
@@ -86,8 +110,12 @@ run_mode() {
     esac
 
     rm -f "${log}" "${console}" "${qmp}"
+    local timeout_seconds=28
+    if [ "${mode}" = "p6-install" ]; then
+        timeout_seconds=65
+    fi
     set +e
-    timeout --foreground 28s qemu-system-x86_64 \
+    timeout --foreground "${timeout_seconds}s" qemu-system-x86_64 \
         -machine "${machine},accel=tcg" \
         -cpu max \
         -smp 1 \
@@ -102,12 +130,32 @@ run_mode() {
     local qemu_pid=$!
     set -e
 
-    for _ in $(seq 1 180); do
-        if grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}" 2>/dev/null; then
+    if [ "${mode}" = "p6-install" ]; then
+        if ! python3 scripts/qmp_boot_menu.py "${qmp}"; then
+            echo "Could not select the Limine graphical installer entry" >&2
+            kill "${qemu_pid}" 2>/dev/null || true
+            wait "${qemu_pid}" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    for _ in $(seq 1 300); do
+        if [ "${mode}" = "p6-install" ]; then
+            if grep -q "\[P6 \] Graphical installer mode active" "${log}" 2>/dev/null; then
+                if ! python3 scripts/qmp_p6_install.py "${qmp}" "${log}"; then
+                    echo "P6 graphical installation automation failed" >&2
+                    kill "${qemu_pid}" 2>/dev/null || true
+                    wait "${qemu_pid}" 2>/dev/null || true
+                    tail -n 300 "${log}" >&2 || true
+                    return 1
+                fi
+                break
+            fi
+        elif grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}" 2>/dev/null; then
             python3 scripts/qmp_input_test.py "${qmp}" "${mode}"
             break
         fi
-        sleep 0.1
+        sleep 0.2
     done
 
     set +e
@@ -145,7 +193,8 @@ run_mode() {
     if { [ "${mode}" = "uefi" ] || [ "${mode}" = "ehci" ] ||
          [ "${mode}" = "hub" ] || [ "${mode}" = "generic" ] ||
          [ "${mode}" = "p5-ehci" ] || [ "${mode}" = "p5-xhci-hs" ] ||
-         [ "${mode}" = "p5" ] ||
+         [ "${mode}" = "p5" ] || [ "${mode}" = "p6-live" ] ||
+         [ "${mode}" = "p6-install" ] || [ "${mode}" = "p6-disk-uefi" ] ||
          [ "${mode}" = "usb-modern" ]; } &&
        ! grep -q "PCI backend=.*PCIe ECAM" "${log}"; then
         echo "UEFI Q35 run did not use PCIe ECAM" >&2
@@ -153,7 +202,8 @@ run_mode() {
         return 1
     fi
     if { [ "${mode}" = "bios" ] || [ "${mode}" = "ohci" ] ||
-         [ "${mode}" = "usb-legacy" ]; } &&
+         [ "${mode}" = "usb-legacy" ] ||
+         [ "${mode}" = "p6-disk-bios" ]; } &&
        ! grep -q "PCI backend=.*CF8/CFC" "${log}"; then
         echo "Legacy run did not use CF8/CFC configuration space" >&2
         tail -n 250 "${log}" >&2
@@ -203,6 +253,24 @@ run_mode() {
         echo "P5 storage validation failed" >&2
         tail -n 350 "${log}" >&2
         return 1
+    fi
+    if [ "${mode}" = "p6-install" ]; then
+        if ! grep -q "\[P6 \] Installer scan found [1-9]" "${log}" ||
+           ! grep -q "\[P6 \] Installer target selected" "${log}" ||
+           ! grep -q "\[P6 \] Limine BIOS deployed" "${log}" ||
+           ! grep -q "\[P6 \] Installation complete on" "${log}"; then
+            echo "P6 installer did not complete the UEFI/BIOS deployment" >&2
+            tail -n 400 "${log}" >&2
+            return 1
+        fi
+    elif [ "${mode}" = "p6-live" ] ||
+         [ "${mode}" = "p6-disk-uefi" ] ||
+         [ "${mode}" = "p6-disk-bios" ]; then
+        if ! grep -q "\[P6 \] Full desktop, splash and nine applications ready" "${log}"; then
+            echo "P6 full desktop was not reached" >&2
+            tail -n 350 "${log}" >&2
+            return 1
+        fi
     fi
     if [ ! -s "qemu-${mode}-screen.ppm" ]; then
         echo "QEMU ${mode} did not produce a framebuffer screenshot" >&2
@@ -282,6 +350,30 @@ run_mode p5 q35 p5 -bios "${UEFI_FW}" \
     -device usb-storage,drive=p5exfat,bus=xhci.0,port=1,id=usb-storage \
     -device usb-kbd,bus=xhci.0,port=2,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,port=3,id=usb-mouse
+fi
+if selected_mode p6-live; then
+run_mode p6-live q35 p5 -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,port=2,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=3,id=usb-mouse
+fi
+if selected_mode p6-install; then
+run_mode p6-install q35 p6 -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
+    -device usb-tablet,bus=xhci.0,port=2,id=usb-tablet
+fi
+if selected_mode p6-disk-uefi; then
+run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,port=2,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=3,id=usb-mouse
+fi
+if selected_mode p6-disk-bios; then
+run_mode p6-disk-bios pc p6-disk \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,id=usb-kbd \
+    -device usb-mouse,bus=uhci.0,id=usb-mouse
 fi
 if selected_mode usb-legacy; then
 run_mode usb-legacy pc usb-uhci \

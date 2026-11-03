@@ -695,6 +695,22 @@ void wm_init(void){
     calc_init();cpanel_init();fm_init();sysinfo_init();puzzle_init();imageviewer_init();audioplayer_init();installer_init();redraw=1;
 }
 
+void wm_installer_activate(void) {
+    insv = 1;
+    insm = 0;
+    insx = 16;
+    insy = 30;
+    insw = screen_w - 32;
+    insh = screen_h - 50;
+    if (insw < 360) insw = screen_w - 8;
+    if (insh < 280) insh = screen_h - 8;
+    installer_init();
+    bring_to_top(10);
+    show_opened("Install");
+    redraw = 1;
+    need_mr = 1;
+}
+
 void wm_draw(unsigned char* v){
     if(redraw){
         extern void mouse_invalidate(void);

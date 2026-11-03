@@ -833,6 +833,275 @@ static unsigned int allocate_cluster(fat_fs_t* vol) {
     return 0;
 }
 
+static int plain_short_name(const char* name) {
+    int length = str_len((char*)name);
+    int dot = -1;
+    if (length < 1 || length > 12) return 0;
+    for (int index = 0; index < length; index++) {
+        char c = name[index];
+        if (c == '.') {
+            if (dot >= 0) return 0;
+            dot = index;
+            continue;
+        }
+        if (c <= ' ' || c == '/' || c == '\\' || c == ':' ||
+            c == '*' || c == '?' || c == '"' || c == '<' ||
+            c == '>' || c == '|') {
+            return 0;
+        }
+    }
+    if (dot < 0) return length <= 8;
+    return dot >= 1 && dot <= 8 && length - dot - 1 <= 3;
+}
+
+static void make_short_alias(fat_fs_t* vol, unsigned int dir_cluster,
+                             const char* long_name, unsigned char* name,
+                             unsigned char* ext) {
+    char base[9];
+    int base_length = str_len((char*)long_name);
+    int dot = -1;
+    for (int index = 0; index < base_length; index++) {
+        if (long_name[index] == '.') {
+            dot = index;
+            break;
+        }
+    }
+    if (dot >= 0) base_length = dot;
+    int out = 0;
+    for (int index = 0; index < base_length && out < 6; index++) {
+        char c = long_name[index];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-') {
+            if (c >= 'a' && c <= 'z') c -= 32;
+            base[out++] = c;
+        }
+    }
+    if (out == 0) base[out++] = 'P';
+
+    char candidate[13];
+    file_info_t existing;
+    for (int number = 1; number < 1000; number++) {
+        int stop = out;
+        base[stop++] = '~';
+        char digits[4];
+        int digit_count = 0;
+        int value = number;
+        while (value > 0) {
+            digits[digit_count++] = (char)('0' + value % 10);
+            value /= 10;
+        }
+        while (digit_count > 0 && stop < 8) {
+            base[stop++] = digits[--digit_count];
+        }
+        while (digit_count > 0) digit_count--;
+        base[stop] = '\0';
+
+        int position = 0;
+        for (int index = 0; base[index]; index++) candidate[position++] = base[index];
+        if (dot >= 0) {
+            candidate[position++] = '.';
+            for (int index = dot + 1;
+                 long_name[index] && position < 12; index++) {
+                candidate[position++] = long_name[index];
+            }
+        }
+        candidate[position] = '\0';
+        str_to_fat_name(candidate, name, ext);
+        if (fat_find_in_dir(vol, dir_cluster, candidate, &existing) != 0) {
+            return;
+        }
+    }
+    str_to_fat_name("PIXEL~1", name, ext);
+}
+
+static unsigned int directory_last_cluster(fat_fs_t* vol,
+                                           unsigned int start_cluster) {
+    unsigned int cluster = start_cluster;
+    if (cluster == 0 && vol->type == 32) cluster = vol->root_cluster;
+    unsigned int end_mark = (vol->type == 12) ? 0x0FF8 :
+                            ((vol->type == 16) ? 0xFFF8 : 0x0FFFFFF8);
+    while (cluster >= 2 && cluster < end_mark) {
+        unsigned int next = fat_read_entry(vol, cluster);
+        if (next < 2 || next >= end_mark) return cluster;
+        cluster = next;
+    }
+    return cluster;
+}
+
+static int extend_directory(fat_fs_t* vol, unsigned int dir_cluster,
+                            unsigned int* new_cluster) {
+    if (dir_cluster == 0 && vol->type != 32) return -1;
+    unsigned int last = directory_last_cluster(vol, dir_cluster);
+    if (last < 2 || last >= 0x0FFFFFF8) return -1;
+    unsigned int allocated = allocate_cluster(vol);
+    if (allocated == 0) return -1;
+    if (fat_write_entry(vol, last, allocated) != 0) return -1;
+    unsigned char zero[512] = {0};
+    unsigned int first_sector = cluster_to_sector(vol, allocated);
+    for (unsigned int sector = 0; sector < vol->sectors_per_cluster;
+         sector++) {
+        if (vol_write_sec(vol, first_sector + sector, zero) != 0) return -1;
+    }
+    *new_cluster = allocated;
+    return 0;
+}
+
+struct lfn_slot {
+    unsigned int sector;
+    int offset;
+};
+
+static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
+                               const char* long_name, int is_dir) {
+    unsigned char short_name[8], short_ext[3];
+    make_short_alias(vol, dir_cluster, long_name, short_name, short_ext);
+    int name_length = str_len((char*)long_name);
+    if (name_length > 255) return -1;
+    int lfn_entries = (name_length + 12) / 13;
+    int needed = lfn_entries + 1;
+    if (needed > 21) return -1;
+
+    struct lfn_slot slots[21];
+    int found = 0;
+    for (int pass = 0; pass < 2 && !found; pass++) {
+        int run = 0;
+        unsigned int cluster = dir_cluster;
+        int fixed_root = dir_cluster == 0 &&
+                         (vol->type == 12 || vol->type == 16);
+        unsigned int first_sector;
+        unsigned int sector_count;
+        if (fixed_root) {
+            first_sector = vol->reserved_sectors +
+                           vol->num_fats * vol->sectors_per_fat;
+            sector_count = vol->root_dir_sectors;
+        } else {
+            if (cluster == 0 && vol->type == 32) cluster = vol->root_cluster;
+            if (cluster < 2 || cluster >= 0x0FFFFFF8) return -1;
+            first_sector = cluster_to_sector(vol, cluster);
+            sector_count = vol->sectors_per_cluster;
+        }
+
+        while (sector_count > 0) {
+            for (unsigned int sector_index = 0;
+                 sector_index < sector_count; sector_index++) {
+                unsigned char buffer[512];
+                unsigned int sector = first_sector + sector_index;
+                if (vol_read_sec(vol, sector, buffer) != 0) return -1;
+                for (int entry_index = 0; entry_index < 16; entry_index++) {
+                    dir_entry_t* entry =
+                        (dir_entry_t*)&buffer[entry_index * 32];
+                    int free_slot = entry->name[0] == 0x00 ||
+                                    entry->name[0] == 0xE5;
+                    if (free_slot) {
+                        if (run < needed) {
+                            slots[run].sector = sector;
+                            slots[run].offset = entry_index * 32;
+                        }
+                        run++;
+                        if (run >= needed) {
+                            found = 1;
+                            break;
+                        }
+                    } else {
+                        run = 0;
+                    }
+                }
+                if (found) break;
+            }
+            if (found || fixed_root) break;
+            unsigned int next = fat_read_entry(vol, cluster);
+            unsigned int end_mark = (vol->type == 12) ? 0x0FF8 :
+                                    ((vol->type == 16) ? 0xFFF8 :
+                                                         0x0FFFFFF8);
+            if (next < 2 || next >= end_mark) break;
+            cluster = next;
+            first_sector = cluster_to_sector(vol, cluster);
+        }
+
+        if (!found && !fixed_root) {
+            unsigned int extension = 0;
+            if (extend_directory(vol, dir_cluster, &extension) != 0) return -1;
+            dir_cluster = extension;
+        } else if (!found && fixed_root) {
+            return -1;
+        }
+    }
+    if (!found) return -1;
+
+    unsigned char checksum = calc_lfn_checksum(short_name);
+    int physical = 0;
+    for (int sequence = lfn_entries; sequence >= 1; sequence--) {
+        unsigned char entry[32];
+        memset(entry, 0, sizeof(entry));
+        entry[0] = (unsigned char)sequence;
+        if (sequence == lfn_entries) entry[0] |= 0x40;
+        entry[11] = 0x0F;
+        entry[13] = checksum;
+        for (int item = 0; item < 13; item++) {
+            int source = (sequence - 1) * 13 + item;
+            unsigned short character = 0xFFFF;
+            if (source < name_length) {
+                character = (unsigned char)long_name[source];
+            } else if (source == name_length) {
+                character = 0;
+            }
+            int offset;
+            if (item < 5) offset = 1 + item * 2;
+            else if (item < 11) offset = 14 + (item - 5) * 2;
+            else offset = 28 + (item - 11) * 2;
+            entry[offset] = (unsigned char)(character & 0xFF);
+            entry[offset + 1] = (unsigned char)(character >> 8);
+        }
+        unsigned int sector = slots[physical].sector;
+        int offset = slots[physical].offset;
+        unsigned char buffer[512];
+        if (vol_read_sec(vol, sector, buffer) != 0) return -1;
+        memcpy(&buffer[offset], entry, sizeof(entry));
+        if (vol_write_sec(vol, sector, buffer) != 0) return -1;
+        physical++;
+    }
+
+    unsigned char entry[32];
+    memset(entry, 0, sizeof(entry));
+    for (int index = 0; index < 8; index++) entry[index] = short_name[index];
+    for (int index = 0; index < 3; index++) entry[8 + index] = short_ext[index];
+    entry[11] = is_dir ? 0x10 : 0x20;
+    unsigned int new_cluster = 0;
+    if (is_dir) {
+        new_cluster = allocate_cluster(vol);
+        if (new_cluster == 0) return -1;
+        unsigned char sector_buffer[512] = {0};
+        dir_entry_t* dot = (dir_entry_t*)sector_buffer;
+        memset(dot, 0, sizeof(*dot));
+        memset(dot->name, ' ', 11);
+        dot->name[0] = '.';
+        dot->attr = 0x10;
+        set_first_cluster(dot, new_cluster);
+        dir_entry_t* dotdot = (dir_entry_t*)(sector_buffer + 32);
+        memset(dotdot, 0, sizeof(*dotdot));
+        memset(dotdot->name, ' ', 11);
+        dotdot->name[0] = '.';
+        dotdot->name[1] = '.';
+        dotdot->attr = 0x10;
+        set_first_cluster(dotdot, dir_cluster);
+        unsigned int first_sector = cluster_to_sector(vol, new_cluster);
+        if (vol_write_sec(vol, first_sector, sector_buffer) != 0) return -1;
+        unsigned char zero[512] = {0};
+        for (unsigned int sector = 1; sector < vol->sectors_per_cluster;
+             sector++) {
+            if (vol_write_sec(vol, first_sector + sector, zero) != 0) return -1;
+        }
+        set_first_cluster((dir_entry_t*)entry, new_cluster);
+    }
+    unsigned int sector = slots[physical].sector;
+    int offset = slots[physical].offset;
+    unsigned char buffer[512];
+    if (vol_read_sec(vol, sector, buffer) != 0) return -1;
+    memcpy(&buffer[offset], entry, sizeof(entry));
+    if (vol_write_sec(vol, sector, buffer) != 0) return -1;
+    return 0;
+}
+
 int fat_get_volume_space(char letter, unsigned int* total_kb, unsigned int* free_kb) {
     char path_buf[4] = { letter, ':', '\\', 0 };
     const char* p = path_buf;
@@ -923,6 +1192,10 @@ int fat_create_ext(const char* name, int is_dir) {
         if (fat_find_in_dir(vol, cluster, comp, &dummy) != 0) return -1;
         cluster = dummy.first_cluster;
         path = next_path;
+    }
+
+    if (!plain_short_name(comp)) {
+        return write_lfn_component(vol, cluster, comp, is_dir);
     }
 
     unsigned char fat_name[8], fat_ext[3];

@@ -51,6 +51,7 @@ extern vfs_drive_t g_vfs_drives[26];
 void vfs_init(void);
 int  vfs_remount(char letter);
 vfs_drive_t* vfs_get_drive(char letter);
+int  vfs_mount_partition(partition_entry_t* part, char letter);
 int  vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*));
 int  vfs_find_file(const char* path, vfs_dirent_t* out_entry);
 int  vfs_read_file(const char* path, unsigned char* buf, unsigned int max_size);
