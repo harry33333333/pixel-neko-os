@@ -125,6 +125,24 @@ static void put_be64(unsigned char* data, uint64_t value) {
     }
 }
 
+static void put_le32(unsigned char* data, uint32_t value) {
+    data[0] = (unsigned char)value;
+    data[1] = (unsigned char)(value >> 8);
+    data[2] = (unsigned char)(value >> 16);
+    data[3] = (unsigned char)(value >> 24);
+}
+
+static uint32_t crc32_update(uint32_t crc, const unsigned char* data,
+                             size_t length) {
+    for (size_t index = 0; index < length; index++) {
+        crc ^= data[index];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc;
+}
+
 static int target_supports_format(const target_part_t* target,
                                   part_fs_type_t type) {
     if (!target || !target->part) return 0;
@@ -707,32 +725,176 @@ static uint64_t earliest_partition_lba(blkdev_t* dev) {
     return earliest;
 }
 
-static int stage2_start_lba(blkdev_t* dev, size_t stage2_sectors,
-                            uint64_t* result) {
-    unsigned char header[512];
-    uint64_t candidate = 1;
-    if (block_read(dev, 1, 1, header) == 0 &&
-        memcmp(header, "EFI PART", 8) == 0) {
-        uint64_t entries_lba = read_le64(header + 72);
-        uint32_t entry_count = read_le32(header + 80);
-        uint32_t entry_size = read_le32(header + 84);
-        if (!entries_lba || entry_count == 0 || entry_count > 1024 ||
-            entry_size < 128 || entry_size > 512) {
+static int zero_gpt_entry_range(blkdev_t* dev, uint64_t entries_lba,
+                                uint32_t first, uint32_t last,
+                                uint32_t entry_size) {
+    if (first >= last) return 0;
+    uint64_t byte_start = (uint64_t)first * entry_size;
+    uint64_t byte_end = (uint64_t)last * entry_size;
+    unsigned char buffer[512];
+    uint64_t current = byte_start;
+    while (current < byte_end) {
+        uint64_t sector = entries_lba + current / 512ull;
+        uint32_t offset = (uint32_t)(current % 512ull);
+        uint64_t remaining = byte_end - current;
+        uint32_t available = 512u - offset;
+        if (remaining > available) remaining = available;
+        if (block_read(dev, sector, 1, buffer) != 0) return -12;
+        memset(buffer + offset, 0, (size_t)remaining);
+        if (block_write(dev, sector, 1, buffer) != 0) return -12;
+        current += remaining;
+    }
+    return 0;
+}
+
+static int crc_gpt_entries(blkdev_t* dev, uint64_t entries_lba,
+                           uint64_t byte_count, uint32_t* result) {
+    unsigned int pages =
+        (unsigned int)((byte_count + 4095ull) / 4096ull);
+    unsigned char* buffer = (unsigned char*)pmm_alloc_pages(pages);
+    if (!buffer) return -11;
+    uint64_t copied = 0;
+    int status = 0;
+    while (copied < byte_count) {
+        uint64_t remaining = byte_count - copied;
+        uint32_t bytes = remaining > 512 ? 512 : (uint32_t)remaining;
+        uint64_t sector = entries_lba + copied / 512ull;
+        if (block_read(dev, sector, 1, buffer + copied) != 0) {
+            status = -12;
+            break;
+        }
+        copied += bytes;
+    }
+    if (status == 0) {
+        *result = crc32_update(0xFFFFFFFFu, buffer, (size_t)byte_count) ^
+                  0xFFFFFFFFu;
+    }
+    pmm_free_pages(buffer, pages);
+    return status;
+}
+
+static int prepare_gpt_bios_embedding(blkdev_t* dev, uint16_t size_a,
+                                      uint16_t size_b, uint64_t* location_a,
+                                      uint64_t* location_b) {
+    unsigned char primary[512];
+    if (block_read(dev, 1, 1, primary) != 0 ||
+        memcmp(primary, "EFI PART", 8) != 0) {
+        return 1;
+    }
+    uint32_t header_size = read_le32(primary + 12);
+    uint64_t backup_lba = read_le64(primary + 32);
+    uint64_t entries_lba = read_le64(primary + 72);
+    uint32_t entry_count = read_le32(primary + 80);
+    uint32_t entry_size = read_le32(primary + 84);
+    if (header_size < 92 || header_size > 512 || !backup_lba ||
+        backup_lba >= dev->total_sectors || !entries_lba ||
+        entry_count == 0 || entry_count > 256 ||
+        entry_size < 128 || entry_size > 512 ||
+        (512u % entry_size) != 0) {
+        return -12;
+    }
+
+    unsigned char secondary[512];
+    if (block_read(dev, backup_lba, 1, secondary) != 0 ||
+        memcmp(secondary, "EFI PART", 8) != 0) {
+        return -12;
+    }
+    uint64_t secondary_entries_lba = read_le64(secondary + 72);
+    if (!secondary_entries_lba) return -12;
+
+    uint32_t per_sector = 512u / entry_size;
+    uint32_t entry_sectors = (entry_count + per_sector - 1) / per_sector;
+    uint32_t max_used = 0;
+    for (uint32_t sector_index = 0; sector_index < entry_sectors;
+         sector_index++) {
+        unsigned char entries[512];
+        if (block_read(dev, entries_lba + sector_index, 1, entries) != 0) {
             return -12;
         }
-        uint64_t entry_bytes = (uint64_t)entry_count * entry_size;
-        candidate = entries_lba + (entry_bytes + 511ull) / 512ull;
+        for (uint32_t item = 0; item < per_sector; item++) {
+            uint32_t index = sector_index * per_sector + item;
+            if (index >= entry_count) break;
+            unsigned char* entry = entries + item * entry_size;
+            int used = 0;
+            for (uint32_t byte = 0; byte < 16; byte++) {
+                if (entry[byte]) {
+                    used = 1;
+                    break;
+                }
+            }
+            if (used) max_used = index;
+        }
     }
+
+    uint64_t raw_a = (entries_lba + 32ull) * 512ull - size_a;
+    uint64_t raw_b =
+        (secondary_entries_lba + 32ull) * 512ull - size_b;
+    *location_a = raw_a & ~511ull;
+    *location_b = raw_b & ~511ull;
+    if (*location_a < entries_lba * 512ull ||
+        *location_a % 512ull ||
+        *location_b < secondary_entries_lba * 512ull ||
+        *location_b % 512ull) {
+        return -12;
+    }
+
+    uint64_t new_entry_sectors = *location_a / 512ull - entries_lba;
+    uint32_t new_count = (uint32_t)(new_entry_sectors * per_sector);
+    if (new_count <= max_used || new_count > entry_count) return -12;
+
+    if (zero_gpt_entry_range(dev, entries_lba, max_used + 1, new_count,
+                             entry_size) != 0 ||
+        zero_gpt_entry_range(dev, secondary_entries_lba, max_used + 1,
+                             new_count, entry_size) != 0) {
+        return -12;
+    }
+
+    uint64_t entry_bytes = (uint64_t)new_count * entry_size;
+    uint32_t entries_crc = 0;
+    if (crc_gpt_entries(dev, entries_lba, entry_bytes, &entries_crc) != 0 ||
+        crc_gpt_entries(dev, secondary_entries_lba, entry_bytes,
+                        &entries_crc) != 0) {
+        return -12;
+    }
+
+    put_le32(primary + 80, new_count);
+    put_le32(primary + 88, entries_crc);
+    put_le32(primary + 16, 0);
+    put_le32(primary + 16,
+             crc32_update(0xFFFFFFFFu, primary, header_size) ^ 0xFFFFFFFFu);
+    if (block_write(dev, 1, 1, primary) != 0) return -12;
+
+    put_le32(secondary + 80, new_count);
+    put_le32(secondary + 88, entries_crc);
+    put_le32(secondary + 16, 0);
+    put_le32(secondary + 16,
+             crc32_update(0xFFFFFFFFu, secondary, header_size) ^
+                 0xFFFFFFFFu);
+    if (block_write(dev, backup_lba, 1, secondary) != 0) return -12;
+
+    log_printf("[P6 ] GPT embedded Limine stage2 at LBA=%llu/%llu, entries=%u\n",
+               (unsigned long long)(*location_a / 512ull),
+               (unsigned long long)(*location_b / 512ull), new_count);
+    return 0;
+}
+
+static int select_stage2_locations(blkdev_t* dev, uint16_t size_a,
+                                   uint16_t size_b, uint64_t* location_a,
+                                   uint64_t* location_b) {
+    int gpt_result =
+        prepare_gpt_bios_embedding(dev, size_a, size_b, location_a,
+                                   location_b);
+    if (gpt_result <= 0) return gpt_result;
+
+    size_t stage2_sectors = (size_a + size_b) / 512u;
+    *location_a = 1;
+    *location_b = 1 + size_a / 512u;
     uint64_t first_partition = earliest_partition_lba(dev);
-    if (candidate >= first_partition ||
-        stage2_sectors > first_partition - candidate) {
-        log_printf("[P6 ] No safe Limine BIOS gap: start=%llu sectors=%u first=%llu\n",
-                   (unsigned long long)candidate,
-                   (unsigned int)stage2_sectors,
+    if (1 + stage2_sectors > first_partition) {
+        log_printf("[P6 ] No safe Limine BIOS gap before LBA %llu\n",
                    (unsigned long long)first_partition);
         return -12;
     }
-    *result = candidate;
     return 0;
 }
 
@@ -748,10 +910,11 @@ static int install_limine_bios(blkdev_t* dev) {
     uint16_t size_b = (uint16_t)((stage2_sectors / 2) * 512);
 
     uint64_t location_a;
-    if (stage2_start_lba(dev, stage2_sectors, &location_a) != 0) {
+    uint64_t location_b;
+    if (select_stage2_locations(dev, size_a, size_b, &location_a,
+                                &location_b) != 0) {
         return -12;
     }
-    uint64_t location_b = location_a + size_a / 512ull;
 
     unsigned char original_mbr[512];
     if (block_read(dev, 0, 1, original_mbr) != 0) return -15;
