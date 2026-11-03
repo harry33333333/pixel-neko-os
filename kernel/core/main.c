@@ -31,7 +31,7 @@
 #include "p5_test.h"
 #include "splash.h"
 #include "ui_compat.h"
-#include "installer.h"
+#include "wm.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
