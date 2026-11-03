@@ -35,6 +35,6 @@ bool vmm_virt_to_phys(pagetable_t pml4, virt_addr_t virt, phys_addr_t* phys);
 bool vmm_user_range_ok(pagetable_t pml4, virt_addr_t virt, size_t size, bool write);
 void vmm_switch_pml4(pagetable_t pml4);
 void vmm_invlpg(virt_addr_t virt);
-void vmm_remap_framebuffer_wc(void);
+bool vmm_remap_framebuffer_wc(void);
 
 #endif /* _VMM_H */

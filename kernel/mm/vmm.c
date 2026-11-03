@@ -307,31 +307,51 @@ void vmm_init(void) {
     vmm_map_page(g_kernel_pml4, 0xFEC00000, 0xFEC00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
     log_printf("[VMM] LAPIC (0xFEE00000) & IOAPIC (0xFEC00000) MMIO pages mapped (PCD enabled).\n");
 
-    vmm_remap_framebuffer_wc();
+    (void)vmm_remap_framebuffer_wc();
 }
 
-void vmm_remap_framebuffer_wc(void) {
-    if (!g_kernel_pml4) return;
-    if (!g_main_surface.framebuffer_virt || !g_main_surface.framebuffer_phys) return;
+bool vmm_remap_framebuffer_wc(void) {
+    if (!g_kernel_pml4) return false;
+    if (!g_main_surface.framebuffer_virt || !g_main_surface.framebuffer_phys) {
+        return false;
+    }
 
     uint64_t fb_size = (uint64_t)g_main_surface.pitch * g_main_surface.height;
-    if (fb_size == 0) return;
-    uint64_t fb_pages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (fb_size == 0) return false;
 
-    virt_addr_t fb_virt = (virt_addr_t)g_main_surface.framebuffer_virt;
     phys_addr_t fb_phys = (phys_addr_t)g_main_surface.framebuffer_phys;
     if (fb_phys >= g_hhdm.hhdm_offset && g_hhdm.hhdm_offset > 0) {
         fb_phys -= g_hhdm.hhdm_offset;
     }
 
-    // Apply WC flag (PTE_PWT selects PAT entry 1)
-    uint64_t wc_flags = PTE_PRESENT | PTE_WRITABLE | PTE_PWT;
+    /*
+     * Do not remap the Limine-provided HHDM address in place. Bootloaders often
+     * cover HHDM with 1 GiB or 2 MiB pages, and vmm_map_page() cannot change a
+     * leaf attribute without first splitting that mapping. A private WC window
+     * avoids the conflict and makes framebuffer visibility deterministic on
+     * both legacy IGP and modern discrete graphics.
+     */
+    const virt_addr_t wc_base = 0xFFFF900000000000ULL;
+    uint64_t page_offset = fb_phys & (PAGE_SIZE - 1);
+    phys_addr_t page_phys = fb_phys & PAGE_MASK;
+    uint64_t fb_pages =
+        (fb_size + page_offset + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t wc_flags =
+        PTE_PRESENT | PTE_WRITABLE | PTE_PWT | PTE_NX;
 
     for (uint64_t p = 0; p < fb_pages; p++) {
-        vmm_map_page(g_kernel_pml4, fb_virt + p * PAGE_SIZE, fb_phys + p * PAGE_SIZE, wc_flags);
+        if (!vmm_map_page(g_kernel_pml4, wc_base + p * PAGE_SIZE,
+                          page_phys + p * PAGE_SIZE, wc_flags)) {
+            log_printf("[VMM] Failed to map framebuffer WC window at page %llu\n",
+                       (unsigned long long)p);
+            return false;
+        }
     }
 
-    log_printf("[VMM] Boot Framebuffer (%llu KB, %llu pages) accelerated with PAT Write-Combining (WC)!\n",
-               fb_size / 1024, fb_pages);
+    g_main_surface.framebuffer_virt = (void*)(wc_base + page_offset);
+    __asm__ volatile ("mfence" : : : "memory");
+    log_printf("[VMM] Boot Framebuffer (%llu KB, %llu pages) mapped to dedicated PAT Write-Combining window @ %p!\n",
+               fb_size / 1024, fb_pages, g_main_surface.framebuffer_virt);
+    return true;
 }
 

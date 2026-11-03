@@ -227,6 +227,7 @@ static void boot_progress_notify(const char* step_msg) {
     boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, 1, c_dgray);
     boot_framebuffer_fill_rect(badge_x, badge_y, 1, badge_h, c_dgray);
     boot_framebuffer_draw_string(badge_x + 12, badge_y + 4, step_msg, c_blue, c_white);
+    boot_framebuffer_flush();
 }
 
 // Draw a classic Windows 3.1 / Mac OS 9 style 3D modal window
@@ -414,10 +415,13 @@ void kmain(void) {
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
         if (boot_framebuffer_init(fb)) {
             // Accelerate Boot Framebuffer writes with PAT Write-Combining (WC)
-            vmm_remap_framebuffer_wc();
+            if (!vmm_remap_framebuffer_wc()) {
+                log_printf("[BOOT WARN] Dedicated WC framebuffer mapping unavailable; using Limine mapping.\n");
+            }
 
             // Draw classic Mac OS 50% checkerboard background early
             boot_framebuffer_draw_checkerboard();
+            boot_framebuffer_flush();
             boot_progress_notify("Pixel Neko OS :: Framebuffer Ready");
             log_printf("[UI] Early Boot Framebuffer active & 50%% checkerboard rendered.\n");
         }
@@ -519,6 +523,7 @@ void kmain(void) {
     // 23. Draw Windows 3.1 / Mac OS 9 style welcome window with P4b metrics
     if (g_main_surface.framebuffer_virt) {
         draw_welcome_window();
+        boot_framebuffer_flush();
         boot_progress_notify("Pixel Neko OS :: Core Bring-up Complete (Ready)");
         log_printf("[UI] Welcome modal rendered successfully with full P4b status.\n");
     }

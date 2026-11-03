@@ -95,6 +95,7 @@ jobs:
         path: |
           qemu-*-serial.log
           qemu-*-console.log
+          qemu-*-screen.ppm
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact

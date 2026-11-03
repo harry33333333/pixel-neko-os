@@ -164,7 +164,7 @@ struct usb_device {
     uint8_t parent_hub_address;
     uint8_t parent_port;
     uint8_t hub_depth;
-    uint8_t max_packet0;
+    uint16_t max_packet0;
     uint8_t configuration;
     uint16_t vendor;
     uint16_t product;

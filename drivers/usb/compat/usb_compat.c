@@ -2,6 +2,7 @@
 #include "mm.h"
 #include "vmm.h"
 #include "log.h"
+#include "usb_core.h"
 
 static inline uint64_t usb_read_flags(void) {
     uint64_t flags;
@@ -67,15 +68,12 @@ int usb_legacy_handoff(const pci_device_t* device) {
                 pci_config_write(device->bus, device->slot, device->function,
                                  (uint8_t)(pointer + 4),
                                  support | (1u << 24));
-                for (int timeout = 0; timeout < 100; timeout++) {
+                for (int timeout = 0; timeout < 500; timeout++) {
                     support = pci_config_read(
                         device->bus, device->slot, device->function,
                         (uint8_t)(pointer + 4));
                     if (!(support & (1u << 16))) break;
-                    /* The bounded delay is supplied by HCD init. */
-                    for (volatile int spin = 0; spin < 10000; spin++) {
-                        __asm__ volatile ("pause");
-                    }
+                    usb_delay_ms(1);
                 }
                 if (support & (1u << 16)) {
                     log_printf("[USB ] BIOS ownership hand-off timed out at cap 0x%02x\n",

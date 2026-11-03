@@ -206,3 +206,8 @@ void boot_framebuffer_draw_string(int x, int y, const char* str, uint32_t fg, ui
         str++;
     }
 }
+
+void boot_framebuffer_flush(void) {
+    if (!g_main_surface.framebuffer_virt) return;
+    __asm__ volatile ("sfence" : : : "memory");
+}

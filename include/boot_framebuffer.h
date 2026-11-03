@@ -40,5 +40,6 @@ void boot_framebuffer_draw_checkerboard(void);
 void boot_framebuffer_fill_rect(int x, int y, int w, int h, uint32_t color);
 void boot_framebuffer_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg);
 void boot_framebuffer_draw_string(int x, int y, const char* str, uint32_t fg, uint32_t bg);
+void boot_framebuffer_flush(void);
 
 #endif /* _BOOT_FRAMEBUFFER_H */

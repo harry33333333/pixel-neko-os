@@ -16,6 +16,65 @@ static uint32_t g_controller_kinds = 0;
 static usb_device_t g_devices[USB_MAX_DEVICES];
 static uint32_t g_device_count = 0;
 static uint8_t g_next_address = 1;
+static uint64_t g_tsc_per_ms = 0;
+
+#define PIT_INPUT_HZ 1193182ULL
+
+static inline uint64_t read_tsc(void) {
+    uint32_t low = 0;
+    uint32_t high = 0;
+    __asm__ volatile ("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}
+
+static bool calibrate_tsc_with_pit(void) {
+    const uint32_t sample_ms = 10;
+    uint16_t divisor =
+        (uint16_t)((PIT_INPUT_HZ * sample_ms + 500) / 1000);
+    uint8_t gate = inb(0x61);
+
+    outb(0x61, (uint8_t)(gate & ~1u));
+    outb(0x43, 0xB0); /* Channel 2, mode 0, binary count. */
+    outb(0x42, (uint8_t)(divisor & 0xFF));
+    outb(0x42, (uint8_t)(divisor >> 8));
+    uint64_t start = read_tsc();
+    outb(0x61, (uint8_t)(gate | 1u));
+
+    bool elapsed = false;
+    for (uint32_t spin = 0; spin < 5000000u; spin++) {
+        if (inb(0x61) & 0x20u) {
+            elapsed = true;
+            break;
+        }
+        __asm__ volatile ("pause");
+    }
+    uint64_t end = read_tsc();
+    outb(0x61, (uint8_t)(gate & ~1u));
+    if (!elapsed || end <= start) return false;
+
+    g_tsc_per_ms = (end - start) / sample_ms;
+    return g_tsc_per_ms > 1000;
+}
+
+static void pit_delay_fallback(uint32_t milliseconds) {
+    uint8_t gate = inb(0x61);
+    while (milliseconds) {
+        uint32_t chunk = milliseconds > 50 ? 50 : milliseconds;
+        uint16_t divisor =
+            (uint16_t)((PIT_INPUT_HZ * chunk + 500) / 1000);
+        outb(0x61, (uint8_t)(gate & ~1u));
+        outb(0x43, 0xB0);
+        outb(0x42, (uint8_t)(divisor & 0xFF));
+        outb(0x42, (uint8_t)(divisor >> 8));
+        outb(0x61, (uint8_t)(gate | 1u));
+        for (uint32_t spin = 0; spin < 5000000u; spin++) {
+            if (inb(0x61) & 0x20u) break;
+            __asm__ volatile ("pause");
+        }
+        outb(0x61, (uint8_t)(gate & ~1u));
+        milliseconds -= chunk;
+    }
+}
 
 void usb_memset(void* destination, uint8_t value, size_t length) {
     memset(destination, value, length);
@@ -26,10 +85,19 @@ void usb_memcpy(void* destination, const void* source, size_t length) {
 }
 
 void usb_delay_ms(uint32_t milliseconds) {
-    for (uint32_t ms = 0; ms < milliseconds; ms++) {
-        for (uint32_t us = 0; us < 1000; us++) {
-            __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
-        }
+    if (!milliseconds) return;
+    if (!g_tsc_per_ms && !calibrate_tsc_with_pit()) {
+        pit_delay_fallback(milliseconds);
+        return;
+    }
+    if (milliseconds > UINT64_MAX / g_tsc_per_ms) {
+        pit_delay_fallback(milliseconds);
+        return;
+    }
+
+    uint64_t target = read_tsc() + (uint64_t)milliseconds * g_tsc_per_ms;
+    while ((int64_t)(read_tsc() - target) < 0) {
+        __asm__ volatile ("pause");
     }
 }
 
@@ -141,6 +209,9 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
     int offset = 0;
     int selected_interface = -1;
     int selected_score = -1;
+    uint8_t device_class = dev->class_code;
+    uint8_t device_subclass = dev->subclass;
+    uint8_t device_protocol = dev->protocol;
     while (offset + 2 <= length) {
         uint8_t item_length = buffer[offset];
         uint8_t item_type = buffer[offset + 1];
@@ -148,19 +219,27 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
         if (item_type == USB_DT_INTERFACE && item_length >= 9) {
             const usb_interface_desc_t* interface =
                 (const usb_interface_desc_t*)(buffer + offset);
+            uint8_t interface_class = interface->bInterfaceClass;
+            uint8_t interface_subclass = interface->bInterfaceSubClass;
+            uint8_t interface_protocol = interface->bInterfaceProtocol;
+            if (interface_class == 0 && device_class) {
+                interface_class = device_class;
+                interface_subclass = device_subclass;
+                interface_protocol = device_protocol;
+            }
             int score = 0;
-            if (interface->bInterfaceClass == USB_CLASS_HID) score = 3;
-            else if (interface->bInterfaceClass == USB_CLASS_HUB) score = 2;
+            if (interface_class == USB_CLASS_HID) score = 3;
+            else if (interface_class == USB_CLASS_HUB) score = 2;
             else score = 1;
             if (score > selected_score) {
                 selected_score = score;
                 selected_interface = interface->bInterfaceNumber;
-                dev->class_code = interface->bInterfaceClass;
-                dev->subclass = interface->bInterfaceSubClass;
-                dev->protocol = interface->bInterfaceProtocol;
+                dev->class_code = interface_class;
+                dev->subclass = interface_subclass;
+                dev->protocol = interface_protocol;
                 dev->interface_number = interface->bInterfaceNumber;
-                dev->interface_subclass = interface->bInterfaceSubClass;
-                dev->interface_protocol = interface->bInterfaceProtocol;
+                dev->interface_subclass = interface_subclass;
+                dev->interface_protocol = interface_protocol;
             }
         }
         offset += item_length;
@@ -246,10 +325,15 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         return -1;
     }
 
-    if (speed == USB_SPEED_SUPER && descriptor.bMaxPacketSize0 < 10) {
-        dev->max_packet0 = (uint8_t)(1u << descriptor.bMaxPacketSize0);
-    } else if (descriptor.bMaxPacketSize0) {
+    if (speed == USB_SPEED_SUPER && descriptor.bMaxPacketSize0 == 9) {
+        dev->max_packet0 = 512;
+    } else if (descriptor.bMaxPacketSize0 == 8 ||
+               descriptor.bMaxPacketSize0 == 16 ||
+               descriptor.bMaxPacketSize0 == 32 ||
+               descriptor.bMaxPacketSize0 == 64) {
         dev->max_packet0 = descriptor.bMaxPacketSize0;
+    } else {
+        dev->max_packet0 = speed >= USB_SPEED_HIGH ? 64 : 8;
     }
 
     uint8_t address = allocate_address();
@@ -416,6 +500,7 @@ void usb_init(void) {
     g_device_count = 0;
     g_next_address = 1;
     memset(g_devices, 0, sizeof(g_devices));
+    (void)usb_hid_selftest();
 
     if (!bus_find(BUS_TYPE_USB)) bus_register("usb", BUS_TYPE_USB);
 
