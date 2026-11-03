@@ -124,7 +124,7 @@ run_mode() {
 
     if { [ "${mode}" = "uefi" ] || [ "${mode}" = "ehci" ] ||
          [ "${mode}" = "hub" ] || [ "${mode}" = "generic" ] ||
-         [ "${mode}" = "p5-ehci" ] ||
+         [ "${mode}" = "p5-ehci" ] || [ "${mode}" = "p5-xhci-hs" ] ||
          [ "${mode}" = "usb-modern" ]; } &&
        ! grep -q "PCI backend=.*PCIe ECAM" "${log}"; then
         echo "UEFI Q35 run did not use PCIe ECAM" >&2
@@ -232,6 +232,15 @@ run_mode p5-ehci q35 cdrom -bios "${UEFI_FW}" \
     -device usb-storage,drive=usbdata,bus=ehci.0,id=usb-storage \
     -device usb-kbd,bus=ehci.0,id=usb-kbd \
     -device usb-mouse,bus=ehci.0,id=usb-mouse
+fi
+if selected_mode p5-xhci-hs; then
+run_mode p5-xhci-hs q35 cdrom -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-hub,bus=xhci.0,port=2,id=usbhub \
+    -drive "if=none,id=usbdata,format=raw,readonly=on,file=${ISO}" \
+    -device usb-storage,drive=usbdata,bus=xhci.0,port=2.1,id=usb-storage \
+    -device usb-kbd,bus=xhci.0,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,id=usb-mouse
 fi
 if selected_mode usb-legacy; then
 run_mode usb-legacy pc usb-uhci \
