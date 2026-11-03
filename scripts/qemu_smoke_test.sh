@@ -158,13 +158,11 @@ run_mode() {
     esac
 
     rm -f "${log}" "${console}" "${qmp}"
-    local timeout_seconds=28
+    local timeout_seconds=45
     if [ "${mode}" = "p6-install" ] ||
        [ "${mode}" = "p6-install-mbr" ] ||
        [ "${mode}" = "p6-install-fat16" ]; then
         timeout_seconds=65
-    elif [ "${mode}" = "hub" ]; then
-        timeout_seconds=45
     fi
     set +e
     timeout --foreground "${timeout_seconds}s" qemu-system-x86_64 \

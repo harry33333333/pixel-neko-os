@@ -197,6 +197,10 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    try:
+        connection.sendall(b'{"execute":"quit"}\n')
+    except OSError:
+        pass
     connection.close()
     return 0
 
