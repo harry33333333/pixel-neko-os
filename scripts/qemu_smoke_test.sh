@@ -163,6 +163,8 @@ run_mode() {
        [ "${mode}" = "p6-install-mbr" ] ||
        [ "${mode}" = "p6-install-fat16" ]; then
         timeout_seconds=65
+    elif [ "${mode}" = "hub" ]; then
+        timeout_seconds=45
     fi
     set +e
     timeout --foreground "${timeout_seconds}s" qemu-system-x86_64 \
