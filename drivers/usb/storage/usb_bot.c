@@ -148,7 +148,7 @@ static int scsi_inquiry(usb_bot_device_t* bot) {
     memcpy(product, response + 16, 16);
     vendor[8] = '\0';
     product[16] = '\0';
-    log_printf("[USBMS] SCSI device: %.8s %.16s\n", vendor, product);
+    log_printf("[USBMS] SCSI device: %s %s\n", vendor, product);
     return 0;
 }
 

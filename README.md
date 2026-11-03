@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A131a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A140a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -42,11 +42,11 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A131a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A140a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A131a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A140a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P4b automated smoke test
@@ -58,7 +58,7 @@ P3/P4a regressions and validates the rendered welcome window from a framebuffer
 screenshot:
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A131a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A140a.iso
 ```
 
 Controller and transfer architecture details are documented in

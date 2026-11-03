@@ -42,7 +42,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A131a"
+          VERSION="26A140a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -118,7 +118,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: Hardware bring-up fixes for Legacy UHCI and modern xHCI boot, generic non-Boot HID devices, USB hubs/hotplug, calibrated controller timing and a dedicated WC framebuffer mapping.
+          > **Pre-release**: P5 complete storage stack with AHCI/IDE/USB BOT block devices, GPT/MBR, FAT12/16/32, exFAT, ISO9660, FAT formatting and C:/D:/E: VFS drive mapping.
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -147,6 +147,14 @@ jobs:
           - **Boot Paths**: Legacy UHCI and SuperSpeed xHCI USB-storage boot, UEFI/BIOS optical boot, generic non-Boot HID, hub/hotplug and framebuffer screenshot validation.
           - **Runtime Self-test**: QEMU validates eight hardware-oriented scenarios on every release.
           - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
+
+          ### P5 Storage Highlights
+          - **Block Devices**: 64-bit block abstraction for AHCI SATA, Legacy IDE/ATAPI and USB Bulk-Only Transport.
+          - **Partitions**: MBR primary/logical and GPT entry parsing.
+          - **Filesystems**: FAT12/16/32 with long names, native exFAT with bitmap/up-case metadata parsing, and ISO9660/Joliet.
+          - **Formatting**: FAT16 and FAT32 VBR/BPB, dual FAT initialization, FSInfo and root-cluster formatting.
+          - **Drive Mapping**: A:/B: floppy, C: local FAT system partition, D: installation optical media and E: removable exFAT.
+          - **Runtime Self-test**: Validated FAT/exFAT reads and writes, FAT16/FAT32 format operations, AHCI ATAPI and xHCI USB storage.
         draft: false
         prerelease: true
         make_latest: false
