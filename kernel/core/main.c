@@ -25,6 +25,9 @@
 #include "input.h"
 #include "usb_core.h"
 #include "usb_hid.h"
+#include "storage.h"
+#include "part.h"
+#include "vfs.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -467,6 +470,13 @@ void kmain(void) {
                usb_get_hci_count(), usb_get_device_count(),
                usb_host_controller_summary(),
                usb_hid_keyboard_count(), usb_hid_mouse_count());
+
+    boot_progress_notify("Pixel Neko OS :: [18/23] Probing Storage & Volumes...");
+    storage_init();
+    part_scan_all();
+    vfs_init();
+    log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
+               blkdev_count(), g_partition_count);
 
     // 18. Check Kernel Load Address
     if (kernel_address_request.response) {

@@ -13,7 +13,7 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -ffreestanding -nostdlib -nostartfiles \
           -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
           -std=gnu11 -O2 -Wall -Wextra \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Idrivers/video -Idrivers/audio -Idrivers/acpi
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage
 
 NASMFLAGS ?= -f elf64
 
@@ -58,6 +58,16 @@ C_SRCS   = kernel/core/main.c \
            drivers/usb/hcd/usb_ohci.c \
            drivers/usb/hcd/usb_ehci.c \
            drivers/usb/hcd/usb_xhci.c \
+           drivers/storage/block.c \
+           drivers/storage/ahci.c \
+           drivers/storage/ata.c \
+           drivers/storage/storage.c \
+           fs/part.c \
+           fs/fat.c \
+           fs/exfat.c \
+           fs/iso9660.c \
+           fs/format.c \
+           fs/vfs.c \
            drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
            drivers/audio/speaker.c

@@ -15,18 +15,22 @@ typedef enum {
 
 typedef struct {
     blkdev_t*      dev;
-    unsigned int   start_lba;
-    unsigned int   total_sectors;
+    uint64_t       start_lba;
+    uint64_t       total_sectors;
     unsigned char  sys_id;          // Partition type byte (e.g. 0x07, 0x0B, 0x83)
     part_fs_type_t fs_type;
-    int            is_supported;    // 1 if kernel can mount & read (FAT12/16/32), 0 otherwise (NTFS/exFAT/ext)
+    int            is_supported;
+    int            is_efi_system;
+    uint8_t        gpt_type_guid[16];
     char           label[32];
 } partition_entry_t;
 
-#define MAX_PARTITIONS 16
+#define MAX_PARTITIONS 64
 extern partition_entry_t g_partitions[MAX_PARTITIONS];
 extern int g_partition_count;
 
 void part_scan_all(void);
+partition_entry_t* part_get(int index);
+partition_entry_t* part_find_by_start(blkdev_t* dev, uint64_t start_lba);
 
 #endif

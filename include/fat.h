@@ -51,7 +51,7 @@ typedef struct {
     unsigned int   root_cluster;
     
     blkdev_t*      dev;
-    unsigned int   partition_lba;
+    uint64_t       partition_lba;
     
     unsigned int   cached_fat_sector;
     unsigned char  fat_sector_buf[512];

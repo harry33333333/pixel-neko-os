@@ -18,14 +18,15 @@ typedef enum {
 typedef enum {
     VFS_DRV_FLOPPY = 0,
     VFS_DRV_HDD,
-    VFS_DRV_CDROM
+    VFS_DRV_CDROM,
+    VFS_DRV_USB
 } vfs_drv_type_t;
 
 typedef struct {
     char           name[128];
     unsigned char  is_dir;
-    unsigned int   size;
-    unsigned int   first_cluster;
+    uint64_t       size;
+    uint64_t       first_cluster;
 } vfs_dirent_t;
 
 typedef struct {
@@ -36,10 +37,10 @@ typedef struct {
     int            is_supported; // 1 if readable, 0 if unsupported FS
     int            is_readonly;  // 1 if optical disc or read-only
     blkdev_t*      dev;
-    unsigned int   start_lba;
-    unsigned int   total_sectors;
-    unsigned int   total_kb;
-    unsigned int   free_kb;
+    uint64_t       start_lba;
+    uint64_t       total_sectors;
+    uint64_t       total_kb;
+    uint64_t       free_kb;
     int            is_free_known;
     char           label[32];
     int            mounted;
@@ -54,18 +55,18 @@ int  vfs_find_file(const char* path, vfs_dirent_t* out_entry);
 int  vfs_read_file(const char* path, unsigned char* buf, unsigned int max_size);
 int  vfs_write_file(const char* path, const unsigned char* buf, unsigned int size);
 const char* vfs_get_fs_name(part_fs_type_t type);
-int  vfs_get_drive_space(char letter, unsigned int* total_kb, unsigned int* free_kb, int* is_known);
+int  vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb, int* is_known);
 int  vfs_has_cdrom(void);
 char vfs_get_boot_cdrom_letter(void);
 int  vfs_is_booted_from_cdrom(void);
 
 typedef struct {
     char           path[256];
-    unsigned int   size;
-    unsigned int   current_offset;
+    uint64_t       size;
+    uint64_t       current_offset;
     int            is_open;
     int            is_cdrom;
-    unsigned int   cdrom_extent_lba;
+    uint64_t       cdrom_extent_lba;
     void*          fat_handle;
     unsigned int   cached_sec_lba;
     int            has_cached_sec;
@@ -74,7 +75,7 @@ typedef struct {
 
 int  vfs_stream_open(const char* path, vfs_stream_t* stream);
 int  vfs_stream_read(vfs_stream_t* stream, void* buf, unsigned int size);
-int  vfs_stream_seek(vfs_stream_t* stream, unsigned int offset);
+int  vfs_stream_seek(vfs_stream_t* stream, uint64_t offset);
 void vfs_stream_close(vfs_stream_t* stream);
 
 #endif
