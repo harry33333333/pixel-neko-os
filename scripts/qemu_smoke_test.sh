@@ -103,6 +103,17 @@ run_mode() {
                 -boot order=c
             )
             ;;
+        p6-disk-official)
+            if [ ! -f ".p6-images/p6-official.img" ]; then
+                echo "Official Limine comparison disk is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-official.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=c
+            )
+            ;;
         *)
             echo "Unknown boot source: ${boot_source}" >&2
             return 2
@@ -130,7 +141,8 @@ run_mode() {
     local qemu_pid=$!
     set -e
 
-    if [ "${mode}" = "p6-disk-bios" ]; then
+    if [ "${mode}" = "p6-disk-bios" ] ||
+       [ "${mode}" = "p6-disk-official" ]; then
         python3 scripts/qmp_screenshot.py "${qmp}" \
             "qemu-${mode}-screen.ppm" 8 &
     fi
@@ -208,7 +220,8 @@ run_mode() {
     fi
     if { [ "${mode}" = "bios" ] || [ "${mode}" = "ohci" ] ||
          [ "${mode}" = "usb-legacy" ] ||
-         [ "${mode}" = "p6-disk-bios" ]; } &&
+         [ "${mode}" = "p6-disk-bios" ] ||
+         [ "${mode}" = "p6-disk-official" ]; } &&
        ! grep -q "PCI backend=.*CF8/CFC" "${log}"; then
         echo "Legacy run did not use CF8/CFC configuration space" >&2
         tail -n 250 "${log}" >&2
@@ -270,7 +283,8 @@ run_mode() {
         fi
     elif [ "${mode}" = "p6-live" ] ||
          [ "${mode}" = "p6-disk-uefi" ] ||
-         [ "${mode}" = "p6-disk-bios" ]; then
+         [ "${mode}" = "p6-disk-bios" ] ||
+         [ "${mode}" = "p6-disk-official" ]; then
         if ! grep -q "\[P6 \] Full desktop, splash and nine applications ready" "${log}"; then
             echo "P6 full desktop was not reached" >&2
             tail -n 350 "${log}" >&2
@@ -376,6 +390,14 @@ fi
 dd if=.p6-images/p6-target.img of=qemu-p6-disk-head.bin \
     bs=512 count=256 status=none
 mdir -i ".p6-images/p6-target.img@@1048576" ::/boot/limine
+cp .p6-images/p6-target.img .p6-images/p6-official.img
+./boot/limine/limine bios-install .p6-images/p6-official.img
+fi
+if selected_mode p6-disk-official; then
+run_mode p6-disk-official pc p6-disk-official \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,id=usb-kbd \
+    -device usb-mouse,bus=uhci.0,id=usb-mouse
 fi
 if selected_mode p6-disk-uefi; then
 run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
