@@ -350,8 +350,12 @@ int exfat_find(exfat_fs_t* fs, const char* path, exfat_file_info_t* info) {
         path = next_component(path, component, sizeof(component));
         if (!component[0]) break;
         struct exfat_find_context find = { component, info, false };
-        if (visit_directory(fs, cluster, find_visitor, &find) != 1 ||
-            !find.found) {
+        int visit = visit_directory(fs, cluster, find_visitor, &find);
+        if (visit < 0) {
+            log_printf("[EXFAT] directory read failed for %s\n", component);
+            return -1;
+        }
+        if (visit != 1 || !find.found) {
             return -1;
         }
         if (*path && !find.info->is_dir) return -1;
