@@ -9,7 +9,7 @@
 #define XHCI_MAX_SLOTS 16
 #define XHCI_RING_SIZE 1024
 #define XHCI_EVENT_RING_SIZE 4096
-#define XHCI_ARENA_SIZE (256u * 1024u)
+#define XHCI_ARENA_SIZE (1024u * 1024u)
 
 #define XHCI_CMD_RUN       (1u << 0)
 #define XHCI_CMD_RESET     (1u << 1)
