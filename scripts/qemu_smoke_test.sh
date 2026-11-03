@@ -367,6 +367,15 @@ run_mode p6-install q35 p6 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
     -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
+mcopy -o -i ".p6-images/p6-target.img@@1048576" \
+    "::/boot/limine/limine-bios.sys" p6-deployed-limine.sys
+if ! cmp -s boot/limine/limine-bios.sys p6-deployed-limine.sys; then
+    echo "Installed limine-bios.sys does not match the source payload" >&2
+    exit 1
+fi
+dd if=.p6-images/p6-target.img of=qemu-p6-disk-head.bin \
+    bs=512 count=256 status=none
+mdir -i ".p6-images/p6-target.img@@1048576" ::/boot/limine
 fi
 if selected_mode p6-disk-uefi; then
 run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
