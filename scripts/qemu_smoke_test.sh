@@ -130,6 +130,11 @@ run_mode() {
     local qemu_pid=$!
     set -e
 
+    if [ "${mode}" = "p6-disk-bios" ]; then
+        python3 scripts/qmp_screenshot.py "${qmp}" \
+            "qemu-${mode}-screen.ppm" 8 &
+    fi
+
     if [ "${mode}" = "p6-install" ]; then
         if ! python3 scripts/qmp_boot_menu.py "${qmp}"; then
             echo "Could not select the Limine graphical installer entry" >&2
