@@ -20,6 +20,7 @@ static int sel_res_idx = 2; // Default 800x600
 static int sel_bpp_idx = 1; // Default 16-bit
 static int res_dropdown_open = 0;
 static int bpp_dropdown_open = 0;
+static int slider_dragging = 0;
 
 static const int res_w[5] = { 320, 640, 800, 1024, 1280 };
 static const int res_h[5] = { 200, 480, 600, 768, 1024 };
@@ -62,6 +63,7 @@ void check_revert_timer(void)
             if (revert_timer == 0) {
                 set_resolution(prev_w, prev_h, prev_bpp);
                 gfx_accel_set_mode(prev_w, prev_h, prev_bpp);
+                cpanel_init();
                 redraw = 1;
             }
         }
@@ -271,11 +273,12 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
 
     // Mouse speed slider
     int tx = wx+120, ty = wy+28;
-    if (mx >= tx && mx < tx+100 && my >= ty-4 && my < ty+18) {
+    if (mx >= tx-4 && mx < tx+104 && my >= ty-6 && my < ty+20) {
         int val = (mx - tx) / 20;
         if (val < 0) val = 0;
         if (val > 4) val = 4;
         slider_val = val;
+        slider_dragging = 1;
         mouse_set_speed(val);
         redraw = 1;
         return;
@@ -395,4 +398,30 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
         redraw = 1;
         return;
     }
+}
+
+int cpanel_drag(int mx, int my, int wx, int wy)
+{
+    (void)my;
+    if (!slider_dragging) return 0;
+    int tx = wx + 120;
+    int val = (mx - tx) / 20;
+    if (val < 0) val = 0;
+    if (val > 4) val = 4;
+    if (val != slider_val) {
+        slider_val = val;
+        mouse_set_speed(val);
+        return 1;
+    }
+    return 0;
+}
+
+void cpanel_release(void)
+{
+    slider_dragging = 0;
+}
+
+int cpanel_has_open_dropdown(void)
+{
+    return res_dropdown_open || bpp_dropdown_open;
 }

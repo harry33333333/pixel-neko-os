@@ -367,7 +367,7 @@ void installer_draw(unsigned char* surface, int wx, int wy,
                     next_button_y(wy, wh), 78, 23, "Next >",
                     g_target_count > 0);
         draw_button(surface, wx + 14, next_button_y(wy, wh),
-                    78, 23, "Cancel", 1);
+                    78, 23, "Refresh", 1);
     } else if (g_step == STEP_FORMAT) {
         font_draw_text(surface, wx + 14, wy + 28,
                        "Choose the destination filesystem", 0);
@@ -475,9 +475,6 @@ void installer_draw(unsigned char* surface, int wx, int wy,
                            "The target disk can boot independently.", 8);
             draw_button(surface, wx + 20, next_button_y(wy, wh) - 4,
                         116, 27, "Reboot Now", 1);
-            draw_button(surface, next_button_x(wx, ww) - 120,
-                        next_button_y(wy, wh) - 4,
-                        120, 27, "Stay on Desktop", 1);
         } else {
             font_draw_text(surface, wx + 14, wy + 28,
                            "Installation Failed", 12);
@@ -1087,7 +1084,7 @@ void installer_click(unsigned char* surface, int mx, int my,
         }
         if (point_in_rect(mx, my, wx + 14, next_button_y(wy, wh),
                           78, 23)) {
-            insv = 0;
+            scan_targets();
             redraw = 1;
         }
     } else if (g_step == STEP_FORMAT) {
@@ -1133,11 +1130,6 @@ void installer_click(unsigned char* surface, int mx, int my,
                               next_button_y(wy, wh) - 4, 116, 27)) {
                 sys_reboot();
                 return;
-            }
-            if (point_in_rect(mx, my, next_button_x(wx, ww) - 120,
-                              next_button_y(wy, wh) - 4, 120, 27)) {
-                insv = 0;
-                redraw = 1;
             }
         } else if (point_in_rect(mx, my, next_button_x(wx, ww),
                                  next_button_y(wy, wh), 78, 23)) {

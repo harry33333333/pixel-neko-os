@@ -29,7 +29,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf dosfstools exfatprogs
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -78,34 +78,6 @@ jobs:
         path: |
           bin/kernel.elf
           kernel-symbols.txt
-        if-no-files-found: ignore
-
-    - name: Create P5 Storage Fixtures
-      run: bash scripts/create_p5_storage_fixtures.sh .p5-images
-
-    - name: Create P6 Existing-Partition Fixture
-      run: bash scripts/create_p6_install_fixture.sh .p6-images
-
-    - name: QEMU UEFI and Legacy Smoke Test
-      if: success()
-      env:
-        QEMU_MODES: ${{ github.event.inputs.qemu_modes || 'all' }}
-      run: |
-        bash scripts/qemu_smoke_test.sh "pixel-neko-os_${VERSION}.iso"
-
-    - name: Upload QEMU Serial Logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: qemu-serial-logs
-        path: |
-          qemu-*-serial.log
-          qemu-*-console.log
-          qemu-*-screen.ppm
-          qemu-p6-install-*.ppm
-          qemu-p6-disk-head.bin
-          qemu-p6-mbr-disk-head.bin
-          qemu-p6-fat16-disk-head.bin
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact

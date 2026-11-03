@@ -5,6 +5,7 @@
 
 void wm_init(void);
 void wm_installer_activate(void);
+void wm_on_resolution_change(int w, int h);
 void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_release);
 void wm_draw(unsigned char* v);
 int wm_is_dragging(void);

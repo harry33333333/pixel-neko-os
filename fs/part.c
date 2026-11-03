@@ -1,4 +1,5 @@
 #include "part.h"
+#include "format.h"
 #include "log.h"
 #include "string.h"
 
@@ -223,10 +224,20 @@ static void scan_mbr(blkdev_t* dev, const uint8_t* mbr) {
     }
 }
 
+static void write_le32_part(uint8_t* data, uint32_t value) {
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+    data[2] = (uint8_t)(value >> 16);
+    data[3] = (uint8_t)(value >> 24);
+}
+
 static void scan_device(blkdev_t* dev) {
     if (!dev || dev->is_readonly || dev->sector_size != 512) return;
     uint8_t mbr[512];
-    if (block_read(dev, 0, 1, mbr) != 0) return;
+    if (block_read(dev, 0, 1, mbr) != 0) {
+        log_printf("[PART] %s failed to read sector 0\n", dev->name);
+        return;
+    }
     bool has_signature = mbr[510] == 0x55 && mbr[511] == 0xAA;
     log_printf("[PART] %s sector0 signature=%02x%02x type0=%02x\n",
                dev->name, mbr[511], mbr[510], mbr[0x1BE + 4]);
@@ -252,6 +263,55 @@ static void scan_device(blkdev_t* dev) {
     probe_filesystem(dev, 0, &probe);
     if (probe.is_supported) {
         add_partition(dev, 0, dev->total_sectors, 0x06, NULL);
+        return;
+    }
+
+    if ((dev->type == BLK_TYPE_ATA || dev->type == BLK_TYPE_AHCI) &&
+        !dev->is_readonly && dev->total_sectors >= 8192) {
+        bool blank_mbr = true;
+        for (int i = 0; i < 512; i++) {
+            if (mbr[i] != 0) {
+                blank_mbr = false;
+                break;
+            }
+        }
+        if (blank_mbr) {
+            uint64_t start_lba = 2048;
+            uint64_t avail = dev->total_sectors - start_lba;
+            uint32_t part_sectors = avail > 0xFFFFFFFFull
+                                        ? 0xFFFFFFFFu
+                                        : (uint32_t)avail;
+            uint8_t sys_id = part_sectors >= 65536 ? 0x0C : 0x06;
+            part_fs_type_t fmt_type =
+                part_sectors >= 65536 ? PART_FS_FAT32 : PART_FS_FAT16;
+
+            memset(mbr, 0, sizeof(mbr));
+            uint8_t* p1 = mbr + 0x1BE;
+            p1[0] = 0x80;
+            p1[1] = 0x20;
+            p1[2] = 0x21;
+            p1[3] = 0x00;
+            p1[4] = sys_id;
+            p1[5] = 0xFE;
+            p1[6] = 0xFF;
+            p1[7] = 0xFF;
+            write_le32_part(p1 + 8, (uint32_t)start_lba);
+            write_le32_part(p1 + 12, part_sectors);
+            mbr[510] = 0x55;
+            mbr[511] = 0xAA;
+
+            if (block_write(dev, 0, 1, mbr) == 0) {
+                log_printf("[PART] Auto-initialized MBR on blank disk %s (%u sectors)\n",
+                           dev->name, part_sectors);
+                partition_entry_t check_fs;
+                memset(&check_fs, 0, sizeof(check_fs));
+                probe_filesystem(dev, start_lba, &check_fs);
+                if (!check_fs.is_supported) {
+                    (void)format_partition(dev, start_lba, part_sectors, fmt_type);
+                }
+                add_partition(dev, start_lba, part_sectors, sys_id, NULL);
+            }
+        }
     }
 }
 

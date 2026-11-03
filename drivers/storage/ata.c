@@ -63,11 +63,15 @@ static int ata_wait_status(ata_drive_t* drive, uint8_t wanted,
                            uint8_t forbidden, uint32_t timeout) {
     for (uint32_t spin = 0; spin < timeout; spin++) {
         uint8_t status = ata_status(drive);
+        if (status & ATA_SR_BSY) {
+            __asm__ volatile ("pause");
+            continue;
+        }
         if ((status & forbidden) == 0 && (wanted == 0 ||
                                            (status & wanted) == wanted)) {
             return 0;
         }
-        if (status & (ATA_SR_ERR | ATA_SR_DF)) return -1;
+        if (wanted != 0 && (status & (ATA_SR_ERR | ATA_SR_DF))) return -1;
         __asm__ volatile ("pause");
     }
     return -1;
@@ -80,16 +84,18 @@ static void ata_select(ata_drive_t* drive, uint8_t extra) {
 }
 
 static void ata_read_words(uint16_t port, void* buffer, uint32_t words) {
-    uint16_t* output = (uint16_t*)buffer;
-    for (uint32_t index = 0; index < words; index++) output[index] = inw(port);
+    __asm__ volatile ("cld; rep insw"
+                      : "+D"(buffer), "+c"(words)
+                      : "d"(port)
+                      : "memory");
 }
 
 static void ata_write_words(uint16_t port, const void* buffer,
                             uint32_t words) {
-    const uint16_t* input = (const uint16_t*)buffer;
-    for (uint32_t index = 0; index < words; index++) {
-        outw(port, input[index]);
-    }
+    __asm__ volatile ("cld; rep outsw"
+                      : "+S"(buffer), "+c"(words)
+                      : "d"(port)
+                      : "memory");
 }
 
 static void ata_identify_string(char* output, uint16_t capacity,
@@ -191,7 +197,8 @@ static int ata_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     while (count) {
         uint32_t batch = count > 128 ? 128 : count;
         bool extended = lba + batch > 0x0FFFFFFF;
-        ata_select(drive, extended ? 0x40 : 0);
+        uint8_t head_extra = extended ? 0x40 : (uint8_t)(0x40 | ((lba >> 24) & 0x0F));
+        ata_select(drive, head_extra);
         if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) return -1;
         ata_program_lba(drive, lba, batch, extended);
         outb(drive->base + ATA_REG_COMMAND,
@@ -217,7 +224,8 @@ static int ata_write_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     while (count) {
         uint32_t batch = count > 128 ? 128 : count;
         bool extended = lba + batch > 0x0FFFFFFF;
-        ata_select(drive, extended ? 0x40 : 0);
+        uint8_t head_extra = extended ? 0x40 : (uint8_t)(0x40 | ((lba >> 24) & 0x0F));
+        ata_select(drive, head_extra);
         if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) return -1;
         ata_program_lba(drive, lba, batch, extended);
         outb(drive->base + ATA_REG_COMMAND,

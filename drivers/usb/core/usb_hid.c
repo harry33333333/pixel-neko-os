@@ -516,13 +516,21 @@ static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
     return value;
 }
 
+static uint32_t g_last_combined_buttons = 0;
+
 static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
                           const uint8_t* report, int length) {
-    uint32_t buttons = 0;
     if (layout->buttons_count) {
-        buttons = read_report_bits(
+        hid->buttons = read_report_bits(
             report, length, layout->buttons_offset,
             layout->buttons_count > 32 ? 32 : layout->buttons_count);
+    }
+
+    uint32_t buttons = 0;
+    for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
+        if (g_hids[i].used && g_hids[i].mouse) {
+            buttons |= g_hids[i].buttons;
+        }
     }
 
     int32_t x = 0;
@@ -604,10 +612,10 @@ static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
         input_emit_mouse_move(x, y, buttons, wheel);
     }
 
-    if (buttons != hid->buttons) {
+    if (buttons != g_last_combined_buttons) {
         log_printf("[USBHID] BUTTON buttons=%u\n", buttons);
         input_emit_mouse_button(buttons);
-        hid->buttons = buttons;
+        g_last_combined_buttons = buttons;
     }
 }
 
@@ -646,25 +654,21 @@ static bool ensure_boot_layout(hid_descriptor_t* descriptor, bool keyboard) {
         }
         if (!descriptor->report_length) descriptor->report_length = 8;
     } else {
-        if (!layout->buttons_count) {
+        bool has_any_mouse = layout->buttons_count || layout->x_size ||
+                             layout->y_size;
+        if (!has_any_mouse) {
             layout->buttons_offset = 0;
             layout->buttons_count = 3;
-        }
-        if (!layout->x_size) {
             layout->x_offset = 8;
             layout->x_size = 8;
-        }
-        if (!layout->y_size) {
             layout->y_offset = 16;
             layout->y_size = 8;
+            if (!layout->wheel_size && descriptor->report_length > 3) {
+                layout->wheel_offset = 24;
+                layout->wheel_size = 8;
+            }
+            if (!descriptor->report_length) descriptor->report_length = 4;
         }
-        if (!layout->wheel_size && descriptor->report_length > 3 &&
-            layout->x_size == 8 && layout->y_size == 8 &&
-            layout->y_offset == 16) {
-            layout->wheel_offset = 24;
-            layout->wheel_size = 8;
-        }
-        if (!descriptor->report_length) descriptor->report_length = 4;
     }
     return true;
 }

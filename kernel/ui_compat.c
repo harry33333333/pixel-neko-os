@@ -104,6 +104,73 @@ void ui_compat_init(void) {
     g_started = false;
 }
 
+static inline uint32_t surface_pixel_to_rgb32(const unsigned char* source,
+                                              int sx, int sy) {
+    if (screen_bpp <= 8) {
+        uint8_t idx = source[(size_t)sy * (size_t)screen_pitch + (size_t)sx];
+        return palette32[idx];
+    }
+    if (screen_bpp <= 16) {
+        uint16_t c16 = *(const uint16_t*)(source + (size_t)sy * (size_t)screen_pitch +
+                                          (size_t)sx * 2);
+        uint32_t r5 = (c16 >> 11) & 0x1Fu;
+        uint32_t g6 = (c16 >> 5) & 0x3Fu;
+        uint32_t b5 = c16 & 0x1Fu;
+        uint32_t r8 = (r5 << 3) | (r5 >> 2);
+        uint32_t g8 = (g6 << 2) | (g6 >> 4);
+        uint32_t b8 = (b5 << 3) | (b5 >> 2);
+        return (r8 << 16) | (g8 << 8) | b8;
+    }
+    if (screen_bpp == 24) {
+        const uint8_t* p = source + (size_t)sy * (size_t)screen_pitch +
+                           (size_t)sx * 3;
+        return ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+    }
+    return *(const uint32_t*)(source + (size_t)sy * (size_t)screen_pitch +
+                              (size_t)sx * 4);
+}
+
+static inline uint32_t surface_read_raw(const unsigned char* surface,
+                                        int px, int py) {
+    if (screen_bpp <= 8) {
+        return surface[(size_t)py * (size_t)screen_pitch + (size_t)px];
+    }
+    if (screen_bpp <= 16) {
+        return *(const uint16_t*)(surface + (size_t)py * (size_t)screen_pitch +
+                                  (size_t)px * 2);
+    }
+    if (screen_bpp == 24) {
+        const uint8_t* p = surface + (size_t)py * (size_t)screen_pitch +
+                           (size_t)px * 3;
+        return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+    }
+    return *(const uint32_t*)(surface + (size_t)py * (size_t)screen_pitch +
+                              (size_t)px * 4);
+}
+
+static inline void surface_write_raw(unsigned char* surface,
+                                     int px, int py, uint32_t raw) {
+    if (screen_bpp <= 8) {
+        surface[(size_t)py * (size_t)screen_pitch + (size_t)px] = (uint8_t)raw;
+        return;
+    }
+    if (screen_bpp <= 16) {
+        *(uint16_t*)(surface + (size_t)py * (size_t)screen_pitch +
+                     (size_t)px * 2) = (uint16_t)raw;
+        return;
+    }
+    if (screen_bpp == 24) {
+        uint8_t* p = surface + (size_t)py * (size_t)screen_pitch +
+                     (size_t)px * 3;
+        p[0] = (uint8_t)(raw & 0xFFu);
+        p[1] = (uint8_t)((raw >> 8) & 0xFFu);
+        p[2] = (uint8_t)((raw >> 16) & 0xFFu);
+        return;
+    }
+    *(uint32_t*)(surface + (size_t)py * (size_t)screen_pitch +
+                 (size_t)px * 4) = raw;
+}
+
 void copy_rect_to_lfb(const unsigned char* source, int x, int y,
                       int width, int height) {
     if (!source || !lfb) return;
@@ -118,15 +185,52 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
     if (x + width > screen_w) width = screen_w - x;
     if (y + height > screen_h) height = screen_h - y;
     if (width <= 0 || height <= 0) return;
-    for (int row = 0; row < height; row++) {
-        const uint32_t* src =
-            (const uint32_t*)(source + (size_t)(y + row) * screen_pitch +
-                              (size_t)x * 4);
-        volatile uint32_t* dst =
-            (volatile uint32_t*)(lfb +
-                                (size_t)(y + row) * g_main_surface.pitch +
-                                (size_t)x * 4);
-        for (int column = 0; column < width; column++) dst[column] = src[column];
+
+    int hw_w = (int)g_main_surface.width;
+    int hw_h = (int)g_main_surface.height;
+    if (hw_w <= 0 || hw_h <= 0) return;
+
+    if (screen_w == hw_w && screen_h == hw_h) {
+        for (int row = 0; row < height; row++) {
+            int sy = y + row;
+            volatile uint32_t* dst =
+                (volatile uint32_t*)(lfb +
+                                     (size_t)sy * g_main_surface.pitch +
+                                     (size_t)x * 4);
+            if (screen_bpp == 32) {
+                const uint32_t* src =
+                    (const uint32_t*)(source + (size_t)sy * (size_t)screen_pitch +
+                                      (size_t)x * 4);
+                for (int column = 0; column < width; column++) {
+                    dst[column] = src[column];
+                }
+            } else {
+                for (int column = 0; column < width; column++) {
+                    dst[column] = surface_pixel_to_rgb32(source, x + column, sy);
+                }
+            }
+        }
+    } else {
+        int dst_x0 = (x * hw_w) / screen_w;
+        int dst_y0 = (y * hw_h) / screen_h;
+        int dst_x1 = ((x + width) * hw_w + screen_w - 1) / screen_w;
+        int dst_y1 = ((y + height) * hw_h + screen_h - 1) / screen_h;
+        if (dst_x0 < 0) dst_x0 = 0;
+        if (dst_y0 < 0) dst_y0 = 0;
+        if (dst_x1 > hw_w) dst_x1 = hw_w;
+        if (dst_y1 > hw_h) dst_y1 = hw_h;
+
+        for (int dy = dst_y0; dy < dst_y1; dy++) {
+            int sy = (dy * screen_h) / hw_h;
+            if (sy >= screen_h) sy = screen_h - 1;
+            volatile uint32_t* dst =
+                (volatile uint32_t*)(lfb + (size_t)dy * g_main_surface.pitch);
+            for (int dx = dst_x0; dx < dst_x1; dx++) {
+                int sx = (dx * screen_w) / hw_w;
+                if (sx >= screen_w) sx = screen_w - 1;
+                dst[dx] = surface_pixel_to_rgb32(source, sx, sy);
+            }
+        }
     }
     boot_framebuffer_flush();
 }
@@ -136,9 +240,30 @@ void copy_fullscreen_to_lfb(const unsigned char* source) {
 }
 
 void set_resolution(int width, int height, int bpp) {
-    (void)width;
-    (void)height;
-    (void)bpp;
+    if (width < 320) width = 320;
+    if (width > UI_MAX_WIDTH) width = UI_MAX_WIDTH;
+    if (height < 200) height = 200;
+    if (height > UI_MAX_HEIGHT) height = UI_MAX_HEIGHT;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) bpp = 32;
+
+    if (g_cursor_saved_valid) {
+        mouse_reset(backbuffer);
+    }
+
+    screen_w = width;
+    screen_h = height;
+    screen_bpp = bpp;
+    int bytes_per_pixel = (bpp <= 8) ? 1 : ((bpp <= 16) ? 2 : ((bpp <= 24) ? 3 : 4));
+    screen_pitch = screen_w * bytes_per_pixel;
+
+    if (g_mouse_x >= screen_w) g_mouse_x = screen_w - 1;
+    if (g_mouse_y >= screen_h) g_mouse_y = screen_h - 1;
+    if (g_mouse_x < 0) g_mouse_x = 0;
+    if (g_mouse_y < 0) g_mouse_y = 0;
+
+    mouse_invalidate();
+    memset(backbuffer, 0, (size_t)screen_pitch * (size_t)screen_h);
+    wm_on_resolution_change(screen_w, screen_h);
 }
 
 void mouse_invalidate(void) {
@@ -151,11 +276,10 @@ void mouse_reset(unsigned char* surface) {
     for (int row = 0; row < CURSOR_H; row++) {
         int py = g_cursor_saved_y + row;
         if (py < 0 || py >= screen_h) continue;
-        uint32_t* dst = (uint32_t*)(surface + (size_t)py * screen_pitch);
         for (int col = 0; col < CURSOR_W; col++) {
             int px = g_cursor_saved_x + col;
             if (px >= 0 && px < screen_w) {
-                dst[px] = g_cursor_saved[row][col];
+                surface_write_raw(surface, px, py, g_cursor_saved[row][col]);
             }
         }
     }
@@ -189,11 +313,10 @@ static void ui_draw_cursor(unsigned char* surface) {
     for (int row = 0; row < CURSOR_H; row++) {
         int py = g_mouse_y + row;
         if (py < 0 || py >= screen_h) continue;
-        const uint32_t* src = (const uint32_t*)(surface + (size_t)py * screen_pitch);
         for (int col = 0; col < CURSOR_W; col++) {
             int px = g_mouse_x + col;
             if (px >= 0 && px < screen_w) {
-                g_cursor_saved[row][col] = src[px];
+                g_cursor_saved[row][col] = surface_read_raw(surface, px, py);
             }
         }
     }
@@ -204,14 +327,13 @@ static void ui_draw_cursor(unsigned char* surface) {
     for (int row = 0; row < CURSOR_H; row++) {
         int py = g_mouse_y + row;
         if (py < 0 || py >= screen_h) continue;
-        uint32_t* dst = (uint32_t*)(surface + (size_t)py * screen_pitch);
         for (int column = 0; cursor[row][column]; column++) {
             int px = g_mouse_x + column;
             if (px < 0 || px >= screen_w) continue;
             if (cursor[row][column] == 'X') {
-                dst[px] = palette32[0];
+                PUT_PIXEL(surface, px, py, 0);
             } else if (cursor[row][column] == '.') {
-                dst[px] = palette32[15];
+                PUT_PIXEL(surface, px, py, 15);
             }
         }
     }

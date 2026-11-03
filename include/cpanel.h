@@ -4,5 +4,8 @@
 void cpanel_init(void);
 void cpanel_draw(unsigned char* v, int wx, int wy, int ww, int wh);
 void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int wh);
+int cpanel_drag(int mx, int my, int wx, int wy);
+void cpanel_release(void);
+int cpanel_has_open_dropdown(void);
 
 #endif

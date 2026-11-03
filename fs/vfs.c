@@ -63,20 +63,20 @@ static vfs_drive_t* initialize_drive(char letter) {
 }
 
 static bool mount_partition(partition_entry_t* part, char letter) {
-    if (!part || !part->dev || !part->is_supported) return false;
+    if (!part || !part->dev) return false;
     vfs_drive_t* drive = initialize_drive(letter);
     if (!drive) return false;
     drive->drv_type = part->dev->type == BLK_TYPE_USB ? VFS_DRV_USB :
                       VFS_DRV_HDD;
     drive->fs_type = part->fs_type;
-    drive->is_supported = 1;
+    drive->is_supported = part->is_supported ? 1 : 0;
     drive->dev = part->dev;
     drive->start_lba = part->start_lba;
     drive->total_sectors = part->total_sectors;
     drive->total_kb = part->total_sectors *
                       (part->dev->sector_size / 1024u);
     copy_text(drive->label, sizeof(drive->label), part->label);
-    if (part->fs_type == PART_FS_EXFAT) {
+    if (part->is_supported && part->fs_type == PART_FS_EXFAT) {
         exfat_fs_t* exfat = &g_exfat_filesystems[letter - 'A'];
         if (exfat_mount(part->dev, part->start_lba, exfat) == 0) {
             drive->mounted = 1;
@@ -86,9 +86,10 @@ static bool mount_partition(partition_entry_t* part, char letter) {
                           exfat->volume_label);
             }
         }
-    } else if (part->fs_type == PART_FS_FAT12 ||
-               part->fs_type == PART_FS_FAT16 ||
-               part->fs_type == PART_FS_FAT32) {
+    } else if (part->is_supported &&
+               (part->fs_type == PART_FS_FAT12 ||
+                part->fs_type == PART_FS_FAT16 ||
+                part->fs_type == PART_FS_FAT32)) {
         if (fat_mount_dev(letter, part->dev, part->start_lba) == 0) {
             drive->mounted = 1;
             g_filesystem_kind[letter - 'A'] = VFS_FS_FAT;
@@ -99,7 +100,7 @@ static bool mount_partition(partition_entry_t* part, char letter) {
                                    ? "Removable Disk" : "Local Disk";
         copy_text(drive->label, sizeof(drive->label), fallback);
     }
-    return drive->mounted;
+    return drive->present != 0;
 }
 
 int vfs_mount_partition(partition_entry_t* part, char letter) {
@@ -174,22 +175,25 @@ void vfs_init(void) {
     char local_letter = 'C';
     char removable_letter = 'E';
     const char optical_letter = 'D';
-    for (int pass = 0; pass < 2; pass++) {
-        for (int index = 0; index < g_partition_count; index++) {
-            partition_entry_t* part = &g_partitions[index];
-            if (part->is_efi_system || !part->is_supported) continue;
-            bool removable = part->dev->type == BLK_TYPE_USB;
-            if ((pass == 0) != removable) continue;
-            char* cursor = removable ? &removable_letter : &local_letter;
-            while (*cursor == optical_letter ||
-                   (removable && *cursor < 'E') ||
-                   (!removable && *cursor == 'E') ||
-                   (*cursor >= 'A' && *cursor <= 'Z' &&
-                    g_vfs_drives[*cursor - 'A'].present)) {
-                (*cursor)++;
+    for (int sup_pass = 0; sup_pass < 2; sup_pass++) {
+        for (int pass = 0; pass < 2; pass++) {
+            for (int index = 0; index < g_partition_count; index++) {
+                partition_entry_t* part = &g_partitions[index];
+                if (part->is_efi_system) continue;
+                if ((sup_pass == 0) != (part->is_supported != 0)) continue;
+                bool removable = part->dev->type == BLK_TYPE_USB;
+                if ((pass == 0) != removable) continue;
+                char* cursor = removable ? &removable_letter : &local_letter;
+                while (*cursor == optical_letter ||
+                       (removable && *cursor < 'E') ||
+                       (!removable && *cursor == 'E') ||
+                       (*cursor >= 'A' && *cursor <= 'Z' &&
+                        g_vfs_drives[*cursor - 'A'].present)) {
+                    (*cursor)++;
+                }
+                if (*cursor > 'Z') continue;
+                if (mount_partition(part, *cursor)) (*cursor)++;
             }
-            if (*cursor > 'Z') continue;
-            if (mount_partition(part, *cursor)) (*cursor)++;
         }
     }
 
@@ -272,7 +276,9 @@ static void iso_list_entry(const iso_file_info_t* info) {
 int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
     if (!path) return VFS_ERR_NOT_FOUND;
     vfs_drive_t* drive = vfs_get_drive(path[0]);
-    if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
+    if (!drive) return VFS_ERR_NO_DRIVE;
+    if (!drive->is_supported) return VFS_ERR_UNSUPPORTED;
+    if (!drive->mounted) return VFS_ERR_NO_DRIVE;
     g_list_bridge.user_callback = callback;
     switch (g_filesystem_kind[drive->letter - 'A']) {
         case VFS_FS_FAT:
@@ -527,6 +533,7 @@ int vfs_remount(char letter) {
     } else {
         return VFS_ERR_UNSUPPORTED;
     }
+    drive->is_supported = 1;
     drive->mounted = 1;
     return VFS_OK;
 }

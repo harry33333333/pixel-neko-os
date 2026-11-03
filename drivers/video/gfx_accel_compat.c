@@ -32,22 +32,24 @@ unsigned int gfx_accel_get_vram_size(void) {
     return (unsigned int)g_main_surface.pitch * g_main_surface.height;
 }
 
+extern void set_resolution(int width, int height, int bpp);
+
 int gfx_accel_supports_bpp(int width, int height, int bpp) {
-    (void)width;
-    (void)height;
-    return bpp == 32;
+    if (width < 320 || width > 1280 || height < 200 || height > 1024) {
+        return 0;
+    }
+    return (bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32);
 }
 
 int gfx_accel_try_set_mode(int width, int height, int bpp) {
-    (void)width;
-    (void)height;
-    return bpp == 32;
+    if (!gfx_accel_supports_bpp(width, height, bpp)) return 0;
+    set_resolution(width, height, bpp);
+    return 1;
 }
 
 void gfx_accel_set_mode(int width, int height, int bpp) {
-    (void)width;
-    (void)height;
-    (void)bpp;
+    if (!gfx_accel_supports_bpp(width, height, bpp)) return;
+    set_resolution(width, height, bpp);
 }
 
 void gfx_accel_fill_rect(int x, int y, int width, int height,
