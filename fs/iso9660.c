@@ -121,7 +121,11 @@ static int parse_directory(iso_fs_t* fs, unsigned int start_lba, unsigned int to
                     char c = rec[33 + i + 1];
                     if (c == 0) c = rec[33 + i];
                     if (c == 0) break;
+                    if (c == ';') break; // Strip version suffix ;1
                     item.name[name_len++] = c;
+                }
+                if (name_len > 0 && item.name[name_len - 1] == '.') {
+                    name_len--;
                 }
             } else {
                 for (int i = 0; i < len_fi && name_len < 63; i++) {
@@ -189,8 +193,8 @@ int iso_find_file(iso_fs_t* fs, const char* path, iso_file_info_t* info) {
     // Skip drive letter prefix if present (e.g. "E:\" or "C:\")
     if (path[0] && path[1] == ':') {
         path += 2;
-        if (*path == '\\' || *path == '/') path++;
     }
+    while (*path == '\\' || *path == '/') path++;
 
     if (*path == '\0') {
         info->extent_lba = fs->root_extent_lba;

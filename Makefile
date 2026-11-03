@@ -6,6 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PIXEL_NEKO_BUILD_NUMBER ?= 170
+PIXEL_NEKO_BUILD_SUFFIX ?= b
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -128,7 +129,7 @@ TARGET   = bin/kernel.elf
 all: version $(TARGET)
 
 version:
-	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) bash scripts/version_gen.sh
+	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh
 
 %.o: %.asm
 	@mkdir -p $(dir $@)

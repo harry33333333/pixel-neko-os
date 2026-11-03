@@ -216,16 +216,16 @@ static void go_up(void) {
         current_path[0] = 0;
     } else {
         int i = len - 1;
-        if (current_path[i] == '\\' || current_path[i] == '/') {
+        while (i > 0 && (current_path[i] == '\\' || current_path[i] == '/')) {
             current_path[i] = 0;
             i--;
         }
         while (i > 0 && current_path[i] != '\\' && current_path[i] != '/') i--;
         if (i <= 2 && current_path[1] == ':') {
-            current_path[i + 1] = '\\';
-            current_path[i + 2] = 0;
+            current_path[2] = '\\';
+            current_path[3] = 0;
         } else {
-            current_path[i + 1] = 0;
+            current_path[i] = 0;
         }
     }
     load_files();
@@ -239,9 +239,19 @@ static void enter_dir(const char* name) {
     }
     if (current_path[0] == 0) {
         my_strcpy(current_path, name);
+        int len = my_strlen(current_path);
+        if (len == 2 && current_path[1] == ':') {
+            current_path[2] = '\\';
+            current_path[3] = 0;
+        }
     } else {
         int len = my_strlen(current_path);
-        if (current_path[len-1] != '\\') my_strcat(current_path, "\\");
+        while (len > 3 && (current_path[len - 1] == '\\' || current_path[len - 1] == '/')) {
+            current_path[--len] = 0;
+        }
+        if (len > 0 && current_path[len - 1] != '\\' && current_path[len - 1] != '/') {
+            my_strcat(current_path, "\\");
+        }
         my_strcat(current_path, name);
     }
     load_files();
@@ -625,7 +635,7 @@ void fm_click(unsigned char* v, int mx, int my, int mb, int wx, int wy, int ww, 
 
         if (mx >= wx + 4 && mx < sb_x - 2 && my >= y && my < y + FM_ROW_H) {
             if (last_click_idx == idx &&
-                (wm_get_input_event_tick() - last_click_time) <
+                (unsigned int)(wm_get_input_event_tick() - last_click_time) <
                 WM_DOUBLE_CLICK_TICKS) {
                 open_file(idx);
                 last_click_idx = -1;

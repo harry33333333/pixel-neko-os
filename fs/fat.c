@@ -89,15 +89,15 @@ static fat_fs_t* get_vol(const char** path) {
     if ((*path)[0] >= 'A' && (*path)[0] <= 'Z' && (*path)[1] == ':') {
         char letter = (*path)[0];
         *path += 2;
-        if ((*path)[0] == '\\' || (*path)[0] == '/') (*path)++;
+        while (**path == '\\' || **path == '/') (*path)++;
         v = letter - 'A';
     } else if ((*path)[0] >= 'a' && (*path)[0] <= 'z' && (*path)[1] == ':') {
         char letter = (*path)[0] - 32;
         *path += 2;
-        if ((*path)[0] == '\\' || (*path)[0] == '/') (*path)++;
+        while (**path == '\\' || **path == '/') (*path)++;
         v = letter - 'A';
     } else if ((*path)[0] == '\\' || (*path)[0] == '/') {
-        (*path)++;
+        while (**path == '\\' || **path == '/') (*path)++;
         v = 'C' - 'A'; // Default C:
     }
     if (v >= 0 && v < MAX_VOLUMES) {
@@ -116,13 +116,14 @@ static fat_fs_t* get_vol(const char** path) {
 // Split next path component: "dir\file.txt" -> comp="dir", returns "file.txt"
 // Returns pointer to next component, or end of string
 static const char* split_path(const char* path, char* comp) {
+    while (*path == '\\' || *path == '/') path++;
     int i = 0;
     while (path[i] && path[i] != '\\' && path[i] != '/') {
         if (i < 127) comp[i] = path[i];
         i++;
     }
     comp[i < 127 ? i : 127] = '\0';
-    if (path[i] == '\\' || path[i] == '/') return path + i + 1;
+    while (path[i] == '\\' || path[i] == '/') i++;
     return path + i;
 }
 
@@ -252,14 +253,20 @@ static unsigned int cluster_to_sector(fat_fs_t* vol, unsigned int cluster) {
     return vol->first_data_sector + (cluster - 2) * vol->sectors_per_cluster;
 }
 
-static unsigned int get_first_cluster(dir_entry_t* entry) {
+static unsigned int get_first_cluster(fat_fs_t* vol, dir_entry_t* entry) {
     unsigned int cluster = entry->first_cluster;
-    cluster |= ((unsigned int)entry->first_cluster_high) << 16;
+    if (vol && vol->type == 32) {
+        cluster |= ((unsigned int)entry->first_cluster_high) << 16;
+    }
     return cluster;
 }
-static void set_first_cluster(dir_entry_t* entry, unsigned int cluster) {
+static void set_first_cluster(fat_fs_t* vol, dir_entry_t* entry, unsigned int cluster) {
     entry->first_cluster = cluster & 0xFFFF;
-    entry->first_cluster_high = (cluster >> 16) & 0xFFFF;
+    if (vol && vol->type == 32) {
+        entry->first_cluster_high = (cluster >> 16) & 0xFFFF;
+    } else {
+        entry->first_cluster_high = 0;
+    }
 }
 
 typedef struct {
@@ -486,7 +493,7 @@ static int find_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsi
         }
         data->info->attr = entry->attr;
         data->info->size = entry->file_size;
-        data->info->first_cluster = get_first_cluster(entry);
+        data->info->first_cluster = get_first_cluster(vol, entry);
         data->found = 1;
         return 1;
     }
@@ -503,7 +510,17 @@ int fat_find(const char* name, file_info_t* info) {
     const char* path = name;
     fat_fs_t* vol = get_vol(&path);
     if (!vol) return -1;
-    
+
+    if (!*path) {
+        if (info) {
+            info->name[0] = '\\';
+            info->name[1] = '\0';
+            info->attr = 0x10;
+            info->size = 0;
+            info->first_cluster = 0;
+        }
+        return 0;
+    }
     unsigned int cluster = 0;
     char comp[128];
     while (*path) {
@@ -536,7 +553,7 @@ static int list_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsi
     }
     info.attr = entry->attr;
     info.size = entry->file_size;
-    info.first_cluster = get_first_cluster(entry);
+    info.first_cluster = get_first_cluster(vol, entry);
     if (data->callback) data->callback(&info);
     return 0;
 }
@@ -681,7 +698,7 @@ static int del_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
     }
 
     if (matched) {
-        unsigned int cluster = get_first_cluster(entry);
+        unsigned int cluster = get_first_cluster(vol, entry);
         entry->name[0] = 0xE5;
         if (!(entry->attr & 0x10)) {
             free_chain(vol, cluster);
@@ -1078,14 +1095,14 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
         memset(dot->name, ' ', 11);
         dot->name[0] = '.';
         dot->attr = 0x10;
-        set_first_cluster(dot, new_cluster);
+        set_first_cluster(vol, dot, new_cluster);
         dir_entry_t* dotdot = (dir_entry_t*)(sector_buffer + 32);
         memset(dotdot, 0, sizeof(*dotdot));
         memset(dotdot->name, ' ', 11);
         dotdot->name[0] = '.';
         dotdot->name[1] = '.';
         dotdot->attr = 0x10;
-        set_first_cluster(dotdot, dir_cluster);
+        set_first_cluster(vol, dotdot, dir_cluster);
         unsigned int first_sector = cluster_to_sector(vol, new_cluster);
         if (vol_write_sec(vol, first_sector, sector_buffer) != 0) return -1;
         unsigned char zero[512] = {0};
@@ -1093,7 +1110,7 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
              sector++) {
             if (vol_write_sec(vol, first_sector + sector, zero) != 0) return -1;
         }
-        set_first_cluster((dir_entry_t*)entry, new_cluster);
+        set_first_cluster(vol, (dir_entry_t*)entry, new_cluster);
     }
     unsigned int sector = slots[physical].sector;
     int offset = slots[physical].offset;
@@ -1149,7 +1166,7 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
             for (int k = 0; k < 3; k++) dot->ext[k] = ' ';
             dot->name[0] = '.';
             dot->attr = 0x10;
-            set_first_cluster(dot, new_cluster);
+            set_first_cluster(vol, dot, new_cluster);
             dot->file_size = 0;
 
             // '..' entry pointing to parent directory
@@ -1159,7 +1176,7 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
             dotdot->name[0] = '.';
             dotdot->name[1] = '.';
             dotdot->attr = 0x10;
-            set_first_cluster(dotdot, data->parent_cluster);
+            set_first_cluster(vol, dotdot, data->parent_cluster);
             dotdot->file_size = 0;
 
             vol_write_sec(vol, cluster_to_sector(vol, new_cluster), sector_buf);
@@ -1169,7 +1186,7 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
                 vol_write_sec(vol, cluster_to_sector(vol, new_cluster) + i, zero);
             }
         }
-        set_first_cluster(entry, new_cluster);
+        set_first_cluster(vol, entry, new_cluster);
         entry->file_size = 0;
         
         data->found = 1;
@@ -1264,7 +1281,7 @@ static int update_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, un
 
     if (matched) {
         entry->file_size = data->size;
-        set_first_cluster(entry, data->first_cluster);
+        set_first_cluster(vol, entry, data->first_cluster);
         data->found = 1;
         return 2; 
     }

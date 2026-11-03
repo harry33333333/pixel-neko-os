@@ -32,7 +32,8 @@ else
 fi
 echo "$COUNT" > "$BUILD_NUM_FILE"
 
-BUILD_ID="26A${COUNT}a"
+BUILD_SUFFIX="${PIXEL_NEKO_BUILD_SUFFIX:-b}"
+BUILD_ID="26A${COUNT}${BUILD_SUFFIX}"
 BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
 cat <<EOF > "${ROOT_DIR}/include/version.h"

@@ -232,8 +232,8 @@ static const char* path_without_drive(const char* path) {
     if (!path) return NULL;
     if (path[0] && path[1] == ':') {
         path += 2;
-        while (*path == '\\' || *path == '/') path++;
     }
+    while (*path == '\\' || *path == '/') path++;
     return path;
 }
 

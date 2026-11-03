@@ -338,8 +338,9 @@ static const char* next_component(const char* path, char* component,
 int exfat_find(exfat_fs_t* fs, const char* path, exfat_file_info_t* info) {
     if (!fs || !fs->mounted || !path || !info) return -1;
     if (path[0] && path[1] == ':') path += 2;
+    while (*path == '\\' || *path == '/') path++;
     uint32_t cluster = fs->root_cluster;
-    if (!*path || (*path == '\\' && !path[1])) {
+    if (!*path) {
         memset(info, 0, sizeof(*info));
         info->first_cluster = cluster;
         info->is_dir = true;
