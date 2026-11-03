@@ -117,7 +117,7 @@ int p5_run_storage_self_test(void) {
     }
     if (exfat) {
         if (verify_read(exfat, "P5EXFAT.TXT", "P5EXFAT-OK\n") &&
-            write_and_verify(exfat, "P5EXWR.TXT", "P5-EXWRITE-OK")) {
+            write_and_verify(exfat, "P5EXFAT.TXT", "P5EX-WR-OK\n")) {
             log_printf("[P5 ] exFAT read/write PASS on %c:\n", exfat->letter);
         } else {
             log_printf("[P5 ] exFAT read/write FAIL on %c:\n", exfat->letter);
