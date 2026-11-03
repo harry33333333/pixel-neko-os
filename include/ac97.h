@@ -3,6 +3,10 @@
 
 // Intel ICH / VIA / SiS / AMD AC'97 PCI Audio Controller Driver
 
+#define AC97_DMA_BUFFER_BYTES  65536U
+#define AC97_DMA_HALF_BYTES    32768U
+#define AC97_DMA_TOTAL_FRAMES  (AC97_DMA_BUFFER_BYTES / 4U)
+
 int ac97_init(void);
 int ac97_is_present(void);
 const char* ac97_get_name(void);

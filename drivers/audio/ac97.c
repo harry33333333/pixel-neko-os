@@ -44,6 +44,16 @@
 #define AC97_SR_FIFOE             0x0010U
 #define AC97_SR_W1C_MASK          0x001CU
 
+#ifndef AC97_DMA_BUFFER_BYTES
+#define AC97_DMA_BUFFER_BYTES     65536U
+#endif
+#ifndef AC97_DMA_HALF_BYTES
+#define AC97_DMA_HALF_BYTES       32768U
+#endif
+#ifndef AC97_DMA_TOTAL_FRAMES
+#define AC97_DMA_TOTAL_FRAMES     (AC97_DMA_BUFFER_BYTES / 4U)
+#endif
+
 #define AC97_BDL_ENTRIES          32
 #define AC97_ENTRY_BYTES          (AC97_DMA_BUFFER_BYTES / AC97_BDL_ENTRIES) /* 2048 bytes */
 #define AC97_ENTRY_SAMPLES        (AC97_ENTRY_BYTES / 2)                     /* 1024 16-bit samples */
