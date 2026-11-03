@@ -176,7 +176,9 @@ run_mode() {
                     tail -n 300 "${log}" >&2 || true
                     return 1
                 fi
-                cp qemu-p6-install-screen.ppm "qemu-${mode}-screen.ppm"
+                if [ "${mode}" != "p6-install" ]; then
+                    cp qemu-p6-install-screen.ppm "qemu-${mode}-screen.ppm"
+                fi
                 break
             fi
         elif grep -q "P3 PASS: Ring 3, SYSCALL, FPU context, IPC queue and shared memory" "${log}" 2>/dev/null; then
