@@ -323,6 +323,15 @@ static int ahci_probe_port(ahci_port_t* port) {
         status = port_register(port, AHCI_PX_SSTS);
     }
     if ((status & AHCI_PORT_SSTS_DET) != 3) {
+        port_write(port, 0x2C, 1);
+        usb_delay_ms(20);
+        for (int timeout = 0; timeout < 1000; timeout++) {
+            status = port_register(port, AHCI_PX_SSTS);
+            if ((status & AHCI_PORT_SSTS_DET) == 3) break;
+            usb_delay_ms(1);
+        }
+    }
+    if ((status & AHCI_PORT_SSTS_DET) != 3) {
         log_printf("[AHCI] Port %u not ready: SSTS=%08x SIG=%08x\n",
                    port->index, status,
                    port_register(port, AHCI_PX_SIG));

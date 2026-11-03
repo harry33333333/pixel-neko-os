@@ -609,9 +609,17 @@ static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
     *doorbell = dci;
 
     xhci_trb_t event;
-    if (xhci_wait_transfer(c, slot, dci, &event, 500) != 0) return -1;
+    if (xhci_wait_transfer(c, slot, dci, &event, 500) != 0) {
+        log_printf("[xHCI] bulk timeout slot=%u dci=%u length=%d\n",
+                   slot->slot_id, dci, length);
+        return -1;
+    }
     uint8_t code = (uint8_t)(event.status >> 24);
-    if (code != 1 && code != 13) return -1;
+    if (code != 1 && code != 13) {
+        log_printf("[xHCI] bulk completion=%u slot=%u dci=%u\n",
+                   code, slot->slot_id, dci);
+        return -1;
+    }
     int residual = (int)(event.status & 0xFFFFFF);
     int actual = length - residual;
     if (actual < 0) actual = 0;

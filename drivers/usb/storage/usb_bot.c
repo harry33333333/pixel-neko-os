@@ -97,6 +97,7 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
     memcpy(cbw.command, command, command_length);
     if (bot_bulk(bot, bot->bulk_out, &cbw, sizeof(cbw), USB_DIR_OUT) !=
         (int)sizeof(cbw)) {
+        log_printf("[USBMS] CBW send failed tag=%u\n", cbw.tag);
         return -1;
     }
 
@@ -110,6 +111,8 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
                                                      bot->bulk_out,
                      bot->buffer, data_length, direction) !=
             (int)data_length) {
+            log_printf("[USBMS] data transfer failed tag=%u dir=%d length=%u\n",
+                       cbw.tag, direction, data_length);
             (void)bot_reset_recovery(bot);
             return -1;
         }
@@ -121,6 +124,8 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
         (int)sizeof(csw) ||
         csw.signature != USB_BOT_CSW_SIGNATURE || csw.tag != cbw.tag ||
         csw.status != 0) {
+        log_printf("[USBMS] CSW failure tag=%u got_tag=%u signature=%08x status=%u\n",
+                   cbw.tag, csw.tag, csw.signature, csw.status);
         (void)bot_reset_recovery(bot);
         return -1;
     }
