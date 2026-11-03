@@ -926,10 +926,14 @@ static int install_limine_bios(blkdev_t* dev) {
     put_be64(bootsector + 0x1A8, location_a * 512ull);
     put_be64(bootsector + 0x1B0, location_b * 512ull);
 
+    log_printf("[P6 ] Writing Limine stage2 first half at LBA %llu\n",
+               (unsigned long long)location_a);
     if (block_write(dev, location_a, (uint32_t)(size_a / 512),
                     image + 512) != 0) {
         return -15;
     }
+    log_printf("[P6 ] Writing Limine stage2 second half at LBA %llu\n",
+               (unsigned long long)location_b);
     size_t tail_offset = 512 + size_a;
     size_t tail_size = image_size - tail_offset;
     size_t tail_sectors = (tail_size + 511) / 512;
@@ -943,6 +947,7 @@ static int install_limine_bios(blkdev_t* dev) {
         block_write(dev, location_b, (uint32_t)tail_sectors, tail);
     pmm_free_pages(tail, tail_pages);
     if (tail_result != 0) return -15;
+    log_printf("[P6 ] Writing Limine stage1 to LBA 0\n");
     if (block_write(dev, 0, 1, bootsector) != 0) return -15;
 
     unsigned char verify[512];
