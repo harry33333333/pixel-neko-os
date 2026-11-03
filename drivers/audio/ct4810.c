@@ -609,3 +609,4 @@ int ct4810_poll_half_needed(void) {
 void ct4810_mark_half_filled(int half_idx) {
     if (half_idx >= 0 && half_idx < 2) g_ct_half_filled[half_idx] = 1;
 }
+

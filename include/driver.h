@@ -1,41 +1,39 @@
 #ifndef DRIVER_H
 #define DRIVER_H
 
-typedef enum {
-    DRIVER_CLASS_DISPLAY = 0,
-    DRIVER_CLASS_AUDIO   = 1,
-    DRIVER_CLASS_STORAGE = 2,
-    DRIVER_CLASS_INPUT   = 3
-} driver_class_t;
+#define DRIVER_MAX 16
 
-typedef enum {
-    DRIVER_STATE_UNPROBED = 0,
-    DRIVER_STATE_ACTIVE   = 1,
-    DRIVER_STATE_FALLBACK = 2,
-    DRIVER_STATE_FAILED   = 3
-} driver_state_t;
+#define DRIVER_CATEGORY_DISPLAY 1
+#define DRIVER_CATEGORY_AUDIO   2
+#define DRIVER_CATEGORY_INPUT   3
+#define DRIVER_CATEGORY_STORAGE 4
+
+#define DRIVER_STATE_REGISTERED 0
+#define DRIVER_STATE_FAILED     1
+#define DRIVER_STATE_ACTIVE     2
 
 typedef struct {
     const char* name;
-    driver_class_t dev_class;
+    int category;
+    int priority;
     int (*probe)(void);
-} kernel_driver_t;
+    int (*start)(void);
+    void (*stop)(void);
+} driver_descriptor_t;
 
 typedef struct {
     const char* name;
-    driver_class_t dev_class;
-    driver_state_t state;
-    int last_rc;
-    const char* detail;
+    int category;
+    int priority;
+    int state;
 } driver_status_t;
 
-int driver_register(const kernel_driver_t* drv);
-int driver_probe_and_select(driver_class_t dev_class,
-                            const kernel_driver_t* const* candidates,
-                            int count,
-                            const char* fallback_detail);
-const driver_status_t* driver_get_active(driver_class_t dev_class);
-int driver_get_status_count(void);
+int driver_register(const driver_descriptor_t* descriptor);
+int driver_probe_category(int category);
+const driver_status_t* driver_get_active(int category);
+int driver_is_active(int category, const char* name);
+void driver_deactivate(int category);
+int driver_get_count(void);
 const driver_status_t* driver_get_status(int index);
 
 #endif

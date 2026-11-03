@@ -570,3 +570,4 @@ int vmware_svga_set_cursor(int x, int y, int visible) {
     (void)visible;
     return 0;
 }
+

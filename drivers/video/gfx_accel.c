@@ -395,3 +395,4 @@ int gfx_accel_set_cursor(int x, int y, int visible) {
     (void)visible;
     return 0;
 }
+

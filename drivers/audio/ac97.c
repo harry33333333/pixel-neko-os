@@ -378,3 +378,4 @@ int ac97_poll_half_needed(void) {
     }
     return -1;
 }
+

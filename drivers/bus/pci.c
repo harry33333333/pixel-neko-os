@@ -100,17 +100,17 @@ static void pci_ecam_write(uint8_t bus, uint8_t slot, uint8_t function,
 }
 
 uint32_t pci_config_read(uint8_t bus, uint8_t slot,
-                         uint8_t function, uint8_t offset) {
+                         uint8_t function, uint16_t offset) {
     if (offset < 256 || !g_ecam_active) {
-        return pci_port_read(bus, slot, function, offset);
+        return pci_port_read(bus, slot, function, (uint8_t)offset);
     }
     return pci_ecam_read(bus, slot, function, offset);
 }
 
 void pci_config_write(uint8_t bus, uint8_t slot, uint8_t function,
-                      uint8_t offset, uint32_t value) {
+                      uint16_t offset, uint32_t value) {
     if (offset < 256 || !g_ecam_active) {
-        pci_port_write(bus, slot, function, offset, value);
+        pci_port_write(bus, slot, function, (uint8_t)offset, value);
         return;
     }
     pci_ecam_write(bus, slot, function, offset, value);

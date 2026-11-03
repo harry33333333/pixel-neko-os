@@ -22,3 +22,4 @@ int ac97_poll_half_needed(void);
 void ac97_mark_half_filled(int half_idx);
 
 #endif // AC97_H
+

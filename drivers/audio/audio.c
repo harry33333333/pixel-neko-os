@@ -893,3 +893,4 @@ void audio_get_vu(unsigned char* left_vu, unsigned char* right_vu) {
     if (left_vu) *left_vu = g_vu_l;
     if (right_vu) *right_vu = g_vu_r;
 }
+

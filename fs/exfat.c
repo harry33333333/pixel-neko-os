@@ -38,13 +38,13 @@ static void put_le64(uint8_t* data, uint64_t value) {
     put_le32(data + 4, (uint32_t)(value >> 32));
 }
 
-static int exfat_strlen(const char* text) {
+static int __attribute__((unused)) exfat_strlen(const char* text) {
     int length = 0;
     while (text && text[length]) length++;
     return length;
 }
 
-static void exfat_strcpy(char* target, const char* source, int capacity) {
+static void __attribute__((unused)) exfat_strcpy(char* target, const char* source, int capacity) {
     int index = 0;
     if (!target || capacity <= 0) return;
     while (source && source[index] && index + 1 < capacity) {
@@ -423,7 +423,7 @@ int exfat_read_file(exfat_fs_t* fs, const exfat_file_info_t* info,
     return (int)copied;
 }
 
-static int set_bitmap_bit(exfat_fs_t* fs, uint32_t cluster, bool allocated) {
+static int __attribute__((unused)) set_bitmap_bit(exfat_fs_t* fs, uint32_t cluster, bool allocated) {
     if (!fs->allocation_bitmap_cluster || cluster < 2) return -1;
     uint64_t bit = cluster - 2;
     uint64_t byte_offset = bit / 8u;
@@ -444,7 +444,7 @@ static int set_bitmap_bit(exfat_fs_t* fs, uint32_t cluster, bool allocated) {
     return block_write(fs->dev, sector_lba, 1, sector);
 }
 
-static int write_fat_entry(exfat_fs_t* fs, uint32_t cluster,
+static int __attribute__((unused)) write_fat_entry(exfat_fs_t* fs, uint32_t cluster,
                            uint32_t value) {
     uint64_t lba = fs->partition_lba + fs->fat_offset +
                    (uint64_t)cluster * 4u / 512u;

@@ -1,88 +1,122 @@
 #include "driver.h"
+#include "log.h"
 
-#define MAX_DRIVER_STATUS 16
-#define MAX_DRIVER_CLASSES 4
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
 
-static driver_status_t g_statuses[MAX_DRIVER_STATUS];
-static int g_status_count = 0;
-static driver_status_t g_active_by_class[MAX_DRIVER_CLASSES];
+typedef struct {
+    driver_descriptor_t descriptor;
+    int state;
+} driver_record_t;
 
-static driver_status_t* record_status(const char* name,
-                                      driver_class_t dev_class,
-                                      driver_state_t state,
-                                      int rc,
-                                      const char* detail) {
-    driver_status_t* slot = 0;
-    for (int i = 0; i < g_status_count; i++) {
-        if (g_statuses[i].name == name &&
-            g_statuses[i].dev_class == dev_class) {
-            slot = &g_statuses[i];
-            break;
+static driver_record_t g_drivers[DRIVER_MAX];
+static int g_driver_count;
+static int g_active[5] = { -1, -1, -1, -1, -1 };
+
+int driver_register(const driver_descriptor_t* descriptor) {
+    if (!descriptor || !descriptor->name || !descriptor->probe) return -1;
+    if (g_driver_count >= DRIVER_MAX) return -2;
+
+    for (int i = 0; i < g_driver_count; i++) {
+        if (g_drivers[i].descriptor.category == descriptor->category &&
+            g_drivers[i].descriptor.name == descriptor->name) {
+            return 0;
         }
     }
-    if (!slot && g_status_count < MAX_DRIVER_STATUS) {
-        slot = &g_statuses[g_status_count++];
-    }
-    if (slot) {
-        slot->name = name;
-        slot->dev_class = dev_class;
-        slot->state = state;
-        slot->last_rc = rc;
-        slot->detail = detail;
-    }
-    return slot;
-}
 
-int driver_register(const kernel_driver_t* drv) {
-    if (!drv || !drv->name || !drv->probe) return -1;
-    record_status(drv->name, drv->dev_class, DRIVER_STATE_UNPROBED, 0,
-                  "Registered");
+    g_drivers[g_driver_count].descriptor = *descriptor;
+    g_drivers[g_driver_count].state = DRIVER_STATE_REGISTERED;
+    g_driver_count++;
     return 0;
 }
 
-int driver_probe_and_select(driver_class_t dev_class,
-                            const kernel_driver_t* const* candidates,
-                            int count,
-                            const char* fallback_detail) {
-    if (dev_class < 0 || dev_class >= MAX_DRIVER_CLASSES) return -1;
+int driver_probe_category(int category) {
+    if (category < 0 || category >= 5) return -1;
+    if (g_active[category] >= 0) return 1;
 
-    g_active_by_class[dev_class].name = "Fallback";
-    g_active_by_class[dev_class].dev_class = dev_class;
-    g_active_by_class[dev_class].state = DRIVER_STATE_FALLBACK;
-    g_active_by_class[dev_class].last_rc = -1;
-    g_active_by_class[dev_class].detail =
-        fallback_detail ? fallback_detail : "Fallback active";
-
-    if (!candidates || count <= 0) return -1;
-
-    for (int i = 0; i < count; i++) {
-        const kernel_driver_t* drv = candidates[i];
-        if (!drv || !drv->name || !drv->probe) continue;
-        driver_register(drv);
-        int rc = drv->probe();
-        if (rc == 0) {
-            driver_status_t* st = record_status(
-                drv->name, dev_class, DRIVER_STATE_ACTIVE, 0, "Active");
-            if (st) g_active_by_class[dev_class] = *st;
-            return i;
+    for (;;) {
+        int candidate = -1;
+        for (int i = 0; i < g_driver_count; i++) {
+            if (g_drivers[i].descriptor.category != category ||
+                g_drivers[i].state != DRIVER_STATE_REGISTERED) {
+                continue;
+            }
+            if (candidate < 0 ||
+                g_drivers[i].descriptor.priority >
+                g_drivers[candidate].descriptor.priority) {
+                candidate = i;
+            }
         }
-        record_status(drv->name, dev_class, DRIVER_STATE_FAILED, rc,
-                      "Probe skipped or failed");
+        if (candidate < 0) return 0;
+
+        log_printf("[DRV ] probing %s\n", g_drivers[candidate].descriptor.name);
+        int result = g_drivers[candidate].descriptor.probe();
+        if (result > 0) {
+            if (g_drivers[candidate].descriptor.start &&
+                g_drivers[candidate].descriptor.start() <= 0) {
+                result = 0;
+            }
+        }
+
+        if (result > 0) {
+            g_drivers[candidate].state = DRIVER_STATE_ACTIVE;
+            g_active[category] = candidate;
+            log_printf("[DRV ] active %s\n", g_drivers[candidate].descriptor.name);
+            return 1;
+        }
+
+        g_drivers[candidate].state = DRIVER_STATE_FAILED;
+        log_printf("[DRV ] probe failed: %s\n",
+                   g_drivers[candidate].descriptor.name);
     }
-
-    return -1;
 }
 
-const driver_status_t* driver_get_active(driver_class_t dev_class) {
-    if (dev_class < 0 || dev_class >= MAX_DRIVER_CLASSES) return 0;
-    return &g_active_by_class[dev_class];
+const driver_status_t* driver_get_active(int category) {
+    if (category < 0 || category >= 5) return NULL;
+    int index = g_active[category];
+    if (index < 0) return NULL;
+
+    static driver_status_t status;
+    status.name = g_drivers[index].descriptor.name;
+    status.category = g_drivers[index].descriptor.category;
+    status.priority = g_drivers[index].descriptor.priority;
+    status.state = g_drivers[index].state;
+    return &status;
 }
 
-int driver_get_status_count(void) {
-    return g_status_count;
+int driver_is_active(int category, const char* name) {
+    const driver_status_t* status = driver_get_active(category);
+    if (!status || !name || !status->name) return 0;
+    const char* a = status->name;
+    const char* b = name;
+    while (*a && *b && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+void driver_deactivate(int category) {
+    if (category < 0 || category >= 5) return;
+    int index = g_active[category];
+    if (index >= 0 && g_drivers[index].descriptor.stop) {
+        g_drivers[index].descriptor.stop();
+    }
+    if (index >= 0) g_drivers[index].state = DRIVER_STATE_FAILED;
+    g_active[category] = -1;
+}
+
+int driver_get_count(void) {
+    return g_driver_count;
 }
 
 const driver_status_t* driver_get_status(int index) {
-    if (index < 0 || index >= g_status_count) return 0;
-    return &g_statuses[index];
+    if (index < 0 || index >= g_driver_count) return NULL;
+    static driver_status_t status;
+    status.name = g_drivers[index].descriptor.name;
+    status.category = g_drivers[index].descriptor.category;
+    status.priority = g_drivers[index].descriptor.priority;
+    status.state = g_drivers[index].state;
+    return &status;
 }

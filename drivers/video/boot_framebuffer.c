@@ -175,7 +175,7 @@ void boot_framebuffer_fill_rect(int x, int y, int w, int h, uint32_t color) {
 }
 
 void boot_framebuffer_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
-    if (c < 0 || c >= 128) c = ' ';
+    if ((unsigned char)c >= 128) c = ' ';
     const unsigned char* glyph = font_8x16[(unsigned char)c];
 
     for (int row = 0; row < 16; row++) {

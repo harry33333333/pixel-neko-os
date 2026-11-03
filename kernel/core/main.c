@@ -263,7 +263,7 @@ static void boot_progress_notify(const char* step_msg) {
 }
 
 // Draw a classic Windows 3.1 / Mac OS 9 style 3D modal window
-static void draw_welcome_window(void) {
+static void __attribute__((unused)) draw_welcome_window(void) {
     if (!g_main_surface.framebuffer_virt) return;
 
     int win_w = 560;

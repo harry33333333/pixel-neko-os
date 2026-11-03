@@ -1095,3 +1095,4 @@ int hdaudio_poll_half_needed(void) {
     }
     return -1;
 }
+

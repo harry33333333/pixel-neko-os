@@ -328,3 +328,4 @@ void ati_mach64_screen_blt(int sx, int sy, int dx, int dy, int w, int h) {
     mach64_write32(MACH64_DST_WIDTH_HEIGHT,
                    ((unsigned int)w << 16) | ((unsigned int)h & 0xFFFFU));
 }
+

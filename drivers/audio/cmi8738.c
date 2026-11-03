@@ -437,3 +437,4 @@ void cmi8738_mark_half_filled(int half_idx) {
         g_half_filled[half_idx] = 1;
     }
 }
+

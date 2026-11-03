@@ -14,4 +14,14 @@ int log_get_level(void);
 int log_get_count(void);
 const char* log_get_line(int index);
 
+#ifndef klog_info
+#define klog_info(fmt, ...)  log_printf(fmt "\n", ##__VA_ARGS__)
+#endif
+#ifndef klog_warn
+#define klog_warn(fmt, ...)  log_printf(fmt "\n", ##__VA_ARGS__)
+#endif
+#ifndef klog_error
+#define klog_error(fmt, ...) log_printf(fmt "\n", ##__VA_ARGS__)
+#endif
+
 #endif

@@ -265,3 +265,4 @@ void nvidia_g7x_screen_blt(int sx, int sy, int dx, int dy,
 void nvidia_g7x_sync(void) {
     boot_framebuffer_flush();
 }
+
