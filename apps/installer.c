@@ -183,10 +183,10 @@ static void scan_targets(void) {
                     int k = 0; while (fs[k] && k < 15) { t->fs_name[k] = fs[k]; k++; }
                     t->fs_name[k] = '\0';
                     t->total_mb = d->total_kb / 1024;
-                    unsigned int tot_kb = 0, fre_kb = 0;
+                    uint64_t tot_kb = 0, fre_kb = 0;
                     int known = 0;
                     vfs_get_drive_space(d->letter, &tot_kb, &fre_kb, &known);
-                    t->free_mb = fre_kb / 1024;
+                    t->free_mb = (unsigned int)(fre_kb / 1024);
                     t->is_free_known = known;
                 }
             }
