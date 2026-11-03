@@ -81,6 +81,10 @@ static bool mount_partition(partition_entry_t* part, char letter) {
         if (exfat_mount(part->dev, part->start_lba, exfat) == 0) {
             drive->mounted = 1;
             g_filesystem_kind[letter - 'A'] = VFS_FS_EXFAT;
+            if (exfat->volume_label[0]) {
+                copy_text(drive->label, sizeof(drive->label),
+                          exfat->volume_label);
+            }
         }
     } else if (part->fs_type == PART_FS_FAT12 ||
                part->fs_type == PART_FS_FAT16 ||
@@ -160,14 +164,23 @@ void vfs_init(void) {
     char local_letter = 'C';
     char removable_letter = 'E';
     const char optical_letter = 'D';
-    for (int index = 0; index < g_partition_count; index++) {
-        partition_entry_t* part = &g_partitions[index];
-        if (part->is_efi_system || !part->is_supported) continue;
-        char* wanted = part->dev->type == BLK_TYPE_USB
-                           ? &removable_letter : &local_letter;
-        while (*wanted == optical_letter && *wanted < 'Z') (*wanted)++;
-        if (*wanted > 'Z') continue;
-        if (mount_partition(part, *wanted)) (*wanted)++;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int index = 0; index < g_partition_count; index++) {
+            partition_entry_t* part = &g_partitions[index];
+            if (part->is_efi_system || !part->is_supported) continue;
+            bool removable = part->dev->type == BLK_TYPE_USB;
+            if ((pass == 0) != removable) continue;
+            char* cursor = removable ? &removable_letter : &local_letter;
+            while (*cursor == optical_letter ||
+                   (removable && *cursor < 'E') ||
+                   (!removable && *cursor == 'E') ||
+                   (*cursor >= 'A' && *cursor <= 'Z' &&
+                    g_vfs_drives[*cursor - 'A'].present)) {
+                (*cursor)++;
+            }
+            if (*cursor > 'Z') continue;
+            if (mount_partition(part, *cursor)) (*cursor)++;
+        }
     }
 
     char optical_cursor = optical_letter;

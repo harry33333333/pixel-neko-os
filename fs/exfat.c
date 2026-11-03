@@ -169,6 +169,19 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
                     fs->upcase_checksum = le32(entry + 4);
                     fs->upcase_cluster = le32(entry + 20);
                     fs->upcase_length = le64(entry + 24);
+                } else if (entry[0] == EXFAT_ENTRY_LABEL) {
+                    int out = 0;
+                    for (int character_index = 0;
+                         character_index < 15 &&
+                         out + 1 < (int)sizeof(fs->volume_label);
+                         character_index++) {
+                        uint16_t character =
+                            le16(entry + 2 + character_index * 2);
+                        if (!character) break;
+                        fs->volume_label[out++] =
+                            character < 128 ? (char)character : '_';
+                    }
+                    fs->volume_label[out] = '\0';
                 }
             }
         }

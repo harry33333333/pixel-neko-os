@@ -71,12 +71,21 @@ static bool format_and_verify(vfs_drive_t* drive, part_fs_type_t type,
     if (!part) return false;
     if (format_partition(drive->dev, drive->start_lba,
                          drive->total_sectors, type) != 0) {
+        log_printf("[P5 ] format_partition failed on %c:\n", drive->letter);
         return false;
     }
     drive->fs_type = type;
     drive->is_supported = 1;
-    if (vfs_remount(drive->letter) != VFS_OK) return false;
-    return write_and_verify(drive, filename, "P5-FORMAT-OK\n");
+    if (vfs_remount(drive->letter) != VFS_OK) {
+        log_printf("[P5 ] remount failed on %c:\n", drive->letter);
+        return false;
+    }
+    if (!write_and_verify(drive, filename, "P5-FORMAT-OK\n")) {
+        log_printf("[P5 ] formatted write/read failed on %c:\n",
+                   drive->letter);
+        return false;
+    }
+    return true;
 }
 
 int p5_run_storage_self_test(void) {
