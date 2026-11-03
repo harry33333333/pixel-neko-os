@@ -69,6 +69,7 @@ C_SRCS   = kernel/core/main.c \
            fs/iso9660.c \
            fs/format.c \
            fs/vfs.c \
+           fs/p5_test.c \
            drivers/acpi/acpi.c \
            drivers/video/boot_framebuffer.c \
            drivers/audio/speaker.c

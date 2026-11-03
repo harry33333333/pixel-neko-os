@@ -482,3 +482,28 @@ char vfs_get_boot_cdrom_letter(void) {
 int vfs_is_booted_from_cdrom(void) {
     return vfs_get_boot_cdrom_letter() != 0;
 }
+
+int vfs_remount(char letter) {
+    vfs_drive_t* drive = vfs_get_drive(letter);
+    if (!drive || !drive->dev) return VFS_ERR_NO_DRIVE;
+    drive->mounted = 0;
+    g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
+    if (drive->fs_type == PART_FS_EXFAT) {
+        if (exfat_mount(drive->dev, drive->start_lba,
+                        &g_exfat_filesystems[drive->letter - 'A']) != 0) {
+            return VFS_ERR_IO;
+        }
+        g_filesystem_kind[drive->letter - 'A'] = VFS_FS_EXFAT;
+    } else if (drive->fs_type == PART_FS_FAT12 ||
+               drive->fs_type == PART_FS_FAT16 ||
+               drive->fs_type == PART_FS_FAT32) {
+        if (fat_mount_dev(drive->letter, drive->dev, drive->start_lba) != 0) {
+            return VFS_ERR_IO;
+        }
+        g_filesystem_kind[drive->letter - 'A'] = VFS_FS_FAT;
+    } else {
+        return VFS_ERR_UNSUPPORTED;
+    }
+    drive->mounted = 1;
+    return VFS_OK;
+}

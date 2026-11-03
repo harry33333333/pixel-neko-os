@@ -29,7 +29,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf dosfstools exfatprogs
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -79,6 +79,9 @@ jobs:
           bin/kernel.elf
           kernel-symbols.txt
         if-no-files-found: ignore
+
+    - name: Create P5 Storage Fixtures
+      run: bash scripts/create_p5_storage_fixtures.sh .p5-images
 
     - name: QEMU UEFI and Legacy Smoke Test
       if: success()

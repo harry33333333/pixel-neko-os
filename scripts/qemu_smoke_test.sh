@@ -59,6 +59,26 @@ run_mode() {
                 -boot order=c
             )
             ;;
+        p5)
+            if [ ! -f ".p5-images/p5-data.img" ] ||
+               [ ! -f ".p5-images/p5-format16.img" ] ||
+               [ ! -f ".p5-images/p5-format32.img" ] ||
+               [ ! -f ".p5-images/p5-exfat.img" ]; then
+                echo "P5 storage fixtures are missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=bootcd,format=raw,readonly=on,file=${ISO}"
+                -device ide-cd,drive=bootcd,bus=ide.0
+                -drive "if=none,id=p5data,format=raw,file=.p5-images/p5-data.img"
+                -device ide-hd,drive=p5data,bus=ide.1
+                -drive "if=none,id=p5fmt16,format=raw,file=.p5-images/p5-format16.img"
+                -device ide-hd,drive=p5fmt16,bus=ide.2
+                -drive "if=none,id=p5fmt32,format=raw,file=.p5-images/p5-format32.img"
+                -device ide-hd,drive=p5fmt32,bus=ide.3
+                -boot order=d
+            )
+            ;;
         *)
             echo "Unknown boot source: ${boot_source}" >&2
             return 2
@@ -125,6 +145,7 @@ run_mode() {
     if { [ "${mode}" = "uefi" ] || [ "${mode}" = "ehci" ] ||
          [ "${mode}" = "hub" ] || [ "${mode}" = "generic" ] ||
          [ "${mode}" = "p5-ehci" ] || [ "${mode}" = "p5-xhci-hs" ] ||
+         [ "${mode}" = "p5" ] ||
          [ "${mode}" = "usb-modern" ]; } &&
        ! grep -q "PCI backend=.*PCIe ECAM" "${log}"; then
         echo "UEFI Q35 run did not use PCIe ECAM" >&2
@@ -169,6 +190,18 @@ run_mode() {
          ! grep -q "\[INPUT\] MOUSE_BUTTON" "${log}"; }; then
         echo "Generic non-Boot HID validation failed" >&2
         tail -n 300 "${log}" >&2
+        return 1
+    fi
+    if [ "${mode}" = "p5" ] &&
+       { ! grep -q "\[P5 \] FAT read/write PASS" "${log}" ||
+         ! grep -q "\[P5 \] exFAT read/write PASS" "${log}" ||
+         ! grep -q "\[P5 \] FAT16 format PASS" "${log}" ||
+         ! grep -q "\[P5 \] FAT32 format PASS" "${log}" ||
+         ! grep -q "\[P5 \] Storage self-test PASS" "${log}" ||
+         ! grep -q "\[AHCI\].*ATAPI" "${log}" ||
+         ! grep -q "\[USBMS\] Attached BOT" "${log}"; }; then
+        echo "P5 storage validation failed" >&2
+        tail -n 350 "${log}" >&2
         return 1
     fi
     if [ ! -s "qemu-${mode}-screen.ppm" ]; then
@@ -241,6 +274,14 @@ run_mode p5-xhci-hs q35 cdrom -bios "${UEFI_FW}" \
     -device usb-storage,drive=usbdata,bus=xhci.0,port=2.1,id=usb-storage \
     -device usb-kbd,bus=xhci.0,id=usb-kbd \
     -device usb-mouse,bus=xhci.0,id=usb-mouse
+fi
+if selected_mode p5; then
+run_mode p5 q35 p5 -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -drive "if=none,id=p5exfat,format=raw,file=.p5-images/p5-exfat.img" \
+    -device usb-storage,drive=p5exfat,bus=xhci.0,port=1,id=usb-storage \
+    -device usb-kbd,bus=xhci.0,port=2,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=3,id=usb-mouse
 fi
 if selected_mode usb-legacy; then
 run_mode usb-legacy pc usb-uhci \

@@ -28,6 +28,7 @@
 #include "storage.h"
 #include "part.h"
 #include "vfs.h"
+#include "p5_test.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -475,6 +476,7 @@ void kmain(void) {
     boot_progress_notify("Pixel Neko OS :: [18/23] Probing Storage & Volumes...");
     storage_init();
     vfs_init();
+    (void)p5_run_storage_self_test();
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
 
