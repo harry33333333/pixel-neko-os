@@ -1,4 +1,5 @@
 #include "iso9660.h"
+#include "log.h"
 
 static int str_case_eq(const char* a, const char* b) {
     int i = 0;
@@ -23,8 +24,13 @@ int iso_mount(blkdev_t* dev, iso_fs_t* fs) {
     int found_pvd = 0;
 
     for (unsigned int lba = 16; lba < 32; lba++) {
-        if (dev->read_sectors(dev, lba, 1, sec) != 0) break;
+        if (dev->read_sectors(dev, lba, 1, sec) != 0) {
+            log_printf("[ISO ] Read failed at sector %u\n", lba);
+            break;
+        }
         if (sec[1] != 'C' || sec[2] != 'D' || sec[3] != '0' || sec[4] != '0' || sec[5] != '1') {
+            log_printf("[ISO ] Sector %u header=%02x %02x %02x %02x %02x %02x\n",
+                       lba, sec[0], sec[1], sec[2], sec[3], sec[4], sec[5]);
             break;
         }
 
