@@ -476,8 +476,10 @@ static int xhci_configure_interrupt(xhci_controller_t* c, xhci_slot_t* slot,
     uint32_t* ep_dwords = (uint32_t*)ep_context;
     memcpy(slot_context, slot->output_context + c->context_size,
            c->context_size);
+    uint32_t last_dci = (slot_dwords[0] >> 27) & 0x1F;
+    if (dci > last_dci) last_dci = dci;
     slot_dwords[0] &= ~(0x1Fu << 27);
-    slot_dwords[0] |= (uint32_t)dci << 27;
+    slot_dwords[0] |= last_dci << 27;
 
     uint8_t interval = endpoint->interval ? endpoint->interval : 8;
     ep_dwords[0] = (uint32_t)interval << 16;
@@ -561,9 +563,11 @@ static int xhci_configure_bulk(xhci_controller_t* c, xhci_slot_t* slot,
     uint32_t* ep_dwords = (uint32_t*)ep_context;
     memcpy(slot_context, slot->output_context + c->context_size,
            c->context_size);
+    uint32_t last_dci = (slot_dwords[0] >> 27) & 0x1F;
+    if (dci > last_dci) last_dci = dci;
     slot_dwords[0] &= ~(0x1Fu << 27);
-    slot_dwords[0] |= (uint32_t)dci << 27;
-    ep_dwords[0] = 0;
+    slot_dwords[0] |= last_dci << 27;
+    ep_dwords[0] = (uint32_t)(endpoint->max_packet & 0xFFFF) << 16;
     ep_dwords[1] = (3u << 3) |
                    ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
                    ((endpoint->direction == USB_DIR_IN ? 6u : 2u) << 1);
