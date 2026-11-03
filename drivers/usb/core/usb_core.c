@@ -1,6 +1,7 @@
 #include "usb_core.h"
 #include "usb_hid.h"
 #include "usb_hub.h"
+#include "usb_storage.h"
 #include "usb_uhci.h"
 #include "usb_ohci.h"
 #include "usb_ehci.h"
@@ -144,6 +145,7 @@ void usb_release_device(usb_device_t* dev) {
     }
     usb_hid_detach(dev);
     usb_hub_detach(dev);
+    usb_storage_detach(dev);
     memset(dev, 0, sizeof(*dev));
     if (g_device_count) g_device_count--;
 }
@@ -420,6 +422,12 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
     } else if (dev->class_code == USB_CLASS_HID) {
         if (usb_hid_attach(dev) != 0) {
             log_printf("[USB ] HID attach failed for device %u\n", dev->address);
+        }
+    } else if (dev->class_code == USB_CLASS_MASS_STORAGE &&
+               dev->subclass == 0x06 && dev->protocol == 0x50) {
+        if (usb_storage_attach(dev) != 0) {
+            log_printf("[USB ] USB Mass Storage attach failed for device %u\n",
+                       dev->address);
         }
     }
     return 0;

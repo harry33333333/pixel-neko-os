@@ -239,6 +239,40 @@ static int ohci_intr_in(usb_hci_t* hci, usb_device_t* device,
     return transfer_length;
 }
 
+static int ohci_bulk(usb_hci_t* hci, usb_device_t* device,
+                     usb_endpoint_t* endpoint, void* data, int length,
+                     int direction) {
+    ohci_controller_t* c = hci->priv;
+    if (!c || !device || !endpoint || !data || length <= 0 ||
+        length > (int)sizeof(c->mem->data_buffer)) {
+        return -1;
+    }
+    if (direction == USB_DIR_OUT) {
+        memcpy(c->mem->data_buffer, data, (size_t)length);
+    }
+    ohci_td_init(c, &c->mem->data_td,
+                 direction == USB_DIR_IN ? 2u : 1u,
+                 c->mem->data_buffer, length, endpoint->toggle);
+    c->mem->data_td.next_td = ohci_phys(c, &c->mem->dummy_td);
+    memset(&c->mem->dummy_td, 0, sizeof(c->mem->dummy_td));
+    uint32_t data_start = c->mem->data_td.current_buffer;
+    ohci_set_ed(c, &c->mem->control_ed, device, endpoint->number,
+                direction == USB_DIR_IN ? 2 : 1, endpoint->max_packet);
+    int result = ohci_run_transfer(c, &c->mem->control_ed,
+                                   &c->mem->data_td,
+                                   &c->mem->dummy_td,
+                                   &c->mem->data_td, 500);
+    if (result != 0) return -1;
+    endpoint->toggle ^= 1;
+    if (direction == USB_DIR_IN) {
+        int actual = (int)c->mem->data_td.current_buffer - (int)data_start;
+        if (actual < 0 || actual > length) actual = length;
+        memcpy(data, c->mem->data_buffer, (size_t)actual);
+        return actual;
+    }
+    return length;
+}
+
 static void ohci_release(usb_hci_t* hci, usb_device_t* device) {
     ohci_controller_t* c = hci->priv;
     if (!c || !device) return;
@@ -363,6 +397,7 @@ int ohci_probe(const pci_device_t* device) {
     c->hci.root_ports = (uint8_t)c->ports;
     c->hci.supports_hubs = true;
     c->hci.control = ohci_control;
+    c->hci.bulk = ohci_bulk;
     c->hci.intr_in = ohci_intr_in;
     c->hci.port_reset = ohci_port_reset;
     c->hci.device_release = ohci_release;

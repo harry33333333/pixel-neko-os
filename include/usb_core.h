@@ -55,6 +55,7 @@
 #define USB_DT_HUB        0x29U
 
 #define USB_CLASS_HID     0x03U
+#define USB_CLASS_MASS_STORAGE 0x08U
 #define USB_CLASS_HUB     0x09U
 #define USB_HID_SUBCLASS_BOOT 0x01U
 #define USB_HID_PROTOCOL_KBD  0x01U

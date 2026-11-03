@@ -54,6 +54,7 @@ C_SRCS   = kernel/core/main.c \
            drivers/usb/core/usb_core.c \
            drivers/usb/core/usb_hub.c \
            drivers/usb/core/usb_hid.c \
+           drivers/usb/storage/usb_bot.c \
            drivers/usb/hcd/usb_uhci.c \
            drivers/usb/hcd/usb_ohci.c \
            drivers/usb/hcd/usb_ehci.c \

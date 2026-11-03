@@ -6,7 +6,6 @@
 #include "log.h"
 
 void storage_init(void) {
-    blkdev_init();
     ahci_init();
     if (pci_find_class(0x01, 0x01) || blkdev_count() == 0) {
         ata_init();

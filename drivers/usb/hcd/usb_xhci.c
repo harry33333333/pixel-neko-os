@@ -69,6 +69,8 @@ typedef struct {
     uint64_t output_context_phys;
     xhci_ring_t ep0_ring;
     xhci_ring_t interrupt_ring;
+    xhci_ring_t bulk_rings[32];
+    bool bulk_configured[32];
     uint8_t* report_buffer;
     uint64_t report_buffer_phys;
     uint8_t* transfer_buffer;
@@ -106,6 +108,7 @@ typedef struct {
     uint8_t* input_context;
     uint64_t input_context_phys;
     dma_buffer_t scratchpad;
+    dma_buffer_t bulk_staging;
     xhci_slot_t slots[XHCI_MAX_SLOTS];
     uint32_t ports_seen;
 } xhci_controller_t;
@@ -297,6 +300,11 @@ static int xhci_enable_slot(xhci_controller_t* c, uint8_t* slot_id) {
         return -1;
     }
     xhci_slot_t* slot = &c->slots[id - 1];
+    for (int index = 0; index < 32; index++) {
+        slot->bulk_rings[index].virtual_base = NULL;
+        slot->bulk_configured[index] = false;
+    }
+    slot->interrupt_ring.virtual_base = NULL;
     slot->allocated = true;
     slot->slot_id = id;
     slot->device = NULL;
@@ -536,6 +544,86 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     return 0;
 }
 
+static int xhci_configure_bulk(xhci_controller_t* c, xhci_slot_t* slot,
+                               usb_endpoint_t* endpoint, uint8_t dci) {
+    if (slot->bulk_configured[dci]) return 0;
+    if (!slot->bulk_rings[dci].virtual_base) {
+        xhci_ring_init(c, &slot->bulk_rings[dci]);
+    }
+    if (!slot->bulk_rings[dci].virtual_base) return -1;
+
+    memset(c->input_context, 0, c->context_size * 33);
+    uint32_t* input_control = (uint32_t*)c->input_context;
+    input_control[1] = 1u | (1u << dci);
+    uint8_t* slot_context = c->input_context + c->context_size;
+    uint8_t* ep_context = c->input_context + c->context_size * (dci + 1);
+    uint32_t* slot_dwords = (uint32_t*)slot_context;
+    uint32_t* ep_dwords = (uint32_t*)ep_context;
+    memcpy(slot_context, slot->output_context + c->context_size,
+           c->context_size);
+    slot_dwords[0] &= ~(0x1Fu << 27);
+    slot_dwords[0] |= (uint32_t)dci << 27;
+    ep_dwords[0] = 0;
+    ep_dwords[1] = (3u << 3) |
+                   ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
+                   (2u << 1);
+    ep_dwords[2] = (uint32_t)slot->bulk_rings[dci].physical_base |
+                   slot->bulk_rings[dci].cycle;
+    ep_dwords[3] =
+        (uint32_t)(slot->bulk_rings[dci].physical_base >> 32);
+    int result = xhci_command(
+        c, c->input_context_phys, 0,
+        (XHCI_TRB_CONFIGURE_ENDPOINT << 10) |
+        ((uint32_t)slot->slot_id << 24), NULL);
+    if (result == 0) slot->bulk_configured[dci] = true;
+    return result;
+}
+
+static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
+                     usb_endpoint_t* endpoint, void* data, int length,
+                     int direction) {
+    xhci_controller_t* c = hci->priv;
+    if (!c || !device || !endpoint || !data || length <= 0 ||
+        c->bulk_staging.size < (size_t)length) {
+        return -1;
+    }
+    xhci_slot_t* slot = xhci_slot_for_device(c, device);
+    if (!slot || endpoint->number == 0) return -1;
+    uint8_t dci = (uint8_t)(endpoint->number * 2 +
+                            (direction == USB_DIR_IN ? 1 : 0));
+    if (dci >= 32 || xhci_configure_bulk(c, slot, endpoint, dci) != 0) {
+        return -1;
+    }
+
+    memset((void*)c->bulk_staging.virt_addr, 0, (size_t)length);
+    if (direction == USB_DIR_OUT) {
+        memcpy((void*)c->bulk_staging.virt_addr, data, (size_t)length);
+    }
+    dma_sync_for_device(&c->bulk_staging);
+    slot->ep_complete[dci] = false;
+    xhci_ring_push(c, &slot->bulk_rings[dci],
+                   c->bulk_staging.phys_addr, (uint32_t)length,
+                   (XHCI_TRB_NORMAL << 10) | (1u << 16) | (1u << 5));
+    volatile uint32_t* doorbell =
+        (volatile uint32_t*)(c->doorbell + 4u * slot->slot_id);
+    *doorbell = dci;
+
+    xhci_trb_t event;
+    if (xhci_wait_transfer(c, slot, dci, &event, 500) != 0) return -1;
+    uint8_t code = (uint8_t)(event.status >> 24);
+    if (code != 1 && code != 13) return -1;
+    int residual = (int)(event.status & 0xFFFFFF);
+    int actual = length - residual;
+    if (actual < 0) actual = 0;
+    if (actual > length) actual = length;
+    dma_sync_for_cpu(&c->bulk_staging);
+    if (direction == USB_DIR_IN && actual > 0) {
+        memcpy(data, (void*)c->bulk_staging.virt_addr, (size_t)actual);
+    }
+    endpoint->toggle ^= 1;
+    return actual;
+}
+
 static void xhci_release(usb_hci_t* hci, usb_device_t* device) {
     xhci_controller_t* c = hci->priv;
     if (!c || !device) return;
@@ -554,6 +642,10 @@ static void xhci_release(usb_hci_t* hci, usb_device_t* device) {
     slot->device = NULL;
     slot->interrupt_configured = false;
     slot->interrupt_pending = false;
+    for (int index = 0; index < 32; index++) {
+        slot->bulk_configured[index] = false;
+        slot->bulk_rings[index].virtual_base = NULL;
+    }
     device->hcd_priv = NULL;
 }
 
@@ -660,6 +752,11 @@ int xhci_probe(const pci_device_t* device) {
                            PAGE_SIZE, &c->arena) != 0) {
         return -1;
     }
+    if (usb_dma_alloc_zero(65536,
+                           (hccparams1 & 1u) ? UINT64_MAX : UINT32_MAX,
+                           64, &c->bulk_staging) != 0) {
+        return -1;
+    }
     c->memory = (uint8_t*)c->arena.virt_addr;
     c->memory_phys = c->arena.phys_addr;
     c->arena_cursor = 0;
@@ -764,6 +861,7 @@ int xhci_probe(const pci_device_t* device) {
     c->hci.supports_hubs = true;
     c->hci.skips_set_address = true;
     c->hci.control = xhci_control;
+    c->hci.bulk = xhci_bulk;
     c->hci.intr_in = xhci_intr_in;
     c->hci.port_reset = xhci_port_reset;
     c->hci.device_release = xhci_release;

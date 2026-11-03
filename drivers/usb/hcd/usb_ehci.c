@@ -43,6 +43,9 @@ typedef struct {
     ehci_qtd_t setup_qtd;
     ehci_qtd_t data_qtd;
     ehci_qtd_t status_qtd;
+    ehci_qh_t bulk_qh;
+    ehci_qtd_t bulk_qtd;
+    ehci_qtd_t bulk_dummy;
     uint8_t setup_buffer[8] __attribute__((aligned(32)));
     uint8_t data_buffer[1024] __attribute__((aligned(32)));
     ehci_intr_t interrupts[EHCI_MAX_INTR_SLOTS];
@@ -293,6 +296,74 @@ static int ehci_intr_in(usb_hci_t* hci, usb_device_t* device,
     return actual;
 }
 
+static int ehci_bulk(usb_hci_t* hci, usb_device_t* device,
+                     usb_endpoint_t* endpoint, void* data, int length,
+                     int direction) {
+    ehci_controller_t* c = hci->priv;
+    if (!c || !device || !endpoint || !data || length <= 0 ||
+        length > (int)sizeof(c->mem->data_buffer)) {
+        return -1;
+    }
+    if (direction == USB_DIR_OUT) {
+        memcpy(c->mem->data_buffer, data, (size_t)length);
+    }
+    ehci_qtd_init(c, &c->mem->bulk_qtd,
+                  direction == USB_DIR_IN ? EHCI_QTD_PID_IN :
+                                            EHCI_QTD_PID_OUT,
+                  c->mem->data_buffer, length, endpoint->toggle);
+    memset(&c->mem->bulk_dummy, 0, sizeof(c->mem->bulk_dummy));
+    c->mem->bulk_dummy.next = 1;
+    c->mem->bulk_dummy.alt_next = 1;
+    c->mem->bulk_qtd.next = ehci_phys(c, &c->mem->bulk_dummy);
+
+    ehci_qh_t* qh = &c->mem->bulk_qh;
+    memset(qh, 0, sizeof(*qh));
+    uint32_t speed = device->speed == USB_SPEED_HIGH ? 2u :
+                     (device->speed == USB_SPEED_LOW ? 1u : 0u);
+    qh->epchar = (device->address & 0x7F) |
+                 ((uint32_t)(endpoint->number & 0x0F) << 8) |
+                 (speed << 12) |
+                 ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
+                 (1u << 27);
+    qh->epcap = (1u << 30) | ((uint32_t)0x08 << 8);
+    qh->next_qtd = ehci_phys(c, &c->mem->bulk_qtd);
+    qh->alt_qtd = 1;
+    qh->head = c->mem->async_qh.head;
+    c->mem->async_qh.head = ehci_qh_link(c, qh);
+    dma_sync_for_device(&c->dma);
+
+    int result = -1;
+    for (int timeout = 0; timeout < 500; timeout++) {
+        dma_sync_for_cpu(&c->dma);
+        if (c->mem->bulk_qtd.token & EHCI_QTD_HALTED) break;
+        if (ehci_qtd_complete(&c->mem->bulk_qtd)) {
+            result = 0;
+            break;
+        }
+        usb_delay_ms(1);
+    }
+    c->mem->async_qh.head = ehci_qh_link(c, &c->mem->async_qh);
+    ehci_reg_write(c, c->operational + 0x08, EHCI_CMD_IAAD);
+    for (int timeout = 0; timeout < 20; timeout++) {
+        uint32_t status = ehci_reg_read(c, c->operational + 0x04);
+        if (status & EHCI_STS_IAAD) {
+            ehci_reg_write(c, c->operational + 0x04, EHCI_STS_IAAD);
+            break;
+        }
+        usb_delay_ms(1);
+    }
+    if (result != 0) return -1;
+    endpoint->toggle ^= 1;
+    if (direction == USB_DIR_IN) {
+        int remaining = (int)((c->mem->bulk_qtd.token >> 16) & 0x7FFF);
+        int actual = length - remaining;
+        if (actual < 0 || actual > length) actual = length;
+        memcpy(data, c->mem->data_buffer, (size_t)actual);
+        return actual;
+    }
+    return length;
+}
+
 static void ehci_release(usb_hci_t* hci, usb_device_t* device) {
     ehci_controller_t* c = hci->priv;
     if (!c || !device) return;
@@ -476,6 +547,7 @@ int ehci_probe(const pci_device_t* device) {
     c->hci.root_ports = c->ports;
     c->hci.supports_hubs = true;
     c->hci.control = ehci_control;
+    c->hci.bulk = ehci_bulk;
     c->hci.intr_in = ehci_intr_in;
     c->hci.port_reset = ehci_port_reset;
     c->hci.device_release = ehci_release;

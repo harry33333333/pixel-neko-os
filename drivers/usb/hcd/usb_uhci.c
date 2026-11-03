@@ -278,6 +278,49 @@ static int uhci_intr_in(usb_hci_t* hci, usb_device_t* device,
     return actual;
 }
 
+static int uhci_bulk(usb_hci_t* hci, usb_device_t* device,
+                     usb_endpoint_t* endpoint, void* data, int length,
+                     int direction) {
+    uhci_controller_t* c = hci->priv;
+    if (!c || !device || !endpoint || !data || length <= 0 ||
+        length > (int)sizeof(c->mem->data_buffer)) {
+        return -1;
+    }
+    if (direction == USB_DIR_OUT) {
+        memcpy(c->mem->data_buffer, data, (size_t)length);
+    }
+    uhci_program_td(c, &c->mem->data_td,
+                    direction == USB_DIR_IN ? 0x69 : 0xE1,
+                    device->address, endpoint->number, endpoint->toggle,
+                    device->speed == USB_SPEED_LOW,
+                    uhci_phys(c, c->mem->data_buffer), length);
+    c->mem->data_td.link = 1;
+    c->mem->control_qh.element =
+        uhci_phys(c, &c->mem->data_td) & ~0x0Fu;
+    dma_sync_for_device(&c->dma);
+    outw(c->io_base, (uint16_t)(inw(c->io_base) | UHCI_CMD_RUN));
+    int result = -1;
+    for (int timeout = 0; timeout < 500; timeout++) {
+        if (c->mem->data_td.control & UHCI_TD_ERROR) break;
+        if (!(c->mem->data_td.control & UHCI_TD_ACTIVE)) {
+            result = 0;
+            break;
+        }
+        usb_delay_ms(1);
+    }
+    c->mem->control_qh.element = 1;
+    dma_sync_for_cpu(&c->dma);
+    if (result != 0) return -1;
+    endpoint->toggle ^= 1;
+    if (direction == USB_DIR_IN) {
+        int actual = (int)((c->mem->data_td.control + 1u) & 0x7FFu);
+        if (actual > length) actual = length;
+        memcpy(data, c->mem->data_buffer, (size_t)actual);
+        return actual;
+    }
+    return length;
+}
+
 static void uhci_device_release(usb_hci_t* hci, usb_device_t* device) {
     uhci_controller_t* c = hci->priv;
     if (!c || !device) return;
@@ -417,6 +460,7 @@ int uhci_probe(const pci_device_t* device) {
     c->hci.root_ports = 2;
     c->hci.supports_hubs = true;
     c->hci.control = uhci_control;
+    c->hci.bulk = uhci_bulk;
     c->hci.intr_in = uhci_intr_in;
     c->hci.port_reset = uhci_port_reset;
     c->hci.device_release = uhci_device_release;

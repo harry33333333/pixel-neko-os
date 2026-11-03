@@ -465,6 +465,7 @@ void kmain(void) {
 
     // 17. P4b: Probe the full USB host-controller matrix and enumerate devices
     boot_progress_notify("Pixel Neko OS :: [17/23] Initializing USB Controllers...");
+    blkdev_init();
     usb_init();
     log_printf("[P4B] USB controllers=%u devices=%u summary=%s HID(K=%d M=%d)\n",
                usb_get_hci_count(), usb_get_device_count(),
