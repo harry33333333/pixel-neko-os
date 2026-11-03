@@ -953,7 +953,6 @@ struct lfn_slot {
 
 static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
                                const char* long_name, int is_dir) {
-    log_printf("[FAT ] Creating LFN entry %s\n", long_name);
     unsigned char short_name[8], short_ext[3];
     make_short_alias(vol, dir_cluster, long_name, short_name, short_ext);
     int name_length = str_len((char*)long_name);
@@ -1028,8 +1027,6 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
         }
     }
     if (!found) return -1;
-    log_printf("[FAT ] LFN slots reserved for %s\n", long_name);
-
     unsigned char short_name_11[11];
     memcpy(short_name_11, short_name, 8);
     memcpy(short_name_11 + 8, short_ext, 3);
@@ -1104,7 +1101,6 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
     if (vol_read_sec(vol, sector, buffer) != 0) return -1;
     memcpy(&buffer[offset], entry, sizeof(entry));
     if (vol_write_sec(vol, sector, buffer) != 0) return -1;
-    log_printf("[FAT ] LFN entry committed %s\n", long_name);
     return 0;
 }
 
@@ -1282,8 +1278,6 @@ void fat_set_write_progress_cb(void (*cb)(unsigned int written, unsigned int tot
 }
 
 int fat_write_file(const char* name, const unsigned char* buf, unsigned int size) {
-    int trace_long_name = !plain_short_name(name);
-    if (trace_long_name) log_printf("[FAT ] Write begin %s\n", name);
     file_info_t info;
     if (fat_find(name, &info) == 0) {
         const char* path = name;
@@ -1342,12 +1336,7 @@ int fat_write_file(const char* name, const unsigned char* buf, unsigned int size
     unsigned char fat_name[8], fat_ext[3];
     str_to_fat_name(comp, fat_name, fat_ext);
     struct update_cb_data data = { comp, (const char*)fat_name, (const char*)fat_ext, size, first_cluster, 0 };
-    if (trace_long_name) log_printf("[FAT ] Updating directory entry %s\n", comp);
-    int update_result = traverse_dir(vol, cluster, update_cb, &data);
-    if (trace_long_name) {
-        log_printf("[FAT ] Directory update result=%d found=%d\n",
-                   update_result, data.found);
-    }
+    traverse_dir(vol, cluster, update_cb, &data);
     
     return 0;
 }

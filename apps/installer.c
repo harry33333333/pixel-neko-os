@@ -62,11 +62,6 @@ static char g_progress_text[72];
 static char g_progress_subtext[72];
 static payload_list_t* g_payload_collector;
 
-static void on_payload_write_progress(unsigned int written,
-                                      unsigned int total) {
-    log_printf("[P6 ] Payload bytes %u/%u\n", written, total);
-}
-
 static void text_copy(char* destination, const char* source, int capacity) {
     int index = 0;
     if (!destination || capacity <= 0) return;
@@ -569,22 +564,19 @@ static int copy_payload_file(const char* source, const char* destination,
     if (file_total > 0) percent += file_index * 30 / file_total;
     update_progress_ui(percent, "Releasing complete system payload...",
                        source);
-    fat_set_write_progress_cb(on_payload_write_progress);
     int write = vfs_write_file(destination, buffer,
                                (unsigned int)source_entry.size);
-    fat_set_write_progress_cb(NULL);
     pmm_free_pages(buffer, (unsigned int)page_count);
     if (write != VFS_OK) return -10;
-    log_printf("[P6 ] Payload write returned for %s\n", destination);
 
     vfs_dirent_t copied;
     int find_result = vfs_find_file(destination, &copied);
-    log_printf("[P6 ] Payload verify lookup %s result=%d\n",
-               destination, find_result);
     if (find_result != VFS_OK ||
         copied.is_dir || copied.size != source_entry.size) {
         return -14;
     }
+    log_printf("[P6 ] Payload verified %s (%u bytes)\n", destination,
+               (unsigned int)source_entry.size);
     return 0;
 }
 
