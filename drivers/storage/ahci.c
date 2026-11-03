@@ -267,8 +267,8 @@ static int ahci_atapi_count(ahci_port_t* port, uint64_t lba,
     memset(packet, 0, sizeof(packet));
     packet[0] = 0x28;
     be32_write(packet + 2, (uint32_t)lba);
-    packet[8] = (uint8_t)(count >> 8);
-    packet[9] = (uint8_t)count;
+    packet[7] = (uint8_t)(count >> 8);
+    packet[8] = (uint8_t)count;
     return ahci_issue(port, AHCI_CMD_PACKET, 0, count, NULL, buffer,
                       count * port->sector_size, packet);
 }

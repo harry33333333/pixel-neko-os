@@ -318,8 +318,8 @@ static int atapi_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
         memset(packet, 0, sizeof(packet));
         packet[0] = 0x28;
         write_be32(packet + 2, (uint32_t)lba);
-        packet[8] = (uint8_t)(batch >> 8);
-        packet[9] = (uint8_t)batch;
+        packet[7] = (uint8_t)(batch >> 8);
+        packet[8] = (uint8_t)batch;
         uint32_t bytes = batch * drive->sector_size;
         if (atapi_packet(drive, packet, output, bytes, true) != 0) return -1;
         output += bytes;
