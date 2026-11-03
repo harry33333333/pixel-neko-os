@@ -40,6 +40,18 @@ bool cpu_detect_and_verify(void) {
     }
 
     // 3. Extended Leaf 0x80000000: Max Extended Leaf
+    if (g_cpu_info.max_basic_leaf >= 0x16) {
+        cpuid(0x16, 0, &eax, &ebx, &ecx, &edx);
+        g_cpu_info.mhz = eax & 0xFFFF;
+    }
+    if (!g_cpu_info.mhz && g_cpu_info.max_basic_leaf >= 0x15) {
+        cpuid(0x15, 0, &eax, &ebx, &ecx, &edx);
+        if (eax && ebx && ecx) {
+            g_cpu_info.mhz = (uint32_t)((uint64_t)ecx * ebx / eax / 1000000u);
+        }
+    }
+
+    // 3. Extended Leaf 0x80000000: Max Extended Leaf
     cpuid(0x80000000, 0, &eax, &ebx, &ecx, &edx);
     g_cpu_info.max_ext_leaf = eax;
 

@@ -38,6 +38,7 @@ typedef struct {
     uint32_t family;
     uint32_t model;
     uint32_t stepping;
+    uint32_t mhz;
     uint32_t max_basic_leaf;
     uint32_t max_ext_leaf;
     uint32_t basic_ecx;

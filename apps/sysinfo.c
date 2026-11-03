@@ -1,4 +1,8 @@
 #include "sysinfo.h"
+#include "cpu.h"
+
+extern int usable_ram_mb;
+extern int total_ram_mb;
 #include "font.h"
 #include "wm.h"
 #include "cpu.h"
@@ -384,14 +388,14 @@ void sysinfo_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
                 const char* fs = (d->drv_type == VFS_DRV_FLOPPY) ? "FAT12" :
                                  ((d->drv_type == VFS_DRV_CDROM) ? "CDFS" : vfs_get_fs_name(d->fs_type));
 
-                unsigned int tot_k = 0, fre_k = 0;
+                uint64_t tot_k = 0, fre_k = 0;
                 int is_known = 0;
                 vfs_get_drive_space((char)letter, &tot_k, &fre_k, &is_known);
 
                 char tot_buf[16], fre_buf[16];
-                format_kb_str(tot_k, tot_buf);
+                format_kb_str((unsigned int)tot_k, tot_buf);
                 if (is_known) {
-                    format_kb_str(fre_k, fre_buf);
+                    format_kb_str((unsigned int)fre_k, fre_buf);
                 } else if (d->is_readonly) {
                     fre_buf[0] = 'R'; fre_buf[1] = 'e'; fre_buf[2] = 'a'; fre_buf[3] = 'd';
                     fre_buf[4] = 'O'; fre_buf[5] = 'n'; fre_buf[6] = 'l'; fre_buf[7] = 'y'; fre_buf[8] = '\0';
