@@ -105,6 +105,7 @@ jobs:
           qemu-p6-install-*.ppm
           qemu-p6-disk-head.bin
           qemu-p6-mbr-disk-head.bin
+          qemu-p6-fat16-disk-head.bin
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact
@@ -124,7 +125,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: P5 complete storage stack with AHCI/IDE/USB BOT block devices, GPT/MBR, FAT12/16/32, exFAT, ISO9660, FAT formatting and C:/D:/E: VFS drive mapping.
+          > **Pre-release**: P6 complete classic desktop and offline installer. The ISO supports Live and Graphical Installer modes, formats an existing FAT16/FAT32 partition, deploys the full payload and boots independently through Limine UEFI or BIOS.
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -142,6 +143,14 @@ jobs:
           ```
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
+
+          ### P6 Desktop and Installer Highlights
+          - **Classic desktop**: menu bar, Neko branding, wallpaper, 3D window chrome, splash animation, cursor and all nine built-in applications.
+          - **Boot modes**: Live Desktop, Graphical Installer, Safe Graphics Live and Safe Graphics Installer.
+          - **Safe install target**: existing AHCI/IDE GPT or MBR partitions only; no automatic repartitioning.
+          - **Filesystem flow**: FAT32 by default, FAT16 for compatible small targets, then recursive payload release and read-back verification.
+          - **Offline boot**: UEFI `EFI/BOOT/BOOTX64.EFI` plus native Limine BIOS Stage 1/Stage 2 embedding for GPT and MBR disks.
+          - **Acceptance**: CI installs into separate GPT and MBR disks, removes the ISO, then verifies UEFI GPT, BIOS GPT and BIOS MBR standalone boots.
 
           ### P4b Architecture Highlights
           - **USB 1.1**: UHCI I/O-port frame scheduling and OHCI HCCA/ED/TD control and interrupt transfers.

@@ -49,13 +49,13 @@ qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A150a.is
 qemu-system-x86_64 -cdrom pixel-neko-os_26A150a.iso -m 512M -serial stdio -boot d
 ```
 
-### P4b automated smoke test
+### P6 automated desktop, installer and standalone-boot test
 
 `scripts/qemu_smoke_test.sh` boots the ISO through Q35/OVMF and Legacy BIOS,
 tests UHCI, OHCI, EHCI and xHCI controllers, generic Report Protocol HID,
-USB-storage boot, a USB hub and hotplug. It requires real USB HID input plus
-P3/P4a regressions and validates the rendered welcome window from a framebuffer
-screenshot:
+USB-storage boot, a USB hub and hotplug. P6 modes install through the real
+graphical UI into separate GPT and MBR disks, detach the ISO, and verify UEFI
+plus BIOS standalone desktop boots:
 
 ```bash
 bash scripts/qemu_smoke_test.sh pixel-neko-os_26A150a.iso
@@ -63,6 +63,9 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A150a.iso
 
 Controller and transfer architecture details are documented in
 [`docs/USB.md`](docs/USB.md).
+
+The graphical installer, complete payload and standalone-boot flow are
+documented in [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md).
 
 ---
 

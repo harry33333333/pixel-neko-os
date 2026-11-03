@@ -79,11 +79,13 @@ def wait_for(path: Path, needle: str, timeout: float) -> bool:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("Usage: qmp_p6_install.py <qmp-socket> <serial-log>", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("Usage: qmp_p6_install.py <qmp-socket> <serial-log> [fat16]",
+              file=sys.stderr)
         return 2
     socket_path = sys.argv[1]
     serial_log = Path(sys.argv[2])
+    choose_fat16 = len(sys.argv) == 4 and sys.argv[3] == "fat16"
 
     connection = connect_qmp(socket_path)
     greeting = read_message(connection)
@@ -122,6 +124,9 @@ def main() -> int:
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-filesystem.ppm"))
 
+    if choose_fat16:
+        click(connection, 100, 181)
+        time.sleep(0.5)
     click(connection)  # FAT32 -> confirmation.
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-confirm.ppm"))

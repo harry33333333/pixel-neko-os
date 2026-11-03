@@ -105,6 +105,19 @@ run_mode() {
                 -boot order=d
             )
             ;;
+        p6-fat16)
+            if [ ! -f ".p6-images/p6-fat16.img" ]; then
+                echo "P6 FAT16 installation fixture is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6bootcd,format=raw,readonly=on,file=${ISO}"
+                -device ide-cd,drive=p6bootcd,bus=ide.0
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-fat16.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=d
+            )
+            ;;
         p6-disk)
             if [ ! -f ".p6-images/p6-target.img" ]; then
                 echo "P6 installed disk fixture is missing" >&2
@@ -127,6 +140,17 @@ run_mode() {
                 -boot order=c
             )
             ;;
+        p6-disk-fat16)
+            if [ ! -f ".p6-images/p6-fat16.img" ]; then
+                echo "P6 installed FAT16 disk is missing" >&2
+                return 2
+            fi
+            boot_args=(
+                -drive "if=none,id=p6target,format=raw,file=.p6-images/p6-fat16.img"
+                -device ide-hd,drive=p6target,bus=ide.1
+                -boot order=c
+            )
+            ;;
         *)
             echo "Unknown boot source: ${boot_source}" >&2
             return 2
@@ -136,7 +160,8 @@ run_mode() {
     rm -f "${log}" "${console}" "${qmp}"
     local timeout_seconds=28
     if [ "${mode}" = "p6-install" ] ||
-       [ "${mode}" = "p6-install-mbr" ]; then
+       [ "${mode}" = "p6-install-mbr" ] ||
+       [ "${mode}" = "p6-install-fat16" ]; then
         timeout_seconds=65
     fi
     set +e
@@ -156,20 +181,32 @@ run_mode() {
     set -e
 
     if [ "${mode}" = "p6-install" ] ||
-       [ "${mode}" = "p6-install-mbr" ]; then
+       [ "${mode}" = "p6-install-mbr" ] ||
+       [ "${mode}" = "p6-install-fat16" ]; then
         if ! python3 scripts/qmp_boot_menu.py "${qmp}"; then
             echo "Could not select the Limine graphical installer entry" >&2
             kill "${qemu_pid}" 2>/dev/null || true
             wait "${qemu_pid}" 2>/dev/null || true
             return 1
         fi
+        if [ "${mode}" = "p6-install-fat16" ] &&
+           ! grep -q "Format target .* as FAT16" "${log}"; then
+            echo "P6 installer did not use the selected FAT16 format" >&2
+            return 1
+        fi
     fi
 
     for _ in $(seq 1 300); do
         if [ "${mode}" = "p6-install" ] ||
-           [ "${mode}" = "p6-install-mbr" ]; then
+           [ "${mode}" = "p6-install-mbr" ] ||
+           [ "${mode}" = "p6-install-fat16" ]; then
             if grep -q "\[P6 \] Graphical installer mode active" "${log}" 2>/dev/null; then
-                if ! python3 scripts/qmp_p6_install.py "${qmp}" "${log}"; then
+                format_choice=fat32
+                if [ "${mode}" = "p6-install-fat16" ]; then
+                    format_choice=fat16
+                fi
+                if ! python3 scripts/qmp_p6_install.py "${qmp}" "${log}" \
+                    "${format_choice}"; then
                     echo "P6 graphical installation automation failed" >&2
                     kill "${qemu_pid}" 2>/dev/null || true
                     wait "${qemu_pid}" 2>/dev/null || true
@@ -226,6 +263,7 @@ run_mode() {
          [ "${mode}" = "p5" ] || [ "${mode}" = "p6-live" ] ||
          [ "${mode}" = "p6-install" ] ||
          [ "${mode}" = "p6-install-mbr" ] ||
+         [ "${mode}" = "p6-install-fat16" ] ||
          [ "${mode}" = "p6-disk-uefi" ] ||
          [ "${mode}" = "usb-modern" ]; } &&
        ! grep -q "PCI backend=.*PCIe ECAM" "${log}"; then
@@ -236,7 +274,8 @@ run_mode() {
     if { [ "${mode}" = "bios" ] || [ "${mode}" = "ohci" ] ||
          [ "${mode}" = "usb-legacy" ] ||
          [ "${mode}" = "p6-disk-bios" ] ||
-         [ "${mode}" = "p6-disk-mbr" ]; } &&
+         [ "${mode}" = "p6-disk-mbr" ] ||
+         [ "${mode}" = "p6-disk-fat16" ]; } &&
        ! grep -q "PCI backend=.*CF8/CFC" "${log}"; then
         echo "Legacy run did not use CF8/CFC configuration space" >&2
         tail -n 250 "${log}" >&2
@@ -288,7 +327,8 @@ run_mode() {
         return 1
     fi
     if [ "${mode}" = "p6-install" ] ||
-       [ "${mode}" = "p6-install-mbr" ]; then
+       [ "${mode}" = "p6-install-mbr" ] ||
+       [ "${mode}" = "p6-install-fat16" ]; then
         if ! grep -q "\[P6 \] Installer scan found [1-9]" "${log}" ||
            ! grep -q "\[P6 \] Installer target selected" "${log}" ||
            ! grep -q "\[P6 \] Limine BIOS deployed" "${log}" ||
@@ -300,7 +340,8 @@ run_mode() {
     elif [ "${mode}" = "p6-live" ] ||
          [ "${mode}" = "p6-disk-uefi" ] ||
          [ "${mode}" = "p6-disk-bios" ] ||
-         [ "${mode}" = "p6-disk-mbr" ]; then
+         [ "${mode}" = "p6-disk-mbr" ] ||
+         [ "${mode}" = "p6-disk-fat16" ]; then
         if ! grep -q "\[P6 \] Full desktop, splash and nine applications ready" "${log}"; then
             echo "P6 full desktop was not reached" >&2
             tail -n 350 "${log}" >&2
@@ -420,6 +461,13 @@ run_mode p6-install-mbr q35 p6-mbr -bios "${UEFI_FW}" \
     -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
 verify_p6_disk .p6-images/p6-mbr.img p6-mbr
 fi
+if selected_mode p6-install-fat16; then
+run_mode p6-install-fat16 q35 p6-fat16 -bios "${UEFI_FW}" \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
+verify_p6_disk .p6-images/p6-fat16.img p6-fat16
+fi
 if selected_mode p6-disk-uefi; then
 run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
@@ -434,6 +482,12 @@ run_mode p6-disk-bios pc p6-disk \
 fi
 if selected_mode p6-disk-mbr; then
 run_mode p6-disk-mbr pc p6-disk-mbr \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,id=usb-kbd \
+    -device usb-mouse,bus=uhci.0,id=usb-mouse
+fi
+if selected_mode p6-disk-fat16; then
+run_mode p6-disk-fat16 pc p6-disk-fat16 \
     -device piix3-usb-uhci,id=uhci \
     -device usb-kbd,bus=uhci.0,id=usb-kbd \
     -device usb-mouse,bus=uhci.0,id=usb-mouse
