@@ -228,7 +228,8 @@ int iso_list_dir(iso_fs_t* fs, const char* path, void (*callback)(const iso_file
     return 0;
 }
 
-int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, unsigned int offset, unsigned char* buf, unsigned int size) {
+int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, uint64_t offset,
+                  unsigned char* buf, unsigned int size) {
     if (!fs || !fs->mounted || !info || info->is_dir) return -1;
     if (offset >= info->size) return 0;
     if (offset + size > info->size) {
@@ -239,7 +240,7 @@ int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, unsigned int offset
     unsigned char sec[2048];
 
     while (bytes_read < size) {
-        unsigned int cur_offset = offset + bytes_read;
+        uint64_t cur_offset = offset + bytes_read;
         unsigned int sec_idx = cur_offset / 2048;
         unsigned int sec_off = cur_offset % 2048;
 
