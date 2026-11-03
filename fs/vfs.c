@@ -134,7 +134,6 @@ void vfs_init(void) {
     memset(g_exfat_filesystems, 0, sizeof(g_exfat_filesystems));
     memset(g_filesystem_kind, 0, sizeof(g_filesystem_kind));
     fat_init();
-    if (!g_partition_count) part_scan_all();
 
     int floppy_unit = 0;
     for (int index = 0; index < blkdev_count() && floppy_unit < 2; index++) {

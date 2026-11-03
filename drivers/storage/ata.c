@@ -257,8 +257,9 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
     ata_select(drive, 0);
     outb(drive->base + ATA_REG_FEATURES, 0);
     outb(drive->base + ATA_REG_SECCOUNT0, 0);
-    outb(drive->base + ATA_REG_LBA0, (uint8_t)bytes);
-    outb(drive->base + ATA_REG_LBA1, (uint8_t)(bytes >> 8));
+    outb(drive->base + ATA_REG_LBA0, 0);
+    outb(drive->base + ATA_REG_LBA1, (uint8_t)bytes);
+    outb(drive->base + ATA_REG_LBA2, (uint8_t)(bytes >> 8));
     outb(drive->base + ATA_REG_COMMAND, ATA_CMD_PACKET);
     if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
         return -1;

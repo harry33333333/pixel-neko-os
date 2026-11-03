@@ -473,7 +473,6 @@ void kmain(void) {
 
     boot_progress_notify("Pixel Neko OS :: [18/23] Probing Storage & Volumes...");
     storage_init();
-    part_scan_all();
     vfs_init();
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
