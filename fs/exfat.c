@@ -459,7 +459,12 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
     uint64_t old_capacity =
         ((info.size + fs->cluster_size - 1) / fs->cluster_size) *
         fs->cluster_size;
-    if (size > old_capacity || !info.no_fat_chain) return -1;
+    if (size > old_capacity) {
+        log_printf("[EXFAT] Write exceeds allocated capacity (%llu > %llu)\n",
+                   (unsigned long long)size,
+                   (unsigned long long)old_capacity);
+        return -1;
+    }
 
     const uint8_t* input = (const uint8_t*)buffer;
     uint64_t written = 0;
@@ -474,7 +479,12 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
             return -1;
         }
         written += amount;
-        cluster++;
+        if (info.no_fat_chain) {
+            cluster++;
+        } else if (written < size) {
+            cluster = fat_next(fs, cluster);
+            if (cluster >= 0xFFFFFFF8u) return -1;
+        }
     }
 
     uint32_t length = 0;
