@@ -189,11 +189,6 @@ run_mode() {
             wait "${qemu_pid}" 2>/dev/null || true
             return 1
         fi
-        if [ "${mode}" = "p6-install-fat16" ] &&
-           ! grep -q "Format target .* as FAT16" "${log}"; then
-            echo "P6 installer did not use the selected FAT16 format" >&2
-            return 1
-        fi
     fi
 
     for _ in $(seq 1 300); do
@@ -335,6 +330,11 @@ run_mode() {
            ! grep -q "\[P6 \] Installation complete on" "${log}"; then
             echo "P6 installer did not complete the UEFI/BIOS deployment" >&2
             tail -n 400 "${log}" >&2
+            return 1
+        fi
+        if [ "${mode}" = "p6-install-fat16" ] &&
+           ! grep -q "Format target .* as FAT16" "${log}"; then
+            echo "P6 installer did not use the selected FAT16 format" >&2
             return 1
         fi
     elif [ "${mode}" = "p6-live" ] ||
