@@ -362,9 +362,9 @@ void splash_run(void)
     PUT_PIXEL(v, bx + 17, by + 19, 0);  // Nose
 
     // Title and system info
-    font_draw_text(v, win_x + 68, win_y + 16, "Pixel Neko Next", 0);
-    font_draw_text(v, win_x + 68, win_y + 32, "Version C2.0 (Build " KERNEL_BUILD ")", 0);
-    font_draw_text(v, win_x + 68, win_y + 48, "32-Bit Graphical Operating System", 8);
+    font_draw_text(v, win_x + 68, win_y + 16, "Pixel Neko OS", 0);
+    font_draw_text(v, win_x + 68, win_y + 32, "Version " KERNEL_BUILD, 0);
+    font_draw_text(v, win_x + 68, win_y + 48, "64-Bit Graphical Operating System", 8);
     font_draw_text(v, win_x + 68, win_y + 64, "(C) 2026 Tairitsu_tty / XNZM", 8);
 
     // Beveled horizontal separator line

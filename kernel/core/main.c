@@ -29,6 +29,9 @@
 #include "part.h"
 #include "vfs.h"
 #include "p5_test.h"
+#include "splash.h"
+#include "ui_compat.h"
+#include "installer.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -72,6 +75,12 @@ volatile struct limine_memmap_request memmap_request = {
 __attribute__((used, section(".limine_requests")))
 volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST,
     .revision = 0
 };
 
@@ -480,6 +489,23 @@ void kmain(void) {
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
 
+    if (g_main_surface.framebuffer_virt) {
+        ui_compat_init();
+        splash_run();
+        if (kernel_file_request.response &&
+            kernel_file_request.response->kernel_file &&
+            kernel_file_request.response->kernel_file->cmdline) {
+            const char* command_line =
+                kernel_file_request.response->kernel_file->cmdline;
+            for (int index = 0; command_line[index]; index++) {
+                if (strncmp(command_line + index, "mode=install", 12) == 0) {
+                    ui_compat_set_install_mode(true);
+                    break;
+                }
+            }
+        }
+    }
+
     // 18. Check Kernel Load Address
     if (kernel_address_request.response) {
         log_printf("[KERNEL] Phys Base: 0x%llx, Virt Base: 0x%llx\n",
@@ -532,16 +558,14 @@ void kmain(void) {
     log_printf("[P3] Loaded Ring 3 processes: init PID=%u, echo PID=%u.\n",
                init_process->pid, echo_process->pid);
 
-    // 23. Draw Windows 3.1 / Mac OS 9 style welcome window with P4b metrics
     if (g_main_surface.framebuffer_virt) {
-        draw_welcome_window();
-        boot_framebuffer_flush();
-        boot_progress_notify("Pixel Neko OS :: Core Bring-up Complete (Ready)");
-        log_printf("[UI] Welcome modal rendered successfully with full P4b status.\n");
+        ui_desktop_start();
+        if (ui_install_mode_requested()) {
+            installer_open();
+            log_printf("[P6 ] Graphical installer mode active.\n");
+        }
+        log_printf("[P6 ] Full desktop, splash and nine applications ready.\n");
     }
-
-    // 24. Play classic Mac / Happy Neko ascending boot chord on PC Speaker
-    speaker_boot_chord();
 
     log_printf("[SYSTEM] P4b milestone reached: full USB host-controller matrix active.\n");
 
