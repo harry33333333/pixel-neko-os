@@ -483,7 +483,7 @@ static int xhci_configure_interrupt(xhci_controller_t* c, xhci_slot_t* slot,
     ep_dwords[0] = (uint32_t)interval << 16;
     ep_dwords[1] = (7u << 3) |
                    ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
-                   (3u << 1);
+                   (7u << 1);
     ep_dwords[2] = (uint32_t)slot->interrupt_ring.physical_base |
                    slot->interrupt_ring.cycle;
     ep_dwords[3] = (uint32_t)(slot->interrupt_ring.physical_base >> 32);
@@ -566,7 +566,7 @@ static int xhci_configure_bulk(xhci_controller_t* c, xhci_slot_t* slot,
     ep_dwords[0] = 0;
     ep_dwords[1] = (3u << 3) |
                    ((uint32_t)(endpoint->max_packet & 0x7FF) << 16) |
-                   (2u << 1);
+                   ((endpoint->direction == USB_DIR_IN ? 6u : 2u) << 1);
     ep_dwords[2] = (uint32_t)slot->bulk_rings[dci].physical_base |
                    slot->bulk_rings[dci].cycle;
     ep_dwords[3] =

@@ -217,7 +217,15 @@ int usb_storage_attach(usb_device_t* device) {
     bot->device = device;
     bot->bulk_in = bulk_in;
     bot->bulk_out = bulk_out;
-    if (scsi_inquiry(bot) != 0 || scsi_capacity(bot) != 0) {
+    if (scsi_inquiry(bot) != 0) {
+        log_printf("[USBMS] SCSI INQUIRY failed on device %u\n",
+                   device->address);
+        memset(bot, 0, sizeof(*bot));
+        return -1;
+    }
+    if (scsi_capacity(bot) != 0) {
+        log_printf("[USBMS] READ CAPACITY failed on device %u\n",
+                   device->address);
         memset(bot, 0, sizeof(*bot));
         return -1;
     }
