@@ -511,9 +511,8 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
             put_le64(entry + 8, size);
             put_le64(stream + 8, size);
             put_le64(stream + 24, size);
-            uint64_t directory_lba = fs->root_cluster == 2
-                ? cluster_lba(fs, fs->root_cluster) : 0;
-            if (!directory_lba) return -1;
+            uint64_t directory_lba = cluster_lba(fs, fs->root_cluster);
+            if (directory_lba == UINT64_MAX) return -1;
             return block_write(fs->dev,
                                directory_lba + offset / 512u, 1, entry -
                                (offset & 511u));
