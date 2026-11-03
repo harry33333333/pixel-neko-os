@@ -234,6 +234,6 @@ fi
 if selected_mode usb-modern; then
 run_mode usb-modern q35 usb-xhci -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
-    -device usb-kbd,bus=xhci.0,id=usb-kbd \
-    -device usb-mouse,bus=xhci.0,id=usb-mouse
+    -device usb-kbd,bus=xhci.0,port=2,id=usb-kbd \
+    -device usb-mouse,bus=xhci.0,port=3,id=usb-mouse
 fi
