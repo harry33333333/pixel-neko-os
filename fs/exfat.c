@@ -459,6 +459,9 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
     uint64_t old_capacity =
         ((info.size + fs->cluster_size - 1) / fs->cluster_size) *
         fs->cluster_size;
+    log_printf("[EXFAT] write path=%s size=%llu capacity=%llu nofat=%u\n",
+               path, (unsigned long long)size,
+               (unsigned long long)old_capacity, info.no_fat_chain);
     if (size > old_capacity) {
         log_printf("[EXFAT] Write exceeds allocated capacity (%llu > %llu)\n",
                    (unsigned long long)size,
@@ -476,6 +479,7 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
         if (amount > size - written) amount = (uint32_t)(size - written);
         uint32_t sectors = (amount + 511u) / 512u;
         if (block_write(fs->dev, lba, sectors, input + written) != 0) {
+            log_printf("[EXFAT] cluster write failed cluster=%u\n", cluster);
             return -1;
         }
         written += amount;
@@ -488,7 +492,10 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
     }
 
     uint32_t length = 0;
-    if (load_directory(fs, fs->root_cluster, &length) != 0) return -1;
+    if (load_directory(fs, fs->root_cluster, &length) != 0) {
+        log_printf("[EXFAT] root directory reload failed\n");
+        return -1;
+    }
     uint32_t offset = 0;
     while (offset + 64 <= length) {
         uint8_t* entry = g_exfat_directory + offset;
@@ -529,5 +536,6 @@ int exfat_write_file(exfat_fs_t* fs, const char* path,
         }
         offset += (entry[1] + 1) * 32;
     }
+    log_printf("[EXFAT] directory entry not found for %s\n", path);
     return -1;
 }
