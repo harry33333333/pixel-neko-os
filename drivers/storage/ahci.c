@@ -5,6 +5,7 @@
 #include "pci.h"
 #include "string.h"
 #include "usb_compat.h"
+#include "usb_core.h"
 
 #define AHCI_MAX_PORTS 16
 #define AHCI_SECTOR_SIZE 512
