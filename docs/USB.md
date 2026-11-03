@@ -12,6 +12,11 @@
 All controller descriptors contain physical DMA addresses. Kernel virtual
 addresses are never written into host-controller memory.
 
+USB timing is calibrated once against PIT channel 2 and then uses the TSC for
+bounded delays. EHCI/OHCI control transfers report the actual short-packet
+length rather than the requested buffer length, preventing stale DMA bytes
+from leaking into descriptors and HID reports.
+
 ## Device And Input Layers
 
 The common USB core owns address allocation, descriptor parsing,
@@ -19,9 +24,11 @@ configuration selection, hub enumeration and detach propagation. USB devices
 are also inserted into the P4a Bus/Device/Driver tree.
 
 USB HID keyboard and mouse reports are translated into the same
-`input_event_t` queue used by PS/2. Boot keyboard reports use the fixed
-8-byte format. HID mouse interfaces probe their report descriptor for a wheel
-usage and remain in report protocol when one is present.
+`input_event_t` queue used by PS/2. Boot devices use the fixed 8-byte keyboard
+and 4-byte mouse formats. Non-Boot HID and vendor-specific interfaces are
+classified from application usages in the report descriptor. The parser also
+tracks Report IDs, keyboard modifier/key arrays, mouse buttons and relative or
+absolute X/Y axes, and wheel usages.
 
 Hub state follows:
 
@@ -42,6 +49,11 @@ devices and their controller transfer resources.
 - EHCI with USB keyboard and mouse
 - xHCI with USB keyboard and mouse
 - xHCI plus external hub, downstream HID, QMP hot-add and hot-remove
+- Generic non-Boot HID using Report Protocol
+- Legacy UHCI USB-storage boot with downstream hub HID
+- SuperSpeed xHCI USB-storage boot with USB HID
+- Framebuffer screenshot validation for the completed welcome window
 
 The job fails unless both the controller-specific enumeration logs and USBHID
-input reports are present, in addition to the P3/P4a regression checks.
+input reports are present, the rendered welcome window is visible in a QEMU
+screendump, and the P3/P4a regression checks pass.

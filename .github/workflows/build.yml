@@ -42,7 +42,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A130a"
+          VERSION="26A131a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -115,7 +115,7 @@ jobs:
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: UHCI/OHCI/EHCI/xHCI, USB hubs, HID input, hotplug and controller-specific DMA teardown (Milestone P4b Complete).
+          > **Pre-release**: Hardware bring-up fixes for Legacy UHCI and modern xHCI boot, generic non-Boot HID devices, USB hubs/hotplug, calibrated controller timing and a dedicated WC framebuffer mapping.
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -138,9 +138,11 @@ jobs:
           - **USB 1.1**: UHCI I/O-port frame scheduling and OHCI HCCA/ED/TD control and interrupt transfers.
           - **USB 2.0**: EHCI asynchronous/periodic queues, BIOS ownership handoff, port ownership and asynchronous-advance teardown.
           - **USB 3.0**: Native xHCI command/event/transfer rings, DCBAA, Slot/Endpoint Contexts and interrupt endpoints.
-          - **Hub & HID**: Hub power/debounce/reset/recovery, downstream enumeration, Boot keyboard/mouse reports and wheel detection.
+          - **Hub & HID**: Hub power/debounce/reset/recovery, downstream enumeration, Boot and generic Report Protocol keyboard/mouse parsing, Report IDs, wheels and absolute pointer handling.
           - **Hotplug & Recovery**: Runtime attach/detach, unified input delivery, controller-specific device teardown and PS/2 fallback.
-          - **Runtime Self-test**: QEMU validates UHCI, OHCI, EHCI, xHCI, a hub topology and repeated HID injection on every release.
+          - **Hardware Compatibility**: PIT-calibrated USB delays, BIOS ownership hand-off, EHCI/OHCI short-packet accounting and exact physical DMA addresses.
+          - **Boot Paths**: Legacy UHCI and SuperSpeed xHCI USB-storage boot, UEFI/BIOS optical boot, generic non-Boot HID, hub/hotplug and framebuffer screenshot validation.
+          - **Runtime Self-test**: QEMU validates eight hardware-oriented scenarios on every release.
           - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
         draft: false
         prerelease: true
