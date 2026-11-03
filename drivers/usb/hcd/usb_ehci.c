@@ -214,9 +214,13 @@ static int ehci_control(usb_hci_t* hci, usb_device_t* device,
         return -1;
     }
     if (length > 0 && direction == USB_DIR_IN && data) {
+        int remaining =
+            (int)((c->mem->data_qtd.token >> 16) & 0x7FFF);
+        int actual = length - remaining;
+        if (actual < 0 || actual > length) actual = length;
         memset(data, 0, (size_t)length);
-        memcpy(data, c->mem->data_buffer, (size_t)length);
-        return length;
+        memcpy(data, c->mem->data_buffer, (size_t)actual);
+        return actual;
     }
     return length;
 }

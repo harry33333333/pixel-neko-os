@@ -180,6 +180,7 @@ static int ohci_control(usb_hci_t* hci, usb_device_t* device,
                  direction == USB_DIR_IN ? 1u : 2u, NULL, 0, true);
     c->mem->status_td.next_td = ohci_phys(c, &c->mem->dummy_td);
     memset(&c->mem->dummy_td, 0, sizeof(c->mem->dummy_td));
+    uint32_t data_start = c->mem->data_td.current_buffer;
 
     ohci_set_ed(c, &c->mem->control_ed, device, 0, 0,
                 device->max_packet0);
@@ -195,7 +196,8 @@ static int ohci_control(usb_hci_t* hci, usb_device_t* device,
         return -1;
     }
     if (length > 0 && direction == USB_DIR_IN && data) {
-        int actual = length;
+        int actual = (int)(c->mem->data_td.current_buffer - data_start);
+        if (actual < 0 || actual > length) actual = length;
         memcpy(data, c->mem->data_buffer, (size_t)actual);
         return actual;
     }
