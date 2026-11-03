@@ -557,9 +557,13 @@ static int copy_payload_file(const char* source, const char* destination,
     fat_set_write_progress_cb(NULL);
     pmm_free_pages(buffer, (unsigned int)page_count);
     if (write != VFS_OK) return -10;
+    log_printf("[P6 ] Payload write returned for %s\n", destination);
 
     vfs_dirent_t copied;
-    if (vfs_find_file(destination, &copied) != VFS_OK ||
+    int find_result = vfs_find_file(destination, &copied);
+    log_printf("[P6 ] Payload verify lookup %s result=%d\n",
+               destination, find_result);
+    if (find_result != VFS_OK ||
         copied.is_dir || copied.size != source_entry.size) {
         return -14;
     }

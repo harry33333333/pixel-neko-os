@@ -1279,6 +1279,8 @@ void fat_set_write_progress_cb(void (*cb)(unsigned int written, unsigned int tot
 }
 
 int fat_write_file(const char* name, const unsigned char* buf, unsigned int size) {
+    int trace_long_name = !plain_short_name(name);
+    if (trace_long_name) log_printf("[FAT ] Write begin %s\n", name);
     file_info_t info;
     if (fat_find(name, &info) == 0) {
         const char* path = name;
@@ -1337,7 +1339,12 @@ int fat_write_file(const char* name, const unsigned char* buf, unsigned int size
     unsigned char fat_name[8], fat_ext[3];
     str_to_fat_name(comp, fat_name, fat_ext);
     struct update_cb_data data = { comp, (const char*)fat_name, (const char*)fat_ext, size, first_cluster, 0 };
-    traverse_dir(vol, cluster, update_cb, &data);
+    if (trace_long_name) log_printf("[FAT ] Updating directory entry %s\n", comp);
+    int update_result = traverse_dir(vol, cluster, update_cb, &data);
+    if (trace_long_name) {
+        log_printf("[FAT ] Directory update result=%d found=%d\n",
+                   update_result, data.found);
+    }
     
     return 0;
 }
