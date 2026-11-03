@@ -454,7 +454,15 @@ static int write_fat_entry(exfat_fs_t* fs, uint32_t cluster,
 int exfat_write_file(exfat_fs_t* fs, const char* path,
                      const void* buffer, uint64_t size) {
     exfat_file_info_t info;
-    if (exfat_find(fs, path, &info) != 0 || info.is_dir || !buffer) return -1;
+    if (!fs || !path || !buffer) return -1;
+    if (exfat_find(fs, path, &info) != 0) {
+        log_printf("[EXFAT] write target not found: %s\n", path);
+        return -1;
+    }
+    if (info.is_dir) {
+        log_printf("[EXFAT] write target is a directory: %s\n", path);
+        return -1;
+    }
 
     uint64_t old_capacity =
         ((info.size + fs->cluster_size - 1) / fs->cluster_size) *
