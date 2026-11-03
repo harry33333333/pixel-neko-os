@@ -110,18 +110,18 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
     }
 
     fs->sector_shift = boot[108];
-    fs->cluster_shift = boot[109];
+    uint8_t sectors_per_cluster_shift = boot[109];
+    fs->cluster_shift =
+        (uint8_t)(fs->sector_shift + sectors_per_cluster_shift);
     if (fs->sector_shift < 9 || fs->sector_shift > 12 ||
-        fs->cluster_shift > 25 ||
-        fs->cluster_shift < fs->sector_shift) {
+        fs->cluster_shift > 25) {
         log_printf("[EXFAT] Invalid shift values sector=%u cluster=%u\n",
-                   fs->sector_shift, fs->cluster_shift);
+                   fs->sector_shift, sectors_per_cluster_shift);
         return -1;
     }
     fs->sector_size = 1u << fs->sector_shift;
     fs->cluster_size = 1u << fs->cluster_shift;
-    fs->sectors_per_cluster = 1u <<
-                              (fs->cluster_shift - fs->sector_shift);
+    fs->sectors_per_cluster = 1u << sectors_per_cluster_shift;
     fs->volume_sectors = le64(boot + 72);
     fs->fat_offset = le32(boot + 80);
     fs->fat_length = le32(boot + 84);

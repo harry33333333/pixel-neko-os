@@ -109,8 +109,8 @@ static int write_fat32(uint64_t sectors, uint32_t hidden,
     memset(fsinfo, 0, sizeof(fsinfo));
     put_le32(fsinfo + 0, 0x41615252);
     put_le32(fsinfo + 484, 0x61417272);
-    put_le32(fsinfo + 488, clusters - 1);
-    put_le32(fsinfo + 492, 2);
+    put_le32(fsinfo + 488, clusters - 2);
+    put_le32(fsinfo + 492, 3);
     put_le32(fsinfo + 508, 0xAA550000);
     if (block_write(dev, start + 1, 1, fsinfo) != 0 ||
         block_write(dev, start + 7, 1, fsinfo) != 0) {
@@ -125,6 +125,7 @@ static int write_fat32(uint64_t sectors, uint32_t hidden,
     memset(fat_head, 0, sizeof(fat_head));
     put_le32(fat_head, 0x0FFFFFF8);
     put_le32(fat_head + 4, 0x0FFFFFFF);
+    put_le32(fat_head + 8, 0x0FFFFFFF);
     if (block_write(dev, start + reserved, 1, fat_head) != 0 ||
         block_write(dev, start + reserved + fat_size, 1, fat_head) != 0) {
         return -1;
