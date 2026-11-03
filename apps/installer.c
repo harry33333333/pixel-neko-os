@@ -25,7 +25,7 @@ extern int insv;
 #define INSTALL_MIN_MB 64u
 #define INSTALL_FAT16_MAX_SECTORS 4194304ull
 #define INSTALL_FAT32_MIN_SECTORS 65536ull
-#define PAYLOAD_LIST_CAPACITY 64
+#define PAYLOAD_LIST_CAPACITY 16
 
 typedef enum {
     STEP_SELECT = 0,
@@ -534,6 +534,9 @@ static int copy_payload_file(const char* source, const char* destination,
         (unsigned char*)pmm_alloc_pages((unsigned int)page_count);
     if (!buffer) return -11;
 
+    log_printf("[P6 ] Payload copy %d/%d %s -> %s (%u bytes)\n",
+               file_index + 1, file_total, source, destination,
+               (unsigned int)source_entry.size);
     int read = vfs_read_file(source, buffer, (unsigned int)source_entry.size);
     if (read != (int)source_entry.size) {
         pmm_free_pages(buffer, (unsigned int)page_count);
@@ -831,6 +834,8 @@ static int do_installation(target_part_t* target, part_fs_type_t type) {
     }
     int total_files = count_payload_files(source_root);
     if (total_files <= 0) return -10;
+    log_printf("[P6 ] Source payload %s contains %d file(s).\n",
+               source_root, total_files);
 
     char destination_root[4];
     destination_root[0] = target_letter;
