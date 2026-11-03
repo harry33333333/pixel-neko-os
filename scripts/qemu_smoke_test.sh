@@ -361,7 +361,7 @@ if selected_mode p6-install; then
 run_mode p6-install q35 p6 -bios "${UEFI_FW}" \
     -device qemu-xhci,id=xhci \
     -device usb-kbd,bus=xhci.0,port=1,id=usb-kbd \
-    -device usb-tablet,bus=xhci.0,port=2,id=usb-tablet
+    -device usb-mouse,bus=xhci.0,port=2,id=usb-mouse
 fi
 if selected_mode p6-disk-uefi; then
 run_mode p6-disk-uefi q35 p6-disk -bios "${UEFI_FW}" \

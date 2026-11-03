@@ -16,17 +16,23 @@ SCREEN_WIDTH = 1024
 SCREEN_HEIGHT = 768
 
 
-def click(connection, x: int, y: int) -> None:
-    for event in (
-        {"type": "abs", "data": {
-            "axis": "x", "value": int(x * 32767 / (SCREEN_WIDTH - 1))}},
-        {"type": "abs", "data": {
-            "axis": "y", "value": int(y * 32767 / (SCREEN_HEIGHT - 1))}},
-    ):
-        response = command(connection, "input-send-event", {"events": [event]})
+def move_relative(connection, dx: int, dy: int) -> None:
+    while dx or dy:
+        step_x = max(-80, min(80, dx))
+        step_y = max(-80, min(80, dy))
+        events = [
+            {"type": "rel", "data": {"axis": "x", "value": step_x}},
+            {"type": "rel", "data": {"axis": "y", "value": step_y}},
+        ]
+        response = command(connection, "input-send-event", {"events": events})
         if "return" not in response:
             raise RuntimeError(f"QMP pointer move failed: {response}")
-        time.sleep(0.2)
+        dx -= step_x
+        dy -= step_y
+        time.sleep(0.12)
+
+
+def click(connection) -> None:
     for down in (True, False):
         response = command(
             connection,
@@ -87,15 +93,22 @@ def main() -> int:
 
     next_x = 16 + (SCREEN_WIDTH - 32) - 92 + 39
     next_y = 30 + (SCREEN_HEIGHT - 50) - 32 + 11
-    click(connection, next_x, next_y)  # Select partition -> filesystem.
+    # The cursor starts at screen center. Move to the bottom-right Next button
+    # once, then reuse the same position for each wizard step.
+    move_relative(
+        connection,
+        next_x - SCREEN_WIDTH // 2,
+        next_y - SCREEN_HEIGHT // 2,
+    )
+    click(connection)  # Select partition -> filesystem.
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-filesystem.ppm"))
 
-    click(connection, next_x, next_y)  # FAT32 -> confirmation.
+    click(connection)  # FAT32 -> confirmation.
     time.sleep(0.8)
     screenshot(connection, Path("qemu-p6-install-confirm.ppm"))
 
-    click(connection, next_x + 5, next_y)  # Install Now.
+    click(connection)  # Install Now.
     if not wait_for(serial_log, "[P6 ] Installation complete on", 22.0):
         print("Installer did not report a completed offline deployment", file=sys.stderr)
         return 1
