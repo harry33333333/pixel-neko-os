@@ -23,6 +23,10 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "power.h"
 #include "installer.h"
 #include "vfs.h"
+#include "cpu.h"
+
+extern int total_ram_mb;
+extern int usable_ram_mb;
 
 int redraw = 0;
 static int need_mr = 0;
