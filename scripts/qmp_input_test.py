@@ -129,8 +129,6 @@ def main() -> int:
         pointer_events = [
             {"type": "abs", "data": {"axis": "x", "value": 24000}},
             {"type": "abs", "data": {"axis": "y", "value": 16000}},
-            {"type": "btn", "data": {"down": True, "button": "left"}},
-            {"type": "btn", "data": {"down": False, "button": "left"}},
         ]
     else:
         pointer_events = [
@@ -138,13 +136,20 @@ def main() -> int:
             {"type": "rel", "data": {"axis": "y", "value": -12}},
             {"type": "rel", "data": {"axis": "x", "value": 16}},
             {"type": "rel", "data": {"axis": "y", "value": -8}},
-            {"type": "btn", "data": {"down": True, "button": "left"}},
-            {"type": "btn", "data": {"down": False, "button": "left"}},
         ]
     if not send_events(
         connection,
         pointer_events,
         0.35,
+    ):
+        return 1
+    if not send_events(
+        connection,
+        [
+            {"type": "btn", "data": {"down": True, "button": "left"}},
+            {"type": "btn", "data": {"down": False, "button": "left"}},
+        ],
+        0.9,
     ):
         return 1
 
