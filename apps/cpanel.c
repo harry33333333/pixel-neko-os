@@ -405,6 +405,7 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
 int cpanel_drag(int mx, int my, int wx, int wy)
 {
     (void)my;
+    (void)wy;
     if (!slider_dragging) return 0;
     int tx = wx + 120;
     int val = (mx - tx) / 20;

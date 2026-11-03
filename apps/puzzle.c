@@ -197,6 +197,7 @@ void puzzle_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
 }
 
 void puzzle_click(int mx, int my, int wx, int wy, int ww, int wh) {
+    (void)wh;
     int tile_size = 32;
     int grid_w = 4 * tile_size;
     int start_x = wx + (ww - grid_w) / 2;

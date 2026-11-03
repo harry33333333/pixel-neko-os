@@ -101,7 +101,7 @@ bool device_add_resource(device_t* device, device_resource_type_t type,
 bool device_region_is_free(device_resource_type_t type,
                            uint64_t start, uint64_t length);
 
-device_driver_t* driver_register(device_driver_t* driver);
+device_driver_t* device_driver_register(device_driver_t* driver);
 int driver_probe_all(void);
 int driver_get_bind_count(void);
 void device_tree_dump(void);

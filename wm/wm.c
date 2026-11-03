@@ -164,12 +164,19 @@ static void get_time(int*h,int*m,int*s){
 static void ok_btn(unsigned char* v, int bx, int by, int p)
 {
     for(int y=by;y<by+12;y++)for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, y, 7);
-    if(p){for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, by, 0);for(int y=by;y<by+12;y++)PUT_PIXEL(v, bx, y, 0);
-           for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, (by+11), 15);for(int y=by;y<by+12;y++)PUT_PIXEL(v, bx+31, y, 15);
-           font_draw_text(v,bx+9,by+3,"OK",0);}
-    else{for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, by, 15);for(int y=by;y<by+12;y++)PUT_PIXEL(v, bx, y, 15);
-          for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, (by+11), 0);for(int y=by;y<by+12;y++)PUT_PIXEL(v, bx+31, y, 0);
-          font_draw_text(v,bx+8,by+2,"OK",0);}
+    if(p){
+        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, by, 0);
+        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx, y, 0);
+        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, (by+11), 15);
+        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx+31, y, 15);
+        font_draw_text(v,bx+9,by+3,"OK",0);
+    } else {
+        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, by, 15);
+        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx, y, 15);
+        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, (by+11), 0);
+        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx+31, y, 0);
+        font_draw_text(v,bx+8,by+2,"OK",0);
+    }
 }
 
 static void cl_btn(unsigned char* v, int cx, int cy, int p)
@@ -296,8 +303,10 @@ static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* l
     
     if(bg==1){
         for(int i=0;i<16;i++)for(int j=0;j<16;j++) ic[i][j]=9;
-        for(int j=0;j<16;j++) ic[0][j]=11; for(int i=0;i<16;i++) ic[i][0]=11;
-        for(int j=0;j<16;j++) ic[15][j]=1; for(int i=0;i<16;i++) ic[i][15]=1;
+        for(int j=0;j<16;j++) ic[0][j]=11;
+        for(int i=0;i<16;i++) ic[i][0]=11;
+        for(int j=0;j<16;j++) ic[15][j]=1;
+        for(int i=0;i<16;i++) ic[i][15]=1;
         for(int i=3;i<7;i++)for(int j=6;j<10;j++) ic[i][j]=15;
         for(int i=8;i<9;i++)for(int j=6;j<10;j++) ic[i][j]=15;
         for(int i=10;i<12;i++)for(int j=7;j<9;j++) ic[i][j]=15;
@@ -311,8 +320,10 @@ static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* l
         ic[8][7]=4;
     }else if(bg==4){
         for(int i=0;i<16;i++)for(int j=0;j<16;j++) ic[i][j]=7;
-        for(int j=0;j<16;j++) ic[0][j]=15; for(int i=0;i<16;i++) ic[i][0]=15;
-        for(int j=0;j<16;j++) ic[15][j]=0; for(int i=0;i<16;i++) ic[i][15]=0;
+        for(int j=0;j<16;j++) ic[0][j]=15;
+        for(int i=0;i<16;i++) ic[i][0]=15;
+        for(int j=0;j<16;j++) ic[15][j]=0;
+        for(int i=0;i<16;i++) ic[i][15]=0;
         for(int i=2;i<6;i++)for(int j=2;j<14;j++) ic[i][j]=2;
         for(int j=2;j<14;j++) ic[2][j]=0;
         for(int i=7;i<10;i++)for(int j=2;j<6;j++) ic[i][j]=15;

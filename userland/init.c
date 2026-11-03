@@ -98,7 +98,7 @@ static int init_main(void) {
     int child_status = -1;
     for (int i = 0; i < 200; i++) {
         if (neko_waitpid((unsigned long)reply.sender_pid, &child_status) ==
-            reply.sender_pid) {
+            (long)reply.sender_pid) {
             break;
         }
         neko_sleep(1);

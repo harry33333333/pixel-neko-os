@@ -643,7 +643,7 @@ void fm_click(unsigned char* v, int mx, int my, int mb, int wx, int wy, int ww, 
 }
 
 int fm_drag(int mx, int my, int wx, int wy, int ww, int wh) {
-    (void)wx; (void)ww;
+    (void)mx; (void)wx; (void)ww;
     if (!sb_dragging) return 0;
     int list_top = wy + 60;
     int list_bot = wy + wh - FM_STATUS_H;

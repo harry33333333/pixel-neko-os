@@ -225,7 +225,7 @@ void ps2_input_init(void) {
         device_add_resource(controller, DEVICE_RESOURCE_IRQ, 1, 1, true);
         device_add_resource(controller, DEVICE_RESOURCE_IRQ, 12, 1, true);
     }
-    driver_register(&g_ps2_driver);
+    device_driver_register(&g_ps2_driver);
 }
 
 void mouse_get(int* x, int* y, int* buttons) {

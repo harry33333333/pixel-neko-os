@@ -175,7 +175,7 @@ uint32_t device_get_count(void) {
     return g_device_count;
 }
 
-device_driver_t* driver_register(device_driver_t* driver) {
+device_driver_t* device_driver_register(device_driver_t* driver) {
     if (!driver || !driver->name || !driver->match ||
         g_driver_count >= DRIVER_MAX_COUNT) {
         return NULL;
