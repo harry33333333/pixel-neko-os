@@ -47,8 +47,14 @@ def click(connection) -> None:
 
 def screenshot(connection, path: Path) -> None:
     response = command(connection, "screendump", {"filename": str(path.resolve())})
-    if "return" not in response or not path.is_file() or not validate_screendump(path):
+    if "return" not in response:
         raise RuntimeError(f"Installer screenshot validation failed: {path}")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if path.is_file() and validate_screendump(path):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Installer screenshot validation failed: {path}")
 
 
 def wait_for(path: Path, needle: str, timeout: float) -> bool:
