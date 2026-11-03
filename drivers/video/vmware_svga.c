@@ -61,7 +61,6 @@ static int g_probed;
 static int g_active;
 static int g_fifo_ready;
 static int g_cursor_ready;
-static int g_cursor_visible;
 static int g_reg_mmio;
 static unsigned int g_io_index;
 static unsigned int g_io_data;
@@ -393,7 +392,7 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
 
     /* Update primary hardware framebuffer surface so copy_rect_to_lfb uses it */
     g_main_surface.framebuffer_phys = fb_phys;
-    g_main_surface.framebuffer_virt = (uint64_t)(uintptr_t)fb_virt;
+    g_main_surface.framebuffer_virt = (void*)(uintptr_t)fb_virt;
     g_main_surface.width = (uint32_t)width;
     g_main_surface.height = (uint32_t)height;
     g_main_surface.pitch = (uint32_t)pitch;
