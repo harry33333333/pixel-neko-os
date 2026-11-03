@@ -105,6 +105,7 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
     uint8_t boot[512];
     if (block_read(dev, partition_lba, 1, boot) != 0 ||
         memcmp(boot + 3, "EXFAT   ", 8) != 0) {
+        log_printf("[EXFAT] Missing boot signature on %s\n", dev->name);
         return -1;
     }
 
@@ -113,6 +114,8 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
     if (fs->sector_shift < 9 || fs->sector_shift > 12 ||
         fs->cluster_shift > 25 ||
         fs->cluster_shift < fs->sector_shift) {
+        log_printf("[EXFAT] Invalid shift values sector=%u cluster=%u\n",
+                   fs->sector_shift, fs->cluster_shift);
         return -1;
     }
     fs->sector_size = 1u << fs->sector_shift;
@@ -132,6 +135,9 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
     if (!fs->cluster_count || fs->root_cluster < 2 ||
         fs->fat_offset < 24 || !fs->fat_length ||
         fs->cluster_heap_offset >= fs->volume_sectors) {
+        log_printf("[EXFAT] Invalid geometry fat=%u heap=%u count=%u root=%u\n",
+                   fs->fat_offset, fs->cluster_heap_offset,
+                   fs->cluster_count, fs->root_cluster);
         return -1;
     }
     if (!verify_boot_region(fs, partition_lba)) {
@@ -145,10 +151,14 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
     uint8_t fat_sector[512];
     if (block_read(dev, partition_lba + fs->fat_offset, 1,
                    fat_sector) != 0) {
+        log_printf("[EXFAT] Failed to read FAT\n");
         return -1;
     }
     uint64_t root_lba = cluster_lba(fs, fs->root_cluster);
-    if (root_lba == UINT64_MAX) return -1;
+    if (root_lba == UINT64_MAX) {
+        log_printf("[EXFAT] Invalid root cluster %u\n", fs->root_cluster);
+        return -1;
+    }
 
     int chain_guard = 0;
     uint32_t cluster = fs->root_cluster;

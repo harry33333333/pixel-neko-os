@@ -41,8 +41,13 @@ static bool verify_read(vfs_drive_t* drive, const char* name,
     uint8_t buffer[128];
     memset(buffer, 0, sizeof(buffer));
     int length = vfs_read_file(path, buffer, sizeof(buffer) - 1);
-    return length == (int)strlen(expected) &&
-           memcmp(buffer, expected, (size_t)length) == 0;
+    bool matches = length == (int)strlen(expected) &&
+                   memcmp(buffer, expected, (size_t)length) == 0;
+    if (!matches) {
+        log_printf("[P5 ] read mismatch %s: length=%d expected=%u\n",
+                   path, length, (unsigned int)strlen(expected));
+    }
+    return matches;
 }
 
 static bool write_and_verify(vfs_drive_t* drive, const char* name,
@@ -57,8 +62,10 @@ static bool write_and_verify(vfs_drive_t* drive, const char* name,
         path[position++] = name[index];
     }
     path[position] = '\0';
-    if (vfs_write_file(path, (const uint8_t*)text, (unsigned int)strlen(text)) !=
-        VFS_OK) {
+    int result = vfs_write_file(path, (const uint8_t*)text,
+                                (unsigned int)strlen(text));
+    if (result != VFS_OK) {
+        log_printf("[P5 ] write failed %s: result=%d\n", path, result);
         return false;
     }
     return verify_read(drive, name, text);
