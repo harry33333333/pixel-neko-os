@@ -77,8 +77,8 @@ run_mode() {
         -qmp "unix:${qmp},server=on,wait=off" \
         -no-reboot \
         -serial "file:${log}" \
-        "${boot_args[@]}" \
-        "$@" >"${console}" 2>&1 &
+        "$@" \
+        "${boot_args[@]}" >"${console}" 2>&1 &
     local qemu_pid=$!
     set -e
 
