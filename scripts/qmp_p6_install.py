@@ -118,7 +118,7 @@ def main() -> int:
     move_relative(
         connection,
         next_x - SCREEN_WIDTH // 2,
-        -(next_y - SCREEN_HEIGHT // 2),
+        next_y - SCREEN_HEIGHT // 2,
     )
     click(connection)  # Select partition -> filesystem.
     time.sleep(0.8)
@@ -129,14 +129,14 @@ def main() -> int:
         move_relative(
             connection,
             option_x - next_x,
-            -(option_y - next_y),
+            option_y - next_y,
         )
         click(connection)
         time.sleep(0.5)
         move_relative(
             connection,
             next_x - option_x,
-            option_y - next_y,
+            next_y - option_y,
         )
     click(connection)  # Filesystem -> confirmation.
     time.sleep(0.8)
