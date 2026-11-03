@@ -10,8 +10,9 @@ create_fat_image() {
     local fat_bits="$3"
     local label="$4"
     truncate -s "${size_mb}M" "${image}"
+    local sectors=$((size_mb * 1024 * 1024 / 512 - 2048))
     sfdisk --quiet --label dos "${image}" <<EOF
-start=2048, type=0c, bootable
+start=2048, size=${sectors}, type=0c, bootable
 EOF
     mkfs.fat "-F${fat_bits}" -n "${label}" --offset=2048 "${image}"
 }

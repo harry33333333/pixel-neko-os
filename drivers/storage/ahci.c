@@ -287,7 +287,11 @@ static int ahci_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
                          : ahci_issue(port, AHCI_CMD_READ_DMA_EXT, lba, batch,
                                       NULL, output, batch * port->sector_size,
                                       NULL);
-        if (result != 0) return -1;
+        if (result != 0) {
+            log_printf("[AHCI] Read failed port=%u lba=%llu count=%u\n",
+                       port->index, (unsigned long long)lba, batch);
+            return -1;
+        }
         output += batch * port->sector_size;
         lba += batch;
         count -= batch;
