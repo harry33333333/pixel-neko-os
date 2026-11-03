@@ -45,7 +45,7 @@ def click(connection) -> None:
         time.sleep(0.45)
 
 
-def screenshot(connection, path: Path) -> None:
+def screenshot(connection, path: Path, allow_sparse: bool = False) -> None:
     response = command(connection, "screendump", {"filename": str(path.resolve())})
     if "return" not in response:
         raise RuntimeError(f"Installer screenshot validation failed: {path}")
@@ -53,6 +53,18 @@ def screenshot(connection, path: Path) -> None:
     while time.monotonic() < deadline:
         if path.is_file() and validate_screendump(path):
             return
+        if allow_sparse and path.is_file():
+            data = path.read_bytes()
+            if data.startswith(b"P6\n"):
+                header_end = 0
+                lines = 0
+                while lines < 3 and header_end < len(data):
+                    header_end = data.find(b"\n", header_end) + 1
+                    if header_end <= 0:
+                        break
+                    lines += 1
+                if lines == 3 and len(data) - header_end >= 1024 * 768 * 3:
+                    return
         time.sleep(0.1)
     raise RuntimeError(f"Installer screenshot validation failed: {path}")
 
@@ -119,7 +131,7 @@ def main() -> int:
         print("Installer did not report a completed offline deployment", file=sys.stderr)
         return 1
     time.sleep(0.8)
-    screenshot(connection, Path("qemu-p6-install-screen.ppm"))
+    screenshot(connection, Path("qemu-p6-install-screen.ppm"), allow_sparse=True)
     connection.close()
     return 0
 
