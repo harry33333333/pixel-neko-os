@@ -1,5 +1,5 @@
 #include "wallpaper.h"
-#include "mm.h"
+#include "ui_memory.h"
 
 static int g_wp_active = 0;
 static wallpaper_mode_t g_wp_mode = WP_MODE_FILL;

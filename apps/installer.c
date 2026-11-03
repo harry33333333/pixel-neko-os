@@ -5,7 +5,7 @@
 #include "fat.h"
 #include "blkdev.h"
 #include "part.h"
-#include "mm.h"
+#include "ui_memory.h"
 #include "power.h"
 #include "grldr_boot_bins.h"
 

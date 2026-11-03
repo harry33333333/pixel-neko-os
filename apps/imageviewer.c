@@ -3,7 +3,7 @@
 #include "wallpaper.h"
 #include "font.h"
 #include "wm.h"
-#include "mm.h"
+#include "ui_memory.h"
 #include "vfs.h"
 #include "speaker.h"
 #include "settings.h"

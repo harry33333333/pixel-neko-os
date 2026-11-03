@@ -1,5 +1,5 @@
 #include "image_dec.h"
-#include "mm.h"
+#include "ui_memory.h"
 #include "vfs.h"
 
 // -------------------------------------------------------------
