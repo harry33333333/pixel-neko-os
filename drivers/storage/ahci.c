@@ -426,16 +426,28 @@ void ahci_init(void) {
 
     uint32_t ghc = ahci_read(&g_ahci, AHCI_GHC);
     ahci_write(&g_ahci, AHCI_GHC, ghc | AHCI_GHC_AE);
-    ahci_write(&g_ahci, AHCI_GHC, ghc | AHCI_GHC_AE | AHCI_GHC_HR);
-    for (int timeout = 0; timeout < 1000; timeout++) {
-        ghc = ahci_read(&g_ahci, AHCI_GHC);
-        if (!(ghc & AHCI_GHC_HR)) break;
-        usb_delay_ms(1);
-    }
-    ahci_write(&g_ahci, AHCI_GHC,
-               ahci_read(&g_ahci, AHCI_GHC) | AHCI_GHC_AE);
-    ahci_write(&g_ahci, AHCI_IS, 0xFFFFFFFFu);
     g_ahci.implemented_ports = ahci_read(&g_ahci, AHCI_PI);
+    bool link_ready = false;
+    for (uint8_t index = 0; index < AHCI_MAX_PORTS; index++) {
+        if (!(g_ahci.implemented_ports & (1u << index))) continue;
+        uint32_t ssts = ahci_read(
+            &g_ahci, AHCI_PORT_BASE + index * AHCI_PORT_STRIDE + AHCI_PX_SSTS);
+        if ((ssts & AHCI_PORT_SSTS_DET) == 3) {
+            link_ready = true;
+            break;
+        }
+    }
+    if (!link_ready) {
+        ahci_write(&g_ahci, AHCI_GHC, ghc | AHCI_GHC_AE | AHCI_GHC_HR);
+        for (int timeout = 0; timeout < 1000; timeout++) {
+            ghc = ahci_read(&g_ahci, AHCI_GHC);
+            if (!(ghc & AHCI_GHC_HR)) break;
+            usb_delay_ms(1);
+        }
+        ahci_write(&g_ahci, AHCI_GHC,
+                   ahci_read(&g_ahci, AHCI_GHC) | AHCI_GHC_AE);
+    }
+    ahci_write(&g_ahci, AHCI_IS, 0xFFFFFFFFu);
     log_printf("[AHCI] Controller %04x:%04x version=%x ports=0x%x\n",
                pci->vendor, pci->device, ahci_read(&g_ahci, AHCI_VS),
                g_ahci.implemented_ports);
