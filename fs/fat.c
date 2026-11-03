@@ -1030,7 +1030,10 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
     if (!found) return -1;
     log_printf("[FAT ] LFN slots reserved for %s\n", long_name);
 
-    unsigned char checksum = calc_lfn_checksum(short_name);
+    unsigned char short_name_11[11];
+    memcpy(short_name_11, short_name, 8);
+    memcpy(short_name_11 + 8, short_ext, 3);
+    unsigned char checksum = calc_lfn_checksum(short_name_11);
     int physical = 0;
     for (int sequence = lfn_entries; sequence >= 1; sequence--) {
         unsigned char entry[32];
