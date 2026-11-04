@@ -50,6 +50,7 @@
 #define USB_DT_INTERFACE  0x04U
 #define USB_DT_ENDPOINT   0x05U
 #define USB_DT_BOS        0x0FU
+#define USB_DT_SS_ENDPOINT_COMPANION 0x30U
 #define USB_DT_HID        0x21U
 #define USB_DT_REPORT     0x22U
 #define USB_DT_HUB        0x29U
@@ -136,6 +137,8 @@ typedef struct {
     uint8_t interface_class;
     uint8_t interface_subclass;
     uint8_t interface_protocol;
+    uint8_t max_burst;
+    uint16_t bytes_per_interval;
     uint16_t hid_report_desc_len;
     void* hcd_priv;
 } usb_endpoint_t;
@@ -185,7 +188,7 @@ struct usb_device {
     uint8_t interface_protocol;
     uint8_t endpoint_count;
     uint8_t configuration_value;
-    uint16_t route;
+    uint32_t route;
     bool is_hub;
     uint8_t hub_port_count;
     uint16_t hub_ports_seen;

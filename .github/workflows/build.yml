@@ -2,20 +2,10 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "beta-v26A180b" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
-    inputs:
-      qemu_modes:
-        description: "Comma-separated QEMU modes or 'all'"
-        required: false
-        default: "all"
-      run_acpi_s5_test:
-        description: "Build ACPI S5 test ISOs and verify both shutdown paths"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: write
@@ -30,11 +20,11 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Install dependencies
+    - name: Install build dependencies
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -47,25 +37,13 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A180a"
+          VERSION="26A180b"
         fi
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-        echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+        echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
         nm -n bin/kernel.elf > kernel-symbols.txt
-        # Create source archive asset
         git archive --format=zip --output="pixel_neko_source_${VERSION}.zip" HEAD
-
-    - name: Build Diagnostics and Summary
-      if: always()
-      run: |
-        if [ -f make.log ]; then
-          echo "=== MAKE.LOG CONSOLE OUTPUT ==="
-          cat make.log
-          echo "### Build Log Summary" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 120 make.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
+        sha256sum "pixel-neko-os_${VERSION}.iso" > "pixel-neko-os_${VERSION}.iso.sha256"
 
     - name: Upload Build Log Artifact
       if: always()
@@ -75,103 +53,59 @@ jobs:
         path: make.log
         if-no-files-found: ignore
 
-    - name: Upload Debug Kernel Artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: debug-kernel
-        path: |
-          bin/kernel.elf
-          kernel-symbols.txt
-        if-no-files-found: ignore
-
-    - name: ACPI S5 uACPI and Fallback Test
-      if: success() && github.event_name == 'workflow_dispatch' && inputs.run_acpi_s5_test
-      run: bash scripts/acpi_s5_test.sh
-
-    - name: Upload ACPI S5 Logs
-      if: always() && github.event_name == 'workflow_dispatch' && inputs.run_acpi_s5_test
-      uses: actions/upload-artifact@v4
-      with:
-        name: acpi-s5-test-logs
-        path: |
-          qemu-acpi-*-serial.log
-          qemu-acpi-*-console.log
-        if-no-files-found: ignore
-
     - name: Upload Bootable ISO Artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: pixel-neko-os-iso
-        path: pixel-neko-os*.iso
+        path: |
+          pixel-neko-os_${{ env.VERSION }}.iso
+          pixel-neko-os_${{ env.VERSION }}.iso.sha256
+        if-no-files-found: error
+
+    - name: Upload Source and Debug Symbols Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pixel-neko-source-and-symbols
+        path: |
+          pixel_neko_source_${{ env.VERSION }}.zip
+          kernel-symbols.txt
         if-no-files-found: error
 
     - name: Publish GitHub Pre-release
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      if: >-
+        success() && github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' ||
+         github.ref == 'refs/heads/master' ||
+         github.ref == 'refs/heads/beta-v26A180b')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko - ACPI S5 Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (USB 3.x Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: P7.2 ACPI S5 beta. This build integrates uACPI 7.0.0 namespace evaluation, a validated AML `_S5_` fallback parser and FADT Generic Address Structure shutdown for both I/O and MMIO PM1 control registers.
+          > **Pre-release**: broad USB 3.x host-controller compatibility work.
 
-          ### 📦 Release Assets
-          - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
-          - **Source Code Archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
+          ### USB 3.x fixes
+          - SuperSpeed and SuperSpeed+ protocol speed IDs are accepted, including 10/20 Gb/s links.
+          - xHCI port power, connect debounce, reset completion and warm-reset fallback follow the controller link state instead of fixed emulator timing.
+          - USB 3.x Endpoint Companion data supplies MaxBurst and ESIT payload values to endpoint contexts.
+          - Larger xHCI slot, root-port and DMA-ring capacity supports multi-hub and multi-device topologies.
+          - BIOS ownership handoff is bounded and non-destructive; Intel legacy routing updates only masked routes.
+          - Malformed or empty descriptors are rejected instead of being exposed as valid devices.
+
+          ### Release Assets
+          - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
+          - **ISO SHA-256**: `pixel-neko-os_${{ env.VERSION }}.iso.sha256`
+          - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          ### 🚀 Running the ISO
-          #### 1. UEFI Mode (Recommended for modern hardware)
-          ```bash
-          qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_${{ env.VERSION }}.iso -m 512M -serial stdio
-          ```
-          #### 2. Legacy BIOS Mode (El Torito Hybrid MBR)
-          ```bash
-          qemu-system-x86_64 -cdrom pixel-neko-os_${{ env.VERSION }}.iso -m 512M -serial stdio -boot d
-          ```
-          #### 3. VMware / VirtualBox
-          Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
-
-          ### ACPI S5 Highlights
-          - **uACPI namespace**: full DSDT/SSDT load, namespace initialization and `_S5_` package evaluation.
-          - **Safe fallback**: AML pattern matching validates the Package encoding before extracting `SLP_TYPa` and `SLP_TYPb`.
-          - **FADT GAS**: supports System I/O and System Memory PM1 control blocks, bit offset, bit width and access width.
-          - **Safety policy**: blind guessed SLP_TYP values and fixed emulator power-off ports were removed; unvalidated hardware writes are refused.
-          - **Focused validation**: QEMU verifies both uACPI S5 and fallback S5 with a clean ACPI power-off, plus an in-kernel MMIO GAS register test.
-          - **Physical hardware**: local verification is intentionally left to the maintainer before this beta is merged into `main`.
-
-          ### P6 Desktop and Installer Highlights
-          - **Classic desktop**: menu bar, Neko branding, wallpaper, 3D window chrome, splash animation, cursor and all nine built-in applications.
-          - **Boot modes**: Live Desktop, Graphical Installer, Safe Graphics Live and Safe Graphics Installer.
-          - **Safe install target**: existing AHCI/IDE GPT or MBR partitions only; no automatic repartitioning.
-          - **Filesystem flow**: FAT32 by default, FAT16 for compatible small targets, then recursive payload release and read-back verification.
-          - **Offline boot**: UEFI `EFI/BOOT/BOOTX64.EFI` plus native Limine BIOS Stage 1/Stage 2 embedding for GPT and MBR disks.
-          - **Acceptance**: CI installs into separate GPT and MBR disks, removes the ISO, then verifies UEFI GPT, BIOS GPT and BIOS MBR standalone boots.
-
-          ### P4b Architecture Highlights
-          - **USB 1.1**: UHCI I/O-port frame scheduling and OHCI HCCA/ED/TD control and interrupt transfers.
-          - **USB 2.0**: EHCI asynchronous/periodic queues, BIOS ownership handoff, port ownership and asynchronous-advance teardown.
-          - **USB 3.0**: Native xHCI command/event/transfer rings, DCBAA, Slot/Endpoint Contexts and interrupt endpoints.
-          - **Hub & HID**: Hub power/debounce/reset/recovery, downstream enumeration, Boot and generic Report Protocol keyboard/mouse parsing, Report IDs, wheels and absolute pointer handling.
-          - **Hotplug & Recovery**: Runtime attach/detach, unified input delivery, controller-specific device teardown and PS/2 fallback.
-          - **Hardware Compatibility**: PIT-calibrated USB delays, BIOS ownership hand-off, EHCI/OHCI short-packet accounting and exact physical DMA addresses.
-          - **Boot Paths**: Legacy UHCI and SuperSpeed xHCI USB-storage boot, UEFI/BIOS optical boot, generic non-Boot HID, hub/hotplug and framebuffer screenshot validation.
-          - **Runtime Self-test**: QEMU validates eight hardware-oriented scenarios on every release.
-          - **Permissive Licensing**: 100% MIT / BSD-2-Clause / CC0 clean code.
-
-          ### P5 Storage Highlights
-          - **Block Devices**: 64-bit block abstraction for AHCI SATA, Legacy IDE/ATAPI and USB Bulk-Only Transport.
-          - **Partitions**: MBR primary/logical and GPT entry parsing.
-          - **Filesystems**: FAT12/16/32 with long names, native exFAT with bitmap/up-case metadata parsing, and ISO9660/Joliet.
-          - **Formatting**: FAT16 and FAT32 VBR/BPB, dual FAT initialization, FSInfo and root-cluster formatting.
-          - **Drive Mapping**: A:/B: floppy, C: local FAT system partition, D: installation optical media and E: removable exFAT.
-          - **Runtime Self-test**: Validated FAT/exFAT reads and writes, FAT16/FAT32 format operations, AHCI ATAPI and xHCI USB storage.
-        draft: false
+          This revision is published from the beta branch for physical-machine validation and is not merged into `main`.
         prerelease: true
         make_latest: false
         files: |
           pixel-neko-os_${{ env.VERSION }}.iso
-          pixel_neko_source_*.zip
+          pixel-neko-os_${{ env.VERSION }}.iso.sha256
+          pixel_neko_source_${{ env.VERSION }}.zip

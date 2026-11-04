@@ -237,6 +237,7 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
     uint8_t cur_if_proto = device_protocol;
     uint16_t cur_hid_report_len = 0;
     bool have_interface = false;
+    usb_endpoint_t* current_endpoint = NULL;
 
     while (offset + 2 <= length) {
         uint8_t item_length = buffer[offset];
@@ -253,6 +254,7 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
             cur_if_proto = interface->bInterfaceProtocol;
             cur_hid_report_len = 0;
             have_interface = true;
+            current_endpoint = NULL;
 
             if (cur_if_class == 0 && device_class) {
                 cur_if_class = device_class;
@@ -312,6 +314,13 @@ static void parse_configuration(usb_device_t* dev, const uint8_t* buffer,
             endpoint->interface_subclass = cur_if_subclass;
             endpoint->interface_protocol = cur_if_proto;
             endpoint->hid_report_desc_len = cur_hid_report_len;
+            current_endpoint = endpoint;
+        } else if (item_type == USB_DT_SS_ENDPOINT_COMPANION &&
+                   item_length >= 6 && current_endpoint) {
+            current_endpoint->max_burst = buffer[offset + 2] & 0x0Fu;
+            current_endpoint->bytes_per_interval =
+                (uint16_t)buffer[offset + 4] |
+                ((uint16_t)buffer[offset + 5] << 8);
         }
         offset += item_length;
     }
@@ -351,8 +360,11 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         dev->parent_hub_address = parent_hub->address;
         dev->parent_port = port;
         dev->hub_depth = (uint8_t)(parent_hub->hub_depth + 1);
-        dev->route = (uint16_t)(parent_hub->route |
-                     ((uint16_t)(port & 0x0F) << ((parent_hub->hub_depth > 3 ? 3 : parent_hub->hub_depth) * 4)));
+        uint32_t route_shift =
+            (uint32_t)(parent_hub->hub_depth > 4 ? 4 :
+                       parent_hub->hub_depth) * 4u;
+        dev->route = parent_hub->route |
+                     ((uint32_t)(port & 0x0Fu) << route_shift);
         if (speed < USB_SPEED_HIGH) {
             if (parent_hub->speed == USB_SPEED_HIGH) {
                 dev->hs_hub_address = parent_hub->address;
@@ -373,7 +385,13 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
             USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
             USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE << 8, 0,
             &descriptor, 8);
-        if (result >= 8) break;
+        if (result >= 8 &&
+            descriptor.bLength >= 8 &&
+            descriptor.bDescriptorType == USB_DT_DEVICE &&
+            descriptor.bMaxPacketSize0 != 0) {
+            break;
+        }
+        result = -1;
         usb_delay_ms(10);
     }
     if (result < 8) {
@@ -419,39 +437,58 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
         USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE << 8, 0,
         &descriptor, sizeof(descriptor));
-    if (result >= (int)sizeof(descriptor) &&
-        descriptor.bLength >= sizeof(descriptor)) {
-        dev->vendor = descriptor.idVendor;
-        dev->product = descriptor.idProduct;
-        dev->class_code = descriptor.bDeviceClass;
-        dev->subclass = descriptor.bDeviceSubClass;
-        dev->protocol = descriptor.bDeviceProtocol;
+    if (result < (int)sizeof(descriptor) ||
+        descriptor.bLength < sizeof(descriptor) ||
+        descriptor.bDescriptorType != USB_DT_DEVICE) {
+        log_printf("[USB ] Malformed device descriptor on port %u (%d)\n",
+                   port, result);
+        usb_release_device(dev);
+        return -1;
     }
+    dev->vendor = descriptor.idVendor;
+    dev->product = descriptor.idProduct;
+    dev->class_code = descriptor.bDeviceClass;
+    dev->subclass = descriptor.bDeviceSubClass;
+    dev->protocol = descriptor.bDeviceProtocol;
 
     uint8_t config_buffer[1024];
     memset(config_buffer, 0, sizeof(config_buffer));
+    bool configuration_valid = false;
     result = usb_control_msg(
         dev,
         USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
         USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG << 8, 0,
         config_buffer, 9);
-    if (result >= 9) {
+    if (result >= 9 &&
+        config_buffer[0] >= 9 &&
+        config_buffer[1] == USB_DT_CONFIG) {
         usb_config_desc_t* config = (usb_config_desc_t*)config_buffer;
         uint16_t total = config->wTotalLength;
-        if (total < 9) total = 9;
-        if (total > sizeof(config_buffer)) total = sizeof(config_buffer);
-        dev->configuration_value = config->bConfigurationValue;
-        result = usb_control_msg(
-            dev,
-            USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
-            USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG << 8, 0,
-            config_buffer, total);
-        if (result >= 9) {
-            parse_configuration(dev, config_buffer, result);
+        if (total >= 9 && config->bConfigurationValue != 0) {
+            if (total > sizeof(config_buffer)) total = sizeof(config_buffer);
+            dev->configuration_value = config->bConfigurationValue;
+            result = usb_control_msg(
+                dev,
+                USB_DIR_IN | USB_RT_STANDARD | USB_RT_DEVICE,
+                USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG << 8, 0,
+                config_buffer, total);
+            if (result >= 9 &&
+                config_buffer[0] >= 9 &&
+                config_buffer[1] == USB_DT_CONFIG) {
+                parse_configuration(dev, config_buffer, result);
+                configuration_valid = true;
+            }
         }
     }
 
-    if (!dev->configuration_value) dev->configuration_value = 1;
+    if (!configuration_valid) {
+        log_printf("[USB ] Configuration descriptor unavailable on port %u "
+                   "(%d, total=%u)\n", port, result,
+                   (unsigned)((uint16_t)config_buffer[2] |
+                              ((uint16_t)config_buffer[3] << 8)));
+        usb_release_device(dev);
+        return -1;
+    }
     result = usb_control_msg(
         dev,
         USB_DIR_OUT | USB_RT_STANDARD | USB_RT_DEVICE,
