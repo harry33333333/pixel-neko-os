@@ -26,6 +26,27 @@ The mount and drive layer contains:
 | E: | Removable exFAT USB volume |
 | F: onward | Additional local or removable volumes |
 
+## Safety & Initialization Policy
+
+To safeguard user data against accidental data loss, raw unpartitioned or
+uninitialized disks are strictly prohibited from being silently formatted or
+partitioned by the kernel. When an uninitialized storage device is detected:
+
+- The drive is flagged in the kernel storage table (`g_uninit_disk_dev`).
+- Auto-partitioning routines are bypassed.
+- An interactive modal confirmation dialog is presented on the desktop window
+  manager, prompting the user for explicit confirmation before any destructive
+  partition table creation or formatting takes place.
+
+## Directory Traversal & VFS Navigation
+
+Path resolution supports full multi-level navigation across FAT12/16/32, exFAT
+and ISO9660:
+- Folder double-click navigation in File Manager properly enters subdirectories
+  without remaining at the parent level.
+- Up-directory traversal correctly parses canonical directory parent entries
+  (`..`) back to root or drive roots.
+
 ## Controllers
 
 AHCI uses a command list, received-FIS area and 64-bit PRDT DMA. The driver

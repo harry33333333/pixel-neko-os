@@ -33,8 +33,15 @@ absolute X/Y axes, and wheel usages.
 Hub state follows:
 
 ```text
-connected -> debounce (100 ms) -> reset -> recovery -> enumerate
+connected -> debounce (20 ms) -> port reset -> wait clear -> recovery (20 ms) -> verify HUB_PORT_ENABLE -> speed detect -> enumerate
 ```
+
+- **Port Enable Validation**: Following reset recovery, the hub driver strictly verifies `HUB_PORT_ENABLE` (bit 1). If reset signaling timed out or failed to enable the port, enumeration is aborted and scheduled for retry backoff, preventing bus lockups and false "Port enabled" misjudgments.
+- **xHCI Modern Chipset Compatibility**:
+  - Root hub ports unconditionally issue Port Reset (PR) regardless of whether Port Enabled/Disabled (PED) was pre-asserted by UEFI/BIOS. This guarantees that devices attached at boot transition out of the BIOS Address state back to Default Address 0.
+  - Modern Intel chipsets (such as 600-series / H610) are shielded from legacy Panther Point / Lynx Point USB routing register writes (`0xD0-0xDC`), avoiding configuration space corruption.
+  - Per-port retry tracking (`port_retry`) allows slow-starting devices to debounce and enumerate reliably across multiple poll cycles.
+  - DMA command and event ring buffers are explicitly synchronized (`dma_sync_for_device`) prior to ring pointer registration.
 
 Hub status-change endpoints are polled when available, with a bounded
 GET_STATUS fallback. Root and hub-port removal recursively releases child
