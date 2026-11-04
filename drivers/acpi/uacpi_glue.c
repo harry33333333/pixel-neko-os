@@ -69,13 +69,13 @@ void* uacpi_kernel_map(uacpi_phys_addr address, uacpi_size length) {
     pagetable_t pml4 = vmm_get_kernel_pml4();
     if (!pml4) return UACPI_MAP_FAILED;
     for (uint64_t page = aligned; page < end; page += PAGE_SIZE) {
-        uint64_t virt = phys_to_virt(page);
+        uint64_t virt = (uint64_t)(uintptr_t)phys_to_virt(page);
         if (!vmm_map_page(pml4, virt, page,
                           PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_NX)) {
             return UACPI_MAP_FAILED;
         }
     }
-    return (void*)(uintptr_t)(phys_to_virt(aligned) + offset);
+    return (uint8_t*)phys_to_virt(aligned) + offset;
 }
 
 void uacpi_kernel_unmap(void* address, uacpi_size length) {
