@@ -6,6 +6,8 @@
 #include "usb_core.h"
 #include "ui_compat.h"
 
+extern void audio_poll(void);
+
 static thread_t* g_thread_list = NULL;
 static thread_t* g_current_thread = NULL;
 static thread_t* g_idle_thread = NULL;
@@ -171,6 +173,7 @@ void scheduler_idle_wait(void) {
 void scheduler_idle_entry(void) {
     for (;;) {
         usb_poll();
+        audio_poll();
         ui_desktop_poll();
         scheduler_idle_wait();
     }

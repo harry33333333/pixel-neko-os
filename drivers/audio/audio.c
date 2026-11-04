@@ -18,7 +18,8 @@
 #define DEC_FLAC 2
 #define DEC_MP3  3
 
-#define PCM_QUEUE_SIZE          65536
+#define PCM_QUEUE_SIZE          262144
+#define PCM_QUEUE_SAMPLES       (PCM_QUEUE_SIZE / sizeof(short))
 #define AUDIO_DMA_HALF_BYTES    32768
 #define AUDIO_DMA_BUFFER_BYTES  65536
 
@@ -318,14 +319,16 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
         unsigned int space_frames = (PCM_QUEUE_SIZE - g_queue_bytes) / 4;
         unsigned int to_copy =
             (sample_count < space_frames) ? sample_count : space_frames;
-        for (unsigned int i = 0; i < to_copy; i++) {
-            unsigned int w_idx = g_queue_write_idx;
-            g_pcm_queue[w_idx] = src_s16[i * 2];
-            g_pcm_queue[w_idx + 1] = src_s16[i * 2 + 1];
-            g_queue_write_idx =
-                (w_idx + 2) % (PCM_QUEUE_SIZE / sizeof(short));
-            g_queue_bytes += 4;
+        unsigned int samples_to_copy = to_copy * 2;
+        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_write_idx;
+        if (first_chunk > samples_to_copy) first_chunk = samples_to_copy;
+        memcpy(&g_pcm_queue[g_queue_write_idx], src_s16, first_chunk * sizeof(short));
+        if (samples_to_copy > first_chunk) {
+            memcpy(&g_pcm_queue[0], &src_s16[first_chunk],
+                   (samples_to_copy - first_chunk) * sizeof(short));
         }
+        g_queue_write_idx = (g_queue_write_idx + samples_to_copy) & (PCM_QUEUE_SAMPLES - 1);
+        g_queue_bytes += to_copy * 4;
         return (int)to_copy;
     }
 
@@ -343,8 +346,7 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
             unsigned int w_idx = g_queue_write_idx;
             g_pcm_queue[w_idx] = l;
             g_pcm_queue[w_idx + 1] = r;
-            g_queue_write_idx =
-                (w_idx + 2) % (PCM_QUEUE_SIZE / sizeof(short));
+            g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes += 4;
         }
         return (int)(to_copy * 2);
@@ -366,8 +368,7 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
             unsigned int w_idx = g_queue_write_idx;
             g_pcm_queue[w_idx] = (short)(sum_l >> 2);
             g_pcm_queue[w_idx + 1] = (short)(sum_r >> 2);
-            g_queue_write_idx =
-                (w_idx + 2) % (PCM_QUEUE_SIZE / sizeof(short));
+            g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes += 4;
         }
         return (int)(to_copy * 4);
@@ -417,7 +418,7 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
         unsigned int w_idx = g_queue_write_idx;
         g_pcm_queue[w_idx] = s16_l;
         g_pcm_queue[w_idx + 1] = s16_r;
-        g_queue_write_idx = (w_idx + 2) % (PCM_QUEUE_SIZE / sizeof(short));
+        g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes += 4;
         produced_frames++;
     }
@@ -559,11 +560,14 @@ int audio_play_file(const char* filepath) {
     if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-        for (unsigned int i = 0; i < samples_needed; i++) {
-            dma_copy_buf[i] = g_pcm_queue[g_queue_read_idx];
-            g_queue_read_idx =
-                (g_queue_read_idx + 1) % (PCM_QUEUE_SIZE / sizeof(short));
+        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+        if (first_chunk > samples_needed) first_chunk = samples_needed;
+        memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+        if (samples_needed > first_chunk) {
+            memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
+                   (samples_needed - first_chunk) * sizeof(short));
         }
+        g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
         if (g_active_driver) {
             g_active_driver->write_half(0, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
@@ -595,16 +599,44 @@ int audio_play_file(const char* filepath) {
     }
 
     if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
-        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)];
+        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-        for (unsigned int i = 0; i < samples_needed; i++) {
-            dma_copy_buf[i] = g_pcm_queue[g_queue_read_idx];
-            g_queue_read_idx =
-                (g_queue_read_idx + 1) % (PCM_QUEUE_SIZE / sizeof(short));
+        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+        if (first_chunk > samples_needed) first_chunk = samples_needed;
+        memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+        if (samples_needed > first_chunk) {
+            memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
+                   (samples_needed - first_chunk) * sizeof(short));
         }
+        g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
         if (g_active_driver) {
             g_active_driver->write_half(1, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
+        }
+    }
+
+    /* Pre-decode into g_pcm_queue so DMA starts with plenty of cushion */
+    for (int pre = 0;
+         pre < 64 && g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2) && !g_eof_reached;
+         pre++) {
+        int samples_read = 0;
+        if (g_active_dec == DEC_WAV) {
+            samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
+        } else if (g_active_dec == DEC_FLAC) {
+            samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
+        } else if (g_active_dec == DEC_MP3) {
+            samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        }
+
+        if (samples_read > 0) {
+            audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
+                               g_audio_info.sample_rate,
+                               g_audio_info.channels,
+                               g_audio_info.bit_depth,
+                               g_audio_info.is_float);
+        } else if (samples_read < 0) {
+            g_eof_reached = 1;
+            break;
         }
     }
 
@@ -775,9 +807,10 @@ void audio_poll(void) {
     if (!audio_has_hardware() || !g_active_driver) return;
 
     int dec_count = 0;
+    int max_dec = (g_queue_bytes < AUDIO_DMA_HALF_BYTES * 2) ? 24 : 12;
     static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
-    while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 16384) &&
-           dec_count < 6) {
+    while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
+           dec_count < max_dec) {
         dec_count++;
         int samples_read = 0;
 
@@ -808,27 +841,33 @@ void audio_poll(void) {
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
             unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-            for (unsigned int i = 0; i < samples_needed; i++) {
-                dma_copy_buf[i] = g_pcm_queue[g_queue_read_idx];
-                g_queue_read_idx =
-                    (g_queue_read_idx + 1) % (PCM_QUEUE_SIZE / sizeof(short));
+            unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+            if (first_chunk > samples_needed) first_chunk = samples_needed;
+            memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+            if (samples_needed > first_chunk) {
+                memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
+                       (samples_needed - first_chunk) * sizeof(short));
             }
+            g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
             g_active_driver->write_half(
                 half_needed, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
             g_total_frames_played += (AUDIO_DMA_HALF_BYTES / 4);
         } else if (g_queue_bytes > 0) {
             unsigned int avail_samples = g_queue_bytes / sizeof(short);
-            for (unsigned int i = 0; i < avail_samples; i++) {
-                dma_copy_buf[i] = g_pcm_queue[g_queue_read_idx];
-                g_queue_read_idx =
-                    (g_queue_read_idx + 1) % (PCM_QUEUE_SIZE / sizeof(short));
+            unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+            if (first_chunk > avail_samples) first_chunk = avail_samples;
+            memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+            if (avail_samples > first_chunk) {
+                memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
+                       (avail_samples - first_chunk) * sizeof(short));
             }
             for (unsigned int i = avail_samples;
                  i < AUDIO_DMA_HALF_BYTES / sizeof(short);
                  i++) {
                 dma_copy_buf[i] = 0;
             }
+            g_queue_read_idx = (g_queue_read_idx + avail_samples) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes = 0;
             g_active_driver->write_half(
                 half_needed, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
@@ -849,8 +888,8 @@ void audio_poll(void) {
     }
 
     unsigned int frame = g_active_driver->get_dma_frame_pos();
-    unsigned int sample_offset =
-        (frame * 2) % (AUDIO_DMA_BUFFER_BYTES / sizeof(short));
+    unsigned int total_dma_samples = AUDIO_DMA_BUFFER_BYTES / sizeof(short);
+    unsigned int sample_offset = (frame * 2) % total_dma_samples;
     const short* dma_samples = (const short*)g_active_driver->get_dma_buffer();
     if (dma_samples) {
         int peak_l = 0, peak_r = 0;
@@ -858,10 +897,10 @@ void audio_poll(void) {
 
         for (int i = 0; i < 128; i++) {
             unsigned int idx =
-                (sample_offset + (unsigned int)(i * 2)) %
-                (AUDIO_DMA_BUFFER_BYTES / sizeof(short));
+                (sample_offset + (unsigned int)(i * 2)) % total_dma_samples;
+            unsigned int idx_r = (idx + 1) % total_dma_samples;
             int sl = dma_samples[idx];
-            int sr = dma_samples[idx + 1];
+            int sr = dma_samples[idx_r];
             if (sl < 0) sl = -sl;
             if (sr < 0) sr = -sr;
             if (sl > peak_l) peak_l = sl;

@@ -510,6 +510,7 @@ void ui_desktop_poll(void) {
 
     if (full_sync) {
         copy_fullscreen_to_lfb(backbuffer);
+        audio_poll();
     } else {
         if (has_drag_box && (box_changed || moved)) {
             ui_sync_drag_box_to_lfb(backbuffer, bx, by, bw, bh);
