@@ -274,63 +274,85 @@ static void boot_screen_xp_init(void) {
     int cx = (int)g_main_surface.width / 2;
     int cy = (int)g_main_surface.height / 2;
 
-    // 1. Draw 4-color modular Windows / Neko emblem (34x34)
-    int em_x = cx - 17;
-    int em_y = cy - 85;
+    // 1. Draw iconic TBMK emblem
+    int lx = cx - 20;
+    int ly = cy - 92;
 
-    uint32_t c_red    = boot_framebuffer_make_color(225, 60, 45);
-    uint32_t c_green  = boot_framebuffer_make_color(60, 185, 45);
-    uint32_t c_blue   = boot_framebuffer_make_color(30, 130, 240);
-    uint32_t c_yellow = boot_framebuffer_make_color(245, 195, 30);
-    uint32_t c_white  = boot_framebuffer_make_color(255, 255, 255);
-    uint32_t c_dgray  = boot_framebuffer_make_color(60, 64, 72);
+    uint32_t c_navy    = boot_framebuffer_make_color(0, 0, 160);     // 1: Dark Blue bar
+    uint32_t c_hiblue  = boot_framebuffer_make_color(50, 120, 240);  // 9: Light Blue highlight
+    uint32_t c_red     = boot_framebuffer_make_color(160, 20, 20);   // 4: Red body
+    uint32_t c_hired   = boot_framebuffer_make_color(240, 50, 50);   // 12: Red highlight
+    uint32_t c_green   = boot_framebuffer_make_color(20, 160, 20);   // 2: Green body
+    uint32_t c_higreen = boot_framebuffer_make_color(50, 220, 50);   // 10: Green highlight
+    uint32_t c_cyan    = boot_framebuffer_make_color(20, 160, 160);  // 3: Cyan body
+    uint32_t c_hicyan  = boot_framebuffer_make_color(50, 220, 220);  // 11: Cyan highlight
+    uint32_t c_mag     = boot_framebuffer_make_color(160, 20, 160);  // 5: Magenta body
+    uint32_t c_himag   = boot_framebuffer_make_color(230, 60, 230);  // 13: Magenta highlight
+    uint32_t c_dgray   = boot_framebuffer_make_color(60, 64, 72);
+    uint32_t c_white   = boot_framebuffer_make_color(255, 255, 255);
 
-    // 4 Quadrants (15x15 each, 2px gap)
-    boot_framebuffer_fill_rect(em_x, em_y, 15, 15, c_red);
-    boot_framebuffer_fill_rect(em_x + 17, em_y, 15, 15, c_green);
-    boot_framebuffer_fill_rect(em_x, em_y + 17, 15, 15, c_blue);
-    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 15, 15, c_yellow);
+    // Dark blue bar (55x15)
+    for (int y = ly + 3; y < ly + 18; y++) {
+        for (int x = lx - 7; x < lx + 48; x++) {
+            boot_framebuffer_putpixel(x, y, c_navy);
+        }
+    }
+    // Top highlight line on blue bar
+    for (int x = lx - 4; x < lx + 45; x++) {
+        boot_framebuffer_putpixel(x, ly + 3, c_hiblue);
+    }
 
-    // Bevel highlights on quadrants
-    boot_framebuffer_fill_rect(em_x, em_y, 15, 1, c_white);
-    boot_framebuffer_fill_rect(em_x, em_y, 1, 15, c_white);
-    boot_framebuffer_fill_rect(em_x + 17, em_y, 15, 1, c_white);
-    boot_framebuffer_fill_rect(em_x + 17, em_y, 1, 15, c_white);
-    boot_framebuffer_fill_rect(em_x, em_y + 17, 15, 1, c_white);
-    boot_framebuffer_fill_rect(em_x, em_y + 17, 1, 15, c_white);
-    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 15, 1, c_white);
-    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 1, 15, c_white);
+    // Red block (12x12)
+    for (int y = ly; y < ly + 12; y++) {
+        for (int x = lx; x < lx + 12; x++) {
+            boot_framebuffer_putpixel(x, y, (y == ly || x == lx) ? c_hired : c_red);
+        }
+    }
 
-    // Center cute Pixel Neko silhouette (12x12 white box with cat face)
-    int cat_x = cx - 6;
-    int cat_y = cy - 85 + 11;
-    boot_framebuffer_fill_rect(cat_x, cat_y, 12, 12, c_white);
-    // Cat ears
-    boot_framebuffer_putpixel(cat_x + 1, cat_y - 1, c_white);
-    boot_framebuffer_putpixel(cat_x + 2, cat_y - 2, c_white);
-    boot_framebuffer_putpixel(cat_x + 9, cat_y - 1, c_white);
-    boot_framebuffer_putpixel(cat_x + 8, cat_y - 2, c_white);
-    // Cat eyes (black)
-    boot_framebuffer_putpixel(cat_x + 3, cat_y + 4, c_black);
-    boot_framebuffer_putpixel(cat_x + 4, cat_y + 4, c_black);
-    boot_framebuffer_putpixel(cat_x + 7, cat_y + 4, c_black);
-    boot_framebuffer_putpixel(cat_x + 8, cat_y + 4, c_black);
-    // Cat nose (red)
-    boot_framebuffer_putpixel(cat_x + 5, cat_y + 7, c_red);
-    boot_framebuffer_putpixel(cat_x + 6, cat_y + 7, c_red);
+    // Green block (12x12)
+    for (int y = ly; y < ly + 12; y++) {
+        for (int x = lx + 10; x < lx + 22; x++) {
+            boot_framebuffer_putpixel(x, y, (y == ly || x == lx + 10) ? c_higreen : c_green);
+        }
+    }
+
+    // Cyan block (12x12)
+    for (int y = ly + 7; y < ly + 19; y++) {
+        for (int x = lx + 19; x < lx + 31; x++) {
+            boot_framebuffer_putpixel(x, y, (y == ly + 7 || x == lx + 19) ? c_hicyan : c_cyan);
+        }
+    }
+
+    // Magenta block (12x12)
+    for (int y = ly + 7; y < ly + 19; y++) {
+        for (int x = lx + 29; x < lx + 41; x++) {
+            boot_framebuffer_putpixel(x, y, (y == ly + 7 || x == lx + 29) ? c_himag : c_mag);
+        }
+    }
+
+    // "TBMK" text in signature 4 colors
+    uint32_t c_txt_t = boot_framebuffer_make_color(60, 130, 255); // Blue
+    uint32_t c_txt_b = boot_framebuffer_make_color(50, 210, 50);  // Green
+    uint32_t c_txt_m = boot_framebuffer_make_color(40, 210, 220); // Cyan
+    uint32_t c_txt_k = boot_framebuffer_make_color(220, 50, 220); // Magenta
+
+    boot_framebuffer_draw_char(lx + 2,  ly + 24, 'T', c_txt_t, c_black);
+    boot_framebuffer_draw_char(lx + 10, ly + 24, 'B', c_txt_b, c_black);
+    boot_framebuffer_draw_char(lx + 18, ly + 24, 'M', c_txt_m, c_black);
+    boot_framebuffer_draw_char(lx + 26, ly + 24, 'K', c_txt_k, c_black);
 
     // 2. Title & Edition Typography
     const char* title = "Pixel Neko OS";
     int title_len = (int)strlen(title);
     int title_x = cx - (title_len * 8) / 2;
-    boot_framebuffer_draw_string(title_x + 1, cy - 42 + 1, title, c_dgray, c_black);
-    boot_framebuffer_draw_string(title_x, cy - 42, title, c_white, c_black);
+    boot_framebuffer_draw_string(title_x + 1, cy - 40 + 1, title, c_dgray, c_black);
+    boot_framebuffer_draw_string(title_x, cy - 40, title, c_white, c_black);
 
     const char* sub = "Snow Neko  ::  64-Bit Edition";
     int sub_len = (int)strlen(sub);
     int sub_x = cx - (sub_len * 8) / 2;
     uint32_t c_sub = boot_framebuffer_make_color(150, 180, 220);
-    boot_framebuffer_draw_string(sub_x, cy - 22, sub, c_sub, c_black);
+    boot_framebuffer_draw_string(sub_x, cy - 20, sub, c_sub, c_black);
 
     // 3. Progress Bar Track (Width 200, Height 16)
     int bar_w = 200;
