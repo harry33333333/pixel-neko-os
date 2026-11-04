@@ -11,6 +11,9 @@
 #define XHCI_RING_SIZE 256
 #define XHCI_EVENT_RING_SIZE 4096
 #define XHCI_ARENA_SIZE (8u * 1024u * 1024u)
+#define XHCI_CONTROL_FAILURE_LIMIT 3
+#define XHCI_PORT_FAILURE_LIMIT 5
+#define XHCI_PORT_RETRY_POLLS 24
 
 #define XHCI_CMD_RUN       (1u << 0)
 #define XHCI_CMD_RESET     (1u << 1)
@@ -92,6 +95,12 @@ typedef struct {
     bool ep_complete[32];
     uint8_t ep_code[32];
     uint32_t ep_residual[32];
+    uint64_t ep_event_parameter[32];
+    uint16_t control_attempts;
+    uint16_t control_failures;
+    uint8_t consecutive_control_failures;
+    uint8_t last_control_completion;
+    bool control_fused;
 } xhci_slot_t;
 
 typedef struct {
@@ -125,8 +134,14 @@ typedef struct {
     dma_buffer_t bulk_staging;
     xhci_slot_t slots[XHCI_MAX_SLOTS];
     uint8_t port_retry[XHCI_MAX_PORTS];
+    uint8_t port_control_failures[XHCI_MAX_PORTS];
+    uint8_t port_enum_failures[XHCI_MAX_PORTS];
     bool port_seen[XHCI_MAX_PORTS];
     bool usb3_port[XHCI_MAX_PORTS];
+    bool port_fused[XHCI_MAX_PORTS];
+    bool port_reset_skipped[XHCI_MAX_PORTS];
+    uint32_t control_failures_total;
+    uint32_t enumeration_failures_total;
 } xhci_controller_t;
 
 static xhci_controller_t g_xhci[XHCI_MAX_CONTROLLERS];
@@ -221,6 +236,7 @@ static void xhci_route_transfer_event(xhci_controller_t* c,
     xhci_slot_t* slot = &c->slots[slot_id - 1];
     slot->ep_code[dci] = (uint8_t)(event->status >> 24);
     slot->ep_residual[dci] = event->status & 0xFFFFFF;
+    slot->ep_event_parameter[dci] = event->parameter;
     slot->ep_complete[dci] = true;
 }
 
@@ -255,14 +271,36 @@ static void xhci_drain_events(xhci_controller_t* c) {
 }
 
 static int xhci_wait_transfer(xhci_controller_t* c, xhci_slot_t* slot,
-                              uint8_t dci, xhci_trb_t* result,
+                              uint8_t dci, uint64_t expected_trb,
+                              xhci_trb_t* result,
                               int timeout_ms) {
+    bool short_packet_seen = false;
+    uint32_t short_packet_residual = 0;
     for (int elapsed = 0; elapsed <= timeout_ms; elapsed++) {
         xhci_drain_events(c);
         if (slot->ep_complete[dci]) {
+            uint8_t code = slot->ep_code[dci];
+            if (expected_trb &&
+                slot->ep_event_parameter[dci] != expected_trb &&
+                (code == 1 || code == 13)) {
+                /*
+                 * IN data stages with ISP can report a short packet before
+                 * the Status Stage.  Only the Status TRB retires the control
+                 * transaction.
+                 */
+                if (code == 13) {
+                    short_packet_seen = true;
+                    short_packet_residual = slot->ep_residual[dci];
+                }
+                slot->ep_complete[dci] = false;
+                continue;
+            }
             if (result) {
-                result->status = (uint32_t)slot->ep_code[dci] << 24 |
-                                 (slot->ep_residual[dci] & 0xFFFFFF);
+                result->parameter = slot->ep_event_parameter[dci];
+                result->status = (uint32_t)code << 24 |
+                                 ((short_packet_seen ?
+                                   short_packet_residual :
+                                   slot->ep_residual[dci]) & 0xFFFFFF);
                 result->control = 0;
             }
             slot->ep_complete[dci] = false;
@@ -303,6 +341,18 @@ static uint8_t xhci_speed_code(uint8_t speed) {
         case USB_SPEED_SUPER: return 4;
         default: return 1;
     }
+}
+
+static uint16_t xhci_initial_ep0_max_packet(const usb_device_t* device) {
+    if (!device) return 8;
+    if (device->speed >= USB_SPEED_SUPER) return 512;
+
+    uint16_t packet = device->max_packet0;
+    if (device->speed == USB_SPEED_LOW) return 8;
+    if (packet == 8 || packet == 16 || packet == 32 || packet == 64) {
+        return packet;
+    }
+    return device->speed >= USB_SPEED_HIGH ? 64 : 8;
 }
 
 /*
@@ -368,6 +418,64 @@ static uint8_t xhci_find_root_port(usb_device_t* device) {
     return device ? device->port : 1;
 }
 
+static uint32_t xhci_slot_root_port(xhci_slot_t* slot) {
+    return slot && slot->device ?
+           (uint32_t)xhci_find_root_port(slot->device) : 0;
+}
+
+static bool xhci_port_is_fused(xhci_controller_t* c,
+                               usb_device_t* device) {
+    if (!c || !device) return true;
+    uint8_t root_port = xhci_find_root_port(device);
+    return root_port != 0 && c->port_fused[root_port - 1];
+}
+
+static void xhci_note_control_success(xhci_controller_t* c,
+                                      xhci_slot_t* slot,
+                                      uint8_t completion) {
+    if (!c || !slot) return;
+    slot->control_attempts++;
+    slot->last_control_completion = completion;
+    slot->consecutive_control_failures = 0;
+    uint32_t port = xhci_slot_root_port(slot);
+    if (port && port <= XHCI_MAX_PORTS) {
+        c->port_control_failures[port - 1] = 0;
+    }
+}
+
+static void xhci_note_control_failure(xhci_controller_t* c,
+                                      xhci_slot_t* slot,
+                                      uint8_t completion) {
+    if (!c || !slot) return;
+    slot->control_attempts++;
+    slot->control_failures++;
+    slot->last_control_completion = completion;
+    if (slot->consecutive_control_failures < UINT8_MAX) {
+        slot->consecutive_control_failures++;
+    }
+    c->control_failures_total++;
+
+    uint32_t port = xhci_slot_root_port(slot);
+    if (port && port <= XHCI_MAX_PORTS) {
+        if (c->port_control_failures[port - 1] < UINT8_MAX) {
+            c->port_control_failures[port - 1]++;
+        }
+        if (c->port_control_failures[port - 1] >=
+            XHCI_CONTROL_FAILURE_LIMIT) {
+            slot->control_fused = true;
+            c->port_fused[port - 1] = true;
+            log_printf("[xHCI] control breaker open: port=%u slot=%u "
+                       "failures=%u last=%u total=%u\n",
+                       port, slot->slot_id,
+                       c->port_control_failures[port - 1],
+                       completion, c->control_failures_total);
+        }
+    } else if (slot->consecutive_control_failures >=
+               XHCI_CONTROL_FAILURE_LIMIT) {
+        slot->control_fused = true;
+    }
+}
+
 static int xhci_enable_slot(xhci_controller_t* c, uint8_t* slot_id) {
     xhci_trb_t event;
     if (xhci_command(c, 0, 0, XHCI_TRB_ENABLE_SLOT << 10, &event) != 0) {
@@ -389,6 +497,11 @@ static int xhci_enable_slot(xhci_controller_t* c, uint8_t* slot_id) {
     slot->ep0_max_packet = 0;
     slot->hub_configured = false;
     slot->device = NULL;
+    slot->control_attempts = 0;
+    slot->control_failures = 0;
+    slot->consecutive_control_failures = 0;
+    slot->last_control_completion = 0xFF;
+    slot->control_fused = false;
     memset(slot->output_context, 0, c->context_size * 32);
     *slot_id = id;
     return 0;
@@ -426,7 +539,7 @@ static void xhci_build_address_context(xhci_controller_t* c,
         }
     }
 
-    uint16_t max_pkt0 = device->max_packet0 ? device->max_packet0 : 8;
+    uint16_t max_pkt0 = xhci_initial_ep0_max_packet(device);
     ep0_dwords[1] = (4u << 3) |
                     ((uint32_t)max_pkt0 << 16) |
                     (3u << 1);
@@ -444,7 +557,7 @@ static int xhci_address_device(xhci_controller_t* c, usb_device_t* device) {
     if (!slot->output_context) return -1;
 
     slot->device = device;
-    slot->ep0_max_packet = device->max_packet0 ? device->max_packet0 : 8;
+    slot->ep0_max_packet = xhci_initial_ep0_max_packet(device);
     xhci_ring_init(c, &slot->ep0_ring);
     xhci_build_address_context(c, slot, device);
     uint8_t* slot_context = c->input_context + c->context_size;
@@ -467,7 +580,8 @@ static int xhci_address_device(xhci_controller_t* c, usb_device_t* device) {
 static void xhci_evaluate_ep0_if_needed(xhci_controller_t* c,
                                         xhci_slot_t* slot,
                                         usb_device_t* device) {
-    if (!device->max_packet0 || device->max_packet0 == slot->ep0_max_packet) {
+    uint16_t target_packet = xhci_initial_ep0_max_packet(device);
+    if (target_packet == slot->ep0_max_packet) {
         return;
     }
     uint32_t size = c->context_size;
@@ -477,19 +591,38 @@ static void xhci_evaluate_ep0_if_needed(xhci_controller_t* c,
     uint8_t* ep0_context = c->input_context + size * 2;
     uint32_t* ep0_dwords = (uint32_t*)ep0_context;
     ep0_dwords[1] = (4u << 3) |
-                    ((uint32_t)device->max_packet0 << 16) |
+                    ((uint32_t)target_packet << 16) |
                     (3u << 1);
     ep0_dwords[4] = 8u;
     if (xhci_command(c, c->input_context_phys, 0,
                      (XHCI_TRB_EVALUATE_CONTEXT << 10) |
                      ((uint32_t)slot->slot_id << 24), NULL) == 0) {
-        slot->ep0_max_packet = device->max_packet0;
+        slot->ep0_max_packet = target_packet;
     }
 }
 
 static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                                const uint8_t* setup, void* data, int length,
                                int direction) {
+    if (!c || !slot || !setup || length < 0 || length > 1024 ||
+        (length > 0 && !data) || slot->control_fused ||
+        xhci_port_is_fused(c, slot->device)) {
+        return -1;
+    }
+
+    /*
+     * A late Transfer Event cannot be correlated with a new transaction.  Drop
+     * the slot and let the next control request create a fresh EP0 ring.
+     */
+    xhci_drain_events(c);
+    if (slot->ep_complete[1]) {
+        slot->ep_complete[1] = false;
+        xhci_note_control_failure(c, slot, 0xFD);
+        log_printf("[xHCI] stale EP0 completion: slot=%u\n", slot->slot_id);
+        xhci_discard_slot(c, slot);
+        return -1;
+    }
+
     uint64_t setup_parameter = 0;
     memcpy(&setup_parameter, setup, 8);
     uint64_t data_phys = 0;
@@ -499,7 +632,12 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
             slot->transfer_buffer = xhci_arena_alloc(c, 1024, 64, &phys);
             slot->transfer_buffer_phys = phys;
         }
-        if (!slot->transfer_buffer) return -1;
+        if (!slot->transfer_buffer) {
+            xhci_note_control_failure(c, slot, 0xFE);
+            log_printf("[xHCI] EP0 staging allocation failed: slot=%u\n",
+                       slot->slot_id);
+            return -1;
+        }
         memset(slot->transfer_buffer, 0, 1024);
         if (direction == USB_DIR_OUT && data) {
             memcpy(slot->transfer_buffer, data, (size_t)length);
@@ -509,38 +647,75 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
 
     uint32_t transfer_type = length > 0 ?
         (direction == USB_DIR_IN ? 3u : 2u) : 0u;
-    xhci_ring_push(c, &slot->ep0_ring, setup_parameter, 8u,
-                   (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
-                   (1u << 6) | (1u << 4));
+
+    /*
+     * Control transfer stages are one implicit TD.  Linux queues Setup and
+     * Data without TRB_CHAIN (bit 4); only the Status TRB carries IOC.  The
+     * previous CHAIN-based layout is tolerated by QEMU but causes some xHCI
+     * implementations to complete the Status stage without moving the IN data.
+     */
+    if (!xhci_ring_push(c, &slot->ep0_ring, setup_parameter, 8u,
+                        (XHCI_TRB_SETUP << 10) | (transfer_type << 16) |
+                        (1u << 6))) {
+        xhci_note_control_failure(c, slot, 0xFE);
+        xhci_discard_slot(c, slot);
+        return -1;
+    }
     if (length > 0) {
-        uint32_t flags = (1u << 4);
+        uint32_t flags = 0;
         if (direction == USB_DIR_IN) flags |= (1u << 16) | (1u << 2);
-        xhci_ring_push(c, &slot->ep0_ring, data_phys,
-                       (uint32_t)(length & 0x1FFFF),
-                       (XHCI_TRB_DATA << 10) | flags);
+        if (!xhci_ring_push(c, &slot->ep0_ring, data_phys,
+                            (uint32_t)(length & 0x1FFFF),
+                            (XHCI_TRB_DATA << 10) | flags)) {
+            xhci_note_control_failure(c, slot, 0xFE);
+            xhci_discard_slot(c, slot);
+            return -1;
+        }
     }
     uint32_t status_flags = (1u << 5);
     if (direction != USB_DIR_IN || length == 0) status_flags |= 1u << 16;
-    xhci_ring_push(c, &slot->ep0_ring, 0, 0,
-                   (XHCI_TRB_STATUS << 10) | status_flags);
+    xhci_trb_t* status_trb = xhci_ring_push(
+        c, &slot->ep0_ring, 0, 0,
+        (XHCI_TRB_STATUS << 10) | status_flags);
+    if (!status_trb) {
+        xhci_note_control_failure(c, slot, 0xFE);
+        xhci_discard_slot(c, slot);
+        return -1;
+    }
+    uint64_t status_trb_phys =
+        slot->ep0_ring.physical_base +
+        (uint64_t)((uint8_t*)status_trb -
+                   (uint8_t*)slot->ep0_ring.virtual_base);
     slot->ep_complete[1] = false;
+    slot->ep_code[1] = 0xFF;
+    slot->ep_residual[1] = 0;
     volatile uint32_t* doorbell = (volatile uint32_t*)
         (c->doorbell + 4u * slot->slot_id);
     *doorbell = 1;
 
     xhci_trb_t event;
-    if (xhci_wait_transfer(c, slot, 1, &event, 500) != 0) {
-        log_printf("[xHCI] control transfer timeout slot=%u\n", slot->slot_id);
+    if (xhci_wait_transfer(c, slot, 1, status_trb_phys,
+                           &event, 500) != 0) {
+        xhci_note_control_failure(c, slot, 0xFF);
+        log_printf("[xHCI] control timeout slot=%u type=%02x req=%02x "
+                   "value=%04x index=%04x len=%d\n",
+                   slot->slot_id, setup[0], setup[1],
+                   (unsigned)(setup[2] | ((uint16_t)setup[3] << 8)),
+                   (unsigned)(setup[4] | ((uint16_t)setup[5] << 8)), length);
         xhci_discard_slot(c, slot);
         return -1;
     }
     uint8_t code = (uint8_t)(event.status >> 24);
     if (code != 1 && code != 13) {
-        log_printf("[xHCI] control completion=%u slot=%u\n",
-                   code, slot->slot_id);
+        xhci_note_control_failure(c, slot, code);
+        log_printf("[xHCI] control completion=%u slot=%u type=%02x "
+                   "req=%02x len=%d residual=%u\n",
+                   code, slot->slot_id, setup[0], setup[1], length,
+                   (unsigned)(event.status & 0xFFFFFFu));
         xhci_discard_slot(c, slot);
         return -1;
     }
+    xhci_note_control_success(c, slot, code);
     if (length > 0 && direction == USB_DIR_IN && data) {
         int residual = (int)(event.status & 0xFFFFFF);
         int actual = length - residual;
@@ -557,10 +732,12 @@ static int xhci_control(usb_hci_t* hci, usb_device_t* device,
                         int length, int direction) {
     xhci_controller_t* c = hci->priv;
     if (!c || !device || !setup || length < 0) return -1;
+    if (xhci_port_is_fused(c, device)) return -1;
     xhci_slot_t* slot = xhci_slot_for_device(c, device);
     if (!slot) {
         if (xhci_address_device(c, device) != 0) return -1;
         slot = device->hcd_priv;
+        if (!slot) return -1;
     } else {
         xhci_evaluate_ep0_if_needed(c, slot, device);
     }
@@ -668,7 +845,7 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
 
     if (slot->ep_pending[dci]) {
         xhci_trb_t event;
-        if (xhci_wait_transfer(c, slot, dci, &event, 0) == 0) {
+        if (xhci_wait_transfer(c, slot, dci, 0, &event, 0) == 0) {
             uint8_t code = (uint8_t)(event.status >> 24);
             slot->ep_pending[dci] = false;
             if (code != 1 && code != 13) {
@@ -798,7 +975,7 @@ static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
     *doorbell = dci;
 
     xhci_trb_t event;
-    if (xhci_wait_transfer(c, slot, dci, &event, 500) != 0) {
+    if (xhci_wait_transfer(c, slot, dci, 0, &event, 500) != 0) {
         log_printf("[xHCI] bulk timeout slot=%u dci=%u length=%d\n",
                    slot->slot_id, dci, length);
         return -1;
@@ -891,7 +1068,7 @@ static uint32_t xhci_port_reset_attempt(xhci_controller_t* c, uint32_t reg,
     for (int elapsed = 0; elapsed < 750; elapsed++) {
         value = xhci_read32(c, reg);
         if (!(value & reset_bit) && (value & XHCI_PORT_CCS) &&
-            (value & XHCI_PORT_PED)) {
+            (value & XHCI_PORT_PED) && XHCI_PORT_PLS_GET(value) == 0) {
             if (++stable >= 2) {
                 usb_delay_ms(10);
                 return xhci_read32(c, reg);
@@ -904,6 +1081,20 @@ static uint32_t xhci_port_reset_attempt(xhci_controller_t* c, uint32_t reg,
     return value;
 }
 
+static uint32_t xhci_port_wait_u0(xhci_controller_t* c, uint32_t reg,
+                                  int timeout_ms) {
+    uint32_t value = xhci_read32(c, reg);
+    for (int elapsed = 0; elapsed < timeout_ms; elapsed++) {
+        if ((value & XHCI_PORT_CCS) && (value & XHCI_PORT_PED) &&
+            XHCI_PORT_PLS_GET(value) == 0) {
+            return value;
+        }
+        usb_delay_ms(1);
+        value = xhci_read32(c, reg);
+    }
+    return value;
+}
+
 static int xhci_port_reset(usb_hci_t* hci, uint8_t port) {
     xhci_controller_t* c = hci->priv;
     if (!c || port == 0 || port > c->max_ports) return USB_SPEED_UNKNOWN;
@@ -912,17 +1103,71 @@ static int xhci_port_reset(usb_hci_t* hci, uint8_t port) {
     if (!(value & XHCI_PORT_CCS)) return USB_SPEED_UNKNOWN;
 
     uint32_t before = value;
-    value = xhci_port_reset_attempt(c, reg, false);
-    if (!(value & XHCI_PORT_PED) &&
-        c->usb3_port[port - 1] &&
-        (XHCI_PORT_SPEED_GET(value) >= 4 ||
-         XHCI_PORT_PLS_GET(value) == 6 ||
-         XHCI_PORT_PLS_GET(value) == 8 ||
-         XHCI_PORT_PLS_GET(value) == 9 ||
-         XHCI_PORT_PLS_GET(value) == 10)) {
-        log_printf("[xHCI] port %u warm reset fallback PORTSC=%08x\n",
-                   port, value);
-        value = xhci_port_reset_attempt(c, reg, true);
+    bool usb3_port = c->usb3_port[port - 1];
+    bool attempted = false;
+    bool warm_attempted = false;
+    bool previous_reset_skipped = c->port_reset_skipped[port - 1];
+    c->port_reset_skipped[port - 1] = false;
+
+    if (usb3_port) {
+        value = xhci_port_wait_u0(c, reg, 100);
+        if ((value & XHCI_PORT_PED) && XHCI_PORT_PLS_GET(value) == 0 &&
+            !previous_reset_skipped) {
+            xhci_port_clear_changes(c, reg, value);
+            c->port_reset_skipped[port - 1] = true;
+            log_printf("[xHCI] port %u USB3 link already in U0; "
+                       "reset skipped\n", port);
+            return xhci_port_speed(value);
+        }
+
+        uint8_t pls = (uint8_t)XHCI_PORT_PLS_GET(value);
+        if ((value & XHCI_PORT_PED) && pls == 0 &&
+            previous_reset_skipped) {
+            log_printf("[xHCI] port %u USB3 U0 reset required after "
+                       "enumeration failure\n", port);
+            value = xhci_port_reset_attempt(c, reg, false);
+            attempted = true;
+        } else if (pls == 6 || pls == 8 || pls == 10) {
+            log_printf("[xHCI] port %u USB3 link recovery warm reset "
+                       "(PLS=%u PORTSC=%08x)\n", port, pls, value);
+            value = xhci_port_reset_attempt(c, reg, true);
+            attempted = true;
+            warm_attempted = true;
+        } else if (!(value & XHCI_PORT_PED) && (pls == 5 || pls == 7)) {
+            /*
+             * A newly attached USB3 device remains in RxDetect/Polling until
+             * software initiates training.  This is the one USB3 case where
+             * a regular Port Reset is required.
+             */
+            value = xhci_port_reset_attempt(c, reg, false);
+            attempted = true;
+        } else if (!(value & XHCI_PORT_PED)) {
+            log_printf("[xHCI] port %u USB3 link not resettable "
+                       "(PLS=%u PORTSC=%08x)\n", port, pls, value);
+            return USB_SPEED_UNKNOWN;
+        } else {
+            log_printf("[xHCI] port %u USB3 link unstable, regular reset "
+                       "suppressed (PLS=%u PORTSC=%08x)\n", port, pls, value);
+            return USB_SPEED_UNKNOWN;
+        }
+    }
+
+    if (!attempted && !usb3_port) {
+        value = xhci_port_reset_attempt(c, reg, false);
+        attempted = true;
+    }
+
+    if (!attempted && usb3_port && !(value & XHCI_PORT_PED)) {
+        return USB_SPEED_UNKNOWN;
+    }
+    if (usb3_port && attempted && !warm_attempted &&
+        !(value & XHCI_PORT_PED)) {
+        uint8_t pls = (uint8_t)XHCI_PORT_PLS_GET(value);
+        if (pls == 6 || pls == 8 || pls == 10) {
+            log_printf("[xHCI] port %u USB3 reset recovery fallback "
+                       "(PLS=%u PORTSC=%08x)\n", port, pls, value);
+            value = xhci_port_reset_attempt(c, reg, true);
+        }
     }
     xhci_port_clear_changes(c, reg, value);
     xhci_drain_events(c);
@@ -936,6 +1181,25 @@ static int xhci_port_reset(usb_hci_t* hci, uint8_t port) {
     return xhci_port_speed(value);
 }
 
+static void xhci_note_port_failure(xhci_controller_t* c, uint32_t port,
+                                   const char* reason) {
+    if (!c || port == 0 || port > XHCI_MAX_PORTS) return;
+    uint32_t index = port - 1;
+    if (c->port_enum_failures[index] < UINT8_MAX) {
+        c->port_enum_failures[index]++;
+    }
+    c->enumeration_failures_total++;
+    if (c->port_enum_failures[index] >= XHCI_PORT_FAILURE_LIMIT) {
+        c->port_fused[index] = true;
+        c->port_retry[index] = 0;
+        log_printf("[xHCI] port %u breaker open after %u failures "
+                   "(%s); waiting for disconnect/reconnect\n",
+                   port, c->port_enum_failures[index], reason);
+    } else {
+        c->port_retry[index] = XHCI_PORT_RETRY_POLLS;
+    }
+}
+
 static void xhci_poll(usb_hci_t* hci) {
     xhci_controller_t* c = hci->priv;
     if (!c) return;
@@ -943,7 +1207,8 @@ static void xhci_poll(usb_hci_t* hci) {
     for (uint32_t port = 1; port <= c->max_ports; port++) {
         uint32_t reg = c->operational + 0x400 + 0x10u * (port - 1);
         uint32_t value = xhci_read32(c, reg);
-        if (value & XHCI_PORT_CHANGES) {
+        uint32_t changes = value & XHCI_PORT_CHANGES;
+        if (changes) {
             xhci_port_clear_changes(c, reg, value);
         }
         if (!(value & XHCI_PORT_CCS)) {
@@ -951,23 +1216,34 @@ static void xhci_poll(usb_hci_t* hci) {
                 usb_disconnect_port(hci, (uint8_t)port);
                 c->port_seen[port - 1] = false;
             }
-            if (port <= XHCI_MAX_PORTS) {
-                c->port_retry[port - 1] = 0;
-            }
+            c->port_retry[port - 1] = 0;
+            c->port_control_failures[port - 1] = 0;
+            c->port_enum_failures[port - 1] = 0;
+            c->port_fused[port - 1] = false;
+            c->port_reset_skipped[port - 1] = false;
             continue;
         }
         if (c->port_seen[port - 1]) continue;
 
-        if (port <= XHCI_MAX_PORTS && c->port_retry[port - 1] > 0) {
+        if (c->port_fused[port - 1]) {
+            if (changes & XHCI_PORT_CSC) {
+                c->port_fused[port - 1] = false;
+                c->port_control_failures[port - 1] = 0;
+                c->port_enum_failures[port - 1] = 0;
+                c->port_reset_skipped[port - 1] = false;
+            } else {
+                continue;
+            }
+        }
+
+        if (c->port_retry[port - 1] > 0) {
             c->port_retry[port - 1]--;
             continue;
         }
 
         uint8_t speed = (uint8_t)xhci_port_reset(hci, (uint8_t)port);
         if (speed == USB_SPEED_UNKNOWN) {
-            if (port <= XHCI_MAX_PORTS) {
-                c->port_retry[port - 1] = 32;
-            }
+            xhci_note_port_failure(c, port, "reset");
             continue;
         }
 
@@ -980,12 +1256,16 @@ static void xhci_poll(usb_hci_t* hci) {
         int enum_res = usb_enumerate(hci, (uint8_t)port, speed);
         if (enum_res == 0) {
             c->port_seen[port - 1] = true;
+            c->port_retry[port - 1] = 0;
+            c->port_control_failures[port - 1] = 0;
+            c->port_enum_failures[port - 1] = 0;
+            c->port_fused[port - 1] = false;
+            c->port_reset_skipped[port - 1] = false;
         } else {
             c->port_seen[port - 1] = false;
-            if (port <= XHCI_MAX_PORTS) {
-                c->port_retry[port - 1] = 32;
-            }
-            log_printf("[xHCI] port %u enumerate failed (%d), retry armed\n", port, enum_res);
+            xhci_note_port_failure(c, port, "enumerate");
+            log_printf("[xHCI] port %u enumerate failed (%d), failures=%u\n",
+                       port, enum_res, c->port_enum_failures[port - 1]);
         }
     }
 }

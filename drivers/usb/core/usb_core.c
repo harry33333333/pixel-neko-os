@@ -395,21 +395,36 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
         usb_delay_ms(10);
     }
     if (result < 8) {
-        log_printf("[USB ] Initial device descriptor failed on port %u (%d)\n",
-                   port, result);
+        log_printf("[USB ] Initial device descriptor failed on port %u "
+                   "(%d) head=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   port, result,
+                   descriptor.bLength, descriptor.bDescriptorType,
+                   (unsigned)(descriptor.bcdUSB & 0xFF),
+                   (unsigned)(descriptor.bcdUSB >> 8),
+                   descriptor.bDeviceClass, descriptor.bDeviceSubClass,
+                   descriptor.bDeviceProtocol, descriptor.bMaxPacketSize0);
         usb_release_device(dev);
         return -1;
     }
 
-    if (speed == USB_SPEED_SUPER && descriptor.bMaxPacketSize0 == 9) {
+    if (speed == USB_SPEED_SUPER) {
+        /*
+         * USB3 encodes bMaxPacketSize0 as a power-of-two exponent (9).
+         * xHCI Slot/Endpoint Contexts always require the decoded 512-byte
+         * packet size for SuperSpeed EP0.
+         */
         dev->max_packet0 = 512;
+    } else if (speed == USB_SPEED_LOW) {
+        dev->max_packet0 = 8;
     } else if (descriptor.bMaxPacketSize0 == 8 ||
                descriptor.bMaxPacketSize0 == 16 ||
                descriptor.bMaxPacketSize0 == 32 ||
                descriptor.bMaxPacketSize0 == 64) {
         dev->max_packet0 = descriptor.bMaxPacketSize0;
+    } else if (speed == USB_SPEED_HIGH) {
+        dev->max_packet0 = 64;
     } else {
-        dev->max_packet0 = speed >= USB_SPEED_HIGH ? 64 : 8;
+        dev->max_packet0 = 8;
     }
 
     uint8_t address = allocate_address();

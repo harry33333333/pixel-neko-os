@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A180b" ]
+    branches: [ "main", "master", "beta-v26A180c" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A180b"
+          VERSION="26A180c"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -78,7 +78,7 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A180b')
+         github.ref == 'refs/heads/beta-v26A180c')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
@@ -90,12 +90,12 @@ jobs:
           > **Pre-release**: broad USB 3.x host-controller compatibility work.
 
           ### USB 3.x fixes
-          - SuperSpeed and SuperSpeed+ protocol speed IDs are accepted, including 10/20 Gb/s links.
-          - xHCI port power, connect debounce, reset completion and warm-reset fallback follow the controller link state instead of fixed emulator timing.
-          - USB 3.x Endpoint Companion data supplies MaxBurst and ESIT payload values to endpoint contexts.
-          - Larger xHCI slot, root-port and DMA-ring capacity supports multi-hub and multi-device topologies.
-          - BIOS ownership handoff is bounded and non-destructive; Intel legacy routing updates only masked routes.
-          - Malformed or empty descriptors are rejected instead of being exposed as valid devices.
+          - xHCI control transfers no longer place Setup/Data stages in an invalid CHAIN relationship and now retire only on the Status TRB.
+          - Short-packet and late Transfer Events are correlated by TRB address to prevent stale EP0 completions.
+          - Initial EP0 contexts now force the correct 512-byte SuperSpeed packet size while retaining USB2 speed-specific defaults.
+          - USB3 ports only reset from valid link states; stable U0 links skip regular Port Reset and recovery states use warm reset.
+          - Per-port control/enumeration failure counters open a circuit breaker after repeated failures and re-arm on disconnect.
+          - Malformed or empty descriptors retain detailed diagnostics instead of entering an infinite enumeration loop.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
