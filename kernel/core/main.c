@@ -44,23 +44,6 @@ hhdm_info_t g_hhdm = {0};
 bool g_verbose_boot = false;
 static int g_xp_step_frame = 0;
 
-static bool cmdline_contains(const char* needle) {
-    if (!kernel_file_request.response ||
-        !kernel_file_request.response->kernel_file ||
-        !kernel_file_request.response->kernel_file->cmdline ||
-        !needle) {
-        return false;
-    }
-    const char* haystack = kernel_file_request.response->kernel_file->cmdline;
-    size_t nlen = strlen(needle);
-    for (size_t i = 0; haystack[i]; i++) {
-        if (strncmp(haystack + i, needle, nlen) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // --- Limine Protocol Requests (v8.x Standard) ---
 
 __attribute__((used, section(".limine_requests_start_marker")))
@@ -116,6 +99,23 @@ __attribute__((used, section(".limine_requests_end_marker")))
 static volatile LIMINE_REQUESTS_END_MARKER;
 
 // --- Helper Functions ---
+
+static bool cmdline_contains(const char* needle) {
+    if (!kernel_file_request.response ||
+        !kernel_file_request.response->kernel_file ||
+        !kernel_file_request.response->kernel_file->cmdline ||
+        !needle) {
+        return false;
+    }
+    const char* haystack = kernel_file_request.response->kernel_file->cmdline;
+    size_t nlen = strlen(needle);
+    for (size_t i = 0; haystack[i]; i++) {
+        if (strncmp(haystack + i, needle, nlen) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static void parse_memory_map(void) {
     if (!memmap_request.response) {
