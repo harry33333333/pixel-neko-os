@@ -13,7 +13,7 @@ typedef struct heap_block {
     struct heap_block* next;  // Next block in chain
     struct heap_block* prev;  // Previous block in chain
     uint32_t magic;           // Magic sanity check
-} heap_block_t;
+} __attribute__((aligned(HEAP_ALIGNMENT))) heap_block_t;
 
 static heap_block_t* g_heap_start = NULL;
 

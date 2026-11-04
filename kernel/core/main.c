@@ -46,7 +46,7 @@ bool g_verbose_boot = false;
 volatile bool g_xp_boot_active = false;
 static int g_xp_step_frame = 0;
 static bool g_acpi_fault_test = false;
-static bool g_acpi_shutdown_test = false;
+bool g_acpi_shutdown_test_requested = false;
 
 // --- Limine Protocol Requests (v8.x Standard) ---
 
@@ -635,9 +635,9 @@ void kmain(void) {
     if (cmdline_contains("mode=install")) {
         ui_compat_set_install_mode(true);
     }
-    g_acpi_shutdown_test = cmdline_contains("shutdown_test=1");
+    g_acpi_shutdown_test_requested = cmdline_contains("shutdown_test=1");
     g_acpi_fault_test = cmdline_contains("acpi_selftest=1") ||
-                        g_acpi_shutdown_test;
+                        g_acpi_shutdown_test_requested;
     acpi_set_uacpi_enabled(!cmdline_contains("disable_uacpi=1"));
 
     log_printf("\n");
@@ -842,11 +842,6 @@ void kmain(void) {
             log_printf("[P6 ] Graphical installer mode active.\n");
         }
         log_printf("[P6 ] Full desktop, splash and nine applications ready.\n");
-    }
-
-    if (g_acpi_shutdown_test) {
-        log_printf("[ACPI TEST] Starting direct S5 shutdown test\n");
-        sys_shutdown();
     }
 
     log_printf("[SYSTEM] P4b milestone reached: full USB host-controller matrix active.\n");

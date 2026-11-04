@@ -62,7 +62,7 @@ run_s5_test() {
     fi
     if ! grep -q "\[POWER\] Preparing ACPI S5 shutdown" "${log}" ||
        ! grep -q "\[ACPI\] FADT GAS I/O/MMIO helper self-test: PASS" "${log}" ||
-       ! grep -q "\[ACPI TEST\] Starting direct S5 shutdown test" "${log}"; then
+       ! grep -q "\[ACPI TEST\] Scheduler alive; starting direct S5 shutdown test" "${log}"; then
         echo "ACPI S5 ${kind} did not reach the shutdown test" >&2
         tail -n 350 "${log}" >&2
         return 1

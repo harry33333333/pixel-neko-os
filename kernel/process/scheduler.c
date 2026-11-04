@@ -5,6 +5,7 @@
 #include "log.h"
 #include "usb_core.h"
 #include "ui_compat.h"
+#include "power.h"
 
 extern void audio_poll(void);
 
@@ -15,6 +16,7 @@ static thread_t* g_last_thread = NULL;
 static uint64_t g_tick_count = 0;
 static bool g_scheduler_ready = false;
 static bool g_idle_reported = false;
+extern bool g_acpi_shutdown_test_requested;
 
 void scheduler_init(void) {
     g_thread_list = NULL;
@@ -175,6 +177,11 @@ void scheduler_idle_entry(void) {
         usb_poll();
         audio_poll();
         ui_desktop_poll();
+        if (g_acpi_shutdown_test_requested && g_tick_count >= 200) {
+            g_acpi_shutdown_test_requested = false;
+            log_printf("[ACPI TEST] Scheduler alive; starting direct S5 shutdown test\n");
+            sys_shutdown();
+        }
         scheduler_idle_wait();
     }
 }
