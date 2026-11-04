@@ -1,0 +1,12 @@
+uACPI
+======
+
+Repository: https://github.com/uACPI/uACPI
+Commit: c0edecef62bcac6ce3f783540099190bafadadda
+Snapshot date: 2026-10-16
+Library version: 7.0.0
+License: MIT (see LICENSE)
+
+The vendored files are limited to the upstream public headers, library
+sources, README and license. Platform integration is implemented by
+drivers/acpi/uacpi_glue.c in Pixel Neko OS.

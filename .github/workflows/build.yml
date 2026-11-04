@@ -11,6 +11,11 @@ on:
         description: "Comma-separated QEMU modes or 'all'"
         required: false
         default: "all"
+      run_acpi_s5_test:
+        description: "Build ACPI S5 test ISOs and verify both shutdown paths"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -29,7 +34,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
+        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip qemu-system-x86 ovmf
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -42,7 +47,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A150a"
+          VERSION="26A180a"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
@@ -78,6 +83,20 @@ jobs:
         path: |
           bin/kernel.elf
           kernel-symbols.txt
+        if-no-files-found: ignore
+
+    - name: ACPI S5 uACPI and Fallback Test
+      if: success() && github.event_name == 'workflow_dispatch' && inputs.run_acpi_s5_test
+      run: bash scripts/acpi_s5_test.sh
+
+    - name: Upload ACPI S5 Logs
+      if: always() && github.event_name == 'workflow_dispatch' && inputs.run_acpi_s5_test
+      uses: actions/upload-artifact@v4
+      with:
+        name: acpi-s5-test-logs
+        path: |
+          qemu-acpi-*-serial.log
+          qemu-acpi-*-console.log
         if-no-files-found: ignore
 
     - name: Upload Bootable ISO Artifact

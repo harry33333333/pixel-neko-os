@@ -5,7 +5,7 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 176
+PIXEL_NEKO_BUILD_NUMBER ?= 180
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -14,11 +14,35 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -ffreestanding -nostdlib -nostartfiles \
           -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
           -std=gnu11 -O2 -Wall -Wextra \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm -Iapps -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage
+          -DUACPI_USE_BUILTIN_STRING \
+          -DUACPI_PLAIN_LOG_BUFFER_SIZE=256 \
+          -DUACPI_STATIC_TABLE_ARRAY_LEN=32 \
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm -Iapps \
+          -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage \
+          -Idrivers/acpi/uacpi/include
 
 NASMFLAGS ?= -f elf64
 
 # Source Files
+UACPI_SRCS = drivers/acpi/uacpi/source/tables.c \
+             drivers/acpi/uacpi/source/types.c \
+             drivers/acpi/uacpi/source/uacpi.c \
+             drivers/acpi/uacpi/source/utilities.c \
+             drivers/acpi/uacpi/source/interpreter.c \
+             drivers/acpi/uacpi/source/opcodes.c \
+             drivers/acpi/uacpi/source/namespace.c \
+             drivers/acpi/uacpi/source/stdlib.c \
+             drivers/acpi/uacpi/source/opregion.c \
+             drivers/acpi/uacpi/source/default_handlers.c \
+             drivers/acpi/uacpi/source/io.c \
+             drivers/acpi/uacpi/source/notify.c \
+             drivers/acpi/uacpi/source/sleep.c \
+             drivers/acpi/uacpi/source/registers.c \
+             drivers/acpi/uacpi/source/resources.c \
+             drivers/acpi/uacpi/source/event.c \
+             drivers/acpi/uacpi/source/mutex.c \
+             drivers/acpi/uacpi/source/osi.c
+
 ASM_SRCS = arch/x86_64/entry.asm \
            arch/x86_64/gdt_flush.asm \
            arch/x86_64/interrupts.asm \
@@ -78,6 +102,7 @@ C_SRCS   = kernel/core/main.c \
            fs/vfs.c \
            fs/p5_test.c \
            drivers/acpi/acpi.c \
+           drivers/acpi/uacpi_glue.c \
            drivers/video/boot_framebuffer.c \
            drivers/video/ati_mach64.c \
            drivers/video/nvidia_g7x.c \
@@ -118,7 +143,7 @@ USER_OBJS = $(USER_OBJ_DIR)/start.o \
 
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
-C_OBJS   = $(C_SRCS:.c=.o)
+C_OBJS   = $(C_SRCS:.c=.o) $(UACPI_SRCS:.c=.o)
 USER_EMBED_OBJ = bin/userland/init_elf.o
 OBJS     = $(ASM_OBJS) $(C_OBJS) $(USER_EMBED_OBJ)
 

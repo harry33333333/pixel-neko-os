@@ -98,6 +98,9 @@ size_t acpi_get_ecam_range_count(void);
 const acpi_ecam_range_t* acpi_get_ecam_range(size_t index);
 bool acpi_has_pic(void);
 uint32_t acpi_get_core_count(void);
+void acpi_set_uacpi_enabled(bool enabled);
+bool acpi_uacpi_available(void);
+bool acpi_run_gas_self_test(void);
 void acpi_shutdown(void);
 void acpi_reboot(void);
 

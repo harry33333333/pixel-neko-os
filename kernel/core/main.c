@@ -32,6 +32,7 @@
 #include "splash.h"
 #include "ui_compat.h"
 #include "wm.h"
+#include "power.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -44,6 +45,8 @@ hhdm_info_t g_hhdm = {0};
 bool g_verbose_boot = false;
 volatile bool g_xp_boot_active = false;
 static int g_xp_step_frame = 0;
+static bool g_acpi_fault_test = false;
+static bool g_acpi_shutdown_test = false;
 
 // --- Limine Protocol Requests (v8.x Standard) ---
 
@@ -632,6 +635,10 @@ void kmain(void) {
     if (cmdline_contains("mode=install")) {
         ui_compat_set_install_mode(true);
     }
+    g_acpi_shutdown_test = cmdline_contains("shutdown_test=1");
+    g_acpi_fault_test = cmdline_contains("acpi_selftest=1") ||
+                        g_acpi_shutdown_test;
+    acpi_set_uacpi_enabled(!cmdline_contains("disable_uacpi=1"));
 
     log_printf("\n");
     log_printf("============================================================\n");
@@ -710,6 +717,9 @@ void kmain(void) {
     // 12. P2.5: Initialize ACPI Subsystem (RSDP, RSDT/XSDT, MADT, MCFG)
     boot_progress_notify("Pixel Neko OS :: [12/23] Parsing ACPI Tables...");
     acpi_init();
+    if (g_acpi_fault_test && !acpi_run_gas_self_test()) {
+        log_printf("[ACPI TEST] FADT GAS self-test FAILED\n");
+    }
 
     // 13. P2.6: Initialize Modern Interrupt Subsystem (IMCR, Mask 8259, Local APIC, IOAPIC)
     boot_progress_notify("Pixel Neko OS :: [13/23] Configuring APIC & Interrupts...");
@@ -832,6 +842,11 @@ void kmain(void) {
             log_printf("[P6 ] Graphical installer mode active.\n");
         }
         log_printf("[P6 ] Full desktop, splash and nine applications ready.\n");
+    }
+
+    if (g_acpi_shutdown_test) {
+        log_printf("[ACPI TEST] Starting direct S5 shutdown test\n");
+        sys_shutdown();
     }
 
     log_printf("[SYSTEM] P4b milestone reached: full USB host-controller matrix active.\n");

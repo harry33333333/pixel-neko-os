@@ -1,10 +1,15 @@
 #include "acpi.h"
 #include "limine.h"
 #include "mm.h"
+#include "mmio.h"
+#include "pmm.h"
 #include "vmm.h"
 #include "log.h"
 #include "port.h"
 #include "string.h"
+
+#include <uacpi/sleep.h>
+#include <uacpi/uacpi.h>
 
 extern volatile struct limine_rsdp_request rsdp_request;
 
@@ -33,6 +38,21 @@ static uint8_t  g_fadt_reset_val = 0;
 static uint16_t g_slp_typa = 0;
 static uint16_t g_slp_typb = 0;
 static bool     g_s5_valid = false;
+
+typedef struct {
+    uint8_t address_space;
+    uint8_t bit_width;
+    uint8_t bit_offset;
+    uint8_t access_width;
+    uint64_t address;
+} acpi_gas_t;
+
+static acpi_gas_t g_pm1a_cnt_gas;
+static acpi_gas_t g_pm1b_cnt_gas;
+static bool g_uacpi_enabled = true;
+static bool g_uacpi_namespace_ready = false;
+static bool g_uacpi_sleep_ready = false;
+static bool g_s5_from_uacpi = false;
 
 static bool acpi_validate_checksum(const void* table, size_t length) {
     const uint8_t* bytes = (const uint8_t*)table;
@@ -79,6 +99,94 @@ static void acpi_ensure_table_mapped(void* table_ptr) {
             vmm_map_page(pml4, v, cur_phys, PTE_PRESENT | PTE_WRITABLE);
         }
     }
+}
+
+static bool acpi_gas_valid(const acpi_gas_t* gas) {
+    if (!gas || !gas->address || gas->bit_width == 0 ||
+        gas->bit_width > 32 || gas->bit_offset >= 32 ||
+        gas->bit_offset + gas->bit_width > 32) {
+        return false;
+    }
+    if (gas->address_space != 0 && gas->address_space != 1) return false;
+    if (gas->address_space == 1 && gas->address > 0xFFFF) return false;
+    return gas->access_width == 0 || gas->access_width <= 4;
+}
+
+static uint32_t acpi_gas_access_bytes(const acpi_gas_t* gas) {
+    if (gas->access_width) {
+        return 1u << (gas->access_width - 1u);
+    }
+    uint32_t bits = gas->bit_offset + gas->bit_width;
+    if (bits <= 8) return 1;
+    if (bits <= 16) return 2;
+    if (bits <= 32) return 4;
+    return 0;
+}
+
+static bool acpi_gas_read_register(const acpi_gas_t* gas, uint32_t bytes,
+                                   uint32_t* out_value) {
+    if (!out_value) return false;
+    if (gas->address_space == 1) {
+        uint16_t port = (uint16_t)gas->address;
+        if (bytes == 1) *out_value = inb(port);
+        else if (bytes == 2) *out_value = inw(port);
+        else *out_value = inl(port);
+        return true;
+    }
+    volatile void* base = mmio_map_phys(gas->address, bytes);
+    if (!base) return false;
+    if (bytes == 1) *out_value = mmio_read8(base);
+    else if (bytes == 2) *out_value = mmio_read16(base);
+    else *out_value = mmio_read32(base);
+    return true;
+}
+
+static bool acpi_gas_write_register(const acpi_gas_t* gas, uint32_t bytes,
+                                    uint32_t value) {
+    if (gas->address_space == 1) {
+        uint16_t port = (uint16_t)gas->address;
+        if (bytes == 1) outb(port, (uint8_t)value);
+        else if (bytes == 2) outw(port, (uint16_t)value);
+        else outl(port, value);
+        return true;
+    }
+    volatile void* base = mmio_map_phys(gas->address, bytes);
+    if (!base) return false;
+    if (bytes == 1) mmio_write8(base, (uint8_t)value);
+    else if (bytes == 2) mmio_write16(base, (uint16_t)value);
+    else mmio_write32(base, value);
+    return true;
+}
+
+static bool acpi_gas_read(const acpi_gas_t* gas, uint32_t* value) {
+    if (!value || !acpi_gas_valid(gas)) return false;
+    uint32_t bytes = acpi_gas_access_bytes(gas);
+    if (!bytes || gas->bit_offset + gas->bit_width > bytes * 8u) {
+        return false;
+    }
+    uint32_t raw;
+    if (!acpi_gas_read_register(gas, bytes, &raw)) return false;
+    uint32_t mask = gas->bit_width == 32
+                        ? 0xFFFFFFFFu
+                        : ((1u << gas->bit_width) - 1u);
+    *value = (raw >> gas->bit_offset) & mask;
+    return true;
+}
+
+static bool acpi_gas_write(const acpi_gas_t* gas, uint32_t value) {
+    if (!acpi_gas_valid(gas)) return false;
+    uint32_t bytes = acpi_gas_access_bytes(gas);
+    if (!bytes || gas->bit_offset + gas->bit_width > bytes * 8u) {
+        return false;
+    }
+    uint32_t mask = gas->bit_width == 32
+                        ? 0xFFFFFFFFu
+                        : ((1u << gas->bit_width) - 1u);
+    uint32_t raw;
+    if (!acpi_gas_read_register(gas, bytes, &raw)) return false;
+    raw &= ~(mask << gas->bit_offset);
+    raw |= (value & mask) << gas->bit_offset;
+    return acpi_gas_write_register(gas, bytes, raw);
 }
 
 acpi_sdt_header_t* acpi_find_table(const char* signature) {
@@ -234,6 +342,7 @@ static void parse_mcfg(void) {
 }
 
 static void parse_fadt(void);
+static void initialize_uacpi(void);
 
 void acpi_init(void) {
     if (!rsdp_request.response || !rsdp_request.response->address) {
@@ -290,58 +399,120 @@ void acpi_init(void) {
     parse_madt();
     parse_mcfg();
     parse_fadt();
+    initialize_uacpi();
+}
+
+static bool aml_package_length(const uint8_t* start, const uint8_t* end,
+                               uint32_t* package_length,
+                               uint32_t* length_bytes) {
+    if (!start || start >= end || !package_length || !length_bytes) {
+        return false;
+    }
+    uint8_t lead = *start;
+    uint32_t extra = (lead >> 6) & 3u;
+    if (start + 1 + extra > end) return false;
+    uint32_t length = lead & (extra ? 0x0Fu : 0x3Fu);
+    for (uint32_t index = 0; index < extra; index++) {
+        length |= (uint32_t)start[1 + index] << (4u + index * 8u);
+    }
+    if (length < 1u + extra) return false;
+    *package_length = length;
+    *length_bytes = 1u + extra;
+    return true;
+}
+
+static bool aml_read_integer(const uint8_t** cursor, const uint8_t* end,
+                             uint64_t* value) {
+    if (!cursor || !*cursor || !value || *cursor >= end) return false;
+    const uint8_t* p = *cursor;
+    uint8_t opcode = *p++;
+    switch (opcode) {
+        case 0x00:
+            *value = 0;
+            break;
+        case 0x01:
+            *value = 1;
+            break;
+        case 0xFF:
+            *value = UINT64_MAX;
+            break;
+        case 0x0A:
+            if (p + 1 > end) return false;
+            *value = *p;
+            p++;
+            break;
+        case 0x0B:
+            if (p + 2 > end) return false;
+            *value = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+            p += 2;
+            break;
+        case 0x0C:
+            if (p + 4 > end) return false;
+            *value = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+            p += 4;
+            break;
+        case 0x0E:
+            if (p + 8 > end) return false;
+            *value = 0;
+            for (int index = 0; index < 8; index++) {
+                *value |= (uint64_t)p[index] << (index * 8);
+            }
+            p += 8;
+            break;
+        default:
+            return false;
+    }
+    *cursor = p;
+    return true;
 }
 
 static bool parse_s5_from_aml(const uint8_t* aml, uint32_t aml_len) {
     if (!aml || aml_len < 10) return false;
-    for (uint32_t i = 0; i + 8 < aml_len; i++) {
-        if (aml[i] == '_' && aml[i + 1] == 'S' &&
-            aml[i + 2] == '5' && aml[i + 3] == '_') {
-            bool valid_name = false;
-            if (i > 0 && aml[i - 1] == 0x08) valid_name = true;
-            else if (i > 1 && aml[i - 2] == 0x08 && aml[i - 1] == '\\') valid_name = true;
-            else if (aml[i + 4] == 0x12) valid_name = true;
-            if (!valid_name || aml[i + 4] != 0x12) continue;
-
-            const uint8_t* p = &aml[i + 5];
-            const uint8_t* end = aml + aml_len;
-            uint8_t pkg_len_bytes = (uint8_t)(((p[0] & 0xC0u) >> 6) + 2u);
-            p += pkg_len_bytes;
-            if (p >= end) break;
-
-            uint8_t slp_typa = 0;
-            uint8_t slp_typb = 0;
-            if (*p == 0x0Au) {
-                p++; if (p >= end) break;
-                slp_typa = *p++;
-            } else if (*p == 0x0Bu) {
-                p++; if (p + 1 >= end) break;
-                slp_typa = *p; p += 2;
-            } else if (*p == 0x0Cu) {
-                p++; if (p + 3 >= end) break;
-                slp_typa = *p; p += 4;
-            } else {
-                slp_typa = *p++;
-            }
-
-            if (p < end) {
-                if (*p == 0x0Au) {
-                    p++; if (p < end) slp_typb = *p;
-                } else if (*p == 0x0Bu) {
-                    p++; if (p + 1 < end) slp_typb = *p;
-                } else if (*p == 0x0Cu) {
-                    p++; if (p + 3 < end) slp_typb = *p;
-                } else {
-                    slp_typb = *p;
-                }
-            }
-            g_slp_typa = (uint16_t)((slp_typa & 0x07u) << 10);
-            g_slp_typb = (uint16_t)((slp_typb & 0x07u) << 10);
-            g_s5_valid = true;
-            log_printf("[ACPI] Found _S5_ package: SLP_TYPa=%u (0x%04x) SLP_TYPb=%u (0x%04x)\n",
-                       slp_typa & 0x07u, g_slp_typa, slp_typb & 0x07u, g_slp_typb);
-            return true;
+    const uint8_t* end = aml + aml_len;
+    for (uint32_t i = 0; i + 9 < aml_len; i++) {
+        if (aml[i] != '_' || aml[i + 1] != 'S' ||
+            aml[i + 2] != '5' || aml[i + 3] != '_' ||
+            aml[i + 4] != 0x12) {
+            continue;
         }
+        bool name_op = i > 0 && aml[i - 1] == 0x08;
+        bool root_name = i > 1 && aml[i - 2] == 0x08 &&
+                         aml[i - 1] == '\\';
+        if (!name_op && !root_name) continue;
+
+        uint32_t package_length;
+        uint32_t length_bytes;
+        const uint8_t* length_start = &aml[i + 5];
+        if (!aml_package_length(length_start, end, &package_length,
+                                &length_bytes)) {
+            continue;
+        }
+        const uint8_t* package_end = length_start + package_length;
+        if (package_end > end) continue;
+        const uint8_t* cursor = length_start + length_bytes;
+        if (cursor >= package_end) continue;
+        uint8_t element_count = *cursor++;
+        if (element_count == 0 || element_count > 4) continue;
+
+        uint64_t slp_typa;
+        uint64_t slp_typb;
+        if (!aml_read_integer(&cursor, package_end, &slp_typa)) continue;
+        if (element_count > 1) {
+            if (!aml_read_integer(&cursor, package_end, &slp_typb)) continue;
+        } else {
+            slp_typb = slp_typa >> 8;
+        }
+
+        g_slp_typa = (uint16_t)((slp_typa & 0x07u) << 10);
+        g_slp_typb = (uint16_t)((slp_typb & 0x07u) << 10);
+        g_s5_valid = true;
+        g_s5_from_uacpi = false;
+        log_printf("[ACPI] AML fallback found _S5_: SLP_TYPa=%u (0x%04x) "
+                   "SLP_TYPb=%u (0x%04x)\n",
+                   (unsigned int)(slp_typa & 0x07u), g_slp_typa,
+                   (unsigned int)(slp_typb & 0x07u), g_slp_typb);
+        return true;
     }
     return false;
 }
@@ -358,6 +529,20 @@ static void parse_fadt(void) {
     g_fadt_acpi_enable = raw[52];
     g_fadt_pm1a_cnt = *(const uint32_t*)(raw + 64);
     g_fadt_pm1b_cnt = *(const uint32_t*)(raw + 68);
+    memset(&g_pm1a_cnt_gas, 0, sizeof(g_pm1a_cnt_gas));
+    memset(&g_pm1b_cnt_gas, 0, sizeof(g_pm1b_cnt_gas));
+    if (g_fadt_pm1a_cnt) {
+        g_pm1a_cnt_gas.address_space = 1;
+        g_pm1a_cnt_gas.bit_width = 16;
+        g_pm1a_cnt_gas.access_width = 2;
+        g_pm1a_cnt_gas.address = g_fadt_pm1a_cnt;
+    }
+    if (g_fadt_pm1b_cnt) {
+        g_pm1b_cnt_gas.address_space = 1;
+        g_pm1b_cnt_gas.bit_width = 16;
+        g_pm1b_cnt_gas.access_width = 2;
+        g_pm1b_cnt_gas.address = g_fadt_pm1b_cnt;
+    }
 
     if (facp->length >= 129) {
         uint8_t space_id = raw[116];
@@ -374,24 +559,49 @@ static void parse_fadt(void) {
         uint64_t x_dsdt = *(const uint64_t*)(raw + 140);
         if (x_dsdt != 0) dsdt_phys = x_dsdt;
     }
-    if (g_fadt_pm1a_cnt == 0 && facp->length >= 184) {
-        uint8_t space_id = raw[172];
-        uint64_t x_pm1a = *(const uint64_t*)(raw + 176);
-        if (space_id == 1 && x_pm1a <= 0xFFFFu) {
-            g_fadt_pm1a_cnt = (uint32_t)x_pm1a;
+    if (facp->length >= 184) {
+        acpi_gas_t gas;
+        memset(&gas, 0, sizeof(gas));
+        gas.address_space = raw[172];
+        gas.bit_width = raw[173];
+        gas.bit_offset = raw[174];
+        gas.access_width = raw[175];
+        gas.address = *(const uint64_t*)(raw + 176);
+        if (acpi_gas_valid(&gas)) {
+            g_pm1a_cnt_gas = gas;
+            if (gas.address_space == 1) {
+                g_fadt_pm1a_cnt = (uint32_t)gas.address;
+            }
         }
     }
-    if (g_fadt_pm1b_cnt == 0 && facp->length >= 196) {
-        uint8_t space_id = raw[184];
-        uint64_t x_pm1b = *(const uint64_t*)(raw + 188);
-        if (space_id == 1 && x_pm1b <= 0xFFFFu) {
-            g_fadt_pm1b_cnt = (uint32_t)x_pm1b;
+    if (facp->length >= 196) {
+        acpi_gas_t gas;
+        memset(&gas, 0, sizeof(gas));
+        gas.address_space = raw[184];
+        gas.bit_width = raw[185];
+        gas.bit_offset = raw[186];
+        gas.access_width = raw[187];
+        gas.address = *(const uint64_t*)(raw + 188);
+        if (acpi_gas_valid(&gas)) {
+            g_pm1b_cnt_gas = gas;
+            if (gas.address_space == 1) {
+                g_fadt_pm1b_cnt = (uint32_t)gas.address;
+            }
         }
     }
 
     log_printf("[ACPI] FADT: PM1a_CNT=0x%04x PM1b_CNT=0x%04x SMI_CMD=0x%04x DSDT=0x%llx\n",
                g_fadt_pm1a_cnt, g_fadt_pm1b_cnt, g_fadt_smi_cmd,
                (unsigned long long)dsdt_phys);
+    if (g_pm1a_cnt_gas.address) {
+        log_printf("[ACPI] PM1a_CNT GAS: space=%u width=%u offset=%u "
+                   "access=%u address=0x%llx\n",
+                   g_pm1a_cnt_gas.address_space,
+                   g_pm1a_cnt_gas.bit_width,
+                   g_pm1a_cnt_gas.bit_offset,
+                   g_pm1a_cnt_gas.access_width,
+                   (unsigned long long)g_pm1a_cnt_gas.address);
+    }
 
     if (dsdt_phys != 0) {
         acpi_sdt_header_t* dsdt = (acpi_sdt_header_t*)acpi_resolve_ptr(dsdt_phys);
@@ -429,46 +639,189 @@ static void parse_fadt(void) {
     }
 }
 
+static bool evaluate_s5_with_uacpi(void) {
+    uacpi_object* object = NULL;
+    uacpi_status status = uacpi_eval_simple_package(
+        uacpi_namespace_root(), "_S5_", &object);
+    if (status != UACPI_STATUS_OK) {
+        log_printf("[uACPI] _S5_ evaluation failed: %s\n",
+                   uacpi_status_to_string(status));
+        return false;
+    }
+
+    uacpi_object_array package;
+    memset(&package, 0, sizeof(package));
+    status = uacpi_object_get_package(object, &package);
+    if (status != UACPI_STATUS_OK || package.count == 0 ||
+        package.count > 4) {
+        uacpi_object_unref(object);
+        log_printf("[uACPI] _S5_ is not a valid package\n");
+        return false;
+    }
+
+    uacpi_u64 slp_typa;
+    uacpi_u64 slp_typb;
+    if (uacpi_object_get_integer(package.objects[0], &slp_typa) !=
+        UACPI_STATUS_OK) {
+        uacpi_object_unref(object);
+        log_printf("[uACPI] _S5_[0] is not an integer\n");
+        return false;
+    }
+    if (package.count > 1) {
+        if (uacpi_object_get_integer(package.objects[1], &slp_typb) !=
+            UACPI_STATUS_OK) {
+            uacpi_object_unref(object);
+            log_printf("[uACPI] _S5_[1] is not an integer\n");
+            return false;
+        }
+    } else {
+        slp_typb = slp_typa >> 8;
+    }
+
+    g_slp_typa = (uint16_t)((slp_typa & 0x07u) << 10);
+    g_slp_typb = (uint16_t)((slp_typb & 0x07u) << 10);
+    g_s5_valid = true;
+    g_s5_from_uacpi = true;
+    log_printf("[uACPI] _S5_ namespace package: SLP_TYPa=%u (0x%04x) "
+               "SLP_TYPb=%u (0x%04x)\n",
+               (unsigned int)(slp_typa & 0x07u), g_slp_typa,
+               (unsigned int)(slp_typb & 0x07u), g_slp_typb);
+    uacpi_object_unref(object);
+    return true;
+}
+
+static void initialize_uacpi(void) {
+    if (!g_uacpi_enabled) {
+        log_printf("[uACPI] Disabled by boot option; AML fallback only.\n");
+        return;
+    }
+
+    uacpi_status status = uacpi_initialize(0);
+    if (status != UACPI_STATUS_OK) {
+        log_printf("[uACPI] Initialization failed: %s\n",
+                   uacpi_status_to_string(status));
+        return;
+    }
+    log_printf("[uACPI] Core initialized (v%u.%u.%u), ACPI mode active\n",
+               UACPI_MAJOR, UACPI_MINOR, UACPI_PATCH);
+
+    status = uacpi_namespace_load();
+    if (status != UACPI_STATUS_OK) {
+        log_printf("[uACPI] DSDT/SSDT namespace load failed: %s\n",
+                   uacpi_status_to_string(status));
+        return;
+    }
+    g_uacpi_namespace_ready = true;
+    log_printf("[uACPI] DSDT/SSDT namespace loaded\n");
+    (void)evaluate_s5_with_uacpi();
+
+    status = uacpi_namespace_initialize();
+    if (status != UACPI_STATUS_OK) {
+        log_printf("[uACPI] Namespace _INI initialization failed: %s\n",
+                   uacpi_status_to_string(status));
+        return;
+    }
+    g_uacpi_sleep_ready = true;
+    log_printf("[uACPI] Namespace initialized; S5 sleep backend ready\n");
+}
+
+void acpi_set_uacpi_enabled(bool enabled) {
+    g_uacpi_enabled = enabled;
+}
+
+bool acpi_uacpi_available(void) {
+    return g_uacpi_namespace_ready;
+}
+
+static bool run_gas_register_self_test(void) {
+    phys_addr_t physical = pmm_alloc_page();
+    if (!physical) return false;
+    volatile uint32_t* memory =
+        (volatile uint32_t*)phys_to_virt(physical);
+    *memory = 0;
+
+    acpi_gas_t gas;
+    memset(&gas, 0, sizeof(gas));
+    gas.address_space = 0;
+    gas.bit_width = 16;
+    gas.access_width = 2;
+    gas.address = physical;
+    bool okay = acpi_gas_write(&gas, 0xA5C3);
+    uint32_t readback = 0;
+    okay = okay && acpi_gas_read(&gas, &readback) &&
+           readback == 0xA5C3;
+
+    gas.bit_width = 4;
+    gas.bit_offset = 4;
+    okay = okay && acpi_gas_write(&gas, 0x9);
+    readback = 0;
+    okay = okay && acpi_gas_read(&gas, &readback) && readback == 0x9;
+    okay = okay && ((*memory & 0x00F0u) == 0x0090u);
+    pmm_free_page(physical);
+    return okay;
+}
+
+bool acpi_run_gas_self_test(void) {
+    bool okay = run_gas_register_self_test();
+    log_printf("[ACPI] FADT GAS I/O/MMIO helper self-test: %s\n",
+               okay ? "PASS" : "FAIL");
+    return okay;
+}
+
 void acpi_shutdown(void) {
     uint16_t slp_en = (uint16_t)(1u << 13);
 
-    if (g_fadt_pm1a_cnt != 0) {
-        /* Enable ACPI mode if SCI_EN (bit 0) is not yet set */
-        if ((inw((uint16_t)g_fadt_pm1a_cnt) & 1u) == 0 &&
-            g_fadt_smi_cmd != 0 && g_fadt_acpi_enable != 0) {
-            outb((uint16_t)g_fadt_smi_cmd, g_fadt_acpi_enable);
-            for (int i = 0; i < 300000; i++) {
-                if (inw((uint16_t)g_fadt_pm1a_cnt) & 1u) break;
-                inb(0x80);
-            }
-        }
+    if (g_uacpi_enabled && g_uacpi_sleep_ready) {
+        log_printf("[ACPI] Requesting S5 through uACPI namespace/FADT path\n");
+        uacpi_status status =
+            uacpi_enter_sleep_state_simple(UACPI_SLEEP_STATE_S5);
+        log_printf("[ACPI] uACPI S5 returned: %s\n",
+                   uacpi_status_to_string(status));
+    }
 
-        if (g_s5_valid) {
-            log_printf("[ACPI] Entering S5 soft-off: PM1a=0x%04x val=0x%04x\n",
-                       g_fadt_pm1a_cnt, (uint16_t)(g_slp_typa | slp_en));
-            outw((uint16_t)g_fadt_pm1a_cnt, (uint16_t)(g_slp_typa | slp_en));
-            if (g_fadt_pm1b_cnt != 0) {
-                outw((uint16_t)g_fadt_pm1b_cnt, (uint16_t)(g_slp_typb | slp_en));
-            }
-            for (int i = 0; i < 100000; i++) inb(0x80);
-        }
+    if (!g_s5_valid) {
+        log_printf("[ACPI] Refusing PM1 writes: no validated _S5 package\n");
+        return;
+    }
+    if (!acpi_gas_valid(&g_pm1a_cnt_gas)) {
+        log_printf("[ACPI] Refusing PM1 writes: PM1a control GAS unavailable\n");
+        return;
+    }
 
-        /* Fallback common S5 SLP_TYP values (Intel ICH/PCH=7 or 5, PIIX4=0) */
-        static const uint8_t fallback_typs[] = { 7, 5, 0 };
-        for (int k = 0; k < 3; k++) {
-            uint16_t val = (uint16_t)(((uint16_t)fallback_typs[k] << 10) | slp_en);
-            outw((uint16_t)g_fadt_pm1a_cnt, val);
-            if (g_fadt_pm1b_cnt != 0) {
-                outw((uint16_t)g_fadt_pm1b_cnt, val);
+    uint32_t control = 0;
+    if (acpi_gas_read(&g_pm1a_cnt_gas, &control) &&
+        (control & 1u) == 0 &&
+        g_fadt_smi_cmd != 0 && g_fadt_acpi_enable != 0) {
+        outb((uint16_t)g_fadt_smi_cmd, g_fadt_acpi_enable);
+        for (int index = 0; index < 300000; index++) {
+            if (acpi_gas_read(&g_pm1a_cnt_gas, &control) &&
+                (control & 1u)) {
+                break;
             }
-            for (int i = 0; i < 50000; i++) inb(0x80);
+            inb(0x80);
         }
     }
 
-    /* Emulator / Virtual Machine ACPI power-off ports (QEMU / Bochs / VirtualBox) */
-    outw(0x604, 0x2000);
-    outw(0xB004, 0x2000);
-    outw(0x4004, 0x3400);
+    log_printf("[ACPI] Fallback S5: %s PM1a GAS=0x%llx "
+               "SLP_TYPa=0x%04x SLP_TYPb=0x%04x source=%s\n",
+               g_pm1a_cnt_gas.address_space == 1 ? "I/O" : "MMIO",
+               (unsigned long long)g_pm1a_cnt_gas.address,
+               g_slp_typa, g_slp_typb,
+               g_s5_from_uacpi ? "uACPI-evaluated" : "AML-pattern");
+    if (!acpi_gas_write(&g_pm1a_cnt_gas, g_slp_typa)) {
+        log_printf("[ACPI] Failed to write PM1a SLP_TYP\n");
+        return;
+    }
+    if (acpi_gas_valid(&g_pm1b_cnt_gas)) {
+        acpi_gas_write(&g_pm1b_cnt_gas, g_slp_typb);
+    }
+    acpi_gas_write(&g_pm1a_cnt_gas,
+                   (uint16_t)(g_slp_typa | slp_en));
+    if (acpi_gas_valid(&g_pm1b_cnt_gas)) {
+        acpi_gas_write(&g_pm1b_cnt_gas,
+                       (uint16_t)(g_slp_typb | slp_en));
+    }
+    for (int index = 0; index < 100000; index++) inb(0x80);
 }
 
 void acpi_reboot(void) {

@@ -6,6 +6,14 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${ROOT_DIR}"
 
+TEST_KIND="${1:-}"
+if [ -n "${TEST_KIND}" ] &&
+   [ "${TEST_KIND}" != "acpi-uacpi" ] &&
+   [ "${TEST_KIND}" != "acpi-fallback" ]; then
+    echo "Unknown ISO test kind: ${TEST_KIND}" >&2
+    exit 2
+fi
+
 # 1. Ensure version header exists
 if [ ! -f "include/version.h" ]; then
     bash scripts/version_gen.sh
@@ -13,10 +21,13 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A150a"
+    BUILD_ID="26A180a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
+if [ -n "${TEST_KIND}" ]; then
+    ISO_NAME="pixel-neko-os_${BUILD_ID}-${TEST_KIND}-test.iso"
+fi
 
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
@@ -38,6 +49,16 @@ cp boot/limine/limine-bios.sys iso_root/boot/limine/
 cp boot/limine/limine-bios-cd.bin iso_root/boot/limine/
 cp boot/limine/limine-uefi-cd.bin iso_root/boot/limine/
 cp boot/limine/BOOTX64.EFI iso_root/EFI/BOOT/BOOTX64.EFI
+
+if [ -n "${TEST_KIND}" ]; then
+    sed -i \
+        's/mode=\(live\|install\)/mode=\1 shutdown_test=1/' \
+        iso_root/boot/limine.conf
+    if [ "${TEST_KIND}" = "acpi-fallback" ]; then
+        sed -i 's/shutdown_test=1/shutdown_test=1 disable_uacpi=1/' \
+            iso_root/boot/limine.conf
+    fi
+fi
 
 # Build the offline install payload. The desktop, nine applications, fonts,
 # bitmap assets and splash animation are statically linked into kernel.elf;
@@ -100,7 +121,9 @@ if [ -f "boot/limine/limine" ]; then
 fi
 
 # Create symlink or copy to pixel-neko-os_latest.iso
-cp "${ISO_NAME}" pixel-neko-os_latest.iso
+if [ -z "${TEST_KIND}" ]; then
+    cp "${ISO_NAME}" pixel-neko-os_latest.iso
+fi
 
 echo "=== ISO successfully generated: ${ISO_NAME} ==="
 ls -lh "${ISO_NAME}"
