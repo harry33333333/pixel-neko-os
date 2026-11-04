@@ -12,6 +12,7 @@
 #include "log.h"
 #include "mp3_dec.h"
 #include "wav_dec.h"
+#include "string.h"
 
 #define DEC_NONE 0
 #define DEC_WAV  1
