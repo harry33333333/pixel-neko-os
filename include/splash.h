@@ -6,5 +6,6 @@
 extern bool g_verbose_boot;
 
 void splash_run(void);
+void boot_screen_tick(void);
 
 #endif // SPLASH_H

@@ -42,6 +42,7 @@ hhdm_info_t g_hhdm = {0};
 
 // Boot splash mode: false = Windows XP-style progress bar; true = Classic verbose badge
 bool g_verbose_boot = false;
+volatile bool g_xp_boot_active = false;
 static int g_xp_step_frame = 0;
 
 // --- Limine Protocol Requests (v8.x Standard) ---
@@ -366,6 +367,7 @@ static void boot_screen_xp_init(void) {
     }
 
     g_xp_step_frame = 0;
+    g_xp_boot_active = true;
 }
 
 // Draw the iconic 3-segment XP glowing blue marquee progress bar
@@ -428,6 +430,16 @@ static void draw_xp_progress_frame(int frame) {
     }
 }
 
+// Tick the Windows XP marquee progress bar by 1 frame
+void boot_screen_tick(void) {
+    if (!g_xp_boot_active || g_verbose_boot) return;
+    if (!g_main_surface.framebuffer_virt) return;
+
+    g_xp_step_frame++;
+    draw_xp_progress_frame(g_xp_step_frame);
+    boot_framebuffer_flush();
+}
+
 // Render real-time bring-up progress badge at screen bottom
 static void boot_progress_notify(const char* step_msg) {
     if (!g_main_surface.framebuffer_virt) return;
@@ -452,12 +464,7 @@ static void boot_progress_notify(const char* step_msg) {
     } else {
         // Windows XP Boot Mode: Smoothly advance the 3 glowing blue blocks
         (void)step_msg;
-        for (int f = 0; f < 3; f++) {
-            g_xp_step_frame++;
-            draw_xp_progress_frame(g_xp_step_frame);
-            boot_framebuffer_flush();
-            for (volatile int d = 0; d < 80000; d++) { __asm__ volatile ("pause"); }
-        }
+        boot_screen_tick();
     }
 }
 
@@ -708,7 +715,9 @@ void kmain(void) {
     // 17. P4b: Probe the full USB host-controller matrix and enumerate devices
     boot_progress_notify("Pixel Neko OS :: [17/23] Initializing USB Controllers...");
     blkdev_init();
+    boot_screen_tick();
     usb_init();
+    boot_screen_tick();
     log_printf("[P4B] USB controllers=%u devices=%u summary=%s HID(K=%d M=%d)\n",
                usb_get_hci_count(), usb_get_device_count(),
                usb_host_controller_summary(),
@@ -716,12 +725,16 @@ void kmain(void) {
 
     boot_progress_notify("Pixel Neko OS :: [18/23] Probing Storage & Volumes...");
     storage_init();
+    boot_screen_tick();
     vfs_init();
+    boot_screen_tick();
     (void)p5_run_storage_self_test();
+    boot_screen_tick();
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
 
     if (g_main_surface.framebuffer_virt) {
+        g_xp_boot_active = false;
         ui_compat_init();
         splash_run();
         if (kernel_file_request.response &&

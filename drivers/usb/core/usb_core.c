@@ -57,10 +57,13 @@ static bool calibrate_tsc_with_pit(void) {
     return g_tsc_per_ms > 1000;
 }
 
+extern void boot_screen_tick(void);
+static uint64_t g_last_progress_tsc = 0;
+
 static void pit_delay_fallback(uint32_t milliseconds) {
     uint8_t gate = inb(0x61);
     while (milliseconds) {
-        uint32_t chunk = milliseconds > 50 ? 50 : milliseconds;
+        uint32_t chunk = milliseconds > 25 ? 25 : milliseconds;
         uint16_t divisor =
             (uint16_t)((PIT_INPUT_HZ * chunk + 500) / 1000);
         outb(0x61, (uint8_t)(gate & ~1u));
@@ -73,6 +76,7 @@ static void pit_delay_fallback(uint32_t milliseconds) {
             __asm__ volatile ("pause");
         }
         outb(0x61, (uint8_t)(gate & ~1u));
+        boot_screen_tick();
         milliseconds -= chunk;
     }
 }
@@ -96,9 +100,21 @@ void usb_delay_ms(uint32_t milliseconds) {
         return;
     }
 
+    uint64_t step_tsc = g_tsc_per_ms * 25; // 25ms per marquee frame tick (~40 FPS)
     uint64_t target = read_tsc() + (uint64_t)milliseconds * g_tsc_per_ms;
     while ((int64_t)(read_tsc() - target) < 0) {
+        uint64_t now = read_tsc();
+        if (g_tsc_per_ms && (now - g_last_progress_tsc >= step_tsc)) {
+            g_last_progress_tsc = now;
+            boot_screen_tick();
+        }
         __asm__ volatile ("pause");
+    }
+
+    uint64_t now = read_tsc();
+    if (g_tsc_per_ms && (now - g_last_progress_tsc >= step_tsc)) {
+        g_last_progress_tsc = now;
+        boot_screen_tick();
     }
 }
 

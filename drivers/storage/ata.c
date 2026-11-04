@@ -4,6 +4,8 @@
 #include "port.h"
 #include "string.h"
 
+extern void boot_screen_tick(void);
+
 #define ATA_MAX_CHANNELS 2
 #define ATA_DRIVES_PER_CHANNEL 2
 
@@ -64,6 +66,7 @@ static int ata_wait_status(ata_drive_t* drive, uint8_t wanted,
     for (uint32_t spin = 0; spin < timeout; spin++) {
         uint8_t status = ata_status(drive);
         if (status & ATA_SR_BSY) {
+            if ((spin & 0xFFFF) == 0) boot_screen_tick();
             __asm__ volatile ("pause");
             continue;
         }
@@ -72,6 +75,7 @@ static int ata_wait_status(ata_drive_t* drive, uint8_t wanted,
             return 0;
         }
         if (wanted != 0 && (status & (ATA_SR_ERR | ATA_SR_DF))) return -1;
+        if ((spin & 0xFFFF) == 0) boot_screen_tick();
         __asm__ volatile ("pause");
     }
     return -1;
