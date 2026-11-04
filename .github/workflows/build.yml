@@ -82,6 +82,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
+        target_commitish: ${{ github.sha }}
         name: "Pixel Neko OS ${{ env.TAG_NAME }} (USB 3.x Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
