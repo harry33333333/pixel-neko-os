@@ -68,8 +68,10 @@ syscall_entry:
     cmp qword [rel per_cpu_need_resched], 0
     jne .reschedule
 
-    ; Reject non-canonical/user-half RIPs before using SYSRET.
+    ; Reject non-canonical or kernel-half RIP before using SYSRET.
     mov r10, [rsp + 17*8]           ; saved RIP
+    test r10, r10
+    jz .bad_return
     mov rax, r10
     shr rax, 47
     jnz .bad_return
@@ -77,10 +79,33 @@ syscall_entry:
     cmp r10, rax
     jae .bad_return
 
-    ; RFLAGS.IOPL must remain zero. IF is forced on for userspace.
+    ; Reject non-canonical or kernel-half RSP before using SYSRET.
+    mov r10, [rsp + 20*8]           ; saved RSP
+    test r10, r10
+    jz .bad_return
+    mov rax, r10
+    shr rax, 47
+    jnz .bad_return
+    mov rax, 0x0000800000000000
+    cmp r10, rax
+    jae .bad_return
+
+    ; Verify CS and SS segments: both must belong to user mode (RPL 3).
+    test byte [rsp + 18*8], 3       ; CS RPL must be 3
+    jz .bad_return
+    test byte [rsp + 21*8], 3       ; SS RPL must be 3
+    jz .bad_return
+
+    ; Verify RFLAGS: reject disallowed bits (IOPL != 0, NT != 0, VM != 0).
     mov r11, [rsp + 19*8]           ; saved RFLAGS
-    and r11, 0x3CD5
-    or  r11, 0x0202
+    test r11, 0x7000                ; IOPL (0x3000) or NT (0x4000)
+    jnz .bad_return
+    test r11, 0x20000               ; VM (bit 17)
+    jnz .bad_return
+
+    ; Enforce user RFLAGS mask: IOPL=0, NT=0, IF=1, reserved bit 1 = 1.
+    and r11, 0x0CD5                 ; Keep arithmetic & direction flags only
+    or  r11, 0x0202                 ; Enforce IF=1 and bit 1 = 1
     mov [rsp + 19*8], r11
 
     ; Data selectors are loaded before restoring user registers.
@@ -150,6 +175,10 @@ arch_restore_trap_frame:
 
     test byte [rsp + 18*8], 3       ; frame->cs
     jz .kernel_segments
+    ; Returning to user mode: sanitize RFLAGS (IOPL=0, IF=1)
+    and dword [rsp + 19*8], 0x0CD5  ; Clear IOPL/NT/privileged bits in lower 32-bit of RFLAGS
+    or  dword [rsp + 19*8], 0x0202  ; Force IF=1 and reserved bit 1 = 1
+    mov dword [rsp + 19*8 + 4], 0   ; Ensure upper 32-bits of RFLAGS are 0
     mov ax, 0x1B
     jmp .load_segments
 .kernel_segments:

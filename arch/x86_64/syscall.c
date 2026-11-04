@@ -55,8 +55,13 @@ trap_frame_t* syscall_reschedule(trap_frame_t* frame) {
 }
 
 trap_frame_t* syscall_bad_return(trap_frame_t* frame) {
-    log_printf("[SYSCALL] Rejected non-canonical user return RIP=0x%016llx; terminating PID %u.\n",
-               (unsigned long long)(frame ? frame->rip : 0), process_current_pid());
+    log_printf("[SYSCALL] Rejected invalid return frame (RIP=0x%016llx RSP=0x%016llx RFLAGS=0x%08llx CS=0x%02llx SS=0x%02llx); terminating PID %u.\n",
+               (unsigned long long)(frame ? frame->rip : 0),
+               (unsigned long long)(frame ? frame->rsp : 0),
+               (unsigned long long)(frame ? frame->rflags : 0),
+               (unsigned long long)(frame ? frame->cs : 0),
+               (unsigned long long)(frame ? frame->ss : 0),
+               process_current_pid());
     process_exit_current(-1);
     return scheduler_reschedule_from_syscall(frame);
 }

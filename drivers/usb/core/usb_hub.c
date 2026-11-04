@@ -106,6 +106,20 @@ static void hub_scan_port(usb_device_t* hub, hub_state_t* state, uint8_t port) {
     if (hub_get_port_status(hub, port, &status, &change) != 0) return;
     if (!(status & HUB_PORT_CONNECTION)) return;
 
+    if (status & HUB_PORT_RESET) {
+        log_printf("[HUB ] Port reset timed out: hub=%u port=%u status=0x%04x\n",
+                   hub->address, port, status);
+        state->retry_tick[port] = apic_get_ticks() + 100;
+        return;
+    }
+
+    if (!(status & HUB_PORT_ENABLE)) {
+        log_printf("[HUB ] Port reset failed (HUB_PORT_ENABLE not set): hub=%u port=%u status=0x%04x\n",
+                   hub->address, port, status);
+        state->retry_tick[port] = apic_get_ticks() + 100;
+        return;
+    }
+
     uint8_t speed = hub_port_speed(hub, status);
     log_printf("[HUB ] Port enabled: hub=%u port=%u speed=%s status=0x%04x\n",
                hub->address, port, usb_speed_name(speed), status);
