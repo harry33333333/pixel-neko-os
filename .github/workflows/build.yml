@@ -112,11 +112,11 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko - ACPI S5 Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: P6 complete classic desktop and offline installer. The ISO supports Live and Graphical Installer modes, formats an existing FAT16/FAT32 partition, deploys the full payload and boots independently through Limine UEFI or BIOS.
+          > **Pre-release**: P7.2 ACPI S5 beta. This build integrates uACPI 7.0.0 namespace evaluation, a validated AML `_S5_` fallback parser and FADT Generic Address Structure shutdown for both I/O and MMIO PM1 control registers.
 
           ### 📦 Release Assets
           - **Bootable Dual-Boot Hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -134,6 +134,14 @@ jobs:
           ```
           #### 3. VMware / VirtualBox
           Create a 64-bit Other/Linux (x86_64) VM and mount the ISO to boot in either UEFI or Legacy BIOS mode.
+
+          ### ACPI S5 Highlights
+          - **uACPI namespace**: full DSDT/SSDT load, namespace initialization and `_S5_` package evaluation.
+          - **Safe fallback**: AML pattern matching validates the Package encoding before extracting `SLP_TYPa` and `SLP_TYPb`.
+          - **FADT GAS**: supports System I/O and System Memory PM1 control blocks, bit offset, bit width and access width.
+          - **Safety policy**: blind guessed SLP_TYP values and fixed emulator power-off ports were removed; unvalidated hardware writes are refused.
+          - **Focused validation**: QEMU verifies both uACPI S5 and fallback S5 with a clean ACPI power-off, plus an in-kernel MMIO GAS register test.
+          - **Physical hardware**: local verification is intentionally left to the maintainer before this beta is merged into `main`.
 
           ### P6 Desktop and Installer Highlights
           - **Classic desktop**: menu bar, Neko branding, wallpaper, 3D window chrome, splash animation, cursor and all nine built-in applications.

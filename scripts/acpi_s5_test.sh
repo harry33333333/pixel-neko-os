@@ -88,6 +88,7 @@ run_s5_test() {
     fi
 
     rm -f "${iso}"
+    grep -E "\[uACPI\]|\[ACPI\]|\[ACPI TEST\]|\[POWER\]" "${log}" || true
     echo "ACPI S5 ${kind} PASS"
 }
 
