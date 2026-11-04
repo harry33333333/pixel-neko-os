@@ -289,9 +289,145 @@ static void run_vfs_init(void) {
     vfs_init();
 }
 
+static void splash_run_xp(unsigned char* v) {
+    int skip = 0;
+    int cx = screen_w / 2;
+    int cy = screen_h / 2;
+
+    // Pitch black background in backbuffer
+    draw_filled_box(v, 0, 0, screen_w, screen_h, 0);
+
+    // 1. Draw 4-color modular emblem
+    int em_x = cx - 17;
+    int em_y = cy - 85;
+
+    // Palette colors: 4: Red, 2: Green, 1: Blue, 14: Yellow, 15: White, 8: Dark Gray, 9: Light Blue
+    draw_filled_box(v, em_x, em_y, 15, 15, 4);
+    draw_filled_box(v, em_x + 17, em_y, 15, 15, 2);
+    draw_filled_box(v, em_x, em_y + 17, 15, 15, 1);
+    draw_filled_box(v, em_x + 17, em_y + 17, 15, 15, 14);
+
+    // Bevel highlights
+    draw_filled_box(v, em_x, em_y, 15, 1, 15);
+    draw_filled_box(v, em_x, em_y, 1, 15, 15);
+    draw_filled_box(v, em_x + 17, em_y, 15, 1, 15);
+    draw_filled_box(v, em_x + 17, em_y, 1, 15, 15);
+    draw_filled_box(v, em_x, em_y + 17, 15, 1, 15);
+    draw_filled_box(v, em_x, em_y + 17, 1, 15, 15);
+    draw_filled_box(v, em_x + 17, em_y + 17, 15, 1, 15);
+    draw_filled_box(v, em_x + 17, em_y + 17, 1, 15, 15);
+
+    // Center cute Pixel Neko silhouette
+    int cat_x = cx - 6;
+    int cat_y = cy - 85 + 11;
+    draw_filled_box(v, cat_x, cat_y, 12, 12, 15);
+    PUT_PIXEL(v, cat_x + 1, cat_y - 1, 15);
+    PUT_PIXEL(v, cat_x + 2, cat_y - 2, 15);
+    PUT_PIXEL(v, cat_x + 9, cat_y - 1, 15);
+    PUT_PIXEL(v, cat_x + 8, cat_y - 2, 15);
+    PUT_PIXEL(v, cat_x + 3, cat_y + 4, 0);
+    PUT_PIXEL(v, cat_x + 4, cat_y + 4, 0);
+    PUT_PIXEL(v, cat_x + 7, cat_y + 4, 0);
+    PUT_PIXEL(v, cat_x + 8, cat_y + 4, 0);
+    PUT_PIXEL(v, cat_x + 5, cat_y + 7, 4);
+    PUT_PIXEL(v, cat_x + 6, cat_y + 7, 4);
+
+    // 2. Title & Edition Typography
+    font_draw_text(v, cx - 52, cy - 42, "Pixel Neko OS", 15);
+    font_draw_text(v, cx - 116, cy - 22, "Snow Neko  ::  64-Bit Edition", 9);
+
+    // 3. Progress Bar Track (Width 200, Height 16)
+    int bar_w = 200;
+    int bar_h = 16;
+    int bar_x = cx - bar_w / 2;
+    int bar_y = cy + 24;
+
+    draw_filled_box(v, bar_x, bar_y, bar_w, 1, 8);
+    draw_filled_box(v, bar_x, bar_y, 1, bar_h, 8);
+    draw_filled_box(v, bar_x + bar_w - 1, bar_y, 1, bar_h, 8);
+    draw_filled_box(v, bar_x, bar_y + bar_h - 1, bar_w, 1, 8);
+
+    draw_filled_box(v, bar_x + 1, bar_y + 1, bar_w - 2, 1, 0);
+    draw_filled_box(v, bar_x + 1, bar_y + 1, 1, bar_h - 2, 0);
+    draw_filled_box(v, bar_x + bar_w - 2, bar_y + 1, 1, bar_h - 2, 0);
+    draw_filled_box(v, bar_x + 1, bar_y + bar_h - 2, bar_w - 2, 1, 0);
+
+    draw_filled_box(v, bar_x + 2, bar_y + 2, bar_w - 4, bar_h - 4, 0);
+
+    // Footer
+    font_draw_text(v, cx - 240, screen_h - 28,
+                   "Copyright (C) 2026 Tairitsu_tty / XNZM. All rights reserved.", 8);
+    copy_fullscreen_to_lfb(v);
+
+    speaker_boot_chord();
+
+    // Boot steps execution
+    boot_step_t steps[8] = {
+        { "Initializing processor...", cpu_model_string, 0, 15, 30, NULL },
+        { "Verifying memory map...", "Physical Page Bitmap OK", 1, 28, 30, NULL },
+        { "Scanning PCI bus & 2D Accelerator...", "VMware SVGA II / ATI / VBE", 2, 42, 30, gfx_accel_init },
+        { "Configuring PS/2 keyboard buffer...", "IRQ1 Remapped", 3, 56, 30, NULL },
+        { "Initializing PS/2 mouse streaming...", "Auxiliary Device Enabled", 4, 70, 30, mouse_init },
+        { "Probing ATA IDE storage & partitions...", "Master/Slave Drive Check", 5, 82, 30, NULL },
+        { "Mounting drives & volumes (VFS)...", "Virtual File System Ready", 6, 92, 30, run_vfs_init },
+        { "Loading desktop environment...", "Window Manager Ready", 7, 100, 30, wm_init }
+    };
+
+    int seg_w = 9;
+    int seg_gap = 2;
+    int cluster_w = 3 * seg_w + 2 * seg_gap;
+    int inner_w = bar_w - 4;
+    int inner_h = bar_h - 4;
+    int total_range = inner_w + cluster_w;
+    int inner_x = bar_x + 2;
+    int inner_y = bar_y + 2;
+
+    int xp_frame = 0;
+
+    for (int step = 0; step < 8; step++) {
+        if (!skip && splash_poll_skip()) skip = 1;
+
+        if (steps[step].exec != NULL) {
+            steps[step].exec();
+        }
+
+        int frames = skip ? 0 : 4;
+        for (int f = 0; f < frames; f++) {
+            if (!skip && splash_poll_skip()) skip = 1;
+            xp_frame++;
+            draw_filled_box(v, inner_x, inner_y, inner_w, inner_h, 0);
+
+            int cluster_x = (xp_frame * 6) % total_range - cluster_w;
+            for (int s = 0; s < 3; s++) {
+                int sx = cluster_x + s * (seg_w + seg_gap);
+                for (int px = 0; px < seg_w; px++) {
+                    int tx = sx + px;
+                    if (tx >= 0 && tx < inner_w) {
+                        for (int py = 0; py < inner_h; py++) {
+                            if ((px == 0 || px == seg_w - 1) && (py == 0 || py == inner_h - 1)) {
+                                continue;
+                            }
+                            unsigned char col = (py == 0) ? 15 : ((py < 3) ? 11 : ((py < 9) ? 1 : 9));
+                            PUT_PIXEL(v, inner_x + tx, inner_y + py, col);
+                        }
+                    }
+                }
+            }
+            copy_rect_to_lfb(v, inner_x, inner_y, inner_w, inner_h);
+            sleep_ms(20);
+        }
+    }
+}
+
 void splash_run(void)
 {
     unsigned char* v = backbuffer;
+
+    if (!g_verbose_boot) {
+        splash_run_xp(v);
+        return;
+    }
+
     int skip = 0;
 
     // ------------------------------------------------------------------------

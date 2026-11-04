@@ -43,3 +43,4 @@ To eliminate playback stuttering and audio glitches under high CPU or UI load:
 ## Visualizer & DSP
 
 The audio engine computes real-time 128-band frequency spectrum and stereo peak levels directly from the active hardware DMA buffer. The visualizer feeds the vintage Mac OS 9-style media player application without adding extra decoding passes.
+

@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A174a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A176a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -22,9 +22,10 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **NMI 安全机制**：采用 System V ABI 高速系统调用流水线与三窗口 Paranoid NMI 安全判定。
 - **现代中断体系**：支持 LAPIC, IOAPIC, MADT ISO 中断重定向与 PCI MSI/MSI-X 消息中断。
 
-### 2. 经典像素级 UI 保持
-- **Happy Neko 开机动画**：50% 棋盘底纹、一体机线条、PC 扬声器 4 音符升调开机和弦（C5 -> E5 -> G5 -> C6）。
-- **Win 3.1 风格 3D 浮雕视窗**：45° 动态斜向条纹理发店进度条（Barber-Pole）与 Extension Parade 硬件扩展图标游行。
+### 2. 视觉盛宴：Windows XP 经典开机动画与复古像素 UI
+- **Windows XP 风格开机界面与滚动进度条**：全新设计纯黑背景开机画卷，居中呈现四色复古 Pixel Neko 徽标，下方搭配标志性的 Windows XP 三段式微光高亮蓝色流动滑块进度条（Marquee Progress Bar），硬件设备初始化全程流畅滑行。
+- **经典诊断启动模式保留（Classic Diagnostic Boot）**：通过 Limine 高级菜单可随时启动经典 50% 棋盘底纹与实时带步进提示框，以及 Happy Neko 开机和弦与 Mac OS 9 理发店条纹进度条（Barber-Pole）和硬件扩展游行。
+- **层级化 Limine 引导菜单**：主菜单仅保留纯净的 Live Desktop 与 Graphical Installer 两大常用项，收拢 Safe Graphics、Verbose Diagnostic 及 Debug Log 6 大高级选项至二级折叠子菜单。
 - **显存 PAT (Page Attribute Table) WC 加速**：Write-Combining 显存纯写脏矩形双缓冲，杜绝显存读瓶颈与画面撕裂。
 - **9 大经典内置应用程序**：文件管理器、文本编辑器、简易计算器、控制面板、多媒体音乐播放器、图片查看器、系统信息查看器、15 数字拼图、系统安装器。
 
@@ -56,18 +57,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A174a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A176a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A174a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A176a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A174a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A176a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

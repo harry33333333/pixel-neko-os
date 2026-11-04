@@ -40,6 +40,27 @@
 // Global HHDM and memory limits
 hhdm_info_t g_hhdm = {0};
 
+// Boot splash mode: false = Windows XP-style progress bar; true = Classic verbose badge
+bool g_verbose_boot = false;
+static int g_xp_step_frame = 0;
+
+static bool cmdline_contains(const char* needle) {
+    if (!kernel_file_request.response ||
+        !kernel_file_request.response->kernel_file ||
+        !kernel_file_request.response->kernel_file->cmdline ||
+        !needle) {
+        return false;
+    }
+    const char* haystack = kernel_file_request.response->kernel_file->cmdline;
+    size_t nlen = strlen(needle);
+    for (size_t i = 0; haystack[i]; i++) {
+        if (strncmp(haystack + i, needle, nlen) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // --- Limine Protocol Requests (v8.x Standard) ---
 
 __attribute__((used, section(".limine_requests_start_marker")))
@@ -241,25 +262,203 @@ static void draw_barber_pole(int x, int y, int w, int h, int frame) {
     }
 }
 
+// Initialize modern Windows XP-style boot screen
+static void boot_screen_xp_init(void) {
+    if (!g_main_surface.framebuffer_virt) return;
+
+    // Pitch black background
+    uint32_t c_black = boot_framebuffer_make_color(0, 0, 0);
+    boot_framebuffer_clear(c_black);
+
+    int cx = (int)g_main_surface.width / 2;
+    int cy = (int)g_main_surface.height / 2;
+
+    // 1. Draw 4-color modular Windows / Neko emblem (34x34)
+    int em_x = cx - 17;
+    int em_y = cy - 85;
+
+    uint32_t c_red    = boot_framebuffer_make_color(225, 60, 45);
+    uint32_t c_green  = boot_framebuffer_make_color(60, 185, 45);
+    uint32_t c_blue   = boot_framebuffer_make_color(30, 130, 240);
+    uint32_t c_yellow = boot_framebuffer_make_color(245, 195, 30);
+    uint32_t c_white  = boot_framebuffer_make_color(255, 255, 255);
+    uint32_t c_dgray  = boot_framebuffer_make_color(60, 64, 72);
+
+    // 4 Quadrants (15x15 each, 2px gap)
+    boot_framebuffer_fill_rect(em_x, em_y, 15, 15, c_red);
+    boot_framebuffer_fill_rect(em_x + 17, em_y, 15, 15, c_green);
+    boot_framebuffer_fill_rect(em_x, em_y + 17, 15, 15, c_blue);
+    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 15, 15, c_yellow);
+
+    // Bevel highlights on quadrants
+    boot_framebuffer_fill_rect(em_x, em_y, 15, 1, c_white);
+    boot_framebuffer_fill_rect(em_x, em_y, 1, 15, c_white);
+    boot_framebuffer_fill_rect(em_x + 17, em_y, 15, 1, c_white);
+    boot_framebuffer_fill_rect(em_x + 17, em_y, 1, 15, c_white);
+    boot_framebuffer_fill_rect(em_x, em_y + 17, 15, 1, c_white);
+    boot_framebuffer_fill_rect(em_x, em_y + 17, 1, 15, c_white);
+    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 15, 1, c_white);
+    boot_framebuffer_fill_rect(em_x + 17, em_y + 17, 1, 15, c_white);
+
+    // Center cute Pixel Neko silhouette (12x12 white box with cat face)
+    int cat_x = cx - 6;
+    int cat_y = cy - 85 + 11;
+    boot_framebuffer_fill_rect(cat_x, cat_y, 12, 12, c_white);
+    // Cat ears
+    boot_framebuffer_putpixel(cat_x + 1, cat_y - 1, c_white);
+    boot_framebuffer_putpixel(cat_x + 2, cat_y - 2, c_white);
+    boot_framebuffer_putpixel(cat_x + 9, cat_y - 1, c_white);
+    boot_framebuffer_putpixel(cat_x + 8, cat_y - 2, c_white);
+    // Cat eyes (black)
+    boot_framebuffer_putpixel(cat_x + 3, cat_y + 4, c_black);
+    boot_framebuffer_putpixel(cat_x + 4, cat_y + 4, c_black);
+    boot_framebuffer_putpixel(cat_x + 7, cat_y + 4, c_black);
+    boot_framebuffer_putpixel(cat_x + 8, cat_y + 4, c_black);
+    // Cat nose (red)
+    boot_framebuffer_putpixel(cat_x + 5, cat_y + 7, c_red);
+    boot_framebuffer_putpixel(cat_x + 6, cat_y + 7, c_red);
+
+    // 2. Title & Edition Typography
+    const char* title = "Pixel Neko OS";
+    int title_len = (int)strlen(title);
+    int title_x = cx - (title_len * 8) / 2;
+    boot_framebuffer_draw_string(title_x + 1, cy - 42 + 1, title, c_dgray, c_black);
+    boot_framebuffer_draw_string(title_x, cy - 42, title, c_white, c_black);
+
+    const char* sub = "Snow Neko  ::  64-Bit Edition";
+    int sub_len = (int)strlen(sub);
+    int sub_x = cx - (sub_len * 8) / 2;
+    uint32_t c_sub = boot_framebuffer_make_color(150, 180, 220);
+    boot_framebuffer_draw_string(sub_x, cy - 22, sub, c_sub, c_black);
+
+    // 3. Progress Bar Track (Width 200, Height 16)
+    int bar_w = 200;
+    int bar_h = 16;
+    int bar_x = cx - bar_w / 2;
+    int bar_y = cy + 24;
+
+    uint32_t c_border = boot_framebuffer_make_color(75, 80, 92);
+    uint32_t c_dark   = boot_framebuffer_make_color(22, 26, 34);
+
+    // Outer border
+    boot_framebuffer_fill_rect(bar_x, bar_y, bar_w, 1, c_border);
+    boot_framebuffer_fill_rect(bar_x, bar_y, 1, bar_h, c_border);
+    boot_framebuffer_fill_rect(bar_x + bar_w - 1, bar_y, 1, bar_h, c_border);
+    boot_framebuffer_fill_rect(bar_x, bar_y + bar_h - 1, bar_w, 1, c_border);
+
+    // Inner shadow
+    boot_framebuffer_fill_rect(bar_x + 1, bar_y + 1, bar_w - 2, 1, c_dark);
+    boot_framebuffer_fill_rect(bar_x + 1, bar_y + 1, 1, bar_h - 2, c_dark);
+    boot_framebuffer_fill_rect(bar_x + bar_w - 2, bar_y + 1, 1, bar_h - 2, c_dark);
+    boot_framebuffer_fill_rect(bar_x + 1, bar_y + bar_h - 2, bar_w - 2, 1, c_dark);
+
+    // Track interior (196 x 12)
+    boot_framebuffer_fill_rect(bar_x + 2, bar_y + 2, bar_w - 4, bar_h - 4, c_black);
+
+    // 4. Subtle copyright footer
+    const char* footer = "Copyright (C) 2026 Tairitsu_tty / XNZM. All rights reserved.";
+    int footer_len = (int)strlen(footer);
+    int footer_x = cx - (footer_len * 8) / 2;
+    int footer_y = (int)g_main_surface.height - 28;
+    if (footer_y > cy + 80) {
+        uint32_t c_dim = boot_framebuffer_make_color(85, 90, 100);
+        boot_framebuffer_draw_string(footer_x, footer_y, footer, c_dim, c_black);
+    }
+
+    g_xp_step_frame = 0;
+}
+
+// Draw the iconic 3-segment XP glowing blue marquee progress bar
+static void draw_xp_progress_frame(int frame) {
+    if (!g_main_surface.framebuffer_virt) return;
+
+    int cx = (int)g_main_surface.width / 2;
+    int cy = (int)g_main_surface.height / 2;
+
+    int bar_w = 200;
+    int bar_h = 16;
+    int bar_x = cx - bar_w / 2;
+    int bar_y = cy + 24;
+
+    int inner_x = bar_x + 2;
+    int inner_y = bar_y + 2;
+    int inner_w = bar_w - 4; // 196 px
+    int inner_h = bar_h - 4; // 12 px
+
+    uint32_t c_black = boot_framebuffer_make_color(0, 0, 0);
+    // Clear track interior
+    boot_framebuffer_fill_rect(inner_x, inner_y, inner_w, inner_h, c_black);
+
+    // 3 segmented glowing blue pill blocks
+    int seg_w = 9;
+    int seg_gap = 2;
+    int cluster_w = 3 * seg_w + 2 * seg_gap; // 31 px
+    int total_range = inner_w + cluster_w;
+
+    int cluster_x = (frame * 6) % total_range - cluster_w;
+
+    // Windows XP blue glowing palette
+    uint32_t c_hi    = boot_framebuffer_make_color(170, 225, 255); // Top highlight
+    uint32_t c_body1 = boot_framebuffer_make_color(70, 165, 255);  // Upper gradient
+    uint32_t c_body2 = boot_framebuffer_make_color(30, 115, 245);  // Core vibrant XP blue
+    uint32_t c_body3 = boot_framebuffer_make_color(15, 75, 205);   // Lower gradient
+    uint32_t c_bot   = boot_framebuffer_make_color(10, 45, 150);   // Bottom shadow
+
+    for (int s = 0; s < 3; s++) {
+        int sx = cluster_x + s * (seg_w + seg_gap);
+        for (int px = 0; px < seg_w; px++) {
+            int target_x = sx + px;
+            if (target_x >= 0 && target_x < inner_w) {
+                for (int py = 0; py < inner_h; py++) {
+                    // Rounded corners: skip 4 extreme corner pixels
+                    if ((px == 0 || px == seg_w - 1) && (py == 0 || py == inner_h - 1)) {
+                        continue;
+                    }
+                    uint32_t col;
+                    if (py == 0) col = c_hi;
+                    else if (py < 3) col = c_body1;
+                    else if (py < 8) col = c_body2;
+                    else if (py < 11) col = c_body3;
+                    else col = c_bot;
+
+                    boot_framebuffer_putpixel(inner_x + target_x, inner_y + py, col);
+                }
+            }
+        }
+    }
+}
+
 // Render real-time bring-up progress badge at screen bottom
 static void boot_progress_notify(const char* step_msg) {
     if (!g_main_surface.framebuffer_virt) return;
 
-    uint32_t c_white = boot_framebuffer_make_color(255, 255, 255);
-    uint32_t c_dgray = boot_framebuffer_make_color(128, 128, 128);
-    uint32_t c_blue  = boot_framebuffer_make_color(0, 0, 128);
+    if (g_verbose_boot) {
+        // Classic Diagnostic Boot: Render step badge at bottom of 50% checkerboard screen
+        uint32_t c_white = boot_framebuffer_make_color(255, 255, 255);
+        uint32_t c_dgray = boot_framebuffer_make_color(128, 128, 128);
+        uint32_t c_blue  = boot_framebuffer_make_color(0, 0, 128);
 
-    int badge_w = 480;
-    int badge_h = 24;
-    int badge_x = (int)(g_main_surface.width - badge_w) / 2;
-    int badge_y = (int)g_main_surface.height - 36;
-    if (badge_y < 10) badge_y = 10;
+        int badge_w = 480;
+        int badge_h = 24;
+        int badge_x = (int)(g_main_surface.width - badge_w) / 2;
+        int badge_y = (int)g_main_surface.height - 36;
+        if (badge_y < 10) badge_y = 10;
 
-    boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, badge_h, c_white);
-    boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, 1, c_dgray);
-    boot_framebuffer_fill_rect(badge_x, badge_y, 1, badge_h, c_dgray);
-    boot_framebuffer_draw_string(badge_x + 12, badge_y + 4, step_msg, c_blue, c_white);
-    boot_framebuffer_flush();
+        boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, badge_h, c_white);
+        boot_framebuffer_fill_rect(badge_x, badge_y, badge_w, 1, c_dgray);
+        boot_framebuffer_fill_rect(badge_x, badge_y, 1, badge_h, c_dgray);
+        boot_framebuffer_draw_string(badge_x + 12, badge_y + 4, step_msg, c_blue, c_white);
+        boot_framebuffer_flush();
+    } else {
+        // Windows XP Boot Mode: Smoothly advance the 3 glowing blue blocks
+        (void)step_msg;
+        for (int f = 0; f < 3; f++) {
+            g_xp_step_frame++;
+            draw_xp_progress_frame(g_xp_step_frame);
+            boot_framebuffer_flush();
+            for (volatile int d = 0; d < 80000; d++) { __asm__ volatile ("pause"); }
+        }
+    }
 }
 
 // Draw a classic Windows 3.1 / Mac OS 9 style 3D modal window
@@ -398,6 +597,13 @@ void kmain(void) {
     // 1. Initialize serial port logger (COM1 @ 0x3F8)
     log_init();
 
+    if (cmdline_contains("verbose_boot=1") || cmdline_contains("boot_splash=classic")) {
+        g_verbose_boot = true;
+    }
+    if (cmdline_contains("mode=install")) {
+        ui_compat_set_install_mode(true);
+    }
+
     log_printf("\n");
     log_printf("============================================================\n");
     log_printf("  Pixel Neko OS 64-Bit Kernel (Darwin %s)\n", OS_BUILD);
@@ -451,11 +657,18 @@ void kmain(void) {
                 log_printf("[BOOT WARN] Dedicated WC framebuffer mapping unavailable; using Limine mapping.\n");
             }
 
-            // Draw classic Mac OS 50% checkerboard background early
-            boot_framebuffer_draw_checkerboard();
-            boot_framebuffer_flush();
-            boot_progress_notify("Pixel Neko OS :: Framebuffer Ready");
-            log_printf("[UI] Early Boot Framebuffer active & 50%% checkerboard rendered.\n");
+            if (g_verbose_boot) {
+                // Classic Diagnostic Boot: Draw classic Mac OS 50% checkerboard background early
+                boot_framebuffer_draw_checkerboard();
+                boot_framebuffer_flush();
+                boot_progress_notify("Pixel Neko OS :: Framebuffer Ready");
+                log_printf("[UI] Early Boot Framebuffer active & 50%% checkerboard rendered.\n");
+            } else {
+                // Windows XP Boot Mode: Render clean black background, Pixel Neko emblem & XP progress track
+                boot_screen_xp_init();
+                boot_framebuffer_flush();
+                log_printf("[UI] Windows XP-style boot screen active.\n");
+            }
         }
     } else {
         log_printf("[BOOT WARN] No graphic framebuffer returned by Limine! Running in headless serial mode.\n");

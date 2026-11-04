@@ -5,7 +5,7 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 174
+PIXEL_NEKO_BUILD_NUMBER ?= 176
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1

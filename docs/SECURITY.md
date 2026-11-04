@@ -47,3 +47,4 @@ If any validation check fails:
 
 - **Paranoid NMI Handler**: Implements a dedicated NMI IST stack and validates `GS_BASE` identity. The NMI stub guarantees that the transient kernel-CPL/user-GS window before `sysret` does not leak SWAPGS state.
 - **Double Fault IST**: Double Faults (`#DF`) are assigned a dedicated 16 KiB IST stack with unmapped guard pages, completely eliminating Triple Fault reboot loops.
+
