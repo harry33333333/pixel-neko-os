@@ -1,5 +1,6 @@
 #include "keyboard.h"
 #include "input.h"
+#include "usb_hid.h"
 
 static bool g_shift = false;
 static bool g_ctrl = false;
@@ -120,6 +121,7 @@ void keyboard_handle_byte(uint8_t scancode) {
     }
 
     if (!translated) return;
+    if (usb_hid_prefer_keyboard_input()) return;
     if (!release) legacy_push((int)translated);
     input_emit_key(translated, !release);
 }

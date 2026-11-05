@@ -87,6 +87,7 @@ blkdev_t* blkdev_find_type(blk_type_t type, int unit) {
 
 int block_read(blkdev_t* dev, uint64_t lba, uint32_t count, void* buffer) {
     if (!dev || !dev->read_sectors || !buffer || !count) return -1;
+    if (dev->is_removable && dev->media_state != MEDIA_PRESENT) return -1;
     if (lba >= dev->total_sectors || count > dev->total_sectors - lba) {
         return -1;
     }

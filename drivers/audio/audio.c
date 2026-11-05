@@ -23,6 +23,7 @@
 #define PCM_QUEUE_SAMPLES       (PCM_QUEUE_SIZE / sizeof(short))
 #define AUDIO_DMA_HALF_BYTES    32768
 #define AUDIO_DMA_BUFFER_BYTES  65536
+#define AUDIO_CACHE_TARGET_BYTES (AUDIO_DMA_HALF_BYTES * 4U)
 
 typedef struct {
     const char* (*get_name)(void);
@@ -618,7 +619,8 @@ int audio_play_file(const char* filepath) {
 
     /* Pre-decode into g_pcm_queue so DMA starts with plenty of cushion */
     for (int pre = 0;
-         pre < 64 && g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2) && !g_eof_reached;
+         pre < 256 && g_queue_bytes < AUDIO_CACHE_TARGET_BYTES &&
+         !g_eof_reached;
          pre++) {
         int samples_read = 0;
         if (g_active_dec == DEC_WAV) {
@@ -808,7 +810,7 @@ void audio_poll(void) {
     if (!audio_has_hardware() || !g_active_driver) return;
 
     int dec_count = 0;
-    int max_dec = (g_queue_bytes < AUDIO_DMA_HALF_BYTES * 2) ? 24 : 12;
+    int max_dec = (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) ? 48 : 12;
     static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
            dec_count < max_dec) {

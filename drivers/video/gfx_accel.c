@@ -362,8 +362,33 @@ int gfx_accel_supports_bpp(int w, int h, int bpp) {
 int gfx_accel_try_set_mode(int w, int h, int bpp) {
     if (!gfx_accel_can_change_mode(w, h, bpp)) return 0;
     if (g_backend_kind == GFX_BACKEND_VMWARE) {
-        if (!vmware_svga_set_mode(w, h, bpp)) return 0;
+        int hardware_w = w;
+        int hardware_h = h;
+        bool configured =
+            vmware_svga_set_mode(hardware_w, hardware_h, bpp) != 0;
+        if (!configured) {
+            static const int fallback_w[] = {1024, 800, 640, 320};
+            static const int fallback_h[] = {768, 600, 480, 200};
+            for (unsigned int index = 0;
+                 index < sizeof(fallback_w) / sizeof(fallback_w[0]);
+                 index++) {
+                if (vmware_svga_supports_mode(fallback_w[index],
+                                              fallback_h[index], bpp)) {
+                    hardware_w = fallback_w[index];
+                    hardware_h = fallback_h[index];
+                    if (vmware_svga_set_mode(hardware_w, hardware_h, bpp)) {
+                        configured = true;
+                        break;
+                    }
+                }
+            }
+            if (!configured) return 0;
+        }
         set_resolution(w, h, bpp);
+        if (hardware_w != w || hardware_h != h) {
+            klog_info("[GFX] logical %dx%d scaled into VMware %dx%d "
+                      "scanout", w, h, hardware_w, hardware_h);
+        }
     } else {
         set_resolution(w, h, bpp);
         gfx_accel_set_mode(w, h, bpp);

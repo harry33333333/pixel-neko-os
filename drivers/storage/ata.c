@@ -70,11 +70,11 @@ static int ata_wait_status(ata_drive_t* drive, uint8_t wanted,
             __asm__ volatile ("pause");
             continue;
         }
+        if (status & (ATA_SR_ERR | ATA_SR_DF)) return -1;
         if ((status & forbidden) == 0 && (wanted == 0 ||
                                            (status & wanted) == wanted)) {
             return 0;
         }
-        if (wanted != 0 && (status & (ATA_SR_ERR | ATA_SR_DF))) return -1;
         if ((spin & 0xFFFF) == 0) boot_screen_tick();
         __asm__ volatile ("pause");
     }
@@ -263,7 +263,8 @@ static void write_be32(uint8_t* data, uint32_t value) {
 }
 
 static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
-                        void* buffer, uint32_t bytes, bool input) {
+                        void* buffer, uint32_t bytes, bool input,
+                        bool quiet) {
     if (!drive || !packet || !drive->packet) return -1;
     if (bytes > 0xFFFEu) return -1;
     ata_select(drive, 0);
@@ -274,18 +275,23 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
     outb(drive->base + ATA_REG_LBA2, (uint8_t)(bytes >> 8));
     outb(drive->base + ATA_REG_COMMAND, ATA_CMD_PACKET);
     if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
-        log_printf("[ATA ] ATAPI packet command: status=%02x error=%02x\n",
-                   inb(drive->base + ATA_REG_STATUS),
-                   inb(drive->base + ATA_REG_ERROR));
+        if (!quiet) {
+            log_printf("[ATA ] ATAPI packet command: status=%02x error=%02x\n",
+                       inb(drive->base + ATA_REG_STATUS),
+                       inb(drive->base + ATA_REG_ERROR));
+        }
         return -1;
     }
     ata_write_words(drive->base + ATA_REG_DATA, packet, 6);
     ata_delay400(drive);
     if (bytes) {
         if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
-            log_printf("[ATA ] ATAPI data wait: status=%02x error=%02x bytes=%u\n",
-                       inb(drive->base + ATA_REG_STATUS),
-                       inb(drive->base + ATA_REG_ERROR), bytes);
+            if (!quiet) {
+                log_printf("[ATA ] ATAPI data wait: status=%02x error=%02x "
+                           "bytes=%u\n",
+                           inb(drive->base + ATA_REG_STATUS),
+                           inb(drive->base + ATA_REG_ERROR), bytes);
+            }
             return -1;
         }
         if (input) ata_read_words(drive->base + ATA_REG_DATA, buffer,
@@ -293,9 +299,11 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
         else ata_write_words(drive->base + ATA_REG_DATA, buffer, bytes / 2);
     }
     if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) {
-        log_printf("[ATA ] ATAPI completion: status=%02x error=%02x\n",
-                   inb(drive->base + ATA_REG_STATUS),
-                   inb(drive->base + ATA_REG_ERROR));
+        if (!quiet) {
+            log_printf("[ATA ] ATAPI completion: status=%02x error=%02x\n",
+                       inb(drive->base + ATA_REG_STATUS),
+                       inb(drive->base + ATA_REG_ERROR));
+        }
         return -1;
     }
     return 0;
@@ -306,7 +314,8 @@ static int atapi_probe_capacity(ata_drive_t* drive) {
     uint8_t response[8];
     memset(packet, 0, sizeof(packet));
     packet[0] = 0x25;
-    if (atapi_packet(drive, packet, response, sizeof(response), true) != 0) {
+    if (atapi_packet(drive, packet, response, sizeof(response), true,
+                     true) != 0) {
         return -1;
     }
     uint32_t last_lba = be32(response);
@@ -333,12 +342,69 @@ static int atapi_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
         packet[7] = (uint8_t)(batch >> 8);
         packet[8] = (uint8_t)batch;
         uint32_t bytes = batch * drive->sector_size;
-        if (atapi_packet(drive, packet, output, bytes, true) != 0) return -1;
+        if (atapi_packet(drive, packet, output, bytes, true, false) != 0) {
+            return -1;
+        }
         output += bytes;
         lba += batch;
         count -= batch;
     }
     return 0;
+}
+
+static media_state_t atapi_check_media(blkdev_t* block) {
+    ata_drive_t* drive = block ? (ata_drive_t*)block->priv : NULL;
+    if (!drive || !drive->packet) return MEDIA_ERROR;
+
+    uint8_t packet[12];
+    memset(packet, 0, sizeof(packet));
+    if (atapi_packet(drive, packet, NULL, 0, true, true) != 0) {
+        if (block->total_sectors != 0) {
+            drive->sectors = 0;
+            block_set_capacity(block, 0, drive->sector_size);
+            log_printf("[ATA ] ATAPI tray opened or medium removed\n");
+        }
+        return MEDIA_ABSENT;
+    }
+
+    uint64_t old_sectors = drive->sectors;
+    uint32_t old_size = drive->sector_size;
+    if (atapi_probe_capacity(drive) != 0) {
+        if (block->total_sectors != 0) {
+            drive->sectors = 0;
+            block_set_capacity(block, 0, drive->sector_size);
+        }
+        return MEDIA_ABSENT;
+    }
+    if (old_sectors != drive->sectors || old_size != drive->sector_size ||
+        block->total_sectors != drive->sectors) {
+        block_set_capacity(block, drive->sectors, drive->sector_size);
+        log_printf("[ATA ] ATAPI medium loaded: %llu x %u-byte sectors\n",
+                   (unsigned long long)drive->sectors, drive->sector_size);
+    } else {
+        block->media_state = MEDIA_PRESENT;
+    }
+    return MEDIA_PRESENT;
+}
+
+int ata_atapi_eject(blkdev_t* block) {
+    ata_drive_t* drive = block ? (ata_drive_t*)block->priv : NULL;
+    if (!drive || !drive->packet) return -1;
+    uint8_t packet[12];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x1E;
+    (void)atapi_packet(drive, packet, NULL, 0, true, true);
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x1B;
+    packet[4] = 0x02;
+    int result = atapi_packet(drive, packet, NULL, 0, true, false);
+    if (result == 0) {
+        drive->sectors = 0;
+        block_set_capacity(block, 0, drive->sector_size ? drive->sector_size :
+                                                         2048);
+        log_printf("[ATA ] ATAPI eject requested for %s\n", block->name);
+    }
+    return result;
 }
 
 static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
@@ -351,14 +417,16 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
         drive->channel = channel;
         drive->slave = slave;
         if (!identify_drive(drive)) continue;
-        if (drive->packet && atapi_probe_capacity(drive) != 0) continue;
+        if (drive->packet) (void)atapi_probe_capacity(drive);
         int unit = channel * 2 + slave;
         blkdev_t* block = block_register(
             drive->packet ? "ata-atapi" : "ata-pio",
             drive->packet ? BLK_TYPE_ATAPI : BLK_TYPE_ATA, unit,
-            drive->sector_size, drive->sectors, drive->packet, false,
+            drive->sector_size, drive->sectors, drive->packet,
+            drive->packet,
             drive->packet ? atapi_read_blocks : ata_read_blocks,
-            drive->packet ? NULL : ata_write_blocks, NULL, drive);
+            drive->packet ? NULL : ata_write_blocks,
+            drive->packet ? atapi_check_media : NULL, drive);
         if (block) {
             memcpy(block->model, drive->model, sizeof(block->model));
             log_printf("[ATA ] %s %u:%u %s sectors=%llu\n",

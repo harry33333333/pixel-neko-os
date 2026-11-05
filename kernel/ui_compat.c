@@ -5,12 +5,14 @@
 #include "gfx_accel.h"
 #include "input.h"
 #include "keyboard.h"
+#include "filemanager.h"
 #include "mm.h"
 #include "pmm.h"
 #include "port.h"
 #include "scheduler.h"
 #include "string.h"
 #include "timer.h"
+#include "vfs.h"
 #include "wm.h"
 
 #define UI_MAX_WIDTH 1280
@@ -443,7 +445,7 @@ static void ui_update_pointer(input_event_t* event) {
 void ui_desktop_poll(void) {
     if (!g_started) return;
     timer_update();
-    audio_poll();
+    if (!g_install_mode && vfs_poll_media()) fm_refresh();
 
     int prev_mx = g_cursor_saved_x;
     int prev_my = g_cursor_saved_y;
@@ -522,7 +524,6 @@ void ui_desktop_poll(void) {
 
     if (full_sync) {
         copy_fullscreen_to_lfb(backbuffer);
-        audio_poll();
     } else {
         if (has_drag_box && (box_changed || moved)) {
             ui_sync_drag_box_to_lfb(backbuffer, bx, by, bw, bh);

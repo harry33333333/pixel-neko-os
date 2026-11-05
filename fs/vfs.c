@@ -1,4 +1,7 @@
 #include "vfs.h"
+#include "ahci.h"
+#include "apic.h"
+#include "ata.h"
 #include "exfat.h"
 #include "fat.h"
 #include "iso9660.h"
@@ -9,6 +12,7 @@ vfs_drive_t g_vfs_drives[26];
 
 static iso_fs_t g_iso_filesystems[4];
 static exfat_fs_t g_exfat_filesystems[26];
+static uint64_t g_last_media_poll_tick;
 
 typedef enum {
     VFS_FS_NONE = 0,
@@ -121,12 +125,14 @@ static void mount_optical(blkdev_t* dev, char letter) {
     drive->is_supported = 1;
     drive->is_readonly = 1;
     drive->dev = dev;
-    for (int index = 0; index < 4; index++) {
-        if (g_iso_filesystems[index].mounted &&
-            g_iso_filesystems[index].dev != dev) {
-            continue;
-        }
-        if (iso_mount(dev, &g_iso_filesystems[index]) == 0) {
+    drive->media_generation = dev->media_generation;
+    drive->total_sectors = dev->total_sectors;
+    drive->total_kb = dev->total_sectors *
+                      (dev->sector_size / 1024u);
+    if (dev->media_state == MEDIA_PRESENT && dev->total_sectors) {
+        for (int index = 0; index < 4; index++) {
+            if (g_iso_filesystems[index].mounted) continue;
+            if (iso_mount(dev, &g_iso_filesystems[index]) != 0) continue;
             drive->mounted = 1;
             drive->total_sectors = g_iso_filesystems[index].total_sectors;
             drive->total_kb = drive->total_sectors * 2;
@@ -139,8 +145,71 @@ static void mount_optical(blkdev_t* dev, char letter) {
         }
     }
     if (!drive->mounted) {
-        copy_text(drive->label, sizeof(drive->label), "Optical Drive");
+        copy_text(drive->label, sizeof(drive->label),
+                  dev->media_state == MEDIA_PRESENT ?
+                      "Optical Drive (No ISO)" : "Optical Drive (Empty)");
     }
+}
+
+static void clear_optical_mount(vfs_drive_t* drive) {
+    if (!drive || !drive->dev) return;
+    for (int index = 0; index < 4; index++) {
+        if (g_iso_filesystems[index].dev == drive->dev) {
+            memset(&g_iso_filesystems[index], 0,
+                   sizeof(g_iso_filesystems[index]));
+        }
+    }
+    drive->mounted = 0;
+    drive->fs_type = PART_FS_UNKNOWN;
+    drive->is_supported = 1;
+    drive->is_readonly = 1;
+    drive->total_sectors = drive->dev->total_sectors;
+    drive->total_kb = drive->total_sectors *
+                      (drive->dev->sector_size / 1024u);
+    g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
+}
+
+static bool refresh_optical_drive(vfs_drive_t* drive) {
+    if (!drive || drive->drv_type != VFS_DRV_CDROM || !drive->dev) {
+        return false;
+    }
+    blkdev_t* dev = drive->dev;
+    media_state_t state = block_check_media(dev);
+    if (dev->media_generation == drive->media_generation &&
+        state == dev->media_state) {
+        return false;
+    }
+
+    drive->media_generation = dev->media_generation;
+    clear_optical_mount(drive);
+    if (state != MEDIA_PRESENT || !dev->total_sectors) {
+        copy_text(drive->label, sizeof(drive->label),
+                  "Optical Drive (Empty)");
+        log_printf("[VFS ] %c: optical medium removed\n", drive->letter);
+        return true;
+    }
+
+    for (int index = 0; index < 4; index++) {
+        if (g_iso_filesystems[index].mounted) continue;
+        if (iso_mount(dev, &g_iso_filesystems[index]) != 0) continue;
+        drive->mounted = 1;
+        drive->total_sectors = g_iso_filesystems[index].total_sectors;
+        drive->total_kb = drive->total_sectors * 2;
+        copy_text(drive->label, sizeof(drive->label),
+                  g_iso_filesystems[index].volume_label[0]
+                      ? g_iso_filesystems[index].volume_label
+                      : "Optical Media");
+        g_filesystem_kind[drive->letter - 'A'] = VFS_FS_ISO;
+        log_printf("[VFS ] %c: reloaded optical volume %s\n",
+                   drive->letter, drive->label);
+        return true;
+    }
+
+    copy_text(drive->label, sizeof(drive->label),
+              "Optical Drive (No ISO)");
+    log_printf("[VFS ] %c: medium inserted but no ISO9660 volume found\n",
+               drive->letter);
+    return true;
 }
 
 void vfs_init(void) {
@@ -148,6 +217,7 @@ void vfs_init(void) {
     memset(g_iso_filesystems, 0, sizeof(g_iso_filesystems));
     memset(g_exfat_filesystems, 0, sizeof(g_exfat_filesystems));
     memset(g_filesystem_kind, 0, sizeof(g_filesystem_kind));
+    g_last_media_poll_tick = apic_get_ticks();
     fat_init();
 
     int floppy_unit = 0;
@@ -215,6 +285,43 @@ void vfs_init(void) {
     }
     log_printf("[VFS ] Mounted %d drive(s); C: local, D: optical, E: removable\n",
                mounted);
+}
+
+bool vfs_poll_media(void) {
+    uint64_t now = apic_get_ticks();
+    if (now - g_last_media_poll_tick < 100) return false;
+    g_last_media_poll_tick = now;
+
+    bool changed = false;
+    for (int index = 0; index < 26; index++) {
+        vfs_drive_t* drive = &g_vfs_drives[index];
+        if (!drive->present || drive->drv_type != VFS_DRV_CDROM ||
+            !drive->dev) {
+            continue;
+        }
+        if (refresh_optical_drive(drive)) changed = true;
+    }
+    return changed;
+}
+
+int vfs_eject_optical(char letter) {
+    letter = normalize_letter(letter);
+    vfs_drive_t* drive = vfs_get_drive(letter);
+    if (!drive || drive->drv_type != VFS_DRV_CDROM || !drive->dev) {
+        return VFS_ERR_NO_DRIVE;
+    }
+    int result;
+    if (drive->dev->type == BLK_TYPE_ATAPI) {
+        result = strncmp(drive->dev->name, "ahci", 4) == 0
+                     ? ahci_atapi_eject(drive->dev)
+                     : ata_atapi_eject(drive->dev);
+    } else {
+        result = VFS_ERR_UNSUPPORTED;
+    }
+    if (result != 0) return VFS_ERR_IO;
+    drive->media_generation = UINT32_MAX;
+    (void)refresh_optical_drive(drive);
+    return VFS_OK;
 }
 
 static iso_fs_t* iso_for_drive(vfs_drive_t* drive) {
@@ -515,6 +622,11 @@ int vfs_is_booted_from_cdrom(void) {
 int vfs_remount(char letter) {
     vfs_drive_t* drive = vfs_get_drive(letter);
     if (!drive || !drive->dev) return VFS_ERR_NO_DRIVE;
+    if (drive->drv_type == VFS_DRV_CDROM) {
+        drive->media_generation = UINT32_MAX;
+        (void)refresh_optical_drive(drive);
+        return drive->mounted ? VFS_OK : VFS_ERR_NO_MEDIA;
+    }
     drive->mounted = 0;
     g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
     if (drive->fs_type == PART_FS_EXFAT) {

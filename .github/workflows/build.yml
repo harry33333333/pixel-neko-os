@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A181a" ]
+    branches: [ "main", "master", "beta-v26A181b" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181a"
+          VERSION="26A181b"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -78,27 +78,29 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A181a')
+         github.ref == 'refs/heads/beta-v26A181b')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Local Config Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Media and Input Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: local-disk settings persistence and installed-system boot cleanup.
+          > **Pre-release**: optical media hot-swap, VMware logical resolution, audio buffering and USB input priority.
 
-          ### Local settings
-          - Live and installer media never read or write persistent settings.
-          - Local installed boots store mouse speed, confirmed resolution and wallpaper mode/path in checksummed `.pse` records on the installed system partition.
-          - Two alternating `.pse` slots preserve the previous valid configuration if the newest record is incomplete or corrupt.
-          - Unsupported resolutions and missing or invalid wallpaper images fall back safely without changing the last valid record.
+          ### Optical media
+          - IDE and AHCI ATAPI drives remain registered when the tray is empty.
+          - File Manager exposes an Eject button and `E` shortcut.
+          - Media polling detects eject, insertion and replacement, then remounts ISO9660/Joliet automatically.
 
-          ### Display and installed boot
-          - Standard boot entries request native 1280x1024x32; 1280x1024 selection is only exposed when the active framebuffer or backend can support it.
-          - Framebuffer presentation now handles 16/24/32-bit layouts and color masks instead of assuming every scanline is 32-bit.
-          - The installer replaces Live/Installer menus with a Local Installed System menu using `mode=local`.
+          ### Display and audio
+          - VMware keeps a 1280x1024 logical desktop even when the configured SVGA VRAM only permits a smaller scanout; output is scaled without disabling the resolution option.
+          - Audio polling is performed once per scheduler cycle instead of two or three times, and the playback cache target is doubled to reduce DMA underruns.
+
+          ### USB input
+          - Duplicate pointer interfaces on one USB tablet are ignored.
+          - Recent USB HID input takes priority over PS/2, while PS/2 resumes automatically when USB HID becomes idle or unavailable.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`

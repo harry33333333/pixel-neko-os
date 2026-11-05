@@ -44,6 +44,7 @@ typedef struct {
     int            is_free_known;
     char           label[32];
     int            mounted;
+    uint32_t       media_generation;
 } vfs_drive_t;
 
 extern vfs_drive_t g_vfs_drives[26];
@@ -58,6 +59,8 @@ int  vfs_read_file(const char* path, unsigned char* buf, unsigned int max_size);
 int  vfs_write_file(const char* path, const unsigned char* buf, unsigned int size);
 const char* vfs_get_fs_name(part_fs_type_t type);
 int  vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb, int* is_known);
+bool vfs_poll_media(void);
+int  vfs_eject_optical(char letter);
 int  vfs_has_cdrom(void);
 char vfs_get_boot_cdrom_letter(void);
 int  vfs_is_booted_from_cdrom(void);

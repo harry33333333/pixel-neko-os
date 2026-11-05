@@ -314,19 +314,20 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     if (!g_probed && !vmware_svga_probe()) return 0;
     if (!g_pci || width <= 0 || height <= 0) return 0;
     if (width > 1280 || height > 1024) return 0;
-    if (g_max_width && (unsigned int)width > g_max_width) return 0;
-    if (g_max_height && (unsigned int)height > g_max_height) return 0;
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
         return 0;
     }
 
-    /*
-     * Hardware surface is always configured at 32-bit RGB so copy_rect_to_lfb()
-     * can convert 8/16/24/32-bit backbuffer modes uniformly without needing
-     * legacy VGA DAC palette programming.
-     */
-    const int hw_bpp = 32;
+    int hw_bpp = 32;
     unsigned int required = (unsigned int)width * (unsigned int)height * 4U;
+    if (g_vram_size && required > g_vram_size) {
+        required = (unsigned int)width * (unsigned int)height * 3U;
+        hw_bpp = 24;
+    }
+    if (g_vram_size && required > g_vram_size) {
+        required = (unsigned int)width * (unsigned int)height * 2U;
+        hw_bpp = 16;
+    }
     if (g_vram_size && required > g_vram_size) return 0;
     if (!g_reg_mmio && (!g_io_index || !g_io_data)) return 0;
 
@@ -359,7 +360,8 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     unsigned int pitch = svga_read_reg(SVGA_REG_BYTES_PER_LINE);
     unsigned int framebuffer = svga_read_reg(SVGA_REG_FB_START);
     unsigned int fb_offset = svga_read_reg(SVGA_REG_FB_OFFSET);
-    unsigned int minimum_pitch = (unsigned int)width * 4U;
+    unsigned int minimum_pitch =
+        (unsigned int)width * (unsigned int)(hw_bpp / 8);
 
     if (!framebuffer || pitch < minimum_pitch) {
         svga_restore_previous_mode(old_enabled, old_config_done,
@@ -396,7 +398,24 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     g_main_surface.width = (uint32_t)width;
     g_main_surface.height = (uint32_t)height;
     g_main_surface.pitch = (uint32_t)pitch;
-    g_main_surface.bpp = 32;
+    g_main_surface.bpp = (uint32_t)hw_bpp;
+    if (hw_bpp == 16) {
+        g_main_surface.red_mask_size = 5;
+        g_main_surface.red_mask_shift = 11;
+        g_main_surface.green_mask_size = 6;
+        g_main_surface.green_mask_shift = 5;
+        g_main_surface.blue_mask_size = 5;
+        g_main_surface.blue_mask_shift = 0;
+        g_main_surface.format = PIXEL_FORMAT_RGB565;
+    } else {
+        g_main_surface.red_mask_size = 8;
+        g_main_surface.red_mask_shift = 16;
+        g_main_surface.green_mask_size = 8;
+        g_main_surface.green_mask_shift = 8;
+        g_main_surface.blue_mask_size = 8;
+        g_main_surface.blue_mask_shift = 0;
+        g_main_surface.format = PIXEL_FORMAT_RGB888;
+    }
     lfb = (unsigned char*)fb_virt;
 
     svga_init_fifo();
@@ -413,8 +432,8 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
         g_status = "Linear WC framebuffer active";
     }
 
-    klog_info("[SVGA] mode %dx%dx%d (hw 32bpp) pitch=%u fb=0x%llx fifo=%s",
-              width, height, bpp, pitch, (unsigned long long)fb_phys,
+    klog_info("[SVGA] mode %dx%dx%d (hw %dbpp) pitch=%u fb=0x%llx fifo=%s",
+              width, height, bpp, hw_bpp, pitch, (unsigned long long)fb_phys,
               g_fifo_ready ? "ready" : "fallback");
     return 1;
 }
@@ -432,10 +451,11 @@ int vmware_svga_supports_mode(int width, int height, int bpp) {
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
         return 0;
     }
-    if (g_max_width && (unsigned int)width > g_max_width) return 0;
-    if (g_max_height && (unsigned int)height > g_max_height) return 0;
-    unsigned int required = (unsigned int)width * (unsigned int)height * 4U;
-    return !g_vram_size || required <= g_vram_size;
+    unsigned int pixels = (unsigned int)width * (unsigned int)height;
+    if (!g_vram_size) return 1;
+    if (pixels * 4U <= g_vram_size) return 1;
+    if (pixels * 3U <= g_vram_size) return 1;
+    return pixels * 2U <= g_vram_size;
 }
 
 const char* vmware_svga_get_name(void) {

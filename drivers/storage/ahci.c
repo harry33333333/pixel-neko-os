@@ -279,6 +279,82 @@ static int ahci_atapi_count(ahci_port_t* port, uint64_t lba,
                       count * port->sector_size, packet);
 }
 
+static int ahci_atapi_test_ready(ahci_port_t* port) {
+    uint8_t packet[12];
+    memset(packet, 0, sizeof(packet));
+    return ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, NULL, 0, packet);
+}
+
+static int ahci_atapi_refresh_capacity(ahci_port_t* port) {
+    uint8_t packet[12];
+    uint8_t response[8];
+    memset(packet, 0, sizeof(packet));
+    memset(response, 0, sizeof(response));
+    packet[0] = 0x25;
+    if (ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, response,
+                   sizeof(response), packet) != 0) {
+        return -1;
+    }
+    uint32_t sector_size = be32(response + 4);
+    if (!sector_size || sector_size > 4096) sector_size = 2048;
+    port->sector_size = sector_size;
+    port->sectors = (uint64_t)be32(response) + 1;
+    return port->sectors ? 0 : -1;
+}
+
+static media_state_t ahci_atapi_check_media(blkdev_t* block) {
+    ahci_port_t* port = block ? (ahci_port_t*)block->priv : NULL;
+    if (!port || !port->packet) return MEDIA_ERROR;
+    if (ahci_atapi_test_ready(port) != 0) {
+        if (block->total_sectors) {
+            port->sectors = 0;
+            block_set_capacity(block, 0, port->sector_size);
+            log_printf("[AHCI] Port %u optical medium removed\n",
+                       port->index);
+        }
+        return MEDIA_ABSENT;
+    }
+    uint64_t old_sectors = port->sectors;
+    uint32_t old_size = port->sector_size;
+    if (ahci_atapi_refresh_capacity(port) != 0) {
+        if (block->total_sectors) {
+            port->sectors = 0;
+            block_set_capacity(block, 0, port->sector_size);
+        }
+        return MEDIA_ABSENT;
+    }
+    if (old_sectors != port->sectors || old_size != port->sector_size ||
+        block->total_sectors != port->sectors) {
+        block_set_capacity(block, port->sectors, port->sector_size);
+        log_printf("[AHCI] Port %u optical medium loaded: %llu sectors\n",
+                   port->index, (unsigned long long)port->sectors);
+    } else {
+        block->media_state = MEDIA_PRESENT;
+    }
+    return MEDIA_PRESENT;
+}
+
+int ahci_atapi_eject(blkdev_t* block) {
+    ahci_port_t* port = block ? (ahci_port_t*)block->priv : NULL;
+    if (!port || !port->packet || !port->initialized) return -1;
+    uint8_t packet[12];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x1E;
+    (void)ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, NULL, 0, packet);
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x1B;
+    packet[4] = 0x02;
+    int result = ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, NULL, 0,
+                            packet);
+    if (result == 0) {
+        port->sectors = 0;
+        block_set_capacity(block, 0, port->sector_size ? port->sector_size :
+                                                         2048);
+        log_printf("[AHCI] Port %u optical eject requested\n", port->index);
+    }
+    return result;
+}
+
 static int ahci_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
                             void* buffer) {
     ahci_port_t* port = block ? (ahci_port_t*)block->priv : NULL;
@@ -370,20 +446,8 @@ static int ahci_probe_port(ahci_port_t* port) {
     if (port->packet) {
         static const char fallback[] = "AHCI ATAPI";
         memcpy(port->model, fallback, sizeof(fallback));
-        uint8_t packet[12];
-        uint8_t response[8];
-        memset(packet, 0, sizeof(packet));
-        memset(response, 0, sizeof(response));
-        packet[0] = 0x25;
-        if (ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, response,
-                       sizeof(response), packet) != 0) {
-            return -1;
-        }
-        port->sector_size = ((uint32_t)response[4] << 24) |
-                            ((uint32_t)response[5] << 16) |
-                            ((uint32_t)response[6] << 8) | response[7];
-        if (!port->sector_size) port->sector_size = 2048;
-        port->sectors = (uint64_t)be32(response) + 1;
+        port->sector_size = 2048;
+        (void)ahci_atapi_refresh_capacity(port);
     } else {
         uint16_t identify[256];
         memset(identify, 0, sizeof(identify));
@@ -402,12 +466,13 @@ static int ahci_probe_port(ahci_port_t* port) {
                             identify_word(identify, 60);
         }
     }
-    if (!port->sectors) return -1;
+    if (!port->packet && !port->sectors) return -1;
     blkdev_t* block = block_register(
         port->packet ? "ahci-atapi" : "ahci-sata",
         port->packet ? BLK_TYPE_ATAPI : BLK_TYPE_AHCI, port->index,
-        port->sector_size, port->sectors, port->packet, false,
-        ahci_read_blocks, port->packet ? NULL : ahci_write_blocks, NULL, port);
+        port->sector_size, port->sectors, port->packet, port->packet,
+        ahci_read_blocks, port->packet ? NULL : ahci_write_blocks,
+        port->packet ? ahci_atapi_check_media : NULL, port);
     if (!block) return -1;
     memcpy(block->model, port->model, sizeof(block->model));
     log_printf("[AHCI] Port %u %s: %s, %llu sectors\n", port->index,

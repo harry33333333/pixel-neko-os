@@ -7,6 +7,7 @@
 #include "port.h"
 #include "log.h"
 #include "string.h"
+#include "usb_hid.h"
 
 #define PS2_DATA_PORT    0x60
 #define PS2_STATUS_PORT  0x64
@@ -158,6 +159,7 @@ void mouse_handle_byte(uint8_t byte) {
         g_mouse_y = (int)g_main_surface.height - 1;
     }
 
+    if (usb_hid_prefer_mouse_input()) return;
     input_emit_mouse_move(dx, dy, g_buttons, 0);
     if (old_buttons != g_buttons) {
         input_emit_mouse_button(g_buttons);

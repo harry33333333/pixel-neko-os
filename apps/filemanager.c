@@ -195,6 +195,35 @@ void fm_init(void) {
     load_files();
 }
 
+void fm_refresh(void) {
+    if (current_path[0]) {
+        vfs_drive_t* drive = vfs_get_drive(current_path[0]);
+        if (!drive || !drive->mounted) current_path[0] = 0;
+    }
+    load_files();
+    redraw = 1;
+}
+
+static void eject_selected_drive(void) {
+    char letter = current_path[0] ? current_path[0] : 0;
+    if (!letter) {
+        if (selected < 0 || selected >= file_count) return;
+        letter = files[selected].name[0];
+    }
+    vfs_drive_t* drive = vfs_get_drive(letter);
+    if (!drive || drive->drv_type != VFS_DRV_CDROM) {
+        show_error_msg("Eject unavailable", "Select an optical drive first");
+        return;
+    }
+    if (vfs_eject_optical(letter) != VFS_OK) {
+        show_error_msg("Eject failed", "The drive did not accept the request");
+        return;
+    }
+    current_path[0] = 0;
+    load_files();
+    redraw = 1;
+}
+
 static void my_strcpy(char* dest, const char* src) {
     while(*src) *dest++ = *src++;
     *dest = '\0';
@@ -528,6 +557,15 @@ void fm_click(unsigned char* v, int mx, int my, int mb, int wx, int wy, int ww, 
     int btn_up_x = btn_drv_x - btn_up_w - 4;
     int btn_open_w = 46;
     int btn_open_x = btn_up_x - btn_open_w - 4;
+    int btn_eject_w = 50;
+    int btn_eject_x = btn_open_x - btn_eject_w - 4;
+
+    // Eject optical drive selected in the drive list
+    if (mx >= btn_eject_x && mx < btn_eject_x + btn_eject_w &&
+        my >= btn_y && my < btn_y + btn_h) {
+        eject_selected_drive();
+        return;
+    }
 
     // Open button
     if (mx >= btn_open_x && mx < btn_open_x + btn_open_w && my >= btn_y && my < btn_y + btn_h) {
@@ -769,6 +807,8 @@ void fm_handle_key(int key) {
         }
     } else if (key == '\b') { // BACKSPACE
         go_up();
+    } else if (key == 'e' || key == 'E') {
+        eject_selected_drive();
     }
 }
 
@@ -816,9 +856,11 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
     int btn_up_x = btn_drv_x - btn_up_w - 4;
     int btn_open_w = 46;
     int btn_open_x = btn_up_x - btn_open_w - 4;
+    int btn_eject_w = 50;
+    int btn_eject_x = btn_open_x - btn_eject_w - 4;
 
     // Truncate path title if too long to prevent overlapping buttons
-    int max_title_chars = (btn_open_x - (wx + 8) - 6) / 8;
+    int max_title_chars = (btn_eject_x - (wx + 8) - 6) / 8;
     if (max_title_chars > 0 && max_title_chars < 255) {
         int tlen = my_strlen(title);
         if (tlen > max_title_chars) {
@@ -832,21 +874,28 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
     }
     font_draw_text(v, wx+8, wy+24, title, 0);
 
-    // 1. Draw Open button
+    // 1. Draw Eject button
+    for (int y = btn_y; y < btn_y + btn_h; y++)
+        for (int x = btn_eject_x; x < btn_eject_x + btn_eject_w; x++) PUT_PIXEL(v, x, y, 7);
+    for (int x = btn_eject_x; x < btn_eject_x + btn_eject_w; x++) { PUT_PIXEL(v, x, btn_y, 15); PUT_PIXEL(v, x, btn_y + btn_h - 1, 0); }
+    for (int y = btn_y; y < btn_y + btn_h; y++) { PUT_PIXEL(v, btn_eject_x, y, 15); PUT_PIXEL(v, btn_eject_x + btn_eject_w - 1, y, 0); }
+    font_draw_text(v, btn_eject_x + 8, btn_y + 4, "Eject", 0);
+
+    // 2. Draw Open button
     for (int y = btn_y; y < btn_y + btn_h; y++)
         for (int x = btn_open_x; x < btn_open_x + btn_open_w; x++) PUT_PIXEL(v, x, y, 7);
     for (int x = btn_open_x; x < btn_open_x + btn_open_w; x++) { PUT_PIXEL(v, x, btn_y, 15); PUT_PIXEL(v, x, btn_y + btn_h - 1, 0); }
     for (int y = btn_y; y < btn_y + btn_h; y++) { PUT_PIXEL(v, btn_open_x, y, 15); PUT_PIXEL(v, btn_open_x + btn_open_w - 1, y, 0); }
     font_draw_text(v, btn_open_x + 8, btn_y + 4, "Open", (selected >= 0 && selected < file_count) ? 0 : 8);
 
-    // 2. Draw Up button
+    // 3. Draw Up button
     for (int y = btn_y; y < btn_y + btn_h; y++)
         for (int x = btn_up_x; x < btn_up_x + btn_up_w; x++) PUT_PIXEL(v, x, y, 7);
     for (int x = btn_up_x; x < btn_up_x + btn_up_w; x++) { PUT_PIXEL(v, x, btn_y, 15); PUT_PIXEL(v, x, btn_y + btn_h - 1, 0); }
     for (int y = btn_y; y < btn_y + btn_h; y++) { PUT_PIXEL(v, btn_up_x, y, 15); PUT_PIXEL(v, btn_up_x + btn_up_w - 1, y, 0); }
     font_draw_text(v, btn_up_x + 8, btn_y + 4, "^ Up", current_path[0] ? 0 : 8);
 
-    // 3. Draw Drives button
+    // 4. Draw Drives button
     for (int y = btn_y; y < btn_y + btn_h; y++)
         for (int x = btn_drv_x; x < btn_drv_x + btn_drv_w; x++) PUT_PIXEL(v, x, y, 7);
     for (int x = btn_drv_x; x < btn_drv_x + btn_drv_w; x++) { PUT_PIXEL(v, x, btn_y, 15); PUT_PIXEL(v, x, btn_y + btn_h - 1, 0); }
@@ -974,7 +1023,8 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
     for (int x = wx+4; x < wx+ww-4; x++) PUT_PIXEL(v, x, status_y - 3, 8);
     char status_txt[128];
     if (current_path[0] == 0) {
-        font_draw_text(v, wx + 8, status_y, "Drives Root | Double-click to open drive", 8);
+        font_draw_text(v, wx + 8, status_y,
+                       "Drives Root | Double-click: open | E: eject CD/DVD", 8);
     } else {
         char cur_drv = current_path[0];
         uint64_t tot_k = 0, fre_k = 0; int is_known = 0;
