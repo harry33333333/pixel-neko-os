@@ -1,5 +1,4 @@
 #include "usb_hid.h"
-#include "apic.h"
 #include "input.h"
 #include "log.h"
 #include "string.h"
@@ -90,8 +89,6 @@ typedef struct {
 static hid_state_t g_hids[USB_HID_MAX_DEVICES];
 static int g_keyboards = 0;
 static int g_mice = 0;
-static uint64_t g_last_keyboard_activity_tick = 0;
-static uint64_t g_last_mouse_activity_tick = 0;
 
 static uint32_t hid_item_value(const uint8_t* data, int size) {
     uint32_t value = 0;
@@ -455,7 +452,6 @@ static hid_report_layout_t* layout_for_report(hid_state_t* hid,
 
 static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
                              const uint8_t* report, int length) {
-    g_last_keyboard_activity_tick = apic_get_ticks();
     uint32_t modifiers = 0;
     if (layout->modifiers_count) {
         modifiers = read_report_bits(
@@ -524,7 +520,6 @@ static uint32_t g_last_combined_buttons = 0;
 
 static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
                           const uint8_t* report, int length) {
-    g_last_mouse_activity_tick = apic_get_ticks();
     if (layout->buttons_count) {
         hid->buttons = read_report_bits(
             report, length, layout->buttons_offset,
@@ -732,25 +727,6 @@ static int attach_hid_endpoint(usb_device_t* device, usb_endpoint_t* endpoint) {
         return -1;
     }
 
-    /*
-     * Some virtual and composite tablets expose both a boot mouse and a
-     * report-protocol pointer interface.  Feeding both into the desktop
-     * duplicates motion and buttons.  Keep the first pointer per physical
-     * device while still allowing a keyboard interface on the same device.
-     */
-    if (descriptor.mouse) {
-        for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
-            if (g_hids[i].used && g_hids[i].device == device &&
-                g_hids[i].mouse) {
-                log_printf("[USBHID] Ignoring duplicate pointer interface "
-                           "%u endpoint=0x%02x\n", if_num, endpoint->address);
-                descriptor.mouse = false;
-                break;
-            }
-        }
-    }
-    if (!descriptor.keyboard && !descriptor.mouse) return -1;
-
     int slot = -1;
     for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
         if (!g_hids[i].used) {
@@ -796,14 +772,12 @@ static int attach_hid_endpoint(usb_device_t* device, usb_endpoint_t* endpoint) {
 
     if (hid->keyboard) {
         g_keyboards++;
-        g_last_keyboard_activity_tick = apic_get_ticks();
         log_printf("[USBHID] Attached keyboard address=%u endpoint=0x%02x report=%u mode=%s\n",
                    device->address, endpoint->address, hid->report_length,
                    hid->boot_keyboard ? "boot" : "report");
     }
     if (hid->mouse) {
         g_mice++;
-        g_last_mouse_activity_tick = apic_get_ticks();
         bool wheel = false;
         for (uint8_t i = 0; i < hid->descriptor.report_count; i++) {
             if (hid->descriptor.reports[i].wheel_size) wheel = true;
@@ -935,17 +909,4 @@ int usb_hid_keyboard_count(void) {
 
 int usb_hid_mouse_count(void) {
     return g_mice;
-}
-
-static bool usb_hid_recent(uint64_t tick) {
-    if (!tick) return false;
-    return apic_get_ticks() - tick < 200;
-}
-
-bool usb_hid_prefer_keyboard_input(void) {
-    return g_keyboards > 0 && usb_hid_recent(g_last_keyboard_activity_tick);
-}
-
-bool usb_hid_prefer_mouse_input(void) {
-    return g_mice > 0 && usb_hid_recent(g_last_mouse_activity_tick);
 }

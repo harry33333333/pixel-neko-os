@@ -11,8 +11,6 @@ void usb_hid_poll(void);
 int usb_hid_selftest(void);
 int usb_hid_keyboard_count(void);
 int usb_hid_mouse_count(void);
-bool usb_hid_prefer_keyboard_input(void);
-bool usb_hid_prefer_mouse_input(void);
 const char* usb_hid_controller_summary(void);
 
 #endif

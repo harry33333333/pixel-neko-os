@@ -83,11 +83,11 @@ jobs:
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Media and Input Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Media and Display Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: optical media hot-swap, VMware logical resolution, audio buffering and USB input priority.
+          > **Pre-release**: optical media hot-swap, VMware resolution and audio buffering fixes.
 
           ### Optical media
           - IDE and AHCI ATAPI drives remain registered when the tray is empty.
@@ -97,10 +97,6 @@ jobs:
           ### Display and audio
           - VMware keeps a 1280x1024 logical desktop even when the configured SVGA VRAM only permits a smaller scanout; output is scaled without disabling the resolution option.
           - Audio polling is performed once per scheduler cycle instead of two or three times, and the playback cache target is doubled to reduce DMA underruns.
-
-          ### USB input
-          - Duplicate pointer interfaces on one USB tablet are ignored.
-          - Recent USB HID input takes priority over PS/2, while PS/2 resumes automatically when USB HID becomes idle or unavailable.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
