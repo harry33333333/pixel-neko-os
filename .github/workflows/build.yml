@@ -92,8 +92,9 @@ jobs:
           ### VMware display fixes
           - Standard boot entries request 1280x1024x16, fitting within the VM's 4 MiB SVGA VRAM allocation.
           - VMware verifies the accepted width, height and color depth before declaring a mode active.
-          - Oversized 32bpp requests fall back to true 16bpp hardware scanout instead of a smaller 4:3 display area.
-          - The internal desktop remains 32bpp and is converted into the active framebuffer without clipping rightmost columns.
+          - Oversized 32bpp requests use a 16bpp hardware scanout that still fits the VM's VRAM.
+          - A resolution is accepted only when the hardware width and height match the desktop size.
+          - Failed VMware mode changes now keep the previous physical and logical resolution instead of shrinking fonts into a smaller scanout.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
