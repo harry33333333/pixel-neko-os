@@ -36,6 +36,7 @@ static const gfx_backend_t* g_backend;
 static const char* g_fallback_reason = "WC linear framebuffer active";
 static const char* g_generic_vga_name = "Limine Linear Framebuffer";
 static unsigned int g_generic_vram_bytes = 0;
+static int g_ati_detected;
 
 static void backend_svga_present(int x, int y, int width, int height) {
     vmware_svga_present_rect(x, y, width, height);
@@ -157,8 +158,22 @@ static int probe_vmware_svga(void) {
 
 static int probe_ati_mach64(void) {
     if (!ati_mach64_probe()) return 0;
-    ati_mach64_set_mode_bpp(screen_w, screen_h, screen_bpp);
-    return 1;
+    g_ati_detected = 1;
+    int width = screen_w > 0 ? screen_w : 1024;
+    int height = screen_h > 0 ? screen_h : 768;
+    int bpp = screen_bpp > 0 ? screen_bpp : 16;
+    if (width > 1024 || height > 768) {
+        width = 1024;
+        height = 768;
+    }
+    if (bpp > 16) bpp = 16;
+    if (width != screen_w || height != screen_h || bpp != screen_bpp) {
+        set_resolution(width, height, bpp);
+    }
+    ati_mach64_disable();
+    klog_info("[GFX] ATI detected; acceleration and mode switching disabled, "
+              "maximum 1024x768x16");
+    return 0;
 }
 
 static int probe_nvidia_g7x(void) {
@@ -339,18 +354,17 @@ int gfx_accel_can_change_mode(int w, int h, int bpp) {
     if (!g_initialized) gfx_accel_init();
     if (w < 320 || w > 1280 || h < 200 || h > 1024) return 0;
     if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
+    if (g_ati_detected) {
+        return w <= 1024 && h <= 768 && (bpp == 8 || bpp == 16) &&
+               g_main_surface.framebuffer_virt != NULL;
+    }
 
     if (g_backend_kind == GFX_BACKEND_VMWARE) {
         return vmware_svga_supports_mode(w, h, bpp);
     }
-    if (w > (int)g_main_surface.width || h > (int)g_main_surface.height) {
-        return 0;
-    }
+    if (w > (int)g_main_surface.width || h > (int)g_main_surface.height) return 0;
     if (g_backend_kind == GFX_BACKEND_NVIDIA) {
         return nvidia_g7x_is_active();
-    }
-    if (g_backend_kind == GFX_BACKEND_ATI) {
-        return ati_mach64_is_active();
     }
     return g_main_surface.framebuffer_virt != NULL;
 }

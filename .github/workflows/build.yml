@@ -83,18 +83,17 @@ jobs:
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (VMware 1280x1024 Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Graphics Safety Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: VMware 1280x1024 scanout and framebuffer correction.
+          > **Pre-release**: conservative display-mode restrictions across VMware, ATI and NVIDIA G7x.
 
-          ### VMware display fixes
-          - Standard boot entries request 1280x1024x16, fitting within the VM's 4 MiB SVGA VRAM allocation.
-          - VMware verifies the accepted width, height and color depth before declaring a mode active.
-          - Oversized 32bpp requests use a 16bpp hardware scanout that still fits the VM's VRAM.
-          - A resolution is accepted only when the hardware width and height match the desktop size.
-          - Failed VMware mode changes now keep the previous physical and logical resolution instead of shrinking fonts into a smaller scanout.
+          ### Display compatibility
+          - VMware is limited to the proven 1024x768 path; unsafe 1280 mode switching no longer runs on the default boot.
+          - ATI detection disables acceleration and mode switching, while enforcing a maximum of 1024x768x16.
+          - NVIDIA GeForce 7300 GT can expose 1280x1024 only from its dedicated boot entry and only when the real framebuffer is already 1280x1024.
+          - Logical and physical resolutions must match before a high-resolution mode is accepted, preventing black screens and shrunken fonts.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`

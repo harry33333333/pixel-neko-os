@@ -60,6 +60,7 @@
 // Driver API
 // ----------------------------------------------------------------------------
 int          ati_mach64_probe(void);
+void         ati_mach64_disable(void);
 int          ati_mach64_is_active(void);
 const char*  ati_mach64_get_chip_name(void);
 unsigned int ati_mach64_get_vram_size(void);

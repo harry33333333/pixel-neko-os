@@ -200,6 +200,10 @@ int ati_mach64_is_active(void) {
     return g_ati_active;
 }
 
+void ati_mach64_disable(void) {
+    g_ati_active = 0;
+}
+
 const char* ati_mach64_get_chip_name(void) {
     return g_ati_chip_name;
 }

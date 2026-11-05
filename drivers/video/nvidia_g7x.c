@@ -188,7 +188,10 @@ unsigned int nvidia_g7x_get_vram_size(void) {
 }
 
 int nvidia_g7x_supports_1280x1024(void) {
-    return g_active && g_primary_7300gt;
+    return g_active && g_primary_7300gt &&
+           g_main_surface.width >= 1280 &&
+           g_main_surface.height >= 1024 &&
+           g_vram_size >= (1280U * 1024U * 4U);
 }
 
 void nvidia_g7x_present_rect(int x, int y, int width, int height) {
@@ -209,7 +212,8 @@ void nvidia_g7x_fill_rect(int x, int y, int width, int height,
 
     unsigned int bytes = nvidia_bytes_per_pixel();
     for (int row = y; row < y + height; row++) {
-        unsigned char* destination = lfb + row * screen_pitch + x * bytes;
+        unsigned char* destination =
+            lfb + (size_t)row * g_main_surface.pitch + (size_t)x * bytes;
         if (bytes == 4) {
             unsigned int* pixel = (unsigned int*)destination;
             for (int column = 0; column < width; column++) {
@@ -254,9 +258,12 @@ void nvidia_g7x_screen_blt(int sx, int sy, int dx, int dy,
         row_step = 1;
     }
     for (; row != row_end; row += row_step) {
-        unsigned char* source = lfb + (sy + row) * screen_pitch + sx * bytes;
+        unsigned char* source =
+            lfb + (size_t)(sy + row) * g_main_surface.pitch +
+            (size_t)sx * bytes;
         unsigned char* destination =
-            lfb + (dy + row) * screen_pitch + dx * bytes;
+            lfb + (size_t)(dy + row) * g_main_surface.pitch +
+            (size_t)dx * bytes;
         int count = width * (int)bytes;
         for (int i = 0; i < count; i++) destination[i] = source[i];
     }

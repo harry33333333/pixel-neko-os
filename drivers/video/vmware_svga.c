@@ -313,7 +313,7 @@ int vmware_svga_probe(void) {
 int vmware_svga_set_mode(int width, int height, int bpp) {
     if (!g_probed && !vmware_svga_probe()) return 0;
     if (!g_pci || width <= 0 || height <= 0) return 0;
-    if (width > 1280 || height > 1024) return 0;
+    if (width > 1024 || height > 768) return 0;
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
         return 0;
     }
@@ -455,7 +455,7 @@ int vmware_svga_is_3d_capable(void) {
 }
 
 int vmware_svga_supports_mode(int width, int height, int bpp) {
-    if (width <= 0 || height <= 0 || width > 1280 || height > 1024) return 0;
+    if (width <= 0 || height <= 0 || width > 1024 || height > 768) return 0;
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
         return 0;
     }
