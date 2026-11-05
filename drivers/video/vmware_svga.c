@@ -321,10 +321,6 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     int hw_bpp = 32;
     unsigned int required = (unsigned int)width * (unsigned int)height * 4U;
     if (g_vram_size && required > g_vram_size) {
-        required = (unsigned int)width * (unsigned int)height * 3U;
-        hw_bpp = 24;
-    }
-    if (g_vram_size && required > g_vram_size) {
         required = (unsigned int)width * (unsigned int)height * 2U;
         hw_bpp = 16;
     }
@@ -356,6 +352,18 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     svga_write_reg(SVGA_REG_HEIGHT, (unsigned int)height);
     svga_write_reg(SVGA_REG_BPP, (unsigned int)hw_bpp);
     svga_write_reg(SVGA_REG_ENABLE, 1);
+
+    unsigned int active_width = svga_read_reg(SVGA_REG_WIDTH);
+    unsigned int active_height = svga_read_reg(SVGA_REG_HEIGHT);
+    unsigned int active_bpp = svga_read_reg(SVGA_REG_BPP);
+    if ((active_width && active_width != (unsigned int)width) ||
+        (active_height && active_height != (unsigned int)height) ||
+        (active_bpp && active_bpp != (unsigned int)hw_bpp)) {
+        svga_restore_previous_mode(old_enabled, old_config_done,
+                                   old_width, old_height, old_bpp);
+        g_status = "Display mode was not accepted";
+        return 0;
+    }
 
     unsigned int pitch = svga_read_reg(SVGA_REG_BYTES_PER_LINE);
     unsigned int framebuffer = svga_read_reg(SVGA_REG_FB_START);
@@ -454,7 +462,6 @@ int vmware_svga_supports_mode(int width, int height, int bpp) {
     unsigned int pixels = (unsigned int)width * (unsigned int)height;
     if (!g_vram_size) return 1;
     if (pixels * 4U <= g_vram_size) return 1;
-    if (pixels * 3U <= g_vram_size) return 1;
     return pixels * 2U <= g_vram_size;
 }
 

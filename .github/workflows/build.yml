@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A181c" ]
+    branches: [ "main", "master", "beta-v26A181d" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181c"
+          VERSION="26A181d"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -78,22 +78,22 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A181c')
+         github.ref == 'refs/heads/beta-v26A181d')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Reinstall Safety Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (VMware 1280x1024 Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: reinstall safety warning for existing Pixel Neko OS installations.
+          > **Pre-release**: VMware 1280x1024 scanout and framebuffer correction.
 
-          ### Reinstall safety
-          - Existing Pixel Neko installations are detected from installed kernel and payload files.
-          - Target lists mark partitions or disks that already contain Pixel Neko OS.
-          - A dedicated warning step explains payload, boot-file and `.pse` replacement risks before format selection.
-          - Installation execution repeats the safety check and cannot bypass an unacknowledged warning.
+          ### VMware display fixes
+          - Standard boot entries request 1280x1024x16, fitting within the VM's 4 MiB SVGA VRAM allocation.
+          - VMware verifies the accepted width, height and color depth before declaring a mode active.
+          - Oversized 32bpp requests fall back to true 16bpp hardware scanout instead of a smaller 4:3 display area.
+          - The internal desktop remains 32bpp and is converted into the active framebuffer without clipping rightmost columns.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
