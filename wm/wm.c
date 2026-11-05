@@ -608,28 +608,43 @@ static void draw_menu_popup(unsigned char* v, int x, int y, int w, int h)
 
 static void draw_menubar(unsigned char* v)
 {
+    bool install_mode = ui_install_mode_requested();
+
     for(int y=0; y<20; y++) for(int x=0; x<screen_w; x++) PUT_PIXEL(v, x, y, 15);
     for(int x=0; x<screen_w; x++) PUT_PIXEL(v, x, 20, 0);
     for(int y=4; y<16; y++) for(int x=10; x<22; x++) PUT_PIXEL(v, x, y, (y/2)%6+1);
+
+    if (menu_open && install_mode && menu_index != 4) {
+        menu_open = 0;
+        menu_index = -1;
+    }
     
     if (menu_open) {
-        int mx = 30 + menu_index * 40;
-        int mw = (menu_index == 3) ? 64 : 40; 
-        if (menu_index != 4) {
+        if (menu_index != 4 && !install_mode) {
+            int mx = 30 + menu_index * 40;
+            int mw = (menu_index == 3) ? 64 : 40;
             for(int y=2; y<18; y++) for(int x=mx-4; x<mx+mw; x++) PUT_PIXEL(v, x, y, 1);
         }
-        font_draw_text(v, 30, 2, "File", menu_index==0?15:0);
-        font_draw_text(v, 70, 2, "Edit", menu_index==1?15:0);
-        font_draw_text(v, 110, 2, "View", menu_index==2?15:0);
-        font_draw_text(v, 150, 2, "Special", menu_index==3?15:0);
+        if (!install_mode) {
+            font_draw_text(v, 30, 2, "File", menu_index==0?15:0);
+            font_draw_text(v, 70, 2, "Edit", menu_index==1?15:0);
+            font_draw_text(v, 110, 2, "View", menu_index==2?15:0);
+            font_draw_text(v, 150, 2, "Special", menu_index==3?15:0);
+        }
         
         if (menu_index == 4) { // Apple Logo
-            draw_menu_popup(v, 4, 20, 172, 4*18+4);
-            font_draw_text(v, 10, 24, "About Pixel Neko", 0);
-            font_draw_text(v, 10, 24+18, "System Information", 0);
-            font_draw_text(v, 10, 24+36, "Restart Computer", 0);
-            font_draw_text(v, 10, 24+54, "Shut Down Computer", 0);
-        } else if (menu_index == 0) { // File
+            if (install_mode) {
+                draw_menu_popup(v, 4, 20, 172, 2*18+4);
+                font_draw_text(v, 10, 24, "Restart Computer", 0);
+                font_draw_text(v, 10, 24+18, "Shut Down Computer", 0);
+            } else {
+                draw_menu_popup(v, 4, 20, 172, 4*18+4);
+                font_draw_text(v, 10, 24, "About Pixel Neko", 0);
+                font_draw_text(v, 10, 24+18, "System Information", 0);
+                font_draw_text(v, 10, 24+36, "Restart Computer", 0);
+                font_draw_text(v, 10, 24+54, "Shut Down Computer", 0);
+            }
+        } else if (!install_mode && menu_index == 0) { // File
             if (z_order[10] == 5 && edv && !edm) { // Notepad active
                 draw_menu_popup(v, 30, 20, 130, 4*18+4);
                 font_draw_text(v, 38, 24, "New", 0);
@@ -640,7 +655,7 @@ static void draw_menubar(unsigned char* v)
                 draw_menu_popup(v, 30, 20, 110, 1*18+4);
                 font_draw_text(v, 38, 24, "(Empty)", 8);
             }
-        } else if (menu_index == 1) { // Edit
+        } else if (!install_mode && menu_index == 1) { // Edit
             draw_menu_popup(v, 66, 20, 120, 6*18+4);
             font_draw_text(v, 74, 24, "Undo", 8);
             int ed_active = (z_order[10] == 5 && edv && !edm);
@@ -651,10 +666,10 @@ static void draw_menubar(unsigned char* v)
             font_draw_text(v, 74, 24+54, "Paste", (ed_active && g_clipboard[0]) ? 0 : 8);
             font_draw_text(v, 74, 24+72, "Select All", ed_active ? 0 : 8);
             font_draw_text(v, 74, 24+90, "Clear", has_sel ? 0 : 8);
-        } else if (menu_index == 2) { // View
+        } else if (!install_mode && menu_index == 2) { // View
             draw_menu_popup(v, 106, 20, 160, 1*18+4);
             font_draw_text(v, 114, 24, "Clean Up Desktop", 0);
-        } else if (menu_index == 3) { // Special
+        } else if (!install_mode && menu_index == 3) { // Special
             draw_menu_popup(v, 146, 20, 172, 6*18+4);
             font_draw_text(v, 154, 24, "About Pixel Neko", 0);
             font_draw_text(v, 154, 24+18, "System Information", 0);
@@ -663,7 +678,7 @@ static void draw_menubar(unsigned char* v)
             font_draw_text(v, 154, 24+72, "Restart Computer", 0);
             font_draw_text(v, 154, 24+90, "Shut Down Computer", 0);
         }
-    } else {
+    } else if (!install_mode) {
         font_draw_text(v, 30, 2, "File", 0);
         font_draw_text(v, 70, 2, "Edit", 0);
         font_draw_text(v, 110, 2, "View", 0);
@@ -756,6 +771,8 @@ void wm_init(void){
 
 void wm_installer_activate(void) {
     wv = cv = clv = cpv = fmv = edv = siv = pzv = imv = npv = 0;
+    menu_open = 0;
+    menu_index = -1;
     insv = 1;
     insm = 0;
     insx = 16;
@@ -1009,11 +1026,15 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     if (menu_open && mb_press) {
         bool inst_mode = ui_install_mode_requested();
         if (menu_index == 4) { // Apple Logo
-            if (mx >= 4 && mx < 4 + 172 && my >= 20 && my < 20 + 4*18 + 4) {
+            int item_count = inst_mode ? 2 : 4;
+            if (mx >= 4 && mx < 4 + 172 && my >= 20 && my < 20 + item_count*18 + 4) {
                 int item = (my - 24) / 18;
-                if (item >= 0 && item < 4) {
-                    if (item == 0 && !inst_mode) { wv = 1; am = 0; bring_to_top(0); }
-                    if (item == 1 && !inst_mode) { siv = 1; sim = 0; sysinfo_init(); bring_to_top(6); }
+                if (inst_mode) {
+                    if (item == 0) { power_confirm = 1; }
+                    if (item == 1) { power_confirm = 2; }
+                } else if (item >= 0 && item < 4) {
+                    if (item == 0) { wv = 1; am = 0; bring_to_top(0); }
+                    if (item == 1) { siv = 1; sim = 0; sysinfo_init(); bring_to_top(6); }
                     if (item == 2) { power_confirm = 1; }
                     if (item == 3) { power_confirm = 2; }
                 }
@@ -1048,7 +1069,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 layout_desktop_icons();
                 show_opened("Desktop Cleaned");
             }
-        } else if (menu_index == 3) { // Special
+        } else if (menu_index == 3 && !inst_mode) { // Special
             if (mx >= 146 && mx < 146 + 172 && my >= 20 && my < 20 + 6*18 + 4) {
                 int item = (my - 24) / 18;
                 if (item >= 0 && item < 6) {
@@ -1068,11 +1089,12 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
 
     if(mb_press && my < 20) {
+        bool inst_mode = ui_install_mode_requested();
         if (mx >= 4 && mx < 24) { menu_open = (menu_open && menu_index == 4) ? 0 : 1; menu_index = 4; redraw = 1; need_mr = 1; }
-        else if (mx >= 30 && mx < 62) { menu_open = (menu_open && menu_index == 0) ? 0 : 1; menu_index = 0; redraw = 1; need_mr = 1; }
-        else if (mx >= 70 && mx < 102) { menu_open = (menu_open && menu_index == 1) ? 0 : 1; menu_index = 1; redraw = 1; need_mr = 1; }
-        else if (mx >= 110 && mx < 142) { menu_open = (menu_open && menu_index == 2) ? 0 : 1; menu_index = 2; redraw = 1; need_mr = 1; }
-        else if (mx >= 150 && mx < 206) { menu_open = (menu_open && menu_index == 3) ? 0 : 1; menu_index = 3; redraw = 1; need_mr = 1; }
+        else if (!inst_mode && mx >= 30 && mx < 62) { menu_open = (menu_open && menu_index == 0) ? 0 : 1; menu_index = 0; redraw = 1; need_mr = 1; }
+        else if (!inst_mode && mx >= 70 && mx < 102) { menu_open = (menu_open && menu_index == 1) ? 0 : 1; menu_index = 1; redraw = 1; need_mr = 1; }
+        else if (!inst_mode && mx >= 110 && mx < 142) { menu_open = (menu_open && menu_index == 2) ? 0 : 1; menu_index = 2; redraw = 1; need_mr = 1; }
+        else if (!inst_mode && mx >= 150 && mx < 206) { menu_open = (menu_open && menu_index == 3) ? 0 : 1; menu_index = 3; redraw = 1; need_mr = 1; }
         else { menu_open = 0; redraw = 1; }
         return;
     }

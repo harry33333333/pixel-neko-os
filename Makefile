@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PIXEL_NEKO_BUILD_NUMBER ?= 181
-PIXEL_NEKO_BUILD_SUFFIX ?= d
+PIXEL_NEKO_BUILD_SUFFIX ?= e
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \

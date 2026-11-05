@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A181d`
+Build version: `26A181e`
 
 ## Boot modes
 
@@ -16,6 +16,10 @@ is unavailable. Safe Graphics Live is the only advanced recovery entry.
 
 `mode=install` opens the installer in a near-full-screen classic window after
 the desktop and splash have initialized.
+
+While installer mode is active, the desktop application menus are hidden.
+The system menu remains available with only Restart Computer and Shut Down
+Computer; About and System Information are not exposed during installation.
 
 ## Installer flow
 

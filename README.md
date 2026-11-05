@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A181d - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A181e - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -57,18 +57,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A181d.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A181e.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A181d.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A181e.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A181d.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A181e.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181d"
+          VERSION="26A181e"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -82,11 +82,16 @@ jobs:
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Boot Menu Cleanup)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Focused Installer UI)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: simplified boot menus with automatic high-resolution selection.
+          > **Pre-release**: focused installer interface and automatic high-resolution selection.
+
+          ### Installer interface
+          - File, Edit, View and Special menus are hidden in installer mode.
+          - The system menu contains only Restart Computer and Shut Down Computer.
+          - About and System Information remain available outside installer mode.
 
           ### Display compatibility
           - Live, installer and installed-system boots request 1280x1024x16 and fall back automatically when the firmware or video memory cannot provide it.
@@ -106,7 +111,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision replaces the existing `v26A181d` pre-release assets without changing the version number.
+          This revision publishes the focused installer interface as `v26A181e`.
         prerelease: true
         make_latest: false
         files: |
