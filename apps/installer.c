@@ -716,9 +716,11 @@ static char mount_formatted_target(target_part_t* target,
 static int verify_installed_payload(char letter) {
     static const char* required[] = {
         "boot\\kernel.elf",
+        "limine.conf",
         "boot\\limine.conf",
         "boot\\limine\\limine-bios.sys",
         "EFI\\BOOT\\BOOTX64.EFI",
+        "system\\limine-installed.conf",
         "system\\PAYLOAD.TXT"
     };
     for (int index = 0;
@@ -736,6 +738,36 @@ static int verify_installed_payload(char letter) {
             return -14;
         }
     }
+    return 0;
+}
+
+static int deploy_installed_boot_config(char source_letter,
+                                        char target_letter,
+                                        int copied_files, int total_files) {
+    char source[96];
+    source[0] = source_letter;
+    source[1] = ':';
+    source[2] = '\0';
+    text_append(source, "\\payload\\system\\limine-installed.conf",
+                sizeof(source));
+
+    static const char* destinations[] = {
+        "\\boot\\limine.conf",
+        "\\boot\\limine\\limine.conf",
+        "\\limine.conf"
+    };
+    for (unsigned int index = 0;
+         index < sizeof(destinations) / sizeof(destinations[0]); index++) {
+        char destination[96];
+        destination[0] = target_letter;
+        destination[1] = ':';
+        destination[2] = '\0';
+        text_append(destination, destinations[index], sizeof(destination));
+        int result = copy_payload_file(source, destination, copied_files,
+                                       total_files);
+        if (result != 0) return result;
+    }
+    log_printf("[P6 ] Installed boot menu set to mode=local only\n");
     return 0;
 }
 
@@ -1067,6 +1099,11 @@ static int do_installation(target_part_t* target, part_fs_type_t type) {
                                         &copied_files, total_files);
     if (copy_result != 0) return copy_result;
     if (copied_files != total_files) return -14;
+
+    int boot_config_result = deploy_installed_boot_config(
+        source_letter, target_letter, copied_files, total_files);
+    if (boot_config_result != 0) return boot_config_result;
+    fat_flush_all();
 
     update_progress_ui(66, "Verifying the installed payload...",
                        "Checking kernel, configuration, EFI and BIOS files");

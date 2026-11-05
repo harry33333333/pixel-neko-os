@@ -332,23 +332,47 @@ int gfx_accel_is_hardware_2d_active(void) {
 }
 
 int gfx_accel_supports_1280x1024(void) {
-    return 1;
+    return gfx_accel_can_change_mode(1280, 1024, 32);
+}
+
+int gfx_accel_can_change_mode(int w, int h, int bpp) {
+    if (!g_initialized) gfx_accel_init();
+    if (w < 320 || w > 1280 || h < 200 || h > 1024) return 0;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
+
+    if (g_backend_kind == GFX_BACKEND_VMWARE) {
+        return vmware_svga_supports_mode(w, h, bpp);
+    }
+    if (w > (int)g_main_surface.width || h > (int)g_main_surface.height) {
+        return 0;
+    }
+    if (g_backend_kind == GFX_BACKEND_NVIDIA) {
+        return nvidia_g7x_is_active();
+    }
+    if (g_backend_kind == GFX_BACKEND_ATI) {
+        return ati_mach64_is_active();
+    }
+    return g_main_surface.framebuffer_virt != NULL;
 }
 
 int gfx_accel_supports_bpp(int w, int h, int bpp) {
-    if (w < 320 || w > 1280 || h < 200 || h > 1024) return 0;
-    return (bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32);
+    return gfx_accel_can_change_mode(w, h, bpp);
 }
 
 int gfx_accel_try_set_mode(int w, int h, int bpp) {
-    if (!gfx_accel_supports_bpp(w, h, bpp)) return 0;
-    set_resolution(w, h, bpp);
-    gfx_accel_set_mode(w, h, bpp);
+    if (!gfx_accel_can_change_mode(w, h, bpp)) return 0;
+    if (g_backend_kind == GFX_BACKEND_VMWARE) {
+        if (!vmware_svga_set_mode(w, h, bpp)) return 0;
+        set_resolution(w, h, bpp);
+    } else {
+        set_resolution(w, h, bpp);
+        gfx_accel_set_mode(w, h, bpp);
+    }
     return 1;
 }
 
 void gfx_accel_set_mode(int w, int h, int bpp) {
-    if (!gfx_accel_supports_bpp(w, h, bpp)) return;
+    if (!gfx_accel_can_change_mode(w, h, bpp)) return;
     if (screen_w != w || screen_h != h || screen_bpp != bpp) {
         set_resolution(w, h, bpp);
     }

@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A180c"
+    BUILD_ID="26A181a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -69,6 +69,7 @@ cp boot/limine.conf iso_root/payload/boot/limine.conf
 cp boot/limine.conf iso_root/payload/boot/limine/limine.conf
 cp boot/limine/limine-bios.sys iso_root/payload/boot/limine/limine-bios.sys
 cp boot/limine/BOOTX64.EFI iso_root/payload/EFI/BOOT/BOOTX64.EFI
+cp boot/limine-installed.conf iso_root/payload/system/limine-installed.conf
 cp LICENSE iso_root/payload/system/LICENSE.TXT
 cp THIRD_PARTY_LICENSES.md iso_root/payload/system/THIRDPARTY.TXT
 cp README.md iso_root/payload/system/README.TXT
@@ -80,6 +81,7 @@ UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
 Legacy compatibility configuration: boot/limine/limine.conf
+Installed-system configuration: system/limine-installed.conf
 
 Embedded in kernel.elf:
 - Classic window manager and desktop

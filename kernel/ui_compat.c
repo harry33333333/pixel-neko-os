@@ -179,6 +179,16 @@ static inline void surface_write_raw(unsigned char* surface,
                  (size_t)px * 4) = raw;
 }
 
+static inline void lfb_put_rgb32(int x, int y, uint32_t rgb) {
+    if (x < 0 || y < 0 ||
+        x >= (int)g_main_surface.width || y >= (int)g_main_surface.height) {
+        return;
+    }
+    uint32_t color = boot_framebuffer_make_color(
+        (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
+    boot_framebuffer_putpixel((uint32_t)x, (uint32_t)y, color);
+}
+
 void copy_rect_to_lfb(const unsigned char* source, int x, int y,
                       int width, int height) {
     if (!source || !lfb) return;
@@ -201,11 +211,12 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
     if (screen_w == hw_w && screen_h == hw_h) {
         for (int row = 0; row < height; row++) {
             int sy = y + row;
-            volatile uint32_t* dst =
-                (volatile uint32_t*)(lfb +
-                                     (size_t)sy * g_main_surface.pitch +
-                                     (size_t)x * 4);
-            if (screen_bpp == 32) {
+            if (screen_bpp == 32 && g_main_surface.bpp == 32 &&
+                g_main_surface.format == PIXEL_FORMAT_RGB888) {
+                volatile uint32_t* dst =
+                    (volatile uint32_t*)(lfb +
+                                         (size_t)sy * g_main_surface.pitch +
+                                         (size_t)x * 4);
                 const uint32_t* src =
                     (const uint32_t*)(source + (size_t)sy * (size_t)screen_pitch +
                                       (size_t)x * 4);
@@ -214,7 +225,9 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
                 }
             } else {
                 for (int column = 0; column < width; column++) {
-                    dst[column] = surface_pixel_to_rgb32(source, x + column, sy);
+                    lfb_put_rgb32(x + column, sy,
+                                  surface_pixel_to_rgb32(source,
+                                                         x + column, sy));
                 }
             }
         }
@@ -231,12 +244,11 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
         for (int dy = dst_y0; dy < dst_y1; dy++) {
             int sy = (dy * screen_h) / hw_h;
             if (sy >= screen_h) sy = screen_h - 1;
-            volatile uint32_t* dst =
-                (volatile uint32_t*)(lfb + (size_t)dy * g_main_surface.pitch);
             for (int dx = dst_x0; dx < dst_x1; dx++) {
                 int sx = (dx * screen_w) / hw_w;
                 if (sx >= screen_w) sx = screen_w - 1;
-                dst[dx] = surface_pixel_to_rgb32(source, sx, sy);
+                lfb_put_rgb32(dx, dy,
+                              surface_pixel_to_rgb32(source, sx, sy));
             }
         }
         gfx_accel_present_rect(dst_x0, dst_y0, dst_x1 - dst_x0, dst_y1 - dst_y0);

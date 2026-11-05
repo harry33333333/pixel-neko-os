@@ -10,7 +10,6 @@
 static int slider_val = 2;
 int revert_timer = 0;
 static int prev_w = 800, prev_h = 600, prev_bpp = 16;
-extern void set_resolution(int w, int h, int bpp);
 extern volatile int global_tick;
 extern int redraw;
 
@@ -63,8 +62,7 @@ void check_revert_timer(void)
             revert_timer--;
             redraw = 1;
             if (revert_timer == 0) {
-                set_resolution(prev_w, prev_h, prev_bpp);
-                gfx_accel_set_mode(prev_w, prev_h, prev_bpp);
+                (void)gfx_accel_try_set_mode(prev_w, prev_h, prev_bpp);
                 cpanel_init();
                 redraw = 1;
             }
@@ -74,7 +72,9 @@ void check_revert_timer(void)
 
 void cpanel_init(void)
 {
-    slider_val = mouse_get_speed();
+    slider_val = mouse_get_speed() - 1;
+    if (slider_val < 0) slider_val = 0;
+    if (slider_val > 4) slider_val = 4;
 
     // Match current resolution & bpp
     for (int i = 0; i < available_resolution_count(); i++) {
@@ -281,7 +281,7 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
         if (val > 4) val = 4;
         slider_val = val;
         slider_dragging = 1;
-        mouse_set_speed(val);
+        mouse_set_speed(val + 1);
         redraw = 1;
         return;
     }
@@ -370,12 +370,12 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
         int th = res_h[sel_res_idx];
         int tb = bpp_vals[sel_bpp_idx];
 
-        if (gfx_accel_supports_bpp(tw, th, tb)) {
+        if (gfx_accel_can_change_mode(tw, th, tb)) {
             prev_w = screen_w; prev_h = screen_h; prev_bpp = screen_bpp;
-            set_resolution(tw, th, tb);
-            gfx_accel_set_mode(tw, th, tb);
-            revert_timer = 10;
-            redraw = 1;
+            if (gfx_accel_try_set_mode(tw, th, tb)) {
+                revert_timer = 10;
+                redraw = 1;
+            }
         }
         return;
     }
@@ -387,10 +387,13 @@ void cpanel_click(unsigned char* v, int mx, int my, int wx, int wy, int ww, int 
         int tb = bpp_vals[sel_bpp_idx];
 
         if (tw != screen_w || th != screen_h || tb != screen_bpp) {
-            if (gfx_accel_supports_bpp(tw, th, tb)) {
+            if (gfx_accel_can_change_mode(tw, th, tb)) {
                 prev_w = screen_w; prev_h = screen_h; prev_bpp = screen_bpp;
-                set_resolution(tw, th, tb);
-                gfx_accel_set_mode(tw, th, tb);
+                if (gfx_accel_try_set_mode(tw, th, tb)) {
+                    revert_timer = 10;
+                    redraw = 1;
+                    return;
+                }
             }
         }
         revert_timer = 0;
@@ -413,7 +416,7 @@ int cpanel_drag(int mx, int my, int wx, int wy)
     if (val > 4) val = 4;
     if (val != slider_val) {
         slider_val = val;
-        mouse_set_speed(val);
+        mouse_set_speed(val + 1);
         return 1;
     }
     return 0;
@@ -421,6 +424,10 @@ int cpanel_drag(int mx, int my, int wx, int wy)
 
 void cpanel_release(void)
 {
+    if (slider_dragging) {
+        settings_set_mouse_speed(mouse_get_speed());
+        settings_save();
+    }
     slider_dragging = 0;
 }
 

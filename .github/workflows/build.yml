@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A180c" ]
+    branches: [ "main", "master", "beta-v26A181a" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A180c"
+          VERSION="26A181a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -78,24 +78,27 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A180c')
+         github.ref == 'refs/heads/beta-v26A181a')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (USB 3.x Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Local Config Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: broad USB 3.x host-controller compatibility work.
+          > **Pre-release**: local-disk settings persistence and installed-system boot cleanup.
 
-          ### USB 3.x fixes
-          - xHCI control transfers no longer place Setup/Data stages in an invalid CHAIN relationship and now retire only on the Status TRB.
-          - Short-packet and late Transfer Events are correlated by TRB address to prevent stale EP0 completions.
-          - Initial EP0 contexts now force the correct 512-byte SuperSpeed packet size while retaining USB2 speed-specific defaults.
-          - USB3 ports only reset from valid link states; stable U0 links skip regular Port Reset and recovery states use warm reset.
-          - Per-port control/enumeration failure counters open a circuit breaker after repeated failures and re-arm on disconnect.
-          - Malformed or empty descriptors retain detailed diagnostics instead of entering an infinite enumeration loop.
+          ### Local settings
+          - Live and installer media never read or write persistent settings.
+          - Local installed boots store mouse speed, confirmed resolution and wallpaper mode/path in checksummed `.pse` records on the installed system partition.
+          - Two alternating `.pse` slots preserve the previous valid configuration if the newest record is incomplete or corrupt.
+          - Unsupported resolutions and missing or invalid wallpaper images fall back safely without changing the last valid record.
+
+          ### Display and installed boot
+          - Standard boot entries request native 1280x1024x32; 1280x1024 selection is only exposed when the active framebuffer or backend can support it.
+          - Framebuffer presentation now handles 16/24/32-bit layouts and color masks instead of assuming every scanline is 32-bit.
+          - The installer replaces Live/Installer menus with a Local Installed System menu using `mode=local`.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`

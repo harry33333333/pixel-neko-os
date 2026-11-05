@@ -31,6 +31,7 @@
 #include "p5_test.h"
 #include "splash.h"
 #include "ui_compat.h"
+#include "settings.h"
 #include "wm.h"
 #include "power.h"
 #include <stddef.h>
@@ -634,6 +635,11 @@ void kmain(void) {
     }
     if (cmdline_contains("mode=install")) {
         ui_compat_set_install_mode(true);
+        settings_set_boot_mode(SETTINGS_BOOT_INSTALLER);
+    } else if (cmdline_contains("mode=local")) {
+        settings_set_boot_mode(SETTINGS_BOOT_LOCAL);
+    } else {
+        settings_set_boot_mode(SETTINGS_BOOT_LIVE);
     }
     g_acpi_shutdown_test_requested = cmdline_contains("shutdown_test=1");
     g_acpi_fault_test = cmdline_contains("acpi_selftest=1") ||
@@ -764,23 +770,13 @@ void kmain(void) {
     boot_screen_tick();
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
+    settings_init();
 
     if (g_main_surface.framebuffer_virt) {
         g_xp_boot_active = false;
         ui_compat_init();
         splash_run();
-        if (kernel_file_request.response &&
-            kernel_file_request.response->kernel_file &&
-            kernel_file_request.response->kernel_file->cmdline) {
-            const char* command_line =
-                kernel_file_request.response->kernel_file->cmdline;
-            for (int index = 0; command_line[index]; index++) {
-                if (strncmp(command_line + index, "mode=install", 12) == 0) {
-                    ui_compat_set_install_mode(true);
-                    break;
-                }
-            }
-        }
+        (void)settings_load();
     }
 
     // 18. Check Kernel Load Address

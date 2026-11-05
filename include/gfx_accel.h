@@ -13,6 +13,7 @@ const char*  gfx_accel_get_fallback_reason(void);
 int          gfx_accel_is_hardware_2d_active(void);
 int          gfx_accel_supports_1280x1024(void);
 unsigned int gfx_accel_get_vram_size(void);
+int          gfx_accel_can_change_mode(int w, int h, int bpp);
 int          gfx_accel_supports_bpp(int w, int h, int bpp);
 int          gfx_accel_try_set_mode(int w, int h, int bpp);
 void         gfx_accel_set_mode(int w, int h, int bpp);
