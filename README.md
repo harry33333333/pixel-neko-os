@@ -24,8 +24,8 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 
 ### 2. 视觉盛宴：Windows XP 经典开机动画与复古像素 UI
 - **Windows XP 风格开机界面与滚动进度条**：全新设计纯黑背景开机画卷，居中呈现四色复古 Pixel Neko 徽标，下方搭配标志性的 Windows XP 三段式微光高亮蓝色流动滑块进度条（Marquee Progress Bar），硬件设备初始化全程流畅滑行。
-- **经典诊断启动模式保留（Classic Diagnostic Boot）**：通过 Limine 高级菜单可随时启动经典 50% 棋盘底纹与实时带步进提示框，以及 Happy Neko 开机和弦与 Mac OS 9 理发店条纹进度条（Barber-Pole）和硬件扩展游行。
-- **层级化 Limine 引导菜单**：主菜单仅保留纯净的 Live Desktop 与 Graphical Installer 两大常用项，收拢 Safe Graphics、Verbose Diagnostic 及 Debug Log 6 大高级选项至二级折叠子菜单。
+- **精简 Limine 引导菜单**：主菜单仅保留 Live Desktop 与 Graphical Installer；二级菜单仅保留 Safe Graphics 恢复入口，移除重复的 Installer、手动 1280×1024 及诊断选项。
+- **自动高分辨率选择**：正常启动请求 1280×1024×16，由 Limine、实际 framebuffer、显存和显卡驱动共同决定是否启用；不支持时自动回退，ATI Mach64 仍限制为最高 1024×768×16。
 - **显存 PAT (Page Attribute Table) WC 加速**：Write-Combining 显存纯写脏矩形双缓冲，杜绝显存读瓶颈与画面撕裂。
 - **9 大经典内置应用程序**：文件管理器、文本编辑器、简易计算器、控制面板、多媒体音乐播放器、图片查看器、系统信息查看器、15 数字拼图、系统安装器。
 

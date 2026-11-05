@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A176a`
+Build version: `26A181d`
 
 ## Boot modes
 
@@ -9,7 +9,10 @@ The ISO exposes the following Limine entries:
 1. Live Desktop
 2. Graphical Installer
 3. Safe Graphics Live
-4. Safe Graphics Installer
+
+Normal live and installer boots request 1280x1024x16. Limine and the display
+backend automatically fall back to a smaller supported mode when that scanout
+is unavailable. Safe Graphics Live is the only advanced recovery entry.
 
 `mode=install` opens the installer in a near-full-screen classic window after
 the desktop and splash have initialized.

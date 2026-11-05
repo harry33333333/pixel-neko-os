@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A181d" ]
+    branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -77,23 +77,28 @@ jobs:
       if: >-
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
-         github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A181d')
+         github.ref == 'refs/heads/master')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Graphics Safety Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Boot Menu Cleanup)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: conservative display-mode restrictions across VMware, ATI and NVIDIA G7x.
+          > **Pre-release**: simplified boot menus with automatic high-resolution selection.
 
           ### Display compatibility
-          - VMware is limited to the proven 1024x768 path; unsafe 1280 mode switching no longer runs on the default boot.
+          - Live, installer and installed-system boots request 1280x1024x16 and fall back automatically when the firmware or video memory cannot provide it.
+          - 1280x1024 is exposed in the desktop settings only when the active framebuffer and display backend support the real scanout.
           - ATI detection disables acceleration and mode switching, while enforcing a maximum of 1024x768x16.
-          - NVIDIA GeForce 7300 GT can expose 1280x1024 only from its dedicated boot entry and only when the real framebuffer is already 1280x1024.
           - Logical and physical resolutions must match before a high-resolution mode is accepted, preventing black screens and shrunken fonts.
+
+          ### Boot menu
+          - The ISO keeps Live Desktop and Graphical Installer as the primary entries.
+          - Duplicate installer diagnostics, manual NVIDIA high-resolution entries and verbose/debug entries were removed.
+          - Advanced Boot Options now contains only the Safe Graphics recovery path.
+          - Installed systems use the same automatic resolution policy with a single Safe Graphics recovery path.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -101,7 +106,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision is published from the beta branch for physical-machine validation and is not merged into `main`.
+          This revision replaces the existing `v26A181d` pre-release assets without changing the version number.
         prerelease: true
         make_latest: false
         files: |
