@@ -2,7 +2,7 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta-v26A181b" ]
+    branches: [ "main", "master", "beta-v26A181c" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181b"
+          VERSION="26A181c"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -78,25 +78,22 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta-v26A181b')
+         github.ref == 'refs/heads/beta-v26A181c')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Media and Display Beta)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Reinstall Safety Beta)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: optical media hot-swap, VMware resolution and audio buffering fixes.
+          > **Pre-release**: reinstall safety warning for existing Pixel Neko OS installations.
 
-          ### Optical media
-          - IDE and AHCI ATAPI drives remain registered when the tray is empty.
-          - File Manager exposes an Eject button and `E` shortcut.
-          - Media polling detects eject, insertion and replacement, then remounts ISO9660/Joliet automatically.
-
-          ### Display and audio
-          - VMware keeps a 1280x1024 logical desktop even when the configured SVGA VRAM only permits a smaller scanout; output is scaled without disabling the resolution option.
-          - Audio polling is performed once per scheduler cycle instead of two or three times, and the playback cache target is doubled to reduce DMA underruns.
+          ### Reinstall safety
+          - Existing Pixel Neko installations are detected from installed kernel and payload files.
+          - Target lists mark partitions or disks that already contain Pixel Neko OS.
+          - A dedicated warning step explains payload, boot-file and `.pse` replacement risks before format selection.
+          - Installation execution repeats the safety check and cannot bypass an unacknowledged warning.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`

@@ -32,6 +32,7 @@ extern int insv;
 
 typedef enum {
     STEP_SELECT = 0,
+    STEP_REINSTALL_WARNING,
     STEP_FORMAT,
     STEP_CONFIRM,
     STEP_PROGRESS,
@@ -45,6 +46,8 @@ typedef struct {
     char disk_name[24];
     int disk_index;
     int partition_index;
+    int existing_on_disk;
+    int existing_on_target;
 } target_part_t;
 
 typedef struct {
@@ -60,11 +63,14 @@ static target_part_t g_targets[INSTALL_MAX_TARGETS];
 static target_part_t* g_target;
 static part_fs_type_t g_format_type = PART_FS_FAT32;
 static int g_skip_format = 0;
+static int g_reinstall_acknowledged = 0;
 static int g_install_error;
 static int g_progress_percent;
 static char g_progress_text[72];
 static char g_progress_subtext[72];
 static payload_list_t* g_payload_collector;
+
+static vfs_drive_t* mounted_target_drive(const target_part_t* target);
 
 static void text_copy(char* destination, const char* source, int capacity) {
     int index = 0;
@@ -161,6 +167,38 @@ static int target_supports_skip_format(const target_part_t* target) {
             target->part->fs_type == PART_FS_FAT16);
 }
 
+static int drive_has_pixel_neko(vfs_drive_t* drive) {
+    if (!drive || !drive->present || !drive->mounted) return 0;
+    char kernel[32];
+    char payload[40];
+    kernel[0] = drive->letter;
+    kernel[1] = ':';
+    kernel[2] = '\0';
+    text_append(kernel, "\\boot\\kernel.elf", sizeof(kernel));
+    payload[0] = drive->letter;
+    payload[1] = ':';
+    payload[2] = '\0';
+    text_append(payload, "\\system\\PAYLOAD.TXT", sizeof(payload));
+    vfs_dirent_t entry;
+    return vfs_find_file(kernel, &entry) == VFS_OK && !entry.is_dir &&
+           vfs_find_file(payload, &entry) == VFS_OK && !entry.is_dir;
+}
+
+static void detect_existing_installation(target_part_t* target) {
+    if (!target || !target->part || !target->part->dev) return;
+    target->existing_on_disk = 0;
+    target->existing_on_target = 0;
+    for (int index = 0; index < 26; index++) {
+        vfs_drive_t* drive = &g_vfs_drives[index];
+        if (!drive->present || drive->dev != target->part->dev) continue;
+        if (!drive_has_pixel_neko(drive)) continue;
+        target->existing_on_disk = 1;
+        if (drive->start_lba == target->part->start_lba) {
+            target->existing_on_target = 1;
+        }
+    }
+}
+
 static void scan_targets(void) {
     int disk_ids[INSTALL_MAX_TARGETS];
     int disk_count = 0;
@@ -205,6 +243,7 @@ static void scan_targets(void) {
                                        "Unknown",
                   sizeof(target->fs_name));
         text_copy(target->disk_name, dev->name, sizeof(target->disk_name));
+        detect_existing_installation(target);
         g_target_count++;
     }
 
@@ -226,6 +265,7 @@ void installer_init(void) {
     g_install_error = 0;
     g_format_type = PART_FS_FAT32;
     g_skip_format = 0;
+    g_reinstall_acknowledged = 0;
     g_progress_percent = 0;
     text_copy(g_progress_text, "Preparing installation...",
               sizeof(g_progress_text));
@@ -309,6 +349,11 @@ static void target_description(char* line, int capacity,
     text_append(line, " MB  [", capacity);
     text_append(line, target->fs_name, capacity);
     text_append(line, "]", capacity);
+    if (target->existing_on_disk) {
+        text_append(line, target->existing_on_target
+                             ? "  [PIXEL OS]" : "  [DISK HAS PIXEL OS]",
+                    capacity);
+    }
 }
 
 static int next_button_y(int wy, int wh) {
@@ -380,6 +425,32 @@ void installer_draw(unsigned char* surface, int wx, int wy,
                     g_target_count > 0);
         draw_button(surface, wx + 14, next_button_y(wy, wh),
                     78, 23, "Refresh", 1);
+    } else if (g_step == STEP_REINSTALL_WARNING) {
+        font_draw_text(surface, wx + 14, wy + 28,
+                       "WARNING: Pixel Neko OS already exists on this disk",
+                       12);
+        char target_line[96];
+        target_description(target_line, sizeof(target_line), g_target, 0);
+        font_draw_text(surface, wx + 14, wy + 54, target_line, 0);
+        font_draw_text(surface, wx + 14, wy + 78,
+                       g_target && g_target->existing_on_target
+                           ? "The selected partition already contains an installation."
+                           : "Another partition on this disk contains Pixel Neko OS.",
+                       0);
+        font_draw_text(surface, wx + 14, wy + 102,
+                       "Reinstalling will replace the system payload and boot files.",
+                       8);
+        font_draw_text(surface, wx + 14, wy + 122,
+                       "Saved .pse settings may be overwritten.", 8);
+        font_draw_text(surface, wx + 14, wy + 142,
+                       "The next screen can erase every file on the target partition.",
+                       12);
+        font_draw_text(surface, wx + 14, wy + 166,
+                       "Back up important data before continuing.", 12);
+        draw_button(surface, next_button_x(wx, ww),
+                    next_button_y(wy, wh), 88, 23, "Reinstall", 1);
+        draw_button(surface, wx + 14, next_button_y(wy, wh),
+                    78, 23, "Cancel", 1);
     } else if (g_step == STEP_FORMAT) {
         font_draw_text(surface, wx + 14, wy + 26,
                        "Choose the destination filesystem or skip formatting", 0);
@@ -1132,6 +1203,12 @@ static int point_in_rect(int x, int y, int rx, int ry, int rw, int rh) {
 }
 
 static void begin_install(void) {
+    if (g_target && g_target->existing_on_disk &&
+        !g_reinstall_acknowledged) {
+        g_step = STEP_REINSTALL_WARNING;
+        redraw = 1;
+        return;
+    }
     g_step = STEP_PROGRESS;
     update_progress_ui(0, "Starting installation...",
                        "Preparing the selected existing partition");
@@ -1161,11 +1238,13 @@ void installer_click(unsigned char* surface, int mx, int my,
                           next_button_y(wy, wh), 78, 23) &&
             g_target_count > 0) {
             g_target = &g_targets[g_selected_idx];
+            g_reinstall_acknowledged = 0;
             g_skip_format = 0;
             g_format_type =
                 target_supports_format(g_target, PART_FS_FAT32)
                     ? PART_FS_FAT32 : PART_FS_FAT16;
-            g_step = STEP_FORMAT;
+            g_step = g_target->existing_on_disk
+                         ? STEP_REINSTALL_WARNING : STEP_FORMAT;
             log_printf("[P6 ] Installer target selected: disk=%s lba=%llu size=%u MB fs=%s\n",
                        g_target->disk_name,
                        (unsigned long long)g_target->part->start_lba,
@@ -1176,6 +1255,20 @@ void installer_click(unsigned char* surface, int mx, int my,
         if (point_in_rect(mx, my, wx + 14, next_button_y(wy, wh),
                           78, 23)) {
             scan_targets();
+            redraw = 1;
+        }
+    } else if (g_step == STEP_REINSTALL_WARNING) {
+        if (point_in_rect(mx, my, next_button_x(wx, ww),
+                          next_button_y(wy, wh), 88, 23)) {
+            g_reinstall_acknowledged = 1;
+            g_step = STEP_FORMAT;
+            redraw = 1;
+            return;
+        }
+        if (point_in_rect(mx, my, wx + 14,
+                          next_button_y(wy, wh), 78, 23)) {
+            g_reinstall_acknowledged = 0;
+            g_step = STEP_SELECT;
             redraw = 1;
         }
     } else if (g_step == STEP_FORMAT) {
@@ -1211,6 +1304,7 @@ void installer_click(unsigned char* surface, int mx, int my,
         if (point_in_rect(mx, my, next_button_x(wx, ww) - 88,
                           next_button_y(wy, wh), 78, 23)) {
             g_step = STEP_SELECT;
+            g_reinstall_acknowledged = 0;
             redraw = 1;
         }
     } else if (g_step == STEP_CONFIRM) {
