@@ -22,7 +22,6 @@
 #define FDC_DOR_DMA              0x08
 
 #define FDC_CMD_SPECIFY          0x03
-#define FDC_CMD_VERSION          0x04
 #define FDC_CMD_RECALIBRATE      0x07
 #define FDC_CMD_SENSE_INTERRUPT  0x08
 #define FDC_CMD_SEEK             0x0F
@@ -70,7 +69,6 @@ static dma_buffer_t g_fdc_dma;
 static bool g_fdc_dma_ready;
 static bool g_fdc_controller_ready;
 static bool g_fdc_enhanced;
-static int g_fdc_controller_version = -1;
 
 static const fdc_geometry_t g_geometry_probes[] = {
     { FDC_RATE_500K, 2, 18, 80, 2880 },
@@ -190,24 +188,21 @@ static int fdc_controller_reset(void) {
         return -1;
     }
 
+    int reset_responses = 0;
     for (int index = 0; index < 4; index++) {
         uint8_t status = 0;
         uint8_t cylinder = 0;
         if (fdc_sense_interrupt_raw(&status, &cylinder) != 0) break;
+        reset_responses++;
     }
 
     fdc_set_data_rate(FDC_RATE_250K);
-    if (fdc_write_byte(FDC_CMD_VERSION) == 0) {
-        uint8_t version = 0;
-        if (fdc_read_byte(&version, 100) == 0) {
-            g_fdc_controller_version = version;
-            g_fdc_enhanced = version >= 0x90;
-        }
-    }
     if (fdc_specify() != 0) {
         log_printf("[FDC ] SPECIFY failed\n");
         return -1;
     }
+    log_printf("[FDC ] controller reset complete, interrupt responses=%d\n",
+               reset_responses);
     return 0;
 }
 
@@ -222,7 +217,7 @@ static int fdc_recalibrate(int drive_index) {
     uint8_t status = 0;
     uint8_t cylinder = 0;
     if (fdc_sense_interrupt_raw(&status, &cylinder) != 0) return -1;
-    if ((status & 0xC0u) != 0x20u ||
+    if ((status & 0xE0u) != 0x20u ||
         (status & 0x03u) != (uint8_t)(drive_index & 1) ||
         cylinder != 0) {
         return -1;
@@ -251,7 +246,7 @@ static int fdc_seek(int drive_index, uint8_t cylinder) {
     uint8_t status = 0;
     uint8_t current = 0;
     if (fdc_sense_interrupt_raw(&status, &current) != 0) return -1;
-    if ((status & 0xC0u) != 0x20u ||
+    if ((status & 0xE0u) != 0x20u ||
         (status & 0x03u) != (uint8_t)(drive_index & 1) ||
         current != cylinder) {
         drive->current_cylinder = -1;
@@ -487,7 +482,6 @@ int fdc_init(void) {
     g_fdc_dma_ready = false;
     g_fdc_controller_ready = false;
     g_fdc_enhanced = false;
-    g_fdc_controller_version = -1;
 
     if (dma_alloc(FDC_DMA_SIZE, DMA_BIT_MASK(24), PAGE_SIZE,
                   &g_fdc_dma) != 0) {
@@ -504,6 +498,9 @@ int fdc_init(void) {
 
     uint8_t cmos_types = fdc_cmos_read(0x10);
     uint8_t equipment = fdc_cmos_read(0x14);
+    g_fdc_enhanced =
+        ((cmos_types >> 4) & 0x0Fu) == 0x05u ||
+        (cmos_types & 0x0Fu) == 0x05u;
     bool hints[2] = {
         ((cmos_types >> 4) & 0x0Fu) != 0,
         (cmos_types & 0x0Fu) != 0
@@ -551,10 +548,8 @@ int fdc_init(void) {
     }
 
     isadma_disable();
-    log_printf("[FDC ] controller=%s version=0x%02x drives=%d\n",
+    log_printf("[FDC ] controller=%s drives=%d\n",
                g_fdc_enhanced ? "enhanced" : "compatible",
-               g_fdc_controller_version < 0 ? 0 :
-                   (unsigned int)g_fdc_controller_version,
                detected);
     return detected;
 }
