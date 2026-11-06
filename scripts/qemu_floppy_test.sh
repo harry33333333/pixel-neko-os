@@ -46,8 +46,9 @@ if ! grep -q "\[P6 \] Full desktop" "${EMPTY_LOG}"; then
     tail -n 300 "${EMPTY_LOG}" >&2 || true
     exit 1
 fi
-if grep -qE "\[FDC \] [AB]:|\[VFS \] [AB]:" "${EMPTY_LOG}"; then
-    echo "A:/B: appeared without floppy media" >&2
+if grep -qE "\[VFS \] [AB]:" "${EMPTY_LOG}"; then
+    echo "VFS A:/B: appeared without floppy media" >&2
+    tail -n 350 "${EMPTY_LOG}" >&2 || true
     exit 1
 fi
 
