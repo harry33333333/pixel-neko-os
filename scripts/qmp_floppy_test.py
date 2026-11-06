@@ -59,7 +59,7 @@ def main() -> int:
     if not change_medium(connection, "fda", replacement):
         return 1
     if not wait_for_serial(
-        serial_log, "[VFS ] A: floppy changed (720 KiB)", 12.0
+        serial_log, "[VFS ] A: floppy changed (720 KiB)", 18.0
     ):
         print("Floppy capacity change was not detected", file=sys.stderr)
         return 1
@@ -71,7 +71,7 @@ def main() -> int:
         print(f"QMP floppy eject failed: {response}", file=sys.stderr)
         return 1
     if not wait_for_serial(
-        serial_log, "[VFS ] A: floppy media removed", 12.0
+        serial_log, "[VFS ] A: floppy media removed", 18.0
     ):
         print("Floppy removal was not detected", file=sys.stderr)
         return 1

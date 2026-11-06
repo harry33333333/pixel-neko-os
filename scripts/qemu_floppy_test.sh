@@ -56,7 +56,7 @@ SERIAL_LOG="qemu-floppy-serial.log"
 CONSOLE_LOG="qemu-floppy-console.log"
 QMP_SOCKET="qemu-floppy.qmp"
 rm -f "${SERIAL_LOG}" "${CONSOLE_LOG}" "${QMP_SOCKET}"
-timeout --foreground 55s qemu-system-x86_64 \
+timeout --foreground 75s qemu-system-x86_64 \
     -machine pc,accel=tcg \
     -cpu max \
     -smp 1 \

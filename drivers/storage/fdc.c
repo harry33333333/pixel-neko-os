@@ -38,6 +38,7 @@
 #define FDC_DMA_SIZE             (FDC_MAX_BATCH_SECTORS * FDC_SECTOR_SIZE)
 #define FDC_MAX_TOTAL_SECTORS    10000u
 #define FDC_MOTOR_IDLE_POLLS     3
+#define FDC_MEDIA_REVALIDATE_POLLS 8
 
 typedef struct {
     bool hardware_present;
@@ -50,6 +51,7 @@ typedef struct {
     uint8_t heads;
     uint8_t sectors_per_track;
     uint32_t total_sectors;
+    uint32_t volume_serial;
     int current_cylinder;
     uint8_t last_change_bit;
     int absent_probe_delay;
@@ -382,6 +384,7 @@ static bool fdc_decode_bpb(fdc_drive_t* drive, const uint8_t* sector,
     drive->heads = (uint8_t)heads;
     drive->sectors_per_track = (uint8_t)sectors_per_track;
     drive->total_sectors = total;
+    drive->volume_serial = read_le32(sector + 39);
     drive->current_cylinder = 0;
     return true;
 }
@@ -426,6 +429,7 @@ static media_state_t fdc_detect_media_locked(int drive_index) {
 
     drive->media_valid = false;
     drive->total_sectors = 0;
+    drive->volume_serial = 0;
     drive->current_cylinder = -1;
     drive->absent_probe_delay = 2;
     return MEDIA_ABSENT;
@@ -571,24 +575,36 @@ media_state_t fdc_check_media(int drive) {
     fdc_drive_t* state = &g_fdc_drives[drive];
     uint8_t change_bit = (uint8_t)((inb(FDC_DIR) & 0x80u) ? 1u : 0u);
     bool changed = change_bit != state->last_change_bit;
+    bool force_probe = false;
     if (changed) state->last_change_bit = change_bit;
 
     if (state->ejected) {
-        if (!changed) return MEDIA_ABSENT;
-        state->ejected = false;
-    }
-
-    if (state->media_valid && !changed) {
-        if (state->motor_on) {
-            state->motor_idle_polls++;
-            if (state->motor_idle_polls >= FDC_MOTOR_IDLE_POLLS) {
-                fdc_motor_off(state);
+        if (!changed) {
+            if (++state->absent_probe_delay < FDC_MEDIA_REVALIDATE_POLLS) {
+                return MEDIA_ABSENT;
             }
+            state->absent_probe_delay = 0;
+            force_probe = true;
+        } else {
+            state->ejected = false;
         }
-        return MEDIA_PRESENT;
     }
 
-    if (!changed && state->absent_probe_delay > 0) {
+    if (state->media_valid && !changed && !force_probe) {
+        if (++state->absent_probe_delay < FDC_MEDIA_REVALIDATE_POLLS) {
+            if (state->motor_on) {
+                state->motor_idle_polls++;
+                if (state->motor_idle_polls >= FDC_MOTOR_IDLE_POLLS) {
+                    fdc_motor_off(state);
+                }
+            }
+            return MEDIA_PRESENT;
+        }
+        state->absent_probe_delay = 0;
+        force_probe = true;
+    }
+
+    if (!changed && !force_probe && state->absent_probe_delay > 0) {
         state->absent_probe_delay--;
         return state->media_valid ? MEDIA_PRESENT : MEDIA_ABSENT;
     }
@@ -596,9 +612,11 @@ media_state_t fdc_check_media(int drive) {
 
     bool old_media_valid = state->media_valid;
     uint32_t old_sectors = state->total_sectors;
+    uint32_t old_serial = state->volume_serial;
     media_state_t media = fdc_detect_media_locked(drive);
     bool media_changed = changed || !old_media_valid ||
-                         old_sectors != state->total_sectors;
+                         old_sectors != state->total_sectors ||
+                         old_serial != state->volume_serial;
     fdc_update_block_capacity(state, media, media_changed);
     if (media != MEDIA_PRESENT) fdc_motor_off(state);
     return media;
@@ -612,6 +630,7 @@ int fdc_eject(int drive) {
     fdc_motor_off(state);
     state->media_valid = false;
     state->total_sectors = 0;
+    state->volume_serial = 0;
     state->current_cylinder = -1;
     state->ejected = true;
     state->last_change_bit =
