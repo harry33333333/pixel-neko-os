@@ -514,19 +514,23 @@ int fdc_init(void) {
         if (count > 2) count = 2;
         for (int index = 0; index < count; index++) hints[index] = true;
     }
-    if (!hints[0] && !hints[1]) {
-        log_printf("[FDC ] no drives reported by firmware\n");
-        isadma_disable();
-        return 0;
-    }
+    log_printf("[FDC ] firmware types=0x%02x equipment=0x%02x hints=%u%u\n",
+               cmos_types, equipment, hints[0] ? 1u : 0u,
+               hints[1] ? 1u : 0u);
 
     int detected = 0;
     for (int index = 0; index < 2; index++) {
         fdc_drive_t* drive = &g_fdc_drives[index];
-        if (!hints[index] || !fdc_probe_hardware(index)) continue;
+        bool hinted = hints[index];
+        if (!fdc_probe_hardware(index)) continue;
 
         drive->hardware_present = true;
-        (void)fdc_detect_media_locked(index);
+        media_state_t state = fdc_detect_media_locked(index);
+        if (!hinted && state != MEDIA_PRESENT) {
+            drive->hardware_present = false;
+            fdc_motor_off(drive);
+            continue;
+        }
         char name[16] = { 'f', 'd', 'c', (char)('0' + index), '\0' };
         drive->block = block_register(
             name, BLK_TYPE_FLOPPY, index, FDC_SECTOR_SIZE,

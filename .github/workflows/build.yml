@@ -96,6 +96,7 @@ jobs:
           ### Floppy storage
           - Added an 8237 ISA DMA channel 2 driver and a polled 82077-compatible floppy controller driver.
           - Windows-style A: and B: mapping follows physical floppy units 0 and 1.
+          - Firmware-empty CMOS hints fall back to probing both standard FDC units.
           - Media capacity is read from the FAT12 BPB, covering 160 KiB through 2.88 MiB geometries.
           - Empty drives and media-free machines do not expose A: or B:.
           - Media change, eject and reinsertion invalidate the old FAT volume and remount the new disk.

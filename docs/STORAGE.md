@@ -59,7 +59,9 @@ standard MFM data rates and derives the actual capacity, cylinder, head and
 sector geometry from the FAT12 BPB. A: and B: are tied to physical units 0
 and 1; an empty drive does not create a VFS drive letter. Disk-change
 detection invalidates the previous FAT volume before remounting replacement
-media.
+media. Firmware CMOS drive-type hints are used when available; if a virtual
+or UEFI environment leaves them empty, both physical FDC units are probed and
+only media-bearing unhinted drives are registered.
 
 USB Mass Storage implements Bulk-Only Transport with SCSI INQUIRY, READ
 CAPACITY, READ(10), WRITE(10), REQUEST SENSE handling and reset recovery.
