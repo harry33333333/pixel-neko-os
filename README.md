@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A181e - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A181f - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -43,6 +43,7 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 ### 5. 存储堆栈与用户数据安全防线
 - **未初始化磁盘保护机制**：面对全新或未分区的硬盘，内核严禁静默自动分区与格式化，通过窗口管理器交互式弹窗向用户请求显式授权，防止误抹除数据。
 - **多文件系统与路径导航**：全面支持 MBR/GPT、FAT12/16/32（长文件名）、exFAT、ISO9660/Joliet，修复文件管理器深层目录双击进出与路径解析。详情参阅 [`docs/STORAGE.md`](docs/STORAGE.md)。
+- **软盘与 ISA DMA**：内置 8237 通道 2 和 FDC 驱动，A:/B: 按物理软驱 0/1 映射，按 FAT12 BPB 识别实际容量；空驱不显示盘符，支持换盘、弹出和重新插入。
 
 ---
 
@@ -57,18 +58,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A181e.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A181f.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A181e.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A181f.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A181e.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A181f.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

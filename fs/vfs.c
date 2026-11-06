@@ -4,6 +4,7 @@
 #include "ata.h"
 #include "exfat.h"
 #include "fat.h"
+#include "fdc.h"
 #include "iso9660.h"
 #include "log.h"
 #include "string.h"
@@ -169,6 +170,93 @@ static void clear_optical_mount(vfs_drive_t* drive) {
     g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
 }
 
+static void clear_floppy_mount(vfs_drive_t* drive) {
+    if (!drive) return;
+    fat_unmount_dev(drive->letter);
+    drive->mounted = 0;
+    drive->fs_type = PART_FS_UNKNOWN;
+    drive->is_supported = 0;
+    drive->is_readonly = 0;
+    drive->total_sectors = 0;
+    drive->total_kb = 0;
+    drive->free_kb = 0;
+    drive->is_free_known = 0;
+    drive->label[0] = '\0';
+    g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
+}
+
+static bool mount_floppy(blkdev_t* dev, char letter) {
+    if (!dev || dev->type != BLK_TYPE_FLOPPY || !dev->total_sectors) {
+        return false;
+    }
+    vfs_drive_t* drive = initialize_drive(letter);
+    if (!drive) return false;
+
+    drive->drv_type = VFS_DRV_FLOPPY;
+    drive->fs_type = PART_FS_UNKNOWN;
+    drive->is_supported = 0;
+    drive->is_readonly = dev->is_readonly;
+    drive->dev = dev;
+    drive->start_lba = 0;
+    drive->total_sectors = dev->total_sectors;
+    drive->total_kb =
+        dev->total_sectors * (dev->sector_size / 1024u);
+    drive->media_generation = dev->media_generation;
+    copy_text(drive->label, sizeof(drive->label), "Floppy Disk");
+
+    fat_unmount_dev(letter);
+    if (fat_mount_dev(letter, dev, 0) == 0) {
+        int index = letter - 'A';
+        if (g_volumes[index].type == 12) drive->fs_type = PART_FS_FAT12;
+        else if (g_volumes[index].type == 16) drive->fs_type = PART_FS_FAT16;
+        else drive->fs_type = PART_FS_FAT32;
+        drive->is_supported = 1;
+        drive->mounted = 1;
+        g_filesystem_kind[index] = VFS_FS_FAT;
+    } else {
+        copy_text(drive->label, sizeof(drive->label),
+                  "Floppy Disk (Unsupported)");
+    }
+    return true;
+}
+
+static bool refresh_floppy_drive(blkdev_t* dev) {
+    if (!dev || dev->type != BLK_TYPE_FLOPPY ||
+        dev->unit < 0 || dev->unit >= 2) {
+        return false;
+    }
+
+    media_state_t state = block_check_media(dev);
+    char letter = (char)('A' + dev->unit);
+    vfs_drive_t* drive = &g_vfs_drives[letter - 'A'];
+
+    if (state != MEDIA_PRESENT || !dev->total_sectors) {
+        if (!drive->present) return false;
+        clear_floppy_mount(drive);
+        drive->present = 0;
+        log_printf("[VFS ] %c: floppy media removed\n", letter);
+        return true;
+    }
+
+    if (!drive->present) {
+        if (!mount_floppy(dev, letter)) return false;
+        log_printf("[VFS ] %c: floppy inserted (%llu KiB)\n", letter,
+                   (unsigned long long)dev->total_sectors / 2);
+        return true;
+    }
+
+    if (drive->media_generation == dev->media_generation &&
+        drive->total_sectors == dev->total_sectors) {
+        return false;
+    }
+
+    clear_floppy_mount(drive);
+    if (!mount_floppy(dev, letter)) return false;
+    log_printf("[VFS ] %c: floppy changed (%llu KiB)\n", letter,
+               (unsigned long long)dev->total_sectors / 2);
+    return true;
+}
+
 static bool refresh_optical_drive(vfs_drive_t* drive) {
     if (!drive || drive->drv_type != VFS_DRV_CDROM || !drive->dev) {
         return false;
@@ -220,25 +308,12 @@ void vfs_init(void) {
     g_last_media_poll_tick = apic_get_ticks();
     fat_init();
 
-    int floppy_unit = 0;
-    for (int index = 0; index < blkdev_count() && floppy_unit < 2; index++) {
+    for (int index = 0; index < blkdev_count(); index++) {
         blkdev_t* dev = blkdev_get(index);
         if (!dev || dev->type != BLK_TYPE_FLOPPY) continue;
-        char letter = (char)('A' + floppy_unit++);
-        vfs_drive_t* drive = initialize_drive(letter);
-        if (!drive) break;
-        drive->drv_type = VFS_DRV_FLOPPY;
-        drive->fs_type = PART_FS_FAT12;
-        drive->is_supported = 1;
-        drive->dev = dev;
-        drive->total_sectors = dev->total_sectors;
-        drive->total_kb = dev->total_sectors / 2;
-        copy_text(drive->label, sizeof(drive->label),
-                  floppy_unit == 1 ? "3.5\" Floppy (A:)" :
-                                     "3.5\" Floppy (B:)");
-        if (fat_mount_dev(letter, dev, 0) == 0) {
-            drive->mounted = 1;
-            g_filesystem_kind[letter - 'A'] = VFS_FS_FAT;
+        char letter = (char)('A' + dev->unit);
+        if (block_check_media(dev) == MEDIA_PRESENT && dev->total_sectors) {
+            (void)mount_floppy(dev, letter);
         }
     }
 
@@ -293,6 +368,12 @@ bool vfs_poll_media(void) {
     g_last_media_poll_tick = now;
 
     bool changed = false;
+    for (int index = 0; index < blkdev_count(); index++) {
+        blkdev_t* dev = blkdev_get(index);
+        if (dev && dev->type == BLK_TYPE_FLOPPY) {
+            if (refresh_floppy_drive(dev)) changed = true;
+        }
+    }
     for (int index = 0; index < 26; index++) {
         vfs_drive_t* drive = &g_vfs_drives[index];
         if (!drive->present || drive->drv_type != VFS_DRV_CDROM ||
@@ -304,11 +385,20 @@ bool vfs_poll_media(void) {
     return changed;
 }
 
-int vfs_eject_optical(char letter) {
+int vfs_eject_media(char letter) {
     letter = normalize_letter(letter);
     vfs_drive_t* drive = vfs_get_drive(letter);
-    if (!drive || drive->drv_type != VFS_DRV_CDROM || !drive->dev) {
+    if (!drive || !drive->dev) {
         return VFS_ERR_NO_DRIVE;
+    }
+    if (drive->drv_type == VFS_DRV_FLOPPY) {
+        if (fdc_eject(drive->dev->unit) != 0) return VFS_ERR_IO;
+        drive->media_generation = UINT32_MAX;
+        (void)refresh_floppy_drive(drive->dev);
+        return VFS_OK;
+    }
+    if (drive->drv_type != VFS_DRV_CDROM) {
+        return VFS_ERR_UNSUPPORTED;
     }
     int result;
     if (drive->dev->type == BLK_TYPE_ATAPI) {
@@ -322,6 +412,10 @@ int vfs_eject_optical(char letter) {
     drive->media_generation = UINT32_MAX;
     (void)refresh_optical_drive(drive);
     return VFS_OK;
+}
+
+int vfs_eject_optical(char letter) {
+    return vfs_eject_media(letter);
 }
 
 static iso_fs_t* iso_for_drive(vfs_drive_t* drive) {
@@ -622,6 +716,12 @@ int vfs_is_booted_from_cdrom(void) {
 int vfs_remount(char letter) {
     vfs_drive_t* drive = vfs_get_drive(letter);
     if (!drive || !drive->dev) return VFS_ERR_NO_DRIVE;
+    if (drive->drv_type == VFS_DRV_FLOPPY) {
+        drive->media_generation = UINT32_MAX;
+        (void)refresh_floppy_drive(drive->dev);
+        if (!drive->present) return VFS_ERR_NO_MEDIA;
+        return drive->mounted ? VFS_OK : VFS_ERR_UNSUPPORTED;
+    }
     if (drive->drv_type == VFS_DRV_CDROM) {
         drive->media_generation = UINT32_MAX;
         (void)refresh_optical_drive(drive);

@@ -95,6 +95,7 @@ void fat_set_write_progress_cb(void (*cb)(unsigned int written, unsigned int tot
 void fat_flush_all(void);
 
 int fat_mount_dev(char letter, blkdev_t* dev, unsigned int lba);
+void fat_unmount_dev(char letter);
 int mount_fat(fat_fs_t* vol, blkdev_t* dev, unsigned int lba, unsigned char* boot_sector);
 int fat_get_volume_space(char letter, unsigned int* total_kb, unsigned int* free_kb);
 

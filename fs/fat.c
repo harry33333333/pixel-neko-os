@@ -168,11 +168,20 @@ int fat_mount_dev(char letter, blkdev_t* dev, unsigned int lba) {
     if (letter >= 'a' && letter <= 'z') letter -= 32;
     int idx = letter - 'A';
     if (idx < 0 || idx >= MAX_VOLUMES || !dev || !dev->read_sectors) return -1;
+    memset(&g_volumes[idx], 0, sizeof(g_volumes[idx]));
 
     unsigned char sec[512];
     if (dev->read_sectors(dev, lba, 1, sec) != 0) return -1;
 
     return mount_fat(&g_volumes[idx], dev, lba, sec);
+}
+
+void fat_unmount_dev(char letter) {
+    if (letter >= 'a' && letter <= 'z') letter -= 32;
+    int index = letter - 'A';
+    if (index >= 0 && index < MAX_VOLUMES) {
+        memset(&g_volumes[index], 0, sizeof(g_volumes[index]));
+    }
 }
 
 int fat_init(void) {

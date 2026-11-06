@@ -211,11 +211,12 @@ static void eject_selected_drive(void) {
         letter = files[selected].name[0];
     }
     vfs_drive_t* drive = vfs_get_drive(letter);
-    if (!drive || drive->drv_type != VFS_DRV_CDROM) {
-        show_error_msg("Eject unavailable", "Select an optical drive first");
+    if (!drive || (drive->drv_type != VFS_DRV_CDROM &&
+                   drive->drv_type != VFS_DRV_FLOPPY)) {
+        show_error_msg("Eject unavailable", "Select a floppy or optical drive");
         return;
     }
-    if (vfs_eject_optical(letter) != VFS_OK) {
+    if (vfs_eject_media(letter) != VFS_OK) {
         show_error_msg("Eject failed", "The drive did not accept the request");
         return;
     }
@@ -1024,7 +1025,7 @@ void fm_draw(unsigned char* v, int wx, int wy, int ww, int wh) {
     char status_txt[128];
     if (current_path[0] == 0) {
         font_draw_text(v, wx + 8, status_y,
-                       "Drives Root | Double-click: open | E: eject CD/DVD", 8);
+                       "Drives Root | Double-click: open | E: eject A:/B:/CD", 8);
     } else {
         char cur_drv = current_path[0];
         uint64_t tot_k = 0, fre_k = 0; int is_known = 0;

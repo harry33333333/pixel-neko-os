@@ -24,7 +24,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dos2unix zip
+        sudo apt-get install -y gcc nasm xorriso mtools dosfstools qemu-system-x86 dos2unix zip
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -37,13 +37,18 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181e"
+          VERSION="26A181f"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
         nm -n bin/kernel.elf > kernel-symbols.txt
         git archive --format=zip --output="pixel_neko_source_${VERSION}.zip" HEAD
         sha256sum "pixel-neko-os_${VERSION}.iso" > "pixel-neko-os_${VERSION}.iso.sha256"
+
+    - name: Validate ISA DMA and Floppy Controller
+      if: success()
+      run: |
+        bash scripts/qemu_floppy_test.sh "pixel-neko-os_${VERSION}.iso"
 
     - name: Upload Build Log Artifact
       if: always()
@@ -82,11 +87,18 @@ jobs:
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Focused Installer UI)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Floppy Storage)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: focused installer interface and automatic high-resolution selection.
+          > **Pre-release**: ISA DMA floppy storage with A:/B: media-change support.
+
+          ### Floppy storage
+          - Added an 8237 ISA DMA channel 2 driver and a polled 82077-compatible floppy controller driver.
+          - Windows-style A: and B: mapping follows physical floppy units 0 and 1.
+          - Media capacity is read from the FAT12 BPB, covering 160 KiB through 2.88 MiB geometries.
+          - Empty drives and media-free machines do not expose A: or B:.
+          - Media change, eject and reinsertion invalidate the old FAT volume and remount the new disk.
 
           ### Installer interface
           - File, Edit, View and Special menus are hidden in installer mode.
@@ -111,7 +123,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes the focused installer interface as `v26A181e`.
+          This revision publishes ISA DMA floppy storage as `v26A181f`.
         prerelease: true
         make_latest: false
         files: |

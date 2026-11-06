@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PIXEL_NEKO_BUILD_NUMBER ?= 181
-PIXEL_NEKO_BUILD_SUFFIX ?= e
+PIXEL_NEKO_BUILD_SUFFIX ?= f
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -93,6 +93,8 @@ C_SRCS   = kernel/core/main.c \
            drivers/storage/block.c \
            drivers/storage/ahci.c \
            drivers/storage/ata.c \
+           drivers/storage/isadma.c \
+           drivers/storage/fdc.c \
            drivers/storage/storage.c \
            fs/part.c \
            fs/fat.c \
