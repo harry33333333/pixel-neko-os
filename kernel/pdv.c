@@ -869,15 +869,8 @@ static bool pdv_dir_exists(const char* dir_path) {
 static bool pdv_resolve_boot_pdevice_dir(char* out_dir, size_t cap) {
     if (!out_dir || cap < 16) return false;
 
-    char cd = vfs_get_boot_cdrom_letter();
-    if (cd != 0) {
-        out_dir[0] = cd;
-        out_dir[1] = ':';
-        out_dir[2] = '\\';
-        pdv_safe_str(out_dir + 3, cap - 3, "PDEVICE", 7);
-        if (pdv_dir_exists(out_dir)) return true;
-    }
-
+    /* In local installed mode (mode=local), prioritize <SYS>:\PDEVICE even if
+     * the Live CD ISO is still mounted in the optical drive. */
     char sys = settings_get_system_drive();
     if (sys != 0) {
         out_dir[0] = sys;
@@ -887,9 +880,20 @@ static bool pdv_resolve_boot_pdevice_dir(char* out_dir, size_t cap) {
         if (pdv_dir_exists(out_dir)) return true;
     }
 
+    /* In Live / Installer mode (sys == 0), load from <CD>:\PDEVICE. */
+    char cd = vfs_get_boot_cdrom_letter();
+    if (cd != 0) {
+        out_dir[0] = cd;
+        out_dir[1] = ':';
+        out_dir[2] = '\\';
+        pdv_safe_str(out_dir + 3, cap - 3, "PDEVICE", 7);
+        if (pdv_dir_exists(out_dir)) return true;
+    }
+
     for (char letter = 'C'; letter <= 'Z'; letter++) {
         vfs_drive_t* drv = vfs_get_drive(letter);
         if (!drv || !drv->present || !drv->mounted) continue;
+        if (sys != 0 && drv->drv_type == VFS_DRV_CDROM) continue;
         char kpath[32];
         kpath[0] = letter;
         kpath[1] = ':';
@@ -962,3 +966,4 @@ const pdv_module_info_t* pdv_get_loaded_info(int index) {
     if (index < 0 || index >= g_loaded_pdv_count) return NULL;
     return &g_loaded_pdvs[index];
 }
+
