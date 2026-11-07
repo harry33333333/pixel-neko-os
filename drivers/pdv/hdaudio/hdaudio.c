@@ -1,14 +1,13 @@
-#include "hdaudio.h"
-#include "dma.h"
-#include "log.h"
-#include "mmio.h"
-#include "pci.h"
-#include "port.h"
-#include "timer.h"
+/*
+ * Intel / VIA / VMware High Definition Audio (HDA) Controller Driver (*.pdv module).
+ */
 
-#ifndef NULL
-#define NULL ((void*)0)
-#endif
+#include <pdv/ddk.h>
+
+static const pdv_kernel_api_t* g_kapi = 0;
+
+#define klog_info(fmt, ...) g_kapi->log_printf("[INFO] " fmt "\n", ##__VA_ARGS__)
+#define klog_warn(fmt, ...) g_kapi->log_printf("[WARN] " fmt "\n", ##__VA_ARGS__)
 
 #define HDA_REG_GCAP            0x00
 #define HDA_REG_VMIN            0x02
@@ -149,7 +148,7 @@ typedef struct {
     unsigned short conn[HDA_MAX_CONNECTIONS];
 } hda_widget_t;
 
-static const pci_device_t* g_pci;
+static const pdv_pci_device_t* g_pci;
 static volatile unsigned char* g_regs;
 static unsigned int g_controller_id;
 static unsigned int g_gcap;
@@ -169,10 +168,10 @@ static int g_volume = 85;
 static int g_last_current_half = -1;
 static unsigned int g_corb_wp;
 
-static dma_buffer_t g_corb;
-static dma_buffer_t g_rirb;
-static dma_buffer_t g_pcm;
-static dma_buffer_t g_bdl;
+static pdv_dma_buffer_t g_corb;
+static pdv_dma_buffer_t g_rirb;
+static pdv_dma_buffer_t g_pcm;
+static pdv_dma_buffer_t g_bdl;
 
 static int g_widget_count;
 static hda_widget_t g_widgets[HDA_MAX_WIDGETS];
@@ -187,31 +186,31 @@ static unsigned char g_name[80];
 static const char* g_status = "Not detected";
 
 static unsigned char hda_read8(unsigned int reg) {
-    return mmio_read8(g_regs + reg);
+    return pdv_mmio_read8(g_regs + reg);
 }
 
 static unsigned short hda_read16(unsigned int reg) {
-    return mmio_read16(g_regs + reg);
+    return pdv_mmio_read16(g_regs + reg);
 }
 
 static unsigned int hda_read32(unsigned int reg) {
-    return mmio_read32(g_regs + reg);
+    return pdv_mmio_read32(g_regs + reg);
 }
 
 static void hda_write8(unsigned int reg, unsigned char value) {
-    mmio_write8(g_regs + reg, value);
+    pdv_mmio_write8(g_regs + reg, value);
 }
 
 static void hda_write16(unsigned int reg, unsigned short value) {
-    mmio_write16(g_regs + reg, value);
+    pdv_mmio_write16(g_regs + reg, value);
 }
 
 static void hda_write32(unsigned int reg, unsigned int value) {
-    mmio_write32(g_regs + reg, value);
+    pdv_mmio_write32(g_regs + reg, value);
 }
 
 static void hda_delay(void) {
-    outb(0x80, 0);
+    pdv_outb(0x80, 0);
 }
 
 static void hda_copy_string(unsigned char* dst, const char* src, int max) {
@@ -276,8 +275,8 @@ static int hda_direct_command(unsigned int codec, unsigned short nid,
 static int hda_corb_command(unsigned int codec, unsigned short nid,
                             unsigned short verb, unsigned short payload,
                             unsigned int* response) {
-    if (!g_corb_ready || !dma_is_valid(&g_corb) ||
-        !dma_is_valid(&g_rirb)) {
+    if (!g_corb_ready || !pdv_dma_is_valid(&g_corb) ||
+        !pdv_dma_is_valid(&g_rirb)) {
         return 0;
     }
 
@@ -288,7 +287,7 @@ static int hda_corb_command(unsigned int codec, unsigned short nid,
     g_corb_wp = (g_corb_wp + 1U) % HDA_CORB_ENTRIES;
     corb[g_corb_wp] = (codec << 28) | ((unsigned int)nid << 20) |
                       ((unsigned int)verb << 8) | payload;
-    dma_flush(&g_corb);
+    pdv_dma_flush(g_kapi, &g_corb);
     hda_write16(HDA_REG_CORBWP, (unsigned short)g_corb_wp);
 
     for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
@@ -334,12 +333,12 @@ static int hda_reset_controller(void) {
         if (!(hda_read32(HDA_REG_GCTL) & HDA_GCTL_RESET)) break;
         hda_delay();
     }
-    sleep_ms(2);
+    g_kapi->sleep_ms(2);
     hda_write32(HDA_REG_GCTL, hda_read32(HDA_REG_GCTL) | HDA_GCTL_RESET);
     for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
         if (hda_read32(HDA_REG_GCTL) & HDA_GCTL_RESET) {
             /* Wait 1ms after exiting reset so codecs assert STATESTS */
-            sleep_ms(2);
+            g_kapi->sleep_ms(2);
             return 1;
         }
         hda_delay();
@@ -349,7 +348,7 @@ static int hda_reset_controller(void) {
 
 static void hda_init_corb(void) {
     g_corb_ready = 0;
-    if (!dma_is_valid(&g_corb) || !dma_is_valid(&g_rirb)) return;
+    if (!pdv_dma_is_valid(&g_corb) || !pdv_dma_is_valid(&g_rirb)) return;
 
     hda_write8(HDA_REG_CORBCTL, 0);
     hda_write8(HDA_REG_RIRBCTL, 0);
@@ -597,12 +596,6 @@ static unsigned int hda_amp_payload(unsigned int caps, int volume,
         volume = 0;
         index = 0;
     } else if (steps) {
-        /*
-         * In Intel HDA (Rev 1.0a Section 7.3.3.7), Amp Gain step 0 is the
-         * minimum gain and `steps` (or `offset` at bits 6:0) is 0dB / max gain!
-         * Using proportional `steps * volume / 100` sets gain properly across
-         * Realtek, VIA VT1708S, SigmaTel/IDT, Analog Devices, and VMware codecs.
-         */
         index = (steps * (unsigned int)volume + 50U) / 100U;
         if (index > steps) index = steps;
     }
@@ -678,11 +671,6 @@ static void hda_apply_route(void) {
         }
     }
 
-    /*
-     * On VIA VT1708S (ASUS P7H55-M LE), enable both Rear Line-Out (NID 0x1C)
-     * and Front Headphone (NID 0x1D) pins and unmute DAC0 (NID 0x10) + Mixer
-     * (NID 0x16) so both front and rear jacks produce output simultaneously.
-     */
     if (g_is_via_1708s) {
         hda_command(g_codec_addr, 0x10, HDA_VERB_SET_POWER_STATE, 0, 0);
         hda_command(g_codec_addr, 0x16, HDA_VERB_SET_POWER_STATE, 0, 0);
@@ -751,7 +739,7 @@ static int hda_select_codec(void) {
 }
 
 static void hda_init_bdl(void) {
-    if (!dma_is_valid(&g_pcm) || !dma_is_valid(&g_bdl)) return;
+    if (!pdv_dma_is_valid(&g_pcm) || !pdv_dma_is_valid(&g_bdl)) return;
     volatile hda_bdl_entry_t* bdl =
         (volatile hda_bdl_entry_t*)g_bdl.virt;
     for (unsigned int i = 0; i < HDA_PERIOD_COUNT; i++) {
@@ -761,33 +749,36 @@ static void hda_init_bdl(void) {
         bdl[i].length = HDA_PERIOD_BYTES;
         bdl[i].flags = 0;
     }
-    dma_flush(&g_bdl);
+    pdv_dma_flush(g_kapi, &g_bdl);
 }
 
 static void hda_free_buffers(void) {
-    dma_free(&g_corb);
-    dma_free(&g_rirb);
-    dma_free(&g_pcm);
-    dma_free(&g_bdl);
+    g_kapi->dma_free(&g_corb);
+    g_kapi->dma_free(&g_rirb);
+    g_kapi->dma_free(&g_pcm);
+    g_kapi->dma_free(&g_bdl);
     g_corb_ready = 0;
 }
 
-static int hda_try_controller(const pci_device_t* dev) {
+static void hdaudio_set_format(int rate, int bits, int stereo);
+static void hdaudio_stop_dma(void);
+
+static int hda_try_controller(const pdv_pci_device_t* dev) {
     if (!dev || !dev->bar[0].valid || dev->bar[0].is_io) return 0;
     uint64_t bar0_phys = dev->bar[0].address;
     if (!bar0_phys) return 0;
 
-    pci_enable_memory(dev);
-    pci_enable_bus_master(dev);
+    g_kapi->pci_enable_memory(dev);
+    g_kapi->pci_enable_bus_master(dev);
 
     /* On Intel ICH/PCH HDA (including H55 8086:3b56), select Traffic Class TC0 */
     if (dev->vendor == 0x8086) {
-        uint8_t tcsel = pci_read8(dev->bus, dev->slot, dev->function, 0x44);
-        pci_write8(dev->bus, dev->slot, dev->function, 0x44, (uint8_t)(tcsel & ~0x07U));
+        uint8_t tcsel = pdv_pci_read8(g_kapi, dev->bus, dev->slot, dev->function, 0x44);
+        pdv_pci_write8(g_kapi, dev->bus, dev->slot, dev->function, 0x44, (uint8_t)(tcsel & ~0x07U));
     }
 
     volatile unsigned char* registers =
-        (volatile unsigned char*)mmio_map_phys(bar0_phys, 0x4000);
+        (volatile unsigned char*)g_kapi->mmio_map_uc(bar0_phys, 0x4000);
     if (!registers) return 0;
 
     g_pci = dev;
@@ -808,12 +799,12 @@ static int hda_try_controller(const pci_device_t* dev) {
         return 0;
     }
 
-    g_corb = dma_alloc_aligned(HDA_CORB_ENTRIES * 4, 128);
-    g_rirb = dma_alloc_aligned(HDA_RIRB_ENTRIES * 8, 128);
-    g_pcm = dma_alloc_aligned(HDA_DMA_BYTES, 128);
-    g_bdl = dma_alloc_aligned(HDA_PERIOD_COUNT * sizeof(hda_bdl_entry_t), 128);
-    if (!dma_is_valid(&g_corb) || !dma_is_valid(&g_rirb) ||
-        !dma_is_valid(&g_pcm) || !dma_is_valid(&g_bdl)) {
+    g_corb = pdv_dma_alloc_aligned(g_kapi, HDA_CORB_ENTRIES * 4, 128);
+    g_rirb = pdv_dma_alloc_aligned(g_kapi, HDA_RIRB_ENTRIES * 8, 128);
+    g_pcm = pdv_dma_alloc_aligned(g_kapi, HDA_DMA_BYTES, 128);
+    g_bdl = pdv_dma_alloc_aligned(g_kapi, HDA_PERIOD_COUNT * sizeof(hda_bdl_entry_t), 128);
+    if (!pdv_dma_is_valid(&g_corb) || !pdv_dma_is_valid(&g_rirb) ||
+        !pdv_dma_is_valid(&g_pcm) || !pdv_dma_is_valid(&g_bdl)) {
         g_status = "DMA allocation failed";
         hda_free_buffers();
         return 0;
@@ -838,7 +829,7 @@ static int hda_try_controller(const pci_device_t* dev) {
     return 1;
 }
 
-int hdaudio_init(void) {
+static int hdaudio_init(void) {
     g_present = 0;
     g_running = 0;
     g_paused = 0;
@@ -852,9 +843,9 @@ int hdaudio_init(void) {
     g_status = "No HDA controller";
     g_name[0] = 0;
 
-    pci_scan_all();
-    for (int i = 0; i < pci_get_device_count(); i++) {
-        const pci_device_t* dev = pci_get_device(i);
+    int count = g_kapi->pci_get_device_count();
+    for (int i = 0; i < count; i++) {
+        const pdv_pci_device_t* dev = g_kapi->pci_get_device(i);
         if (!dev) continue;
         int is_vmware_hda = dev->vendor == 0x15AD && dev->device == 0x1977;
         int is_hda_class = dev->class_code == 0x04 && dev->subclass == 0x03;
@@ -890,28 +881,12 @@ int hdaudio_init(void) {
     return -1;
 }
 
-int hdaudio_is_present(void) {
+static int hdaudio_is_present(void) {
     return g_present;
 }
 
-const char* hdaudio_get_name(void) {
+static const char* hdaudio_get_name(void) {
     return g_name[0] ? (const char*)g_name : "Intel High Definition Audio";
-}
-
-const char* hdaudio_get_status(void) {
-    return g_status;
-}
-
-unsigned int hdaudio_get_controller_id(void) {
-    return g_controller_id;
-}
-
-unsigned int hdaudio_get_codec_id(void) {
-    return g_codec_id;
-}
-
-unsigned short hdaudio_get_output_pin(void) {
-    return g_output_pin;
 }
 
 static unsigned int hda_stream_format(int rate) {
@@ -941,7 +916,7 @@ static void hda_stream_reset(void) {
     hda_write8(g_stream_base + HDA_SD_STS, HDA_SD_ERRORS);
 }
 
-void hdaudio_set_format(int rate, int bits, int stereo) {
+static void hdaudio_set_format(int rate, int bits, int stereo) {
     if (bits != 16 || !stereo) return;
     if (rate != 44100 && rate != 48000) rate = 48000;
     if (g_running) hdaudio_stop_dma();
@@ -959,10 +934,13 @@ void hdaudio_set_format(int rate, int bits, int stereo) {
                 (unsigned short)g_stream_format);
     g_status = rate == 44100 ? "44.1kHz/16-bit stereo ready"
                              : "48kHz/16-bit stereo ready";
+    if (g_kapi && g_kapi->audio_set_probe_status) {
+        g_kapi->audio_set_probe_status(g_status);
+    }
 }
 
-void hdaudio_start_dma(void) {
-    if (!g_present || !dma_is_valid(&g_pcm) || !dma_is_valid(&g_bdl)) return;
+static void hdaudio_start_dma(void) {
+    if (!g_present || !pdv_dma_is_valid(&g_pcm) || !pdv_dma_is_valid(&g_bdl)) return;
     if (g_running) hdaudio_stop_dma();
     hda_init_bdl();
     hda_stream_reset();
@@ -1000,7 +978,7 @@ void hdaudio_start_dma(void) {
               (unsigned long long)g_pcm.phys);
 }
 
-void hdaudio_stop_dma(void) {
+static void hdaudio_stop_dma(void) {
     if (!g_present) return;
     g_running = 0;
     g_paused = 0;
@@ -1019,7 +997,7 @@ void hdaudio_stop_dma(void) {
     g_last_current_half = -1;
 }
 
-void hdaudio_pause_dma(int pause) {
+static void hdaudio_pause_dma(int pause) {
     if (!g_present || !g_running) return;
     if (pause) {
         hda_write32(g_stream_base + HDA_SD_CTL,
@@ -1032,7 +1010,7 @@ void hdaudio_pause_dma(int pause) {
     }
 }
 
-void hdaudio_set_volume(int master_vol, int pcm_vol) {
+static void hdaudio_set_volume(int master_vol, int pcm_vol) {
     int volume = (master_vol + pcm_vol) / 2;
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
@@ -1040,19 +1018,19 @@ void hdaudio_set_volume(int master_vol, int pcm_vol) {
     hda_apply_volume();
 }
 
-unsigned int hdaudio_get_dma_frame_pos(void) {
+static unsigned int hdaudio_get_dma_frame_pos(void) {
     if (!g_present) return 0;
     unsigned int position = hda_read32(g_stream_base + HDA_SD_LPIB);
     if (position >= HDA_DMA_BYTES) position = 0;
     return position / 4;
 }
 
-const void* hdaudio_get_dma_buffer(void) {
-    return dma_is_valid(&g_pcm) ? g_pcm.virt : NULL;
+static const void* hdaudio_get_dma_buffer(void) {
+    return pdv_dma_is_valid(&g_pcm) ? g_pcm.virt : NULL;
 }
 
-void hdaudio_write_half(int half_idx, const void* data, unsigned int bytes) {
-    if (!dma_is_valid(&g_pcm) || (half_idx != 0 && half_idx != 1) ||
+static void hdaudio_write_half(int half_idx, const void* data, unsigned int bytes) {
+    if (!pdv_dma_is_valid(&g_pcm) || (half_idx != 0 && half_idx != 1) ||
         !data) {
         return;
     }
@@ -1062,18 +1040,18 @@ void hdaudio_write_half(int half_idx, const void* data, unsigned int bytes) {
     const unsigned char* source = (const unsigned char*)data;
     for (unsigned int i = 0; i < bytes; i++) destination[i] = source[i];
     for (unsigned int i = bytes; i < HDA_HALF_BYTES; i++) destination[i] = 0;
-    dma_flush(&g_pcm);
+    pdv_dma_flush(g_kapi, &g_pcm);
 }
 
-void hdaudio_silence_half(int half_idx) {
-    if (!dma_is_valid(&g_pcm) || (half_idx != 0 && half_idx != 1)) return;
+static void hdaudio_silence_half(int half_idx) {
+    if (!pdv_dma_is_valid(&g_pcm) || (half_idx != 0 && half_idx != 1)) return;
     unsigned char* destination =
         (unsigned char*)g_pcm.virt + half_idx * HDA_HALF_BYTES;
     for (unsigned int i = 0; i < HDA_HALF_BYTES; i++) destination[i] = 0;
-    dma_flush(&g_pcm);
+    pdv_dma_flush(g_kapi, &g_pcm);
 }
 
-int hdaudio_poll_half_needed(void) {
+static int hdaudio_poll_half_needed(void) {
     if (!g_present || !g_running || g_paused) return -1;
     unsigned char status = hda_read8(g_stream_base + HDA_SD_STS);
     if (status & HDA_SD_ERRORS) {
@@ -1096,3 +1074,34 @@ int hdaudio_poll_half_needed(void) {
     return -1;
 }
 
+static int hdaudio_probe_entry(void) {
+    int rc = hdaudio_init();
+    if (g_kapi && g_kapi->audio_set_probe_status) {
+        g_kapi->audio_set_probe_status(g_status);
+    }
+    return (rc == 0 && hdaudio_is_present()) ? 1 : 0;
+}
+
+static const pdv_audio_driver_t g_hdaudio_drv = {
+    .name              = "Intel/VIA High Definition Audio",
+    .priority          = 120,
+    .probe             = hdaudio_probe_entry,
+    .get_name          = hdaudio_get_name,
+    .is_present        = hdaudio_is_present,
+    .set_format        = hdaudio_set_format,
+    .start_dma         = hdaudio_start_dma,
+    .stop_dma          = hdaudio_stop_dma,
+    .pause_dma         = hdaudio_pause_dma,
+    .set_volume        = hdaudio_set_volume,
+    .poll_half_needed  = hdaudio_poll_half_needed,
+    .write_half        = hdaudio_write_half,
+    .silence_half      = hdaudio_silence_half,
+    .get_dma_frame_pos = hdaudio_get_dma_frame_pos,
+    .get_dma_buffer    = hdaudio_get_dma_buffer,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_audio_driver(&g_hdaudio_drv);
+}

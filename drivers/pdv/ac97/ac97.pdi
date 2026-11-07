@@ -1,0 +1,15 @@
+[driver]
+name        = ac97
+provider    = Pixel Neko OS
+class       = AUDIO
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x8086, class=0x04, subclass=0x01
+pci = ven=0x1022, dev=0x7445
+pci = ven=0x1022, dev=0x746d
+pci = ven=0x10de, class=0x04, subclass=0x01
+pci = ven=0x1039, dev=0x7012

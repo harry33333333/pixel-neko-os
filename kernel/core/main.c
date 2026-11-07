@@ -28,6 +28,7 @@
 #include "storage.h"
 #include "part.h"
 #include "vfs.h"
+#include "pdv.h"
 #include "p5_test.h"
 #include "splash.h"
 #include "ui_compat.h"
@@ -771,6 +772,12 @@ void kmain(void) {
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
     settings_init();
+
+    boot_progress_notify("Pixel Neko OS :: [18b/23] Loading Hardware Drivers (PDEVICE)...");
+    (void)pdv_autoload_boot_drivers(cmdline_contains("safe_mode=1"),
+                                    cmdline_contains("nopdv=1"));
+    vfs_mount_initial_floppies();
+    boot_screen_tick();
 
     if (g_main_surface.framebuffer_virt) {
         g_xp_boot_active = false;

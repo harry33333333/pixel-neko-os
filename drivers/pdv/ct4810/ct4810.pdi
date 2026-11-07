@@ -1,0 +1,15 @@
+[driver]
+name        = ct4810
+provider    = Pixel Neko OS
+class       = AUDIO
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x1274, dev=0x1371
+pci = ven=0x1274, dev=0x0371
+pci = ven=0x1274, dev=0x5880
+pci = ven=0x1102, dev=0x5880
+pci = ven=0x1102, dev=0x8938

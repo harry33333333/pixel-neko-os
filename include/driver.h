@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DRIVER_MAX 16
+#define DRIVER_MAX 32
 
 #define DRIVER_CATEGORY_DISPLAY 1
 #define DRIVER_CATEGORY_AUDIO   2

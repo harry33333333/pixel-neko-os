@@ -38,6 +38,10 @@ extern int g_desktop_pattern;
 
 static settings_boot_mode_t g_boot_mode = SETTINGS_BOOT_LIVE;
 static char g_system_drive = 0;
+
+char settings_get_system_drive(void) {
+    return g_system_drive;
+}
 static char g_config_path[2][40];
 static int g_active_slot = -1;
 static uint32_t g_sequence = 0;

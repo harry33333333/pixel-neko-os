@@ -42,6 +42,7 @@ typedef struct blkdev {
     int (*write_sectors)(struct blkdev* dev, uint64_t lba, uint32_t count,
                          const void* buffer);
     media_state_t (*check_media)(struct blkdev* dev);
+    int (*eject)(struct blkdev* dev);
 } blkdev_t;
 
 typedef blkdev_t block_device_t;

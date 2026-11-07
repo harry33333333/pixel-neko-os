@@ -1,18 +1,92 @@
 /*
- * Ensoniq ES1371 / Creative CT4810 / CT5880 PCI audio driver (64-bit adaptation).
+ * Ensoniq ES1371 / Creative CT4810 / CT5880 PCI audio driver (*.pdv module).
  *
  * Register definitions, sample-rate converter sequencing, and AC'97 access
  * follow the public Ensoniq ES1371 hardware documentation, Creative CT5880
  * documentation, and the Intel AC'97 Component Specification.
  */
 
-#include "ct4810.h"
-#include "dma.h"
-#include "log.h"
-#include "mm.h"
-#include "pci.h"
-#include "port.h"
-#include "timer.h"
+#include <pdv/ddk.h>
+
+static const pdv_kernel_api_t* g_kapi = 0;
+
+#define klog_info(fmt, ...) g_kapi->log_printf("[INFO] " fmt "\n", ##__VA_ARGS__)
+#define global_tick         (g_kapi->timer_get_ticks())
+
+#define CT_VENDOR_ENSONIQ       0x1274
+#define CT_DEV_ES1371           0x1371
+#define CT_DEV_ES1371_COMPAT    0x0371
+#define CT_DEV_CT5880           0x5880
+#define CT_VENDOR_CREATIVE      0x1102
+#define CT_DEV_EV1938           0x8938
+
+#define CT_REG_CONTROL          0x00
+#define CT_REG_STATUS           0x04
+#define CT_REG_MEMORY_PAGE      0x0C
+#define CT_REG_SRC_CONTROL      0x10
+#define CT_REG_CODEC_PORT       0x14
+#define CT_REG_LEGACY_CONTROL   0x18
+#define CT_REG_SERIAL_CONTROL   0x20
+#define CT_REG_DAC2_COUNT       0x28
+
+#define CT_PAGE_DAC             0x0C
+#define CT_REG_DAC2_FRAME       0x38
+#define CT_REG_DAC2_SIZE        0x3C
+
+#define CT_CONTROL_P2_BYPASS         (1U << 30)
+#define CT_CONTROL_AC97_SYNC_RESET   (1U << 14)
+#define CT_CONTROL_BUS_MASTER_REQ    (1U << 7)
+#define CT_CONTROL_DAC1_ENABLE       (1U << 6)
+#define CT_CONTROL_DAC2_ENABLE       (1U << 5)
+#define CT_CONTROL_ADC_ENABLE        (1U << 4)
+
+#define CT_STATUS_AC97_RESET         (1U << 29)
+
+#define CT_SERIAL_P2_END_INC(slot)   (((slot) & 0x07) << 19)
+#define CT_SERIAL_P2_END_MASK        (0x07U << 19)
+#define CT_SERIAL_P2_START_INC(slot) (((slot) & 0x07) << 16)
+#define CT_SERIAL_P2_START_MASK      (0x07U << 16)
+#define CT_SERIAL_P2_LOOPBACK        (1U << 14)
+#define CT_SERIAL_P2_PAUSE           (1U << 12)
+#define CT_SERIAL_P2_INTERRUPT       (1U << 9)
+#define CT_SERIAL_P2_DAC_SLOT_ENABLE (1U << 6)
+#define CT_SERIAL_P2_MODE(mode)      (((mode) & 0x03) << 2)
+#define CT_SERIAL_P2_MODE_MASK       (0x03U << 2)
+
+#define CT_SRC_RAM_ADDRESS_MASK      (0x7FU << 25)
+#define CT_SRC_RAM_ADDRESS(reg)      (((reg) & 0x7FU) << 25)
+#define CT_SRC_RAM_WRITE_ENABLE      (1U << 24)
+#define CT_SRC_RAM_BUSY              (1U << 23)
+#define CT_SRC_DISABLE               (1U << 22)
+#define CT_SRC_DAC1_DISABLE          (1U << 21)
+#define CT_SRC_DAC2_DISABLE          (1U << 20)
+#define CT_SRC_ADC_DISABLE           (1U << 19)
+
+#define CT_SRC_DAC1_BASE             0x70
+#define CT_SRC_DAC2_BASE             0x74
+#define CT_SRC_ADC_BASE              0x78
+#define CT_SRC_ADC_VOLUME_BASE       0x6C
+#define CT_SRC_DAC1_VOLUME_BASE      0x7C
+#define CT_SRC_DAC2_VOLUME_BASE      0x7E
+#define CT_SRC_TRUNCATION            0x00
+#define CT_SRC_INTEGER_FREQUENCY     0x01
+#define CT_SRC_FRACTIONAL_FREQUENCY  0x03
+
+#define CT_CODEC_READY               (1U << 31)
+#define CT_CODEC_WRITE_BUSY          (1U << 30)
+#define CT_CODEC_READ_REQUEST        (1U << 23)
+#define CT_EV1938_CODEC_ACCESS       (1U << 26)
+#define CT_AC97_RESET                0x00
+#define CT_AC97_MASTER_VOLUME        0x02
+#define CT_AC97_HEADPHONE_VOLUME     0x04
+#define CT_AC97_PCM_OUT_VOLUME       0x18
+#define CT_AC97_VENDOR_ID1           0x7C
+#define CT_AC97_VENDOR_ID2           0x7E
+
+#define CT_DMA_BUFFER_BYTES     65536
+#define CT_DMA_HALF_BYTES       32768
+#define CT_DMA_TOTAL_FRAMES     16384
+#define CT_DMA_HALF_FRAMES      8192
 
 #define CT_SRC_STATE_MASK \
     (CT_SRC_DISABLE | CT_SRC_DAC1_DISABLE | CT_SRC_DAC2_DISABLE | CT_SRC_ADC_DISABLE)
@@ -26,7 +100,7 @@ static const char* g_ct_chip_name = "None";
 static char g_ct_display_name[72];
 static unsigned char* g_ct_dma_buf = 0;
 static unsigned int g_ct_dma_phys = 0;
-static dma_buffer_t g_ct_dma;
+static pdv_dma_buffer_t g_ct_dma;
 static int g_ct_dma_running = 0;
 static int g_ct_last_half_playing = -1;
 static int g_ct_half_filled[2] = {0, 0};
@@ -38,16 +112,16 @@ static int g_ct_is_ev1938 = 0;
 
 static inline unsigned int ct_read32(unsigned int reg) {
     if (!g_ct_io_base) return 0;
-    return inl((uint16_t)(g_ct_io_base + reg));
+    return pdv_inl((uint16_t)(g_ct_io_base + reg));
 }
 
 static inline void ct_write32(unsigned int reg, unsigned int val) {
     if (!g_ct_io_base) return;
-    outl((uint16_t)(g_ct_io_base + reg), val);
+    pdv_outl((uint16_t)(g_ct_io_base + reg), val);
 }
 
 static inline void ct_io_delay(void) {
-    outb(0x80, 0);
+    pdv_outb(0x80, 0);
 }
 
 static void ct_copy_string(char* dst, const char* src, int max_len) {
@@ -294,7 +368,9 @@ static int ct_needs_ac97_reset_quirk(unsigned short vendor,
     return 0;
 }
 
-int ct4810_init(void) {
+static void ct4810_set_format(int rate, int bits, int stereo);
+
+static int ct4810_init(void) {
     unsigned int status = 0;
     unsigned short vendor = 0;
     unsigned short device = 0;
@@ -307,9 +383,9 @@ int ct4810_init(void) {
     g_ct_revision = 0;
     g_ct_is_ev1938 = 0;
 
-    pci_scan_all();
-    for (int index = 0; index < pci_get_device_count(); index++) {
-        const pci_device_t* pci = pci_get_device(index);
+    int count = g_kapi->pci_get_device_count();
+    for (int index = 0; index < count; index++) {
+        const pdv_pci_device_t* pci = g_kapi->pci_get_device(index);
         if (!pci) continue;
         vendor = pci->vendor;
         device = pci->device;
@@ -323,15 +399,15 @@ int ct4810_init(void) {
         }
         if (!g_ct_io_base) continue;
 
-        pci_enable_io(pci);
-        pci_enable_memory(pci);
-        pci_enable_bus_master(pci);
+        g_kapi->pci_enable_io(pci);
+        g_kapi->pci_enable_memory(pci);
+        g_kapi->pci_enable_bus_master(pci);
 
-        unsigned int latency = pci_config_read(pci->bus, pci->slot,
-                                               pci->function, 0x0C);
+        unsigned int latency = g_kapi->pci_config_read(pci->bus, pci->slot,
+                                                       pci->function, 0x0C);
         if ((latency & 0xFF00U) < 0x4000U) {
-            pci_config_write(pci->bus, pci->slot, pci->function,
-                             0x0C, (latency & 0xFFFF00FFU) | 0x4000U);
+            g_kapi->pci_config_write(pci->bus, pci->slot, pci->function,
+                                     0x0C, (latency & 0xFFFF00FFU) | 0x4000U);
         }
 
         g_ct_revision = pci->revision;
@@ -352,9 +428,9 @@ int ct4810_init(void) {
 
     if (!g_ct_present || !g_ct_io_base) return -1;
 
-    if (!dma_is_valid(&g_ct_dma)) {
-        g_ct_dma = dma_alloc_aligned(CT_DMA_BUFFER_BYTES, 65536);
-        if (!dma_is_valid(&g_ct_dma)) {
+    if (!pdv_dma_is_valid(&g_ct_dma)) {
+        g_ct_dma = pdv_dma_alloc_aligned(g_kapi, CT_DMA_BUFFER_BYTES, 65536);
+        if (!pdv_dma_is_valid(&g_ct_dma)) {
             g_ct_present = 0;
             return -2;
         }
@@ -375,12 +451,12 @@ int ct4810_init(void) {
     }
     if (status) {
         ct_write32(CT_REG_STATUS, status);
-        sleep_ms(20);
+        g_kapi->sleep_ms(20);
     }
 
     ct_write32(CT_REG_CONTROL, CT_CONTROL_AC97_SYNC_RESET);
     (void)ct_read32(CT_REG_CONTROL);
-    sleep_ms(2);
+    g_kapi->sleep_ms(2);
     ct_write32(CT_REG_CONTROL, 0);
 
     (void)ct_src_wait_idle();
@@ -396,7 +472,7 @@ int ct4810_init(void) {
     ct_write32(CT_REG_SRC_CONTROL, 0);
 
     ct_ac97_write(CT_AC97_RESET, 0x0000);
-    sleep_ms(50);
+    g_kapi->sleep_ms(50);
     unsigned short id1 = ct_ac97_read(CT_AC97_VENDOR_ID1);
     unsigned short id2 = ct_ac97_read(CT_AC97_VENDOR_ID2);
     if (id1 || id2) ct_set_codec_name(id1, id2);
@@ -421,19 +497,15 @@ int ct4810_init(void) {
     return 0;
 }
 
-int ct4810_is_present(void) {
+static int ct4810_is_present(void) {
     return g_ct_present;
 }
 
-const char* ct4810_get_name(void) {
+static const char* ct4810_get_name(void) {
     return g_ct_chip_name;
 }
 
-unsigned short ct4810_get_io_base(void) {
-    return g_ct_io_base;
-}
-
-void ct4810_set_format(int rate, int bits, int stereo) {
+static void ct4810_set_format(int rate, int bits, int stereo) {
     if (!g_ct_present || !g_ct_io_base) return;
 
     unsigned int mode = 0;
@@ -450,7 +522,7 @@ void ct4810_set_format(int rate, int bits, int stereo) {
     ct_src_set_rate(CT_SRC_DAC2_BASE, rate);
 }
 
-void ct4810_start_dma(void) {
+static void ct4810_start_dma(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_buf) return;
 
     ct_write32(CT_REG_MEMORY_PAGE, CT_PAGE_DAC);
@@ -474,7 +546,7 @@ void ct4810_start_dma(void) {
     g_ct_hw_reg_moving = 0;
 }
 
-void ct4810_stop_dma(void) {
+static void ct4810_stop_dma(void) {
     if (!g_ct_present || !g_ct_io_base) return;
 
     unsigned int control = ct_read32(CT_REG_CONTROL);
@@ -497,7 +569,7 @@ void ct4810_stop_dma(void) {
     }
 }
 
-void ct4810_pause_dma(int pause) {
+static void ct4810_pause_dma(int pause) {
     if (!g_ct_present || !g_ct_io_base) return;
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
     if (pause) sctrl |= CT_SERIAL_P2_PAUSE;
@@ -505,7 +577,7 @@ void ct4810_pause_dma(int pause) {
     ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
 }
 
-void ct4810_set_volume(int master_vol, int pcm_vol) {
+static void ct4810_set_volume(int master_vol, int pcm_vol) {
     if (!g_ct_present || !g_ct_io_base) return;
 
     if (master_vol < 0) master_vol = 0;
@@ -525,7 +597,7 @@ void ct4810_set_volume(int master_vol, int pcm_vol) {
     ct_ac97_write(CT_AC97_PCM_OUT_VOLUME, p_val);
 }
 
-unsigned int ct4810_get_dma_frame_pos(void) {
+static unsigned int ct4810_get_dma_frame_pos(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_running) return 0;
 
     ct_write32(CT_REG_MEMORY_PAGE, CT_PAGE_DAC);
@@ -535,11 +607,11 @@ unsigned int ct4810_get_dma_frame_pos(void) {
     return frame;
 }
 
-const void* ct4810_get_dma_buffer(void) {
+static const void* ct4810_get_dma_buffer(void) {
     return g_ct_dma_buf;
 }
 
-void ct4810_write_half(int half_idx, const void* data, unsigned int bytes) {
+static void ct4810_write_half(int half_idx, const void* data, unsigned int bytes) {
     if (!g_ct_dma_buf) return;
     if (half_idx < 0 || half_idx > 1 || !data) return;
     if (bytes > CT_DMA_HALF_BYTES) bytes = CT_DMA_HALF_BYTES;
@@ -549,19 +621,19 @@ void ct4810_write_half(int half_idx, const void* data, unsigned int bytes) {
     for (unsigned int i = 0; i < bytes; i++) dest[i] = src[i];
     for (unsigned int i = bytes; i < CT_DMA_HALF_BYTES; i++) dest[i] = 0;
 
-    dma_flush(&g_ct_dma);
+    pdv_dma_flush(g_kapi, &g_ct_dma);
     g_ct_half_filled[half_idx] = 1;
 }
 
-void ct4810_silence_half(int half_idx) {
+static void ct4810_silence_half(int half_idx) {
     if (!g_ct_dma_buf || half_idx < 0 || half_idx > 1) return;
     unsigned char* dest = g_ct_dma_buf + half_idx * CT_DMA_HALF_BYTES;
     for (unsigned int i = 0; i < CT_DMA_HALF_BYTES; i++) dest[i] = 0;
-    dma_flush(&g_ct_dma);
+    pdv_dma_flush(g_kapi, &g_ct_dma);
     g_ct_half_filled[half_idx] = 0;
 }
 
-int ct4810_poll_half_needed(void) {
+static int ct4810_poll_half_needed(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_running) return -1;
 
     unsigned int frame = ct4810_get_dma_frame_pos();
@@ -606,7 +678,30 @@ int ct4810_poll_half_needed(void) {
     return -1;
 }
 
-void ct4810_mark_half_filled(int half_idx) {
-    if (half_idx >= 0 && half_idx < 2) g_ct_half_filled[half_idx] = 1;
+static int ct4810_probe_entry(void) {
+    return (ct4810_init() == 0 && ct4810_is_present()) ? 1 : 0;
 }
 
+static const pdv_audio_driver_t g_ct4810_drv = {
+    .name              = "Ensoniq AudioPCI / CT4810",
+    .priority          = 100,
+    .probe             = ct4810_probe_entry,
+    .get_name          = ct4810_get_name,
+    .is_present        = ct4810_is_present,
+    .set_format        = ct4810_set_format,
+    .start_dma         = ct4810_start_dma,
+    .stop_dma          = ct4810_stop_dma,
+    .pause_dma         = ct4810_pause_dma,
+    .set_volume        = ct4810_set_volume,
+    .poll_half_needed  = ct4810_poll_half_needed,
+    .write_half        = ct4810_write_half,
+    .silence_half      = ct4810_silence_half,
+    .get_dma_frame_pos = ct4810_get_dma_frame_pos,
+    .get_dma_buffer    = ct4810_get_dma_buffer,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_audio_driver(&g_ct4810_drv);
+}

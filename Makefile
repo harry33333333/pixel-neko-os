@@ -5,8 +5,9 @@ CC ?= gcc
 LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
-PIXEL_NEKO_BUILD_NUMBER ?= 181
-PIXEL_NEKO_BUILD_SUFFIX ?= f
+PYTHON3 ?= python3
+PIXEL_NEKO_BUILD_NUMBER ?= 200
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -72,6 +73,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/process/ipc.c \
            kernel/splash.c \
            kernel/driver.c \
+           kernel/pdv.c \
            kernel/ui_compat.c \
            kernel/ui_timer.c \
            kernel/ui_settings.c \
@@ -94,7 +96,6 @@ C_SRCS   = kernel/core/main.c \
            drivers/storage/ahci.c \
            drivers/storage/ata.c \
            drivers/storage/isadma.c \
-           drivers/storage/fdc.c \
            drivers/storage/storage.c \
            fs/part.c \
            fs/fat.c \
@@ -106,15 +107,8 @@ C_SRCS   = kernel/core/main.c \
            drivers/acpi/acpi.c \
            drivers/acpi/uacpi_glue.c \
            drivers/video/boot_framebuffer.c \
-           drivers/video/ati_mach64.c \
-           drivers/video/nvidia_g7x.c \
-           drivers/video/vmware_svga.c \
            drivers/video/gfx_accel.c \
            drivers/audio/speaker.c \
-           drivers/audio/cmi8738.c \
-           drivers/audio/ct4810.c \
-           drivers/audio/ac97.c \
-           drivers/audio/hdaudio.c \
            drivers/audio/wav_dec.c \
            drivers/audio/flac_dec.c \
            drivers/audio/mp3_dec.c \
@@ -143,6 +137,17 @@ USER_OBJS = $(USER_OBJ_DIR)/start.o \
             $(USER_OBJ_DIR)/libneko.o \
             $(USER_OBJ_DIR)/init.o
 
+# Standalone Loadable Drivers (*.pdv in PDEVICE\)
+PDV_CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
+              -mgeneral-regs-only -fno-asynchronous-unwind-tables \
+              -ffreestanding -nostdlib -nostartfiles \
+              -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
+              -std=gnu11 -O2 -Wall -Wextra -Isdk/ddk/include
+
+PDV_DRIVERS = vmwgfx mach64 nvg7x fdc ac97 ct4810 cmi8738 hdaudio
+PDV_OUT_DIR = build/pdevice
+PDV_TARGETS = $(patsubst %,$(PDV_OUT_DIR)/%.pdv,$(PDV_DRIVERS))
+
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
 C_OBJS   = $(C_SRCS:.c=.o) $(UACPI_SRCS:.c=.o)
@@ -151,9 +156,11 @@ OBJS     = $(ASM_OBJS) $(C_OBJS) $(USER_EMBED_OBJ)
 
 TARGET   = bin/kernel.elf
 
-.PHONY: all iso clean version
+.PHONY: all pdv iso clean version
 
-all: version $(TARGET)
+all: version $(TARGET) $(PDV_TARGETS)
+
+pdv: $(PDV_TARGETS)
 
 version:
 	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh
@@ -186,6 +193,22 @@ bin/init.elf: $(USER_OBJS) userland/user.ld
 $(USER_EMBED_OBJ): bin/init.elf
 	@mkdir -p $(dir $@)
 	$(LD) -r -b binary -o $@ $<
+
+define BUILD_PDV_DRIVER
+$$(PDV_OUT_DIR)/$(1).o: drivers/pdv/$(1)/$(1).c sdk/ddk/include/pdv/ddk.h sdk/ddk/include/pdv/format.h
+	@mkdir -p $$(dir $$@)
+	$$(CC) $$(PDV_CFLAGS) -c -o $$@ $$<
+
+$$(PDV_OUT_DIR)/$(1).rel.o: $$(PDV_OUT_DIR)/$(1).o
+	@mkdir -p $$(dir $$@)
+	$$(LD) -m elf_x86_64 -r -o $$@ $$<
+
+$$(PDV_OUT_DIR)/$(1).pdv: drivers/pdv/$(1)/$(1).pdi $$(PDV_OUT_DIR)/$(1).rel.o scripts/mkpdv.py
+	@mkdir -p $$(dir $$@)
+	$$(PYTHON3) scripts/mkpdv.py --manifest drivers/pdv/$(1)/$(1).pdi --object $$(PDV_OUT_DIR)/$(1).rel.o --output $$@
+endef
+
+$(foreach drv,$(PDV_DRIVERS),$(eval $(call BUILD_PDV_DRIVER,$(drv))))
 
 LDFLAGS ?= -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T link64.ld
 

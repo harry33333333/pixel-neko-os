@@ -46,6 +46,11 @@ if ! grep -q "\[P6 \] Full desktop" "${EMPTY_LOG}"; then
     tail -n 300 "${EMPTY_LOG}" >&2 || true
     exit 1
 fi
+if ! grep -q "\[PDV \] Scanned .*PDEVICE" "${EMPTY_LOG}"; then
+    echo "PDV loader did not scan Live CD PDEVICE directory" >&2
+    tail -n 350 "${EMPTY_LOG}" >&2 || true
+    exit 1
+fi
 if grep -qE "\[VFS \] [AB]:" "${EMPTY_LOG}"; then
     echo "VFS A:/B: appeared without floppy media" >&2
     tail -n 350 "${EMPTY_LOG}" >&2 || true
@@ -84,7 +89,8 @@ set +e
 wait "${qemu_pid}"
 set -e
 
-if ! grep -q "\[FDC \] A: 1440KiB" "${SERIAL_LOG}" ||
+if ! grep -qi "\[PDV \] Loaded fdc\.pdv" "${SERIAL_LOG}" ||
+   ! grep -q "\[FDC \] A: 1440KiB" "${SERIAL_LOG}" ||
    ! grep -q "\[FDC \] B: 720KiB" "${SERIAL_LOG}" ||
    ! grep -q "\[VFS \] A: floppy changed (720 KiB)" "${SERIAL_LOG}" ||
    ! grep -q "\[VFS \] A: floppy media removed" "${SERIAL_LOG}" ||

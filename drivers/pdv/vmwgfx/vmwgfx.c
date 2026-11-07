@@ -1,13 +1,26 @@
-#include "vmware_svga.h"
-#include "boot_framebuffer.h"
-#include "log.h"
-#include "mmio.h"
-#include "pci.h"
-#include "port.h"
+#include <pdv/ddk.h>
 
-#ifndef NULL
-#define NULL ((void*)0)
-#endif
+static const pdv_kernel_api_t* g_kapi;
+
+#define klog_info(fmt, ...) g_kapi->log_printf(fmt "\n", ##__VA_ARGS__)
+#define klog_warn(fmt, ...) g_kapi->log_printf(fmt "\n", ##__VA_ARGS__)
+#define mmio_read32         pdv_mmio_read32
+#define mmio_write32        pdv_mmio_write32
+#define mmio_barrier        pdv_mmio_barrier
+#define outb                pdv_outb
+#define inl                 pdv_inl
+#define outl                pdv_outl
+
+#define VMWARE_PCI_VENDOR_ID     0x15AD
+#define VMWARE_SVGA_II_ID        0x0405
+#define VMWARE_SVGA_II_FUSION_ID 0x0406
+#define VMWARE_SVGA_ADAPTER_ID   0x0710
+
+#define SVGA_CAP_RECT_FILL       0x00000001U
+#define SVGA_CAP_RECT_COPY       0x00000002U
+#define SVGA_CAP_ALPHA_CURSOR    0x00000010U
+#define SVGA_CAP_3D              0x00000200U
+#define SVGA_CAP_EXTENDED_FIFO   0x00000400U
 
 #define SVGA_ID_0 0x90000000U
 #define SVGA_ID_1 0x90000001U
@@ -54,9 +67,7 @@
 #define SVGA_FIFO_MIN_SIZE  16384U
 #define SVGA_WAIT_LOOPS     500000
 
-extern unsigned char* lfb;
-
-static const pci_device_t* g_pci;
+static const pdv_pci_device_t* g_pci;
 static int g_probed;
 static int g_active;
 static int g_fifo_ready;
@@ -86,8 +97,8 @@ static volatile unsigned int* g_fifo;
 
 static unsigned int svga_read_reg(unsigned int reg) {
     if (g_reg_mmio && g_reg_mmio_base) {
-        mmio_write32((void*)(g_reg_mmio_base), reg);
-        return mmio_read32((void*)(g_reg_mmio_base + 4));
+        mmio_write32((volatile void*)(g_reg_mmio_base), reg);
+        return mmio_read32((volatile const void*)(g_reg_mmio_base + 4));
     }
     outl((unsigned short)g_io_index, reg);
     return inl((unsigned short)g_io_data);
@@ -95,8 +106,8 @@ static unsigned int svga_read_reg(unsigned int reg) {
 
 static void svga_write_reg(unsigned int reg, unsigned int value) {
     if (g_reg_mmio && g_reg_mmio_base) {
-        mmio_write32((void*)(g_reg_mmio_base), reg);
-        mmio_write32((void*)(g_reg_mmio_base + 4), value);
+        mmio_write32((volatile void*)(g_reg_mmio_base), reg);
+        mmio_write32((volatile void*)(g_reg_mmio_base + 4), value);
         return;
     }
     outl((unsigned short)g_io_index, reg);
@@ -104,11 +115,11 @@ static void svga_write_reg(unsigned int reg, unsigned int value) {
 }
 
 static void svga_fifo_write(unsigned int index, unsigned int value) {
-    mmio_write32((void*)(g_fifo + index), value);
+    mmio_write32((volatile void*)(g_fifo + index), value);
 }
 
 static unsigned int svga_fifo_read(unsigned int index) {
-    return mmio_read32((void*)(g_fifo + index));
+    return mmio_read32((volatile const void*)(g_fifo + index));
 }
 
 static unsigned int svga_bytes_per_pixel(int bpp) {
@@ -118,7 +129,7 @@ static unsigned int svga_bytes_per_pixel(int bpp) {
     return 4;
 }
 
-void vmware_svga_sync(void) {
+static void vmware_svga_sync(void) {
     if (!g_active) return;
     svga_write_reg(SVGA_REG_SYNC, 1);
     for (int i = 0; i < SVGA_WAIT_LOOPS; i++) {
@@ -151,7 +162,7 @@ static int svga_fifo_emit(const unsigned int* words, unsigned int count) {
         if (free_bytes >= count * 4U + 4U) {
             unsigned int cursor = next;
             for (unsigned int i = 0; i < count; i++) {
-                mmio_write32((void*)((volatile unsigned char*)g_fifo + cursor),
+                mmio_write32((volatile void*)((volatile unsigned char*)g_fifo + cursor),
                              words[i]);
                 cursor += 4U;
                 if (cursor == g_fifo_max) cursor = g_fifo_min;
@@ -196,7 +207,7 @@ static int svga_init_fifo(void) {
 
     unsigned int map_bytes = g_fifo_size;
     if (map_bytes > 4U * 1024U * 1024U) map_bytes = 4U * 1024U * 1024U;
-    g_fifo = (volatile unsigned int*)mmio_map_phys(g_fifo_phys, map_bytes);
+    g_fifo = (volatile unsigned int*)g_kapi->mmio_map_uc(g_fifo_phys, map_bytes);
     if (!g_fifo) return 0;
 
     g_fifo_min = SVGA_FIFO_MIN_BYTES;
@@ -228,7 +239,7 @@ static void svga_restore_previous_mode(unsigned int enabled,
     svga_write_reg(SVGA_REG_CONFIG_DONE, config_done);
 }
 
-int vmware_svga_probe(void) {
+static int vmware_svga_probe_hw(void) {
     g_probed = 1;
     g_active = 0;
     g_fifo_ready = 0;
@@ -237,13 +248,12 @@ int vmware_svga_probe(void) {
     g_fifo = 0;
     g_status = "SVGA device not found";
 
-    pci_scan_all();
-    g_pci = pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_II_ID);
+    g_pci = g_kapi->pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_II_ID);
     if (!g_pci) {
-        g_pci = pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_II_FUSION_ID);
+        g_pci = g_kapi->pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_II_FUSION_ID);
     }
     if (!g_pci) {
-        g_pci = pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_ADAPTER_ID);
+        g_pci = g_kapi->pci_find_by_id(VMWARE_PCI_VENDOR_ID, VMWARE_SVGA_ADAPTER_ID);
     }
     if (!g_pci) return 0;
 
@@ -264,7 +274,7 @@ int vmware_svga_probe(void) {
         g_io_data = g_io_index + 1;
     } else if (g_pci->bar[0].valid && !g_pci->bar[0].is_io) {
         g_reg_mmio = 1;
-        g_reg_mmio_base = (volatile unsigned char*)mmio_map_phys(
+        g_reg_mmio_base = (volatile unsigned char*)g_kapi->mmio_map_uc(
             g_pci->bar[0].address, 0x1000);
         if (!g_reg_mmio_base) return 0;
     } else {
@@ -277,9 +287,9 @@ int vmware_svga_probe(void) {
         return 0;
     }
 
-    pci_enable_io(g_pci);
-    pci_enable_memory(g_pci);
-    pci_enable_bus_master(g_pci);
+    g_kapi->pci_enable_io(g_pci);
+    g_kapi->pci_enable_memory(g_pci);
+    g_kapi->pci_enable_bus_master(g_pci);
 
     svga_write_reg(SVGA_REG_ID, SVGA_ID_2);
     g_interface_id = svga_read_reg(SVGA_REG_ID);
@@ -310,8 +320,8 @@ int vmware_svga_probe(void) {
     return 1;
 }
 
-int vmware_svga_set_mode(int width, int height, int bpp) {
-    if (!g_probed && !vmware_svga_probe()) return 0;
+static int vmware_svga_set_mode(int width, int height, int bpp) {
+    if (!g_probed && !vmware_svga_probe_hw()) return 0;
     if (!g_pci || width <= 0 || height <= 0) return 0;
     if (width > 1024 || height > 768) return 0;
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
@@ -384,7 +394,7 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
         map_size = 8ULL * 1024ULL * 1024ULL;
     }
     volatile unsigned char* fb_virt =
-        (volatile unsigned char*)mmio_map_wc(fb_phys, map_size);
+        (volatile unsigned char*)g_kapi->mmio_map_wc(fb_phys, (size_t)map_size);
     if (!fb_virt) {
         svga_restore_previous_mode(old_enabled, old_config_done,
                                    old_width, old_height, old_bpp);
@@ -400,31 +410,32 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     g_pitch = (int)pitch;
     g_active = 1;
 
-    /* Update primary hardware framebuffer surface so copy_rect_to_lfb uses it */
-    g_main_surface.framebuffer_phys = fb_phys;
-    g_main_surface.framebuffer_virt = (void*)(uintptr_t)fb_virt;
-    g_main_surface.width = (uint32_t)width;
-    g_main_surface.height = (uint32_t)height;
-    g_main_surface.pitch = (uint32_t)pitch;
-    g_main_surface.bpp = (uint32_t)hw_bpp;
+    pdv_fb_surface_t surf;
+    g_kapi->fb_get_surface(&surf);
+    surf.framebuffer_phys = fb_phys;
+    surf.framebuffer_virt = (void*)(uintptr_t)fb_virt;
+    surf.width = (uint32_t)width;
+    surf.height = (uint32_t)height;
+    surf.pitch = (uint32_t)pitch;
+    surf.bpp = (uint32_t)hw_bpp;
     if (hw_bpp == 16) {
-        g_main_surface.red_mask_size = 5;
-        g_main_surface.red_mask_shift = 11;
-        g_main_surface.green_mask_size = 6;
-        g_main_surface.green_mask_shift = 5;
-        g_main_surface.blue_mask_size = 5;
-        g_main_surface.blue_mask_shift = 0;
-        g_main_surface.format = PIXEL_FORMAT_RGB565;
+        surf.red_mask_size = 5;
+        surf.red_mask_shift = 11;
+        surf.green_mask_size = 6;
+        surf.green_mask_shift = 5;
+        surf.blue_mask_size = 5;
+        surf.blue_mask_shift = 0;
+        surf.format = PDV_PIXEL_FORMAT_RGB565;
     } else {
-        g_main_surface.red_mask_size = 8;
-        g_main_surface.red_mask_shift = 16;
-        g_main_surface.green_mask_size = 8;
-        g_main_surface.green_mask_shift = 8;
-        g_main_surface.blue_mask_size = 8;
-        g_main_surface.blue_mask_shift = 0;
-        g_main_surface.format = PIXEL_FORMAT_RGB888;
+        surf.red_mask_size = 8;
+        surf.red_mask_shift = 16;
+        surf.green_mask_size = 8;
+        surf.green_mask_shift = 8;
+        surf.blue_mask_size = 8;
+        surf.blue_mask_shift = 0;
+        surf.format = PDV_PIXEL_FORMAT_RGB888;
     }
-    lfb = (unsigned char*)fb_virt;
+    g_kapi->fb_set_surface(&surf, (unsigned char*)fb_virt);
 
     svga_init_fifo();
     svga_write_reg(SVGA_REG_CONFIG_DONE, 1);
@@ -446,15 +457,30 @@ int vmware_svga_set_mode(int width, int height, int bpp) {
     return 1;
 }
 
-int vmware_svga_is_active(void) {
+static int vmware_svga_probe_entry(void) {
+    if (!vmware_svga_probe_hw()) return 0;
+    int sw = 0, sh = 0, sbpp = 0;
+    g_kapi->fb_get_desktop_mode(&sw, &sh, &sbpp);
+    pdv_fb_surface_t surf;
+    g_kapi->fb_get_surface(&surf);
+    int w = sw > 0 ? sw : (int)surf.width;
+    int h = sh > 0 ? sh : (int)surf.height;
+    int bpp = sbpp > 0 ? sbpp : 32;
+    if (w <= 0 || w > 1280) w = 1024;
+    if (h <= 0 || h > 1024) h = 768;
+    if (!vmware_svga_set_mode(w, h, bpp)) return 0;
+    return 1;
+}
+
+static int vmware_svga_is_active(void) {
     return g_active;
 }
 
-int vmware_svga_is_3d_capable(void) {
-    return (g_capabilities & SVGA_CAP_3D) != 0;
+static int vmware_svga_is_2d_active(void) {
+    return g_active;
 }
 
-int vmware_svga_supports_mode(int width, int height, int bpp) {
+static int vmware_svga_supports_mode(int width, int height, int bpp) {
     if (width <= 0 || height <= 0 || width > 1024 || height > 768) return 0;
     if (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) {
         return 0;
@@ -465,39 +491,19 @@ int vmware_svga_supports_mode(int width, int height, int bpp) {
     return pixels * 2U <= g_vram_size;
 }
 
-const char* vmware_svga_get_name(void) {
+static const char* vmware_svga_get_name(void) {
     return g_name;
 }
 
-const char* vmware_svga_get_status(void) {
+static const char* vmware_svga_get_status(void) {
     return g_status;
 }
 
-unsigned int vmware_svga_get_vram_size(void) {
+static unsigned int vmware_svga_get_vram_size(void) {
     return g_vram_size;
 }
 
-unsigned int vmware_svga_get_capabilities(void) {
-    return g_capabilities;
-}
-
-unsigned int vmware_svga_get_framebuffer(void) {
-    return (unsigned int)g_fb_phys;
-}
-
-int vmware_svga_get_pitch(void) {
-    return g_pitch;
-}
-
-int vmware_svga_fifo_ready(void) {
-    return g_fifo_ready;
-}
-
-int vmware_svga_cursor_ready(void) {
-    return g_cursor_ready;
-}
-
-void vmware_svga_present_rect(int x, int y, int width, int height) {
+static void vmware_svga_present_rect(int x, int y, int width, int height) {
     if (!g_active || !g_fifo_ready ||
         !svga_normalize_rect(&x, &y, &width, &height)) {
         return;
@@ -536,8 +542,8 @@ static void svga_software_fill(int x, int y, int width, int height,
     }
 }
 
-void vmware_svga_fill_rect(int x, int y, int width, int height,
-                           unsigned int color) {
+static void vmware_svga_fill_rect(int x, int y, int width, int height,
+                                  unsigned int color) {
     int original_x = x;
     int original_y = y;
     int original_width = width;
@@ -563,8 +569,8 @@ void vmware_svga_fill_rect(int x, int y, int width, int height,
                              original_width, original_height);
 }
 
-void vmware_svga_screen_blt(int sx, int sy, int dx, int dy,
-                            int width, int height) {
+static void vmware_svga_screen_blt(int sx, int sy, int dx, int dy,
+                                   int width, int height) {
     if (!g_active || !g_fb_virt) return;
     if (sx < 0) { width += sx; dx -= sx; sx = 0; }
     if (sy < 0) { height += sy; dy -= sy; sy = 0; }
@@ -590,10 +596,31 @@ void vmware_svga_screen_blt(int sx, int sy, int dx, int dy,
     vmware_svga_present_rect(dx, dy, width, height);
 }
 
-int vmware_svga_set_cursor(int x, int y, int visible) {
-    (void)x;
-    (void)y;
-    (void)visible;
-    return 0;
-}
+static const pdv_display_driver_t g_vmwgfx_drv = {
+    .name                 = "VMware SVGA II",
+    .priority             = 100,
+    .requires_hw_mode_set = 1,
+    .probe                = vmware_svga_probe_entry,
+    .start                = 0,
+    .stop                 = 0,
+    .get_name             = vmware_svga_get_name,
+    .get_status           = vmware_svga_get_status,
+    .is_active            = vmware_svga_is_active,
+    .is_2d_active         = vmware_svga_is_2d_active,
+    .get_vram_size        = vmware_svga_get_vram_size,
+    .can_set_mode         = vmware_svga_supports_mode,
+    .supports_bpp         = 0,
+    .set_mode             = vmware_svga_set_mode,
+    .fill_rect            = vmware_svga_fill_rect,
+    .screen_blt           = vmware_svga_screen_blt,
+    .present_rect         = vmware_svga_present_rect,
+    .sync                 = vmware_svga_sync,
+    .has_hw_cursor        = 0,
+    .set_cursor           = 0,
+};
 
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_display_driver(&g_vmwgfx_drv);
+}

@@ -6,6 +6,7 @@
 #include "fat.h"
 #include "font.h"
 #include "format.h"
+#include "heap.h"
 #include "log.h"
 #include "part.h"
 #include "power.h"
@@ -28,7 +29,7 @@ extern int insv;
 #define INSTALL_MIN_MB 64u
 #define INSTALL_FAT16_MAX_SECTORS 4194304ull
 #define INSTALL_FAT32_MIN_SECTORS 65536ull
-#define PAYLOAD_LIST_CAPACITY 16
+#define PAYLOAD_LIST_CAPACITY 64
 
 typedef enum {
     STEP_SELECT = 0,
@@ -686,63 +687,85 @@ static int copy_payload_file(const char* source, const char* destination,
 }
 
 static int count_payload_files(const char* source_directory) {
-    payload_list_t list;
-    memset(&list, 0, sizeof(list));
+    payload_list_t* list = (payload_list_t*)kzalloc(sizeof(payload_list_t));
+    if (!list) return -11;
     payload_list_t* previous = g_payload_collector;
-    g_payload_collector = &list;
+    g_payload_collector = list;
     int result = vfs_list_dir(source_directory, collect_payload_entry);
     g_payload_collector = previous;
-    if (result != VFS_OK || list.overflow) return -1;
+    if (result != VFS_OK || list->overflow) {
+        kfree(list);
+        return -1;
+    }
     int total = 0;
-    for (int index = 0; index < list.count; index++) {
-        if (list.entries[index].is_dir) {
+    for (int index = 0; index < list->count; index++) {
+        if (list->entries[index].is_dir) {
             char child[256];
             if (path_join(child, sizeof(child), source_directory,
-                          list.entries[index].name) != 0) {
+                          list->entries[index].name) != 0) {
+                kfree(list);
                 return -1;
             }
             int nested = count_payload_files(child);
-            if (nested < 0) return -1;
+            if (nested < 0) {
+                kfree(list);
+                return -1;
+            }
             total += nested;
         } else {
             total++;
         }
     }
+    kfree(list);
     return total;
 }
 
 static int copy_payload_tree(const char* source_directory,
                              const char* destination_directory,
                              int* copied_files, int total_files) {
-    payload_list_t list;
-    memset(&list, 0, sizeof(list));
+    payload_list_t* list = (payload_list_t*)kzalloc(sizeof(payload_list_t));
+    if (!list) return -11;
     payload_list_t* previous = g_payload_collector;
-    g_payload_collector = &list;
+    g_payload_collector = list;
     int result = vfs_list_dir(source_directory, collect_payload_entry);
     g_payload_collector = previous;
-    if (result != VFS_OK || list.overflow) return -14;
+    if (result != VFS_OK || list->overflow) {
+        kfree(list);
+        return -14;
+    }
 
-    for (int index = 0; index < list.count; index++) {
+    for (int index = 0; index < list->count; index++) {
         char source[256];
         char destination[256];
         if (path_join(source, sizeof(source), source_directory,
-                      list.entries[index].name) != 0 ||
+                      list->entries[index].name) != 0 ||
             path_join(destination, sizeof(destination), destination_directory,
-                      list.entries[index].name) != 0) {
+                      list->entries[index].name) != 0) {
+            kfree(list);
             return -14;
         }
-        if (list.entries[index].is_dir) {
-            if (ensure_directory(destination) != 0) return -14;
+        if (list->entries[index].is_dir) {
+            if (ensure_directory(destination) != 0) {
+                kfree(list);
+                return -14;
+            }
             int nested = copy_payload_tree(source, destination, copied_files,
                                            total_files);
-            if (nested != 0) return nested;
+            if (nested != 0) {
+                kfree(list);
+                return nested;
+            }
         } else {
             int copy = copy_payload_file(source, destination, *copied_files,
                                          total_files);
-            if (copy != 0) return copy;
+            if (copy != 0) {
+                kfree(list);
+                return copy;
+            }
             (*copied_files)++;
         }
     }
+    kfree(list);
     return 0;
 }
 
@@ -792,7 +815,9 @@ static int verify_installed_payload(char letter) {
         "boot\\limine\\limine-bios.sys",
         "EFI\\BOOT\\BOOTX64.EFI",
         "system\\limine-installed.conf",
-        "system\\PAYLOAD.TXT"
+        "system\\PAYLOAD.TXT",
+        "PDEVICE\\fdc.pdv",
+        "PDEVICE\\vmwgfx.pdv"
     };
     for (int index = 0;
          index < (int)(sizeof(required) / sizeof(required[0])); index++) {

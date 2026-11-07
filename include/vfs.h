@@ -50,6 +50,7 @@ typedef struct {
 extern vfs_drive_t g_vfs_drives[26];
 
 void vfs_init(void);
+void vfs_mount_initial_floppies(void);
 int  vfs_remount(char letter);
 vfs_drive_t* vfs_get_drive(char letter);
 int  vfs_mount_partition(partition_entry_t* part, char letter);

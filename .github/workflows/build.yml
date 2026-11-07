@@ -2,9 +2,9 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "beta" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "beta" ]
   workflow_dispatch:
 
 permissions:
@@ -24,12 +24,13 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm xorriso mtools dosfstools qemu-system-x86 dos2unix zip
+        sudo apt-get install -y gcc nasm python3 xorriso mtools dosfstools qemu-system-x86 dos2unix zip
 
     - name: Ensure Unix line endings and script permissions
       run: |
-        dos2unix Makefile boot/limine.conf scripts/*.sh || sed -i 's/\r$//' Makefile boot/limine.conf scripts/*.sh
-        chmod +x scripts/*.sh
+        dos2unix Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk drivers/pdv/*/*.pdi || \
+          sed -i 's/\r$//' Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk drivers/pdv/*/*.pdi
+        chmod +x scripts/*.sh scripts/*.py
 
     - name: Build Kernel and Hybrid ISO
       run: |
@@ -37,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A181f"
+          VERSION="26A200a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -82,41 +83,27 @@ jobs:
       if: >-
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
-         github.ref == 'refs/heads/master')
+         github.ref == 'refs/heads/master' ||
+         github.ref == 'refs/heads/beta')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Floppy Storage)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Native PDV Drivers)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release**: ISA DMA floppy storage with A:/B: media-change support.
+          > **Pre-release (Beta Phase 1)**: Native self-contained loadable driver architecture (`PDEVICE\*.pdv`).
 
-          ### Floppy storage
-          - Added an 8237 ISA DMA channel 2 driver and a polled 82077-compatible floppy controller driver.
-          - Windows-style A: and B: mapping follows physical floppy units 0 and 1.
-          - Firmware-empty CMOS hints fall back to probing both standard FDC units.
-          - Media capacity is read from the FAT12 BPB, covering 160 KiB through 2.88 MiB geometries.
-          - Empty drives and media-free machines do not expose A: or B:.
-          - Media change, eject and reinsertion invalidate the old FAT volume and remount the new disk.
-
-          ### Installer interface
-          - File, Edit, View and Special menus are hidden in installer mode.
-          - The system menu contains only Restart Computer and Shut Down Computer.
-          - About and System Information remain available outside installer mode.
-
-          ### Display compatibility
-          - Live, installer and installed-system boots request 1280x1024x16 and fall back automatically when the firmware or video memory cannot provide it.
-          - 1280x1024 is exposed in the desktop settings only when the active framebuffer and display backend support the real scanout.
-          - ATI detection disables acceleration and mode switching, while enforcing a maximum of 1024x768x16.
-          - Logical and physical resolutions must match before a high-resolution mode is accepted, preventing black screens and shrunken fonts.
-
-          ### Boot menu
-          - The ISO keeps Live Desktop and Graphical Installer as the primary entries.
-          - Duplicate installer diagnostics, manual NVIDIA high-resolution entries and verbose/debug entries were removed.
-          - Advanced Boot Options now contains only the Safe Graphics recovery path.
-          - Installed systems use the same automatic resolution policy with a single Safe Graphics recovery path.
+          ### Loadable PDV Driver Architecture (`*.pdv`)
+          - Added native `*.pdv` driver container format (`PDV1`), build-time `.pdi` hardware matching manifests, `scripts/mkpdv.py` packager, and standalone DDK (`sdk/ddk/`).
+          - Added kernel ELF64 `ET_REL` module loader with strict W^X high-half virtual memory protection (`0xFFFFFFFF90000000`–`0xFFFFFFFFBFFFFFFF`), CRC32 validation, and `pdv_kernel_api_t` DDI table.
+          - Automatic hardware enumeration and driver loading from `<CD>:\PDEVICE\*.pdv` in Live/Installer mode and `<SYS>:\PDEVICE\*.pdv` on local installed systems (with `nopdv=1` Safe Mode bypass).
+          - Migrated 8 display, audio, and legacy storage drivers out of `kernel.elf` into `PDEVICE\`:
+            - Display: `vmwgfx.pdv`, `mach64.pdv`, `nvg7x.pdv`
+            - Audio: `hdaudio.pdv`, `ac97.pdv`, `ct4810.pdv`, `cmi8738.pdv`
+            - Storage: `fdc.pdv`
+          - USB controllers/classes and core boot storage remain built into `kernel.elf`.
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -124,7 +111,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes ISA DMA floppy storage as `v26A181f`.
+          This revision publishes Phase 1 of the modular driver architecture on `beta` as `v26A200a`.
         prerelease: true
         make_latest: false
         files: |

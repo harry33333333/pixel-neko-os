@@ -1,0 +1,11 @@
+[driver]
+name        = nvg7x
+provider    = Pixel Neko OS
+class       = DISPLAY
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x10de, class=0x03, subclass=*

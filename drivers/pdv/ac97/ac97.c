@@ -1,17 +1,16 @@
 /*
- * Intel ICH / AMD / NVIDIA AC'97 PCI Audio Controller Driver (64-bit kernel).
+ * Intel ICH / AMD / NVIDIA AC'97 PCI Audio Controller Driver (*.pdv module).
  *
  * Implements NAM (Native Audio Mixer) and NABM (Native Audio Bus Master)
  * ring-buffer DMA playback for Intel 82801 (ICH..ICH7), VirtualBox AC'97,
  * QEMU AC'97, and compatible controllers.
  */
 
-#include "ac97.h"
-#include "dma.h"
-#include "log.h"
-#include "pci.h"
-#include "port.h"
-#include "timer.h"
+#include <pdv/ddk.h>
+
+static const pdv_kernel_api_t* g_kapi = 0;
+
+#define klog_info(fmt, ...) g_kapi->log_printf("[INFO] " fmt "\n", ##__VA_ARGS__)
 
 #define AC97_NAM_RESET            0x00
 #define AC97_NAM_MASTER_VOL       0x02
@@ -44,15 +43,9 @@
 #define AC97_SR_FIFOE             0x0010U
 #define AC97_SR_W1C_MASK          0x001CU
 
-#ifndef AC97_DMA_BUFFER_BYTES
 #define AC97_DMA_BUFFER_BYTES     65536U
-#endif
-#ifndef AC97_DMA_HALF_BYTES
 #define AC97_DMA_HALF_BYTES       32768U
-#endif
-#ifndef AC97_DMA_TOTAL_FRAMES
 #define AC97_DMA_TOTAL_FRAMES     (AC97_DMA_BUFFER_BYTES / 4U)
-#endif
 
 #define AC97_BDL_ENTRIES          32
 #define AC97_ENTRY_BYTES          (AC97_DMA_BUFFER_BYTES / AC97_BDL_ENTRIES) /* 2048 bytes */
@@ -69,8 +62,8 @@ static int g_ac97_present = 0;
 static uint16_t g_nam_base = 0;
 static uint16_t g_nabm_base = 0;
 static const char* g_ac97_name = "None";
-static dma_buffer_t g_ac97_dma;
-static dma_buffer_t g_ac97_bdl_dma;
+static pdv_dma_buffer_t g_ac97_dma;
+static pdv_dma_buffer_t g_ac97_bdl_dma;
 static uint8_t* g_ac97_buf = 0;
 static volatile ac97_bdl_entry_t* g_ac97_bdl = 0;
 static int g_ac97_running = 0;
@@ -79,39 +72,39 @@ static int g_ac97_last_half = -1;
 static int g_ac97_half_filled[2] = {0, 0};
 
 static inline uint16_t nam_read16(uint16_t reg) {
-    return inw((uint16_t)(g_nam_base + reg));
+    return pdv_inw((uint16_t)(g_nam_base + reg));
 }
 
 static inline void nam_write16(uint16_t reg, uint16_t val) {
-    outw((uint16_t)(g_nam_base + reg), val);
-    outb(0x80, 0);
+    pdv_outw((uint16_t)(g_nam_base + reg), val);
+    pdv_outb(0x80, 0);
 }
 
 static inline uint8_t nabm_read8(uint16_t reg) {
-    return inb((uint16_t)(g_nabm_base + reg));
+    return pdv_inb((uint16_t)(g_nabm_base + reg));
 }
 
 static inline uint16_t nabm_read16(uint16_t reg) {
-    return inw((uint16_t)(g_nabm_base + reg));
+    return pdv_inw((uint16_t)(g_nabm_base + reg));
 }
 
 static inline uint32_t nabm_read32(uint16_t reg) {
-    return inl((uint16_t)(g_nabm_base + reg));
+    return pdv_inl((uint16_t)(g_nabm_base + reg));
 }
 
 static inline void nabm_write8(uint16_t reg, uint8_t val) {
-    outb((uint16_t)(g_nabm_base + reg), val);
+    pdv_outb((uint16_t)(g_nabm_base + reg), val);
 }
 
 static inline void nabm_write16(uint16_t reg, uint16_t val) {
-    outw((uint16_t)(g_nabm_base + reg), val);
+    pdv_outw((uint16_t)(g_nabm_base + reg), val);
 }
 
 static inline void nabm_write32(uint16_t reg, uint32_t val) {
-    outl((uint16_t)(g_nabm_base + reg), val);
+    pdv_outl((uint16_t)(g_nabm_base + reg), val);
 }
 
-static int ac97_match_controller(const pci_device_t* pci, const char** out_name) {
+static int ac97_match_controller(const pdv_pci_device_t* pci, const char** out_name) {
     if (!pci) return 0;
     if (pci->class_code != 0x04 || pci->subclass != 0x01) return 0;
 
@@ -144,25 +137,28 @@ static int ac97_match_controller(const pci_device_t* pci, const char** out_name)
 }
 
 static void ac97_setup_bdl(void) {
-    if (!g_ac97_bdl || !dma_is_valid(&g_ac97_dma)) return;
+    if (!g_ac97_bdl || !pdv_dma_is_valid(&g_ac97_dma)) return;
     for (int i = 0; i < AC97_BDL_ENTRIES; i++) {
         g_ac97_bdl[i].addr = (uint32_t)g_ac97_dma.phys + (uint32_t)(i * AC97_ENTRY_BYTES);
         g_ac97_bdl[i].samples = AC97_ENTRY_SAMPLES;
         g_ac97_bdl[i].flags = 0;
     }
-    dma_flush(&g_ac97_bdl_dma);
+    pdv_dma_flush(g_kapi, &g_ac97_bdl_dma);
 }
 
-int ac97_init(void) {
+static void ac97_set_format(int rate, int bits, int stereo);
+static void ac97_set_volume(int master_vol, int pcm_vol);
+
+static int ac97_init(void) {
     g_ac97_present = 0;
     g_nam_base = 0;
     g_nabm_base = 0;
     g_ac97_running = 0;
     g_ac97_paused = 0;
 
-    pci_scan_all();
-    for (int i = 0; i < pci_get_device_count(); i++) {
-        const pci_device_t* pci = pci_get_device(i);
+    int count = g_kapi->pci_get_device_count();
+    for (int i = 0; i < count; i++) {
+        const pdv_pci_device_t* pci = g_kapi->pci_get_device(i);
         const char* name = 0;
         if (!ac97_match_controller(pci, &name)) continue;
 
@@ -175,9 +171,9 @@ int ac97_init(void) {
         g_nabm_base = (uint16_t)pci->bar[1].address;
         g_ac97_name = name;
 
-        pci_enable_io(pci);
-        pci_enable_memory(pci);
-        pci_enable_bus_master(pci);
+        g_kapi->pci_enable_io(pci);
+        g_kapi->pci_enable_memory(pci);
+        g_kapi->pci_enable_bus_master(pci);
         g_ac97_present = 1;
         break;
     }
@@ -186,17 +182,17 @@ int ac97_init(void) {
         return -1;
     }
 
-    if (!dma_is_valid(&g_ac97_dma)) {
-        g_ac97_dma = dma_alloc_aligned(AC97_DMA_BUFFER_BYTES, 65536);
-        if (!dma_is_valid(&g_ac97_dma)) {
+    if (!pdv_dma_is_valid(&g_ac97_dma)) {
+        g_ac97_dma = pdv_dma_alloc_aligned(g_kapi, AC97_DMA_BUFFER_BYTES, 65536);
+        if (!pdv_dma_is_valid(&g_ac97_dma)) {
             g_ac97_present = 0;
             return -2;
         }
         g_ac97_buf = (uint8_t*)g_ac97_dma.virt;
     }
-    if (!dma_is_valid(&g_ac97_bdl_dma)) {
-        g_ac97_bdl_dma = dma_alloc_aligned(sizeof(ac97_bdl_entry_t) * AC97_BDL_ENTRIES, 4096);
-        if (!dma_is_valid(&g_ac97_bdl_dma)) {
+    if (!pdv_dma_is_valid(&g_ac97_bdl_dma)) {
+        g_ac97_bdl_dma = pdv_dma_alloc_aligned(g_kapi, sizeof(ac97_bdl_entry_t) * AC97_BDL_ENTRIES, 4096);
+        if (!pdv_dma_is_valid(&g_ac97_bdl_dma)) {
             g_ac97_present = 0;
             return -2;
         }
@@ -211,13 +207,13 @@ int ac97_init(void) {
     glob_cnt &= ~0x00000030U; /* 2-channel mode, 16-bit */
     glob_cnt |= 0x00000002U;  /* Deassert cold reset */
     nabm_write32(AC97_NABM_GLOB_CNT, glob_cnt);
-    sleep_ms(10);
+    g_kapi->sleep_ms(10);
 
     /* Reset NAM mixer */
     nam_write16(AC97_NAM_RESET, 0x0000);
-    sleep_ms(20);
+    g_kapi->sleep_ms(20);
     nam_write16(AC97_NAM_POWERDOWN, 0x0000);
-    sleep_ms(10);
+    g_kapi->sleep_ms(10);
 
     /* Enable Variable Rate Audio (VRA) if supported */
     uint16_t ext_id = nam_read16(AC97_NAM_EXT_AUDIO_ID);
@@ -235,15 +231,15 @@ int ac97_init(void) {
     return 0;
 }
 
-int ac97_is_present(void) {
+static int ac97_is_present(void) {
     return g_ac97_present;
 }
 
-const char* ac97_get_name(void) {
+static const char* ac97_get_name(void) {
     return g_ac97_name;
 }
 
-void ac97_set_format(int rate, int bits, int stereo) {
+static void ac97_set_format(int rate, int bits, int stereo) {
     (void)bits;
     (void)stereo;
     if (!g_ac97_present) return;
@@ -258,7 +254,7 @@ void ac97_set_format(int rate, int bits, int stereo) {
     }
 }
 
-void ac97_start_dma(void) {
+static void ac97_start_dma(void) {
     if (!g_ac97_present || !g_ac97_bdl) return;
 
     ac97_setup_bdl();
@@ -268,7 +264,7 @@ void ac97_start_dma(void) {
     nabm_write8(AC97_NABM_PO_CR, AC97_CR_RR);
     for (int i = 0; i < 10000; i++) {
         if (!(nabm_read8(AC97_NABM_PO_CR) & AC97_CR_RR)) break;
-        outb(0x80, 0);
+        pdv_outb(0x80, 0);
     }
     nabm_write16(AC97_NABM_PO_SR, AC97_SR_W1C_MASK);
 
@@ -281,7 +277,7 @@ void ac97_start_dma(void) {
     g_ac97_last_half = 0;
 }
 
-void ac97_stop_dma(void) {
+static void ac97_stop_dma(void) {
     if (!g_ac97_present) return;
     nabm_write8(AC97_NABM_PO_CR, 0);
     nabm_write8(AC97_NABM_PO_CR, AC97_CR_RR);
@@ -296,7 +292,7 @@ void ac97_stop_dma(void) {
     }
 }
 
-void ac97_pause_dma(int pause) {
+static void ac97_pause_dma(int pause) {
     if (!g_ac97_present || !g_ac97_running) return;
     if (pause) {
         nabm_write8(AC97_NABM_PO_CR, 0);
@@ -307,7 +303,7 @@ void ac97_pause_dma(int pause) {
     }
 }
 
-void ac97_set_volume(int master_vol, int pcm_vol) {
+static void ac97_set_volume(int master_vol, int pcm_vol) {
     if (!g_ac97_present) return;
     if (master_vol < 0) master_vol = 0;
     if (master_vol > 100) master_vol = 100;
@@ -325,7 +321,7 @@ void ac97_set_volume(int master_vol, int pcm_vol) {
     nam_write16(AC97_NAM_PCM_VOL, p_val);
 }
 
-unsigned int ac97_get_dma_frame_pos(void) {
+static unsigned int ac97_get_dma_frame_pos(void) {
     if (!g_ac97_present || !g_ac97_running) return 0;
     uint8_t civ = nabm_read8(AC97_NABM_PO_CIV) & 0x1FU;
     uint16_t picb = nabm_read16(AC97_NABM_PO_PICB);
@@ -336,11 +332,11 @@ unsigned int ac97_get_dma_frame_pos(void) {
     return pos;
 }
 
-const void* ac97_get_dma_buffer(void) {
+static const void* ac97_get_dma_buffer(void) {
     return g_ac97_buf;
 }
 
-void ac97_write_half(int half_idx, const void* data, unsigned int bytes) {
+static void ac97_write_half(int half_idx, const void* data, unsigned int bytes) {
     if (!g_ac97_buf || (half_idx != 0 && half_idx != 1) || !data) return;
     if (bytes > AC97_DMA_HALF_BYTES) bytes = AC97_DMA_HALF_BYTES;
 
@@ -348,19 +344,19 @@ void ac97_write_half(int half_idx, const void* data, unsigned int bytes) {
     const uint8_t* src = (const uint8_t*)data;
     for (unsigned int i = 0; i < bytes; i++) dst[i] = src[i];
     for (unsigned int i = bytes; i < AC97_DMA_HALF_BYTES; i++) dst[i] = 0;
-    dma_flush(&g_ac97_dma);
+    pdv_dma_flush(g_kapi, &g_ac97_dma);
     g_ac97_half_filled[half_idx] = 1;
 }
 
-void ac97_silence_half(int half_idx) {
+static void ac97_silence_half(int half_idx) {
     if (!g_ac97_buf || (half_idx != 0 && half_idx != 1)) return;
     uint8_t* dst = g_ac97_buf + (half_idx * AC97_DMA_HALF_BYTES);
     for (unsigned int i = 0; i < AC97_DMA_HALF_BYTES; i++) dst[i] = 0;
-    dma_flush(&g_ac97_dma);
+    pdv_dma_flush(g_kapi, &g_ac97_dma);
     g_ac97_half_filled[half_idx] = 0;
 }
 
-int ac97_poll_half_needed(void) {
+static int ac97_poll_half_needed(void) {
     if (!g_ac97_present || !g_ac97_running || g_ac97_paused) return -1;
 
     uint8_t civ = nabm_read8(AC97_NABM_PO_CIV) & 0x1FU;
@@ -389,3 +385,30 @@ int ac97_poll_half_needed(void) {
     return -1;
 }
 
+static int ac97_probe_entry(void) {
+    return (ac97_init() == 0 && ac97_is_present()) ? 1 : 0;
+}
+
+static const pdv_audio_driver_t g_ac97_drv = {
+    .name              = "Intel/AMD AC'97 Audio",
+    .priority          = 110,
+    .probe             = ac97_probe_entry,
+    .get_name          = ac97_get_name,
+    .is_present        = ac97_is_present,
+    .set_format        = ac97_set_format,
+    .start_dma         = ac97_start_dma,
+    .stop_dma          = ac97_stop_dma,
+    .pause_dma         = ac97_pause_dma,
+    .set_volume        = ac97_set_volume,
+    .poll_half_needed  = ac97_poll_half_needed,
+    .write_half        = ac97_write_half,
+    .silence_half      = ac97_silence_half,
+    .get_dma_frame_pos = ac97_get_dma_frame_pos,
+    .get_dma_buffer    = ac97_get_dma_buffer,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_audio_driver(&g_ac97_drv);
+}

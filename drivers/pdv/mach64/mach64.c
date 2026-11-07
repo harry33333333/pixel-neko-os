@@ -1,16 +1,44 @@
-/*
- * ATI Mach64 / 3D Rage II+DVD hardware driver for 64-bit kernel.
- *
- * Register layouts, aperture discovery, and 2D engine programming follow
- * the public ATI Mach64 Programmer's Guide.
- */
+#include <pdv/ddk.h>
 
-#include "ati_mach64.h"
-#include "boot_framebuffer.h"
-#include "log.h"
-#include "mmio.h"
-#include "pci.h"
-#include "port.h"
+static const pdv_kernel_api_t* g_kapi;
+
+#define klog_info(fmt, ...) g_kapi->log_printf(fmt "\n", ##__VA_ARGS__)
+
+#define ATI_VENDOR_ID               0x1002
+#define PCI_DEVICE_ATI_RAGE_GT      0x4754
+#define PCI_DEVICE_ATI_RAGE_II      0x4755
+#define PCI_DEVICE_ATI_RAGE_IIC_PCI 0x4756
+#define PCI_DEVICE_ATI_RAGE_IIC_AGP 0x4757
+#define PCI_DEVICE_ATI_RAGE_IIC_B   0x4759
+#define PCI_DEVICE_ATI_RAGE_IIC_C   0x475A
+#define PCI_DEVICE_ATI_RAGE_PRO_PCI 0x4742
+#define PCI_DEVICE_ATI_RAGE_PRO_TRB 0x4744
+#define PCI_DEVICE_ATI_RAGE_PRO_AGP 0x4749
+#define PCI_DEVICE_ATI_RAGE_XL      0x474D
+#define PCI_DEVICE_ATI_RAGE_XL_PCI  0x4752
+#define PCI_DEVICE_ATI_MACH64_VT    0x5654
+#define PCI_DEVICE_ATI_MACH64_VT4   0x5655
+
+#define MACH64_CRTC_OFF_PITCH       0x0014
+#define MACH64_CRTC_GEN_CNTL        0x001C
+#define MACH64_MEM_CNTL             0x00B0
+#define MACH64_GEN_TEST_CNTL        0x00D0
+#define MACH64_CNFG_CHIP_ID         0x00E0
+#define MACH64_DST_OFF_PITCH        0x0100
+#define MACH64_DST_Y_X              0x010C
+#define MACH64_DST_WIDTH_HEIGHT     0x0118
+#define MACH64_SRC_OFF_PITCH        0x0180
+#define MACH64_SRC_Y_X              0x018C
+#define MACH64_SC_LEFT_RIGHT        0x02A8
+#define MACH64_SC_TOP_BOTTOM        0x02B4
+#define MACH64_DP_FRGD_CLR          0x02C4
+#define MACH64_DP_CHAIN_MASK        0x02CC
+#define MACH64_DP_PIX_WIDTH         0x02D0
+#define MACH64_DP_MIX               0x02D4
+#define MACH64_DP_SRC               0x02D8
+#define MACH64_FIFO_STAT            0x0310
+#define MACH64_GUI_TRAJ_CNTL        0x0330
+#define MACH64_GUI_STAT             0x0338
 
 static int g_ati_active = 0;
 static const char* g_ati_chip_name = "None";
@@ -45,7 +73,7 @@ static volatile unsigned char* mach64_try_regs(uint64_t phys_base,
                                                unsigned short device) {
     if (!phys_base) return 0;
     volatile unsigned int* regs =
-        (volatile unsigned int*)mmio_map_phys(phys_base, 0x1000);
+        (volatile unsigned int*)g_kapi->mmio_map_uc(phys_base, 0x1000);
     if (!regs) return 0;
     unsigned int chip_id = regs[MACH64_CNFG_CHIP_ID / 4];
     unsigned int h_total = regs[0];
@@ -84,21 +112,20 @@ static inline void wait_fifo(int entries) {
     }
 }
 
-void ati_mach64_sync(void) {
+static void ati_mach64_sync(void) {
     if (!g_ati_regs || !g_ati_active) return;
     int timeout = 200000;
     while ((mach64_read32(MACH64_GUI_STAT) & 1U) && --timeout) {
     }
 }
 
-int ati_mach64_probe(void) {
+static int ati_mach64_probe_hw(void) {
     g_ati_active = 0;
     g_ati_regs = 0;
     g_ati_lfb = 0;
 
-    pci_scan_all();
-    for (int index = 0; index < pci_get_device_count(); index++) {
-        const pci_device_t* pci = pci_get_device(index);
+    for (int index = 0; index < g_kapi->pci_get_device_count(); index++) {
+        const pdv_pci_device_t* pci = g_kapi->pci_get_device(index);
         if (!pci || pci->vendor != ATI_VENDOR_ID) continue;
 
         unsigned short device = pci->device;
@@ -131,12 +158,12 @@ int ati_mach64_probe(void) {
         }
         if (!bar0_phys) continue;
 
-        pci_enable_io(pci);
-        pci_enable_memory(pci);
-        pci_enable_bus_master(pci);
+        g_kapi->pci_enable_io(pci);
+        g_kapi->pci_enable_memory(pci);
+        g_kapi->pci_enable_bus_master(pci);
 
         g_ati_chip_name = name;
-        g_ati_lfb = (volatile unsigned char*)mmio_map_wc(
+        g_ati_lfb = (volatile unsigned char*)g_kapi->mmio_map_wc(
             bar0_phys, 8 * 1024 * 1024);
         g_ati_regs = mach64_find_register_base(bar0_phys, bar2_phys, device);
 
@@ -196,67 +223,25 @@ int ati_mach64_probe(void) {
     return 0;
 }
 
-int ati_mach64_is_active(void) {
-    return g_ati_active;
-}
-
-void ati_mach64_disable(void) {
+static int ati_mach64_probe_entry(void) {
+    if (!ati_mach64_probe_hw()) return 0;
     g_ati_active = 0;
+    g_kapi->fb_apply_ati_cap();
+    return 0; /* Keep safe linear WC framebuffer active with 1024x768x16 cap */
 }
 
-const char* ati_mach64_get_chip_name(void) {
-    return g_ati_chip_name;
-}
+static int ati_mach64_is_active(void) { return g_ati_active; }
+static const char* ati_mach64_get_chip_name(void) { return g_ati_chip_name; }
+static const char* ati_mach64_get_status(void) { return "GUI accelerator active"; }
+static unsigned int ati_mach64_get_vram_size(void) { return g_ati_vram_bytes; }
 
-unsigned int ati_mach64_get_vram_size(void) {
-    return g_ati_vram_bytes;
-}
-
-int ati_mach64_supports_native_32bpp(int w, int h) {
-    if (!g_ati_active || w <= 0 || h <= 0) return 0;
-    if (w & 7) return 0;
-    if (mach64_pitch_units(w) > 0x3FFU) return 0;
-    return (unsigned int)w * (unsigned int)h * 4U <= g_ati_vram_bytes;
-}
-
-int ati_mach64_enable_native_32bpp(int w, int h) {
-    if (!ati_mach64_supports_native_32bpp(w, h) || !g_ati_regs) return 0;
-
-    ati_mach64_sync();
-
-    unsigned int off_pitch = mach64_read32(MACH64_CRTC_OFF_PITCH);
-    unsigned int gen_cntl = mach64_read32(MACH64_CRTC_GEN_CNTL);
-    if (off_pitch == 0xFFFFFFFFU || gen_cntl == 0xFFFFFFFFU) return 0;
-
-    unsigned int pitch_units = mach64_pitch_units(w);
-    off_pitch &= 0x000FFFFFU;
-    off_pitch |= (pitch_units & 0x3FFU) << 22;
-    mach64_write32(MACH64_CRTC_OFF_PITCH, off_pitch);
-
-    gen_cntl &= ~MACH64_PIX_WIDTH_MASK;
-    gen_cntl |= MACH64_PIX_WIDTH_32BPP;
-    mach64_write32(MACH64_CRTC_GEN_CNTL, gen_cntl);
-
-    unsigned int mem_cntl = mach64_read32(MACH64_MEM_CNTL);
-    mem_cntl &= 0xF00FFFFFU;
-    mem_cntl |= 0x08000000U;
-    mach64_write32(MACH64_MEM_CNTL, mem_cntl);
-
-    ati_mach64_set_mode_bpp(w, h, 32);
-
-    return (mach64_read32(MACH64_CRTC_GEN_CNTL) & MACH64_PIX_WIDTH_MASK) ==
-           MACH64_PIX_WIDTH_32BPP;
-}
-
-void ati_mach64_set_mode_bpp(int w, int h, int bpp) {
-    if (!g_ati_active) return;
-
+static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
+    if (!g_ati_active) return 0;
     g_cur_w = w;
     g_cur_h = h;
-    if (!g_ati_regs) return;
+    if (!g_ati_regs) return 1;
 
     ati_mach64_sync();
-
     unsigned int pitch_units = mach64_pitch_units(w);
     mach64_write32(MACH64_DST_OFF_PITCH, (pitch_units & 0x3FFU) << 22);
     mach64_write32(MACH64_SRC_OFF_PITCH, (pitch_units & 0x3FFU) << 22);
@@ -275,11 +260,11 @@ void ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     mach64_write32(MACH64_SC_TOP_BOTTOM,
                    ((unsigned int)(h - 1) & 0x7FFFU) << 16);
     mach64_write32(MACH64_DP_MIX, 0x00070007U);
+    return 1;
 }
 
-void ati_mach64_fill_rect(int x, int y, int w, int h, unsigned int color) {
+static void ati_mach64_fill_rect(int x, int y, int w, int h, unsigned int color) {
     if (!g_ati_active || !g_ati_regs) return;
-
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > g_cur_w) w = g_cur_w - x;
@@ -296,9 +281,8 @@ void ati_mach64_fill_rect(int x, int y, int w, int h, unsigned int color) {
                    ((unsigned int)w << 16) | ((unsigned int)h & 0xFFFFU));
 }
 
-void ati_mach64_screen_blt(int sx, int sy, int dx, int dy, int w, int h) {
+static void ati_mach64_screen_blt(int sx, int sy, int dx, int dy, int w, int h) {
     if (!g_ati_active || !g_ati_regs) return;
-
     if (sx < 0) { w += sx; dx -= sx; sx = 0; }
     if (sy < 0) { h += sy; dy -= sy; sy = 0; }
     if (dx < 0) { w += dx; sx -= dx; dx = 0; }
@@ -333,3 +317,31 @@ void ati_mach64_screen_blt(int sx, int sy, int dx, int dy, int w, int h) {
                    ((unsigned int)w << 16) | ((unsigned int)h & 0xFFFFU));
 }
 
+static const pdv_display_driver_t g_mach64_drv = {
+    .name                 = "ATI Mach64",
+    .priority             = 50,
+    .requires_hw_mode_set = 0,
+    .probe                = ati_mach64_probe_entry,
+    .start                = 0,
+    .stop                 = 0,
+    .get_name             = ati_mach64_get_chip_name,
+    .get_status           = ati_mach64_get_status,
+    .is_active            = ati_mach64_is_active,
+    .is_2d_active         = ati_mach64_is_active,
+    .get_vram_size        = ati_mach64_get_vram_size,
+    .can_set_mode         = 0,
+    .supports_bpp         = 0,
+    .set_mode             = ati_mach64_set_mode_bpp,
+    .fill_rect            = ati_mach64_fill_rect,
+    .screen_blt           = ati_mach64_screen_blt,
+    .present_rect         = 0,
+    .sync                 = ati_mach64_sync,
+    .has_hw_cursor        = 0,
+    .set_cursor           = 0,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_display_driver(&g_mach64_drv);
+}

@@ -1,12 +1,9 @@
-#include "nvidia_g7x.h"
-#include "boot_framebuffer.h"
-#include "log.h"
-#include "mmio.h"
-#include "pci.h"
+#include <pdv/ddk.h>
 
-#ifndef NULL
-#define NULL ((void*)0)
-#endif
+static const pdv_kernel_api_t* g_kapi;
+
+#define klog_info(fmt, ...) g_kapi->log_printf(fmt "\n", ##__VA_ARGS__)
+#define mmio_read32         pdv_mmio_read32
 
 #define NVIDIA_VENDOR_ID       0x10DE
 #define PCI_DEV_7600GT_G73     0x0391
@@ -22,13 +19,7 @@
 #define PCI_DEV_6600LE_NV43_B  0x0142
 #define PCI_CAP_ID_EXP         0x10
 
-extern int screen_w;
-extern int screen_h;
-extern int screen_bpp;
-extern int screen_pitch;
-extern unsigned char* lfb;
-
-static const pci_device_t* g_pci;
+static const pdv_pci_device_t* g_pci;
 static int g_active;
 static unsigned int g_vram_size;
 static uint64_t g_bar0;
@@ -38,10 +29,10 @@ static int g_primary_7300gt;
 static const char* g_name = "NVIDIA PCIe";
 static const char* g_status = "Not detected";
 
-static unsigned int nvidia_bytes_per_pixel(void) {
-    if (screen_bpp <= 8) return 1;
-    if (screen_bpp <= 16) return 2;
-    if (screen_bpp <= 24) return 3;
+static unsigned int nvidia_bytes_per_pixel(int bpp) {
+    if (bpp <= 8) return 1;
+    if (bpp <= 16) return 2;
+    if (bpp <= 24) return 3;
     return 4;
 }
 
@@ -55,7 +46,7 @@ static int nvidia_framebuffer_in_bar(uint64_t framebuffer, uint64_t size) {
 static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys) {
     if (!bar0_phys) return 0;
     volatile uint8_t* pfb =
-        (volatile uint8_t*)mmio_map_phys(bar0_phys + 0x100000ULL, 0x1000);
+        (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x100000ULL, 0x1000);
     if (!pfb) return 0;
     uint32_t cstatus = mmio_read32(pfb + 0x20C);
     if (cstatus == 0 || cstatus == 0xFFFFFFFFU) return 0;
@@ -66,7 +57,7 @@ static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys) {
     return 0;
 }
 
-int nvidia_g7x_probe(void) {
+static int nvidia_g7x_probe(void) {
     g_active = 0;
     g_pci = 0;
     g_vram_size = 0;
@@ -76,9 +67,14 @@ int nvidia_g7x_probe(void) {
     g_primary_7300gt = 0;
     g_status = "NVIDIA G7x PCIe device not found";
 
-    pci_scan_all();
-    for (int i = 0; i < pci_get_device_count(); i++) {
-        const pci_device_t* dev = pci_get_device(i);
+    unsigned char* cur_lfb = g_kapi->fb_get_lfb();
+    int sw = 0, sh = 0, sbpp = 0;
+    g_kapi->fb_get_desktop_mode(&sw, &sh, &sbpp);
+    pdv_fb_surface_t surf;
+    g_kapi->fb_get_surface(&surf);
+
+    for (int i = 0; i < g_kapi->pci_get_device_count(); i++) {
+        const pdv_pci_device_t* dev = g_kapi->pci_get_device(i);
         if (!dev || dev->vendor != NVIDIA_VENDOR_ID) continue;
 
         unsigned int vram = 0;
@@ -126,7 +122,7 @@ int nvidia_g7x_probe(void) {
                 continue;
         }
 
-        uint8_t pcie = pci_find_capability(dev, PCI_CAP_ID_EXP);
+        uint8_t pcie = g_kapi->pci_find_capability(dev, PCI_CAP_ID_EXP);
         uint64_t bar_size = 0;
         if (dev->bar[1].valid && !dev->bar[1].is_io) {
             bar_size = dev->bar[1].size;
@@ -134,13 +130,13 @@ int nvidia_g7x_probe(void) {
         if (vram && bar_size < (64ULL * 1024ULL * 1024ULL)) {
             bar_size = vram;
         }
-        if (!lfb || screen_w <= 0 || screen_h <= 0) {
+        if (!cur_lfb || sw <= 0 || sh <= 0) {
             continue;
         }
 
         if (dev->bar[0].valid && !dev->bar[0].is_io) {
-            pci_enable_memory(dev);
-            pci_enable_bus_master(dev);
+            g_kapi->pci_enable_memory(dev);
+            g_kapi->pci_enable_bus_master(dev);
         }
         g_pci = dev;
         g_bar0 = (dev->bar[0].valid && !dev->bar[0].is_io)
@@ -156,7 +152,7 @@ int nvidia_g7x_probe(void) {
         g_active = 1;
 
         if (g_bar1 && nvidia_framebuffer_in_bar(
-                          g_main_surface.framebuffer_phys, bar_size)) {
+                          surf.framebuffer_phys, bar_size)) {
             g_status = "PCIe BAR1 WC LFB active";
         } else {
             g_status = "Linear WC aperture active";
@@ -164,56 +160,46 @@ int nvidia_g7x_probe(void) {
         klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB",
                   g_name, dev->vendor, dev->device, dev->revision, pcie,
                   (unsigned long long)g_bar0, (unsigned long long)g_bar1,
-                  (unsigned long long)g_main_surface.framebuffer_phys,
+                  (unsigned long long)surf.framebuffer_phys,
                   g_vram_size / (1024U * 1024U));
         return 1;
     }
     return 0;
 }
 
-int nvidia_g7x_is_active(void) {
-    return g_active;
-}
+static int nvidia_g7x_is_active(void) { return g_active; }
+static int nvidia_g7x_is_2d_active(void) { return 0; }
+static const char* nvidia_g7x_get_name(void) { return g_name; }
+static const char* nvidia_g7x_get_status(void) { return g_status; }
+static unsigned int nvidia_g7x_get_vram_size(void) { return g_vram_size; }
 
-const char* nvidia_g7x_get_name(void) {
-    return g_name;
-}
-
-const char* nvidia_g7x_get_status(void) {
-    return g_status;
-}
-
-unsigned int nvidia_g7x_get_vram_size(void) {
-    return g_vram_size;
-}
-
-int nvidia_g7x_supports_1280x1024(void) {
-    return g_active && g_primary_7300gt &&
-           g_main_surface.width >= 1280 &&
-           g_main_surface.height >= 1024 &&
-           g_vram_size >= (1280U * 1024U * 4U);
-}
-
-void nvidia_g7x_present_rect(int x, int y, int width, int height) {
+static void nvidia_g7x_present_rect(int x, int y, int width, int height) {
     (void)x;
     (void)y;
     (void)width;
     (void)height;
 }
 
-void nvidia_g7x_fill_rect(int x, int y, int width, int height,
-                          unsigned int color) {
-    if (!g_active || !lfb) return;
+static void nvidia_g7x_fill_rect(int x, int y, int width, int height,
+                                 unsigned int color) {
+    unsigned char* cur_lfb = g_kapi->fb_get_lfb();
+    if (!g_active || !cur_lfb) return;
+
+    int sw = 0, sh = 0, sbpp = 0;
+    g_kapi->fb_get_desktop_mode(&sw, &sh, &sbpp);
+    pdv_fb_surface_t surf;
+    g_kapi->fb_get_surface(&surf);
+
     if (x < 0) { width += x; x = 0; }
     if (y < 0) { height += y; y = 0; }
-    if (x + width > screen_w) width = screen_w - x;
-    if (y + height > screen_h) height = screen_h - y;
+    if (x + width > sw) width = sw - x;
+    if (y + height > sh) height = sh - y;
     if (width <= 0 || height <= 0) return;
 
-    unsigned int bytes = nvidia_bytes_per_pixel();
+    unsigned int bytes = nvidia_bytes_per_pixel(sbpp);
     for (int row = y; row < y + height; row++) {
         unsigned char* destination =
-            lfb + (size_t)row * g_main_surface.pitch + (size_t)x * bytes;
+            cur_lfb + (size_t)row * surf.pitch + (size_t)x * bytes;
         if (bytes == 4) {
             unsigned int* pixel = (unsigned int*)destination;
             for (int column = 0; column < width; column++) {
@@ -235,20 +221,27 @@ void nvidia_g7x_fill_rect(int x, int y, int width, int height,
     }
 }
 
-void nvidia_g7x_screen_blt(int sx, int sy, int dx, int dy,
-                           int width, int height) {
-    if (!g_active || !lfb) return;
+static void nvidia_g7x_screen_blt(int sx, int sy, int dx, int dy,
+                                  int width, int height) {
+    unsigned char* cur_lfb = g_kapi->fb_get_lfb();
+    if (!g_active || !cur_lfb) return;
+
+    int sw = 0, sh = 0, sbpp = 0;
+    g_kapi->fb_get_desktop_mode(&sw, &sh, &sbpp);
+    pdv_fb_surface_t surf;
+    g_kapi->fb_get_surface(&surf);
+
     if (sx < 0) { width += sx; dx -= sx; sx = 0; }
     if (sy < 0) { height += sy; dy -= sy; sy = 0; }
     if (dx < 0) { width += dx; sx -= dx; dx = 0; }
     if (dy < 0) { height += dy; sy -= dy; dy = 0; }
-    if (sx + width > screen_w) width = screen_w - sx;
-    if (sy + height > screen_h) height = screen_h - sy;
-    if (dx + width > screen_w) width = screen_w - dx;
-    if (dy + height > screen_h) height = screen_h - dy;
+    if (sx + width > sw) width = sw - sx;
+    if (sy + height > sh) height = sh - sy;
+    if (dx + width > sw) width = sw - dx;
+    if (dy + height > sh) height = sh - dy;
     if (width <= 0 || height <= 0) return;
 
-    unsigned int bytes = nvidia_bytes_per_pixel();
+    unsigned int bytes = nvidia_bytes_per_pixel(sbpp);
     int row = height - 1;
     int row_end = -1;
     int row_step = -1;
@@ -259,17 +252,45 @@ void nvidia_g7x_screen_blt(int sx, int sy, int dx, int dy,
     }
     for (; row != row_end; row += row_step) {
         unsigned char* source =
-            lfb + (size_t)(sy + row) * g_main_surface.pitch +
+            cur_lfb + (size_t)(sy + row) * surf.pitch +
             (size_t)sx * bytes;
         unsigned char* destination =
-            lfb + (size_t)(dy + row) * g_main_surface.pitch +
+            cur_lfb + (size_t)(dy + row) * surf.pitch +
             (size_t)dx * bytes;
         int count = width * (int)bytes;
         for (int i = 0; i < count; i++) destination[i] = source[i];
     }
 }
 
-void nvidia_g7x_sync(void) {
-    boot_framebuffer_flush();
+static void nvidia_g7x_sync(void) {
+    g_kapi->fb_flush();
 }
 
+static const pdv_display_driver_t g_nvg7x_drv = {
+    .name                 = "NVIDIA G7x PCIe",
+    .priority             = 80,
+    .requires_hw_mode_set = 0,
+    .probe                = nvidia_g7x_probe,
+    .start                = 0,
+    .stop                 = 0,
+    .get_name             = nvidia_g7x_get_name,
+    .get_status           = nvidia_g7x_get_status,
+    .is_active            = nvidia_g7x_is_active,
+    .is_2d_active         = nvidia_g7x_is_2d_active,
+    .get_vram_size        = nvidia_g7x_get_vram_size,
+    .can_set_mode         = 0,
+    .supports_bpp         = 0,
+    .set_mode             = 0,
+    .fill_rect            = nvidia_g7x_fill_rect,
+    .screen_blt           = nvidia_g7x_screen_blt,
+    .present_rect         = nvidia_g7x_present_rect,
+    .sync                 = nvidia_g7x_sync,
+    .has_hw_cursor        = 0,
+    .set_cursor           = 0,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_display_driver(&g_nvg7x_drv);
+}

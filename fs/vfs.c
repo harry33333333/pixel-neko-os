@@ -4,7 +4,6 @@
 #include "ata.h"
 #include "exfat.h"
 #include "fat.h"
-#include "fdc.h"
 #include "iso9660.h"
 #include "log.h"
 #include "string.h"
@@ -300,6 +299,21 @@ static bool refresh_optical_drive(vfs_drive_t* drive) {
     return true;
 }
 
+void vfs_mount_initial_floppies(void) {
+    for (int index = 0; index < blkdev_count(); index++) {
+        blkdev_t* dev = blkdev_get(index);
+        if (!dev || dev->type != BLK_TYPE_FLOPPY ||
+            dev->unit < 0 || dev->unit >= 2) {
+            continue;
+        }
+        char letter = (char)('A' + dev->unit);
+        if (g_vfs_drives[letter - 'A'].present) continue;
+        if (block_check_media(dev) == MEDIA_PRESENT && dev->total_sectors) {
+            (void)mount_floppy(dev, letter);
+        }
+    }
+}
+
 void vfs_init(void) {
     memset(g_vfs_drives, 0, sizeof(g_vfs_drives));
     memset(g_iso_filesystems, 0, sizeof(g_iso_filesystems));
@@ -308,14 +322,7 @@ void vfs_init(void) {
     g_last_media_poll_tick = apic_get_ticks();
     fat_init();
 
-    for (int index = 0; index < blkdev_count(); index++) {
-        blkdev_t* dev = blkdev_get(index);
-        if (!dev || dev->type != BLK_TYPE_FLOPPY) continue;
-        char letter = (char)('A' + dev->unit);
-        if (block_check_media(dev) == MEDIA_PRESENT && dev->total_sectors) {
-            (void)mount_floppy(dev, letter);
-        }
-    }
+    vfs_mount_initial_floppies();
 
     char local_letter = 'C';
     char removable_letter = 'E';
@@ -392,7 +399,9 @@ int vfs_eject_media(char letter) {
         return VFS_ERR_NO_DRIVE;
     }
     if (drive->drv_type == VFS_DRV_FLOPPY) {
-        if (fdc_eject(drive->dev->unit) != 0) return VFS_ERR_IO;
+        if (!drive->dev->eject || drive->dev->eject(drive->dev) != 0) {
+            return VFS_ERR_IO;
+        }
         drive->media_generation = UINT32_MAX;
         (void)refresh_floppy_drive(drive->dev);
         return VFS_OK;

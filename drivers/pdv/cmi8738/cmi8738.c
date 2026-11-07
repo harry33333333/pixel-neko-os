@@ -1,18 +1,71 @@
 /*
- * C-Media CMI8738 / CMI8338 PCI audio driver (64-bit kernel adaptation).
+ * C-Media CMI8738 / CMI8338 PCI audio driver (*.pdv module).
  *
  * Register definitions and AC'97 mixer programming are based on the public
  * C-Media CMI8738/C3DX technical documentation and the Intel AC'97
  * Component Specification.
  */
 
-#include "cmi8738.h"
-#include "dma.h"
-#include "log.h"
-#include "mm.h"
-#include "pci.h"
-#include "port.h"
-#include "timer.h"
+#include <pdv/ddk.h>
+
+static const pdv_kernel_api_t* g_kapi = 0;
+
+#define klog_info(fmt, ...) g_kapi->log_printf("[INFO] " fmt "\n", ##__VA_ARGS__)
+#define global_tick         (g_kapi->timer_get_ticks())
+
+#define CMI_VENDOR_ID          0x13F6
+#define CMI_DEV_8738           0x0111
+#define CMI_DEV_8338A          0x0100
+#define CMI_DEV_8338B          0x0101
+
+#define CMI_REG_FUNCTRL0       0x00
+#define CMI_REG_FUNCTRL1       0x04
+#define CMI_REG_CHFORMAT       0x08
+#define CMI_REG_INT_HLDCLR     0x0C
+#define CMI_REG_INT_STATUS     0x10
+#define CMI_REG_LEGACY_CTRL    0x14
+#define CMI_REG_MISC_CTRL      0x18
+#define CMI_REG_SB_DATA        0x22
+#define CMI_REG_SB_INDEX       0x23
+#define CMI_REG_MIXER1         0x24
+#define CMI_REG_MIXER2         0x25
+#define CMI_REG_CH0_FRAME1     0x80
+#define CMI_REG_CH0_FRAME2     0x84
+#define CMI_REG_EXT_MISC       0x90
+
+#define CMI_CHADC0             0x00000001
+#define CMI_CHADC1             0x00000002
+#define CMI_PAUSE0             0x00000004
+#define CMI_PAUSE1             0x00000008
+#define CMI_CHEN0              0x00010000
+#define CMI_CHEN1              0x00020000
+#define CMI_RST_CH0            0x00040000
+#define CMI_RST_CH1            0x00080000
+
+#define CMI_BREQ               0x00000010
+
+#define CMI_MISC_PWD           0x80000000
+#define CMI_MISC_RESET         0x40000000
+#define CMI_MISC_TXVX          0x08000000
+#define CMI_MISC_N4SPK3D       0x04000000
+#define CMI_MISC_ENDBDAC       0x00800000
+#define CMI_MISC_XCHGDAC       0x00400000
+
+#define CMI_EXT_MISC_ROUTING   0x00000920
+
+#define CMI_LEGACY_DAC_EXCHANGE 0x80000000
+#define CMI_CHFORMAT_SETLAT48   0x00800000
+
+#define CMI_EXT_MIXER_SPEAKER_MUTE 0x08
+#define CMI_EXT_MIXER_PHONE_MUTE   0x10
+
+#define CMI_MIXER1_FMMUTE      0x80
+#define CMI_MIXER1_WSMUTE      0x40
+
+#define CMI_DMA_BUFFER_BYTES   65536
+#define CMI_DMA_HALF_BYTES     32768
+#define CMI_DMA_TOTAL_FRAMES   16384
+#define CMI_DMA_HALF_FRAMES    8192
 
 static int g_cmi_present = 0;
 static unsigned short g_cmi_io_base = 0;
@@ -20,7 +73,7 @@ static unsigned short g_cmi_device = 0;
 static const char* g_cmi_chip_name = "None";
 static unsigned char* g_dma_buf = 0;
 static unsigned int g_dma_phys = 0;
-static dma_buffer_t g_dma;
+static pdv_dma_buffer_t g_dma;
 static int g_dma_running = 0;
 static int g_last_half_playing = -1;
 static int g_half_filled[2] = {0, 0};
@@ -30,53 +83,50 @@ static int g_hw_reg_moving = 0;
 
 static inline unsigned int cmi_read32(unsigned int reg) {
     if (!g_cmi_io_base) return 0;
-    return inl((uint16_t)(g_cmi_io_base + reg));
+    return pdv_inl((uint16_t)(g_cmi_io_base + reg));
 }
 
 static inline void cmi_write32(unsigned int reg, unsigned int val) {
     if (!g_cmi_io_base) return;
-    outl((uint16_t)(g_cmi_io_base + reg), val);
+    pdv_outl((uint16_t)(g_cmi_io_base + reg), val);
 }
 
 static inline unsigned short cmi_read16(unsigned int reg) {
     if (!g_cmi_io_base) return 0;
-    return inw((uint16_t)(g_cmi_io_base + reg));
-}
-
-static inline void cmi_write16(unsigned int reg, unsigned short val) {
-    if (!g_cmi_io_base) return;
-    outw((uint16_t)(g_cmi_io_base + reg), val);
+    return pdv_inw((uint16_t)(g_cmi_io_base + reg));
 }
 
 static inline void cmi_io_wait(void) {
-    outb(0x80, 0);
+    pdv_outb(0x80, 0);
 }
 
 static inline void cmi_write_mixer(unsigned char idx, unsigned char val) {
     if (!g_cmi_io_base) return;
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_INDEX), idx);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_INDEX), idx);
     cmi_io_wait();
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_DATA), val);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_DATA), val);
     cmi_io_wait();
 }
 
 static inline unsigned char cmi_read_mixer(unsigned char idx) {
     if (!g_cmi_io_base) return 0;
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_INDEX), idx);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_SB_INDEX), idx);
     cmi_io_wait();
-    return inb((uint16_t)(g_cmi_io_base + CMI_REG_SB_DATA));
+    return pdv_inb((uint16_t)(g_cmi_io_base + CMI_REG_SB_DATA));
 }
 
-int cmi8738_init(void) {
+static void cmi8738_set_volume(int master_vol, int pcm_vol);
+
+static int cmi8738_init(void) {
     g_cmi_present = 0;
     g_cmi_io_base = 0;
     g_cmi_device = 0;
     g_cmi_chip_name = "None";
     g_dma_running = 0;
 
-    pci_scan_all();
-    for (int index = 0; index < pci_get_device_count(); index++) {
-        const pci_device_t* pci = pci_get_device(index);
+    int count = g_kapi->pci_get_device_count();
+    for (int index = 0; index < count; index++) {
+        const pdv_pci_device_t* pci = g_kapi->pci_get_device(index);
         if (!pci || pci->vendor != CMI_VENDOR_ID) continue;
         unsigned short device = pci->device;
 
@@ -87,7 +137,7 @@ int cmi8738_init(void) {
         } else if (device == CMI_DEV_8338B) {
             g_cmi_chip_name = "C-Media CMI8338B PCI";
         } else {
-            g_cmi_chip_name = "C-Media PCI Audio";
+            continue;
         }
 
         if (!pci->bar[0].valid || !pci->bar[0].is_io) continue;
@@ -95,15 +145,15 @@ int cmi8738_init(void) {
         g_cmi_io_base = (unsigned short)pci->bar[0].address;
         g_cmi_device = device;
 
-        pci_enable_io(pci);
-        pci_enable_memory(pci);
-        pci_enable_bus_master(pci);
+        g_kapi->pci_enable_io(pci);
+        g_kapi->pci_enable_memory(pci);
+        g_kapi->pci_enable_bus_master(pci);
 
-        unsigned int lat = pci_config_read(pci->bus, pci->slot,
-                                           pci->function, 0x0C);
+        unsigned int lat = g_kapi->pci_config_read(pci->bus, pci->slot,
+                                                   pci->function, 0x0C);
         if ((lat & 0xFF00U) < 0x2000U) {
-            pci_config_write(pci->bus, pci->slot, pci->function,
-                             0x0C, (lat & 0xFFFF00FFU) | 0x4000U);
+            g_kapi->pci_config_write(pci->bus, pci->slot, pci->function,
+                                     0x0C, (lat & 0xFFFF00FFU) | 0x4000U);
         }
 
         g_cmi_present = 1;
@@ -114,9 +164,9 @@ int cmi8738_init(void) {
         return -1;
     }
 
-    if (!dma_is_valid(&g_dma)) {
-        g_dma = dma_alloc_aligned(CMI_DMA_BUFFER_BYTES, 65536);
-        if (!dma_is_valid(&g_dma)) {
+    if (!pdv_dma_is_valid(&g_dma)) {
+        g_dma = pdv_dma_alloc_aligned(g_kapi, CMI_DMA_BUFFER_BYTES, 65536);
+        if (!pdv_dma_is_valid(&g_dma)) {
             g_cmi_present = 0;
             return -2;
         }
@@ -176,8 +226,8 @@ int cmi8738_init(void) {
     fmt |= CMI_CHFORMAT_SETLAT48;
     cmi_write32(CMI_REG_CHFORMAT, fmt);
 
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1), 0x00);
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER2), 0x00);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1), 0x00);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER2), 0x00);
 
     cmi_write_mixer(0x00, 0x00);
     cmi_write_mixer(0x3C, 0x1F);
@@ -195,19 +245,15 @@ int cmi8738_init(void) {
     return 0;
 }
 
-int cmi8738_is_present(void) {
+static int cmi8738_is_present(void) {
     return g_cmi_present;
 }
 
-const char* cmi8738_get_name(void) {
+static const char* cmi8738_get_name(void) {
     return g_cmi_chip_name;
 }
 
-unsigned short cmi8738_get_io_base(void) {
-    return g_cmi_io_base;
-}
-
-void cmi8738_set_format(int rate, int bits, int stereo) {
+static void cmi8738_set_format(int rate, int bits, int stereo) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     unsigned int asfc = 3;
@@ -237,7 +283,7 @@ void cmi8738_set_format(int rate, int bits, int stereo) {
     cmi_write32(CMI_REG_CHFORMAT, fmt);
 }
 
-void cmi8738_start_dma(void) {
+static void cmi8738_start_dma(void) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     unsigned int f0 = cmi_read32(CMI_REG_FUNCTRL0);
@@ -257,10 +303,10 @@ void cmi8738_start_dma(void) {
         cmi_write32(CMI_REG_FUNCTRL1, f1 | CMI_BREQ);
     }
 
-    unsigned char m1 = inb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1));
+    unsigned char m1 = pdv_inb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1));
     if (m1 & CMI_MIXER1_WSMUTE) {
-        outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1),
-             (uint8_t)(m1 & ~CMI_MIXER1_WSMUTE));
+        pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1),
+                 (uint8_t)(m1 & ~CMI_MIXER1_WSMUTE));
     }
 
     f0 = cmi_read32(CMI_REG_FUNCTRL0);
@@ -275,7 +321,7 @@ void cmi8738_start_dma(void) {
     g_hw_reg_moving = 0;
 }
 
-void cmi8738_stop_dma(void) {
+static void cmi8738_stop_dma(void) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     unsigned int f0 = cmi_read32(CMI_REG_FUNCTRL0);
@@ -299,7 +345,7 @@ void cmi8738_stop_dma(void) {
     }
 }
 
-void cmi8738_pause_dma(int pause) {
+static void cmi8738_pause_dma(int pause) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     unsigned int f0 = cmi_read32(CMI_REG_FUNCTRL0);
@@ -308,7 +354,7 @@ void cmi8738_pause_dma(int pause) {
     cmi_write32(CMI_REG_FUNCTRL0, f0);
 }
 
-void cmi8738_set_volume(int master_vol, int pcm_vol) {
+static void cmi8738_set_volume(int master_vol, int pcm_vol) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     if (master_vol < 0) master_vol = 0;
@@ -316,9 +362,9 @@ void cmi8738_set_volume(int master_vol, int pcm_vol) {
     if (pcm_vol < 0) pcm_vol = 0;
     if (pcm_vol > 100) pcm_vol = 100;
 
-    unsigned char m1 = inb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1));
+    unsigned char m1 = pdv_inb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1));
     m1 &= (unsigned char)~CMI_MIXER1_WSMUTE;
-    outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1), m1);
+    pdv_outb((uint16_t)(g_cmi_io_base + CMI_REG_MIXER1), m1);
 
     unsigned char m5 = (unsigned char)((master_vol * 31) / 100);
     unsigned char p5 = (unsigned char)((pcm_vol * 31) / 100);
@@ -334,7 +380,7 @@ void cmi8738_set_volume(int master_vol, int pcm_vol) {
     cmi_write_mixer(0xF0, ext);
 }
 
-unsigned int cmi8738_get_dma_frame_pos(void) {
+static unsigned int cmi8738_get_dma_frame_pos(void) {
     if (!g_cmi_present || !g_cmi_io_base || !g_dma_running) return 0;
 
     unsigned short rem = 0;
@@ -348,13 +394,13 @@ unsigned int cmi8738_get_dma_frame_pos(void) {
     return pos;
 }
 
-const void* cmi8738_get_dma_buffer(void) {
+static const void* cmi8738_get_dma_buffer(void) {
     return g_dma_buf;
 }
 
-void cmi8738_write_half(int half_idx, const void* data, unsigned int bytes) {
+static void cmi8738_write_half(int half_idx, const void* data, unsigned int bytes) {
     if (!g_dma_buf) return;
-    if (half_idx < 0 || half_idx > 1) return;
+    if (half_idx < 0 || half_idx > 1 || !data) return;
     if (bytes > CMI_DMA_HALF_BYTES) bytes = CMI_DMA_HALF_BYTES;
 
     unsigned char* dst = g_dma_buf + (half_idx * CMI_DMA_HALF_BYTES);
@@ -366,11 +412,11 @@ void cmi8738_write_half(int half_idx, const void* data, unsigned int bytes) {
     for (unsigned int i = bytes; i < CMI_DMA_HALF_BYTES; i++) {
         dst[i] = 0;
     }
-    dma_flush(&g_dma);
+    pdv_dma_flush(g_kapi, &g_dma);
     g_half_filled[half_idx] = 1;
 }
 
-void cmi8738_silence_half(int half_idx) {
+static void cmi8738_silence_half(int half_idx) {
     if (!g_dma_buf) return;
     if (half_idx < 0 || half_idx > 1) return;
 
@@ -378,11 +424,11 @@ void cmi8738_silence_half(int half_idx) {
     for (unsigned int i = 0; i < CMI_DMA_HALF_BYTES; i++) {
         dst[i] = 0;
     }
-    dma_flush(&g_dma);
+    pdv_dma_flush(g_kapi, &g_dma);
     g_half_filled[half_idx] = 1;
 }
 
-int cmi8738_poll_half_needed(void) {
+static int cmi8738_poll_half_needed(void) {
     if (!g_cmi_present || !g_cmi_io_base || !g_dma_running) return -1;
 
     unsigned int frame = cmi8738_get_dma_frame_pos();
@@ -432,9 +478,30 @@ int cmi8738_poll_half_needed(void) {
     return -1;
 }
 
-void cmi8738_mark_half_filled(int half_idx) {
-    if (half_idx >= 0 && half_idx <= 1) {
-        g_half_filled[half_idx] = 1;
-    }
+static int cmi8738_probe_entry(void) {
+    return (cmi8738_init() == 0 && cmi8738_is_present()) ? 1 : 0;
 }
 
+static const pdv_audio_driver_t g_cmi8738_drv = {
+    .name              = "C-Media CMI8738",
+    .priority          = 90,
+    .probe             = cmi8738_probe_entry,
+    .get_name          = cmi8738_get_name,
+    .is_present        = cmi8738_is_present,
+    .set_format        = cmi8738_set_format,
+    .start_dma         = cmi8738_start_dma,
+    .stop_dma          = cmi8738_stop_dma,
+    .pause_dma         = cmi8738_pause_dma,
+    .set_volume        = cmi8738_set_volume,
+    .poll_half_needed  = cmi8738_poll_half_needed,
+    .write_half        = cmi8738_write_half,
+    .silence_half      = cmi8738_silence_half,
+    .get_dma_frame_pos = cmi8738_get_dma_frame_pos,
+    .get_dma_buffer    = cmi8738_get_dma_buffer,
+};
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return kapi->register_audio_driver(&g_cmi8738_drv);
+}

@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A181f"
+    BUILD_ID="26A200a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -31,8 +31,8 @@ fi
 
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
-mkdir -p iso_root/boot/limine iso_root/EFI/BOOT
-mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT
+mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE
+mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE
 mkdir -p iso_root/payload/system
 
 # Copy kernel
@@ -43,6 +43,17 @@ fi
 cp bin/kernel.elf iso_root/boot/
 cp boot/limine.conf iso_root/boot/limine.conf
 cp boot/limine.conf iso_root/boot/limine/
+
+# Copy native loadable PDV drivers for Live CD and offline installer payload
+shopt -s nullglob
+PDV_FILES=(build/pdevice/*.pdv)
+shopt -u nullglob
+if [ "${#PDV_FILES[@]}" -eq 0 ]; then
+    echo "Error: No PDV drivers found in build/pdevice/! Run make first."
+    exit 1
+fi
+cp "${PDV_FILES[@]}" iso_root/PDEVICE/
+cp "${PDV_FILES[@]}" iso_root/payload/PDEVICE/
 
 # Copy Limine BIOS & UEFI CD boot images
 cp boot/limine/limine-bios.sys iso_root/boot/limine/
@@ -60,9 +71,7 @@ if [ -n "${TEST_KIND}" ]; then
     fi
 fi
 
-# Build the offline install payload. The desktop, nine applications, fonts,
-# bitmap assets and splash animation are statically linked into kernel.elf;
-# the manifest makes that payload contract explicit for the installer.
+# Build the offline install payload.
 cp bin/kernel.elf iso_root/payload/boot/kernel.elf
 cp boot/limine.conf iso_root/payload/limine.conf
 cp boot/limine.conf iso_root/payload/boot/limine.conf
@@ -77,17 +86,21 @@ cat > iso_root/payload/system/PAYLOAD.TXT <<EOF
 Pixel Neko OS ${BUILD_ID} complete offline payload
 
 Static system executable: boot/kernel.elf
+Loadable hardware drivers: PDEVICE/*.pdv
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
 Legacy compatibility configuration: boot/limine/limine.conf
 Installed-system configuration: system/limine-installed.conf
 
+Loadable PDV drivers in PDEVICE/:
+- Display: vmwgfx.pdv, mach64.pdv, nvg7x.pdv
+- Audio: hdaudio.pdv, ac97.pdv, ct4810.pdv, cmi8738.pdv
+- Storage: fdc.pdv
+
 Embedded in kernel.elf:
-- Classic window manager and desktop
-- Nine built-in applications: FileManager, Editor, Calc, CPanel,
-  AudioPlayer, ImageViewer, SysInfo, Puzzle and Installer
-- Font, wallpaper bitmap assets and splash animation resources
+- Core kernel, USB stack, boot storage and filesystems
+- Classic window manager, built-in desktop applications and bitmap resources
 
 The installer recursively releases this tree to the selected existing
 partition, then deploys Limine UEFI and BIOS boot files. The partition table

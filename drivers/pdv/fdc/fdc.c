@@ -1,10 +1,18 @@
-#include "fdc.h"
-#include "dma.h"
-#include "isadma.h"
-#include "log.h"
-#include "port.h"
-#include "string.h"
-#include "usb_core.h"
+#include <pdv/ddk.h>
+
+extern void* memcpy(void* dest, const void* src, size_t count);
+extern void* memset(void* dest, int val, size_t count);
+
+static const pdv_kernel_api_t* g_kapi;
+
+#define inb                 pdv_inb
+#define outb                pdv_outb
+#define log_printf          g_kapi->log_printf
+#define usb_delay_ms        g_kapi->delay_ms
+#define isadma_setup_read   g_kapi->isadma_setup_read
+#define isadma_setup_write  g_kapi->isadma_setup_write
+#define isadma_disable      g_kapi->isadma_disable
+#define block_set_capacity  g_kapi->block_set_capacity
 
 #define FDC_BASE                 0x3F0
 #define FDC_DOR                  (FDC_BASE + 2)
@@ -55,7 +63,7 @@ typedef struct {
     int current_cylinder;
     uint8_t last_change_bit;
     int absent_probe_delay;
-    blkdev_t* block;
+    pdv_blkdev_t* block;
 } fdc_drive_t;
 
 typedef struct {
@@ -67,7 +75,7 @@ typedef struct {
 } fdc_geometry_t;
 
 static fdc_drive_t g_fdc_drives[2];
-static dma_buffer_t g_fdc_dma;
+static pdv_dma_buffer_t g_fdc_dma;
 static bool g_fdc_dma_ready;
 static bool g_fdc_controller_ready;
 static bool g_fdc_enhanced;
@@ -82,6 +90,13 @@ static const fdc_geometry_t g_geometry_probes[] = {
     { FDC_RATE_250K, 1, 8, 40, 320 },
     { FDC_RATE_1M, 2, 36, 80, 5760 }
 };
+
+static pdv_media_state_t fdc_check_media(int drive);
+static int fdc_eject(int drive);
+static int fdc_read_sectors(int drive, unsigned int lba, unsigned int count,
+                            unsigned char* buffer);
+static int fdc_write_sectors(int drive, unsigned int lba, unsigned int count,
+                             const unsigned char* buffer);
 
 static uint16_t read_le16(const uint8_t* data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -389,15 +404,15 @@ static bool fdc_decode_bpb(fdc_drive_t* drive, const uint8_t* sector,
     return true;
 }
 
-static media_state_t fdc_detect_media_locked(int drive_index) {
+static pdv_media_state_t fdc_detect_media_locked(int drive_index) {
     fdc_drive_t* drive = &g_fdc_drives[drive_index];
-    if (!drive->hardware_present) return MEDIA_ABSENT;
-    if (fdc_motor_on(drive) != 0) return MEDIA_ERROR;
+    if (!drive->hardware_present) return PDV_MEDIA_ABSENT;
+    if (fdc_motor_on(drive) != 0) return PDV_MEDIA_ERROR;
 
     if (fdc_recalibrate(drive_index) != 0) {
         drive->media_valid = false;
         drive->total_sectors = 0;
-        return MEDIA_ABSENT;
+        return PDV_MEDIA_ABSENT;
     }
 
     for (unsigned int index = 0;
@@ -423,7 +438,7 @@ static media_state_t fdc_detect_media_locked(int drive_index) {
             drive->last_change_bit =
                 (uint8_t)((inb(FDC_DIR) & 0x80u) ? 1u : 0u);
             drive->absent_probe_delay = 0;
-            return MEDIA_PRESENT;
+            return PDV_MEDIA_PRESENT;
         }
     }
 
@@ -432,7 +447,7 @@ static media_state_t fdc_detect_media_locked(int drive_index) {
     drive->volume_serial = 0;
     drive->current_cylinder = -1;
     drive->absent_probe_delay = 2;
-    return MEDIA_ABSENT;
+    return PDV_MEDIA_ABSENT;
 }
 
 static int fdc_probe_hardware(int drive_index) {
@@ -445,50 +460,54 @@ static int fdc_probe_hardware(int drive_index) {
 }
 
 static void fdc_update_block_capacity(fdc_drive_t* drive,
-                                      media_state_t state,
+                                      pdv_media_state_t state,
                                       bool force_generation) {
     if (!drive || !drive->block) return;
-    if (state == MEDIA_PRESENT) {
+    if (state == PDV_MEDIA_PRESENT) {
         if (force_generation ||
             drive->block->total_sectors != drive->total_sectors ||
             drive->block->sector_size != FDC_SECTOR_SIZE) {
             block_set_capacity(drive->block, drive->total_sectors,
                                FDC_SECTOR_SIZE);
         } else {
-            drive->block->media_state = MEDIA_PRESENT;
+            drive->block->media_state = PDV_MEDIA_PRESENT;
         }
     } else if (drive->block->total_sectors != 0) {
         block_set_capacity(drive->block, 0, FDC_SECTOR_SIZE);
     }
 }
 
-static int fdc_block_read(blkdev_t* block, uint64_t lba, uint32_t count,
+static int fdc_block_read(pdv_blkdev_t* block, uint64_t lba, uint32_t count,
                           void* buffer) {
     if (!block || lba > UINT32_MAX) return -1;
     return fdc_read_sectors(block->unit, (unsigned int)lba, count,
                             (unsigned char*)buffer);
 }
 
-static int fdc_block_write(blkdev_t* block, uint64_t lba, uint32_t count,
+static int fdc_block_write(pdv_blkdev_t* block, uint64_t lba, uint32_t count,
                            const void* buffer) {
     if (!block || lba > UINT32_MAX) return -1;
     return fdc_write_sectors(block->unit, (unsigned int)lba, count,
                              (const unsigned char*)buffer);
 }
 
-static media_state_t fdc_block_check_media(blkdev_t* block) {
-    return block ? fdc_check_media(block->unit) : MEDIA_ERROR;
+static pdv_media_state_t fdc_block_check_media(pdv_blkdev_t* block) {
+    return block ? fdc_check_media(block->unit) : PDV_MEDIA_ERROR;
 }
 
-int fdc_init(void) {
+static int fdc_block_eject(pdv_blkdev_t* block) {
+    return block ? fdc_eject(block->unit) : -1;
+}
+
+static int fdc_init(void) {
     memset(g_fdc_drives, 0, sizeof(g_fdc_drives));
     memset(&g_fdc_dma, 0, sizeof(g_fdc_dma));
     g_fdc_dma_ready = false;
     g_fdc_controller_ready = false;
     g_fdc_enhanced = false;
 
-    if (dma_alloc(FDC_DMA_SIZE, DMA_BIT_MASK(24), PAGE_SIZE,
-                  &g_fdc_dma) != 0) {
+    if (g_kapi->dma_alloc(FDC_DMA_SIZE, PDV_DMA_BIT_MASK(24), PDV_PAGE_SIZE,
+                          &g_fdc_dma) != 0) {
         log_printf("[FDC ] unable to allocate ISA DMA buffer\n");
         return -1;
     }
@@ -496,6 +515,8 @@ int fdc_init(void) {
 
     if (fdc_controller_reset() != 0) {
         isadma_disable();
+        g_kapi->dma_free(&g_fdc_dma);
+        g_fdc_dma_ready = false;
         return -1;
     }
     g_fdc_controller_ready = true;
@@ -525,19 +546,20 @@ int fdc_init(void) {
         if (!fdc_probe_hardware(index)) continue;
 
         drive->hardware_present = true;
-        media_state_t state = fdc_detect_media_locked(index);
-        if (!hinted && state != MEDIA_PRESENT) {
+        pdv_media_state_t state = fdc_detect_media_locked(index);
+        if (!hinted && state != PDV_MEDIA_PRESENT) {
             drive->hardware_present = false;
             fdc_motor_off(drive);
             continue;
         }
         char name[16] = { 'f', 'd', 'c', (char)('0' + index), '\0' };
-        drive->block = block_register(
-            name, BLK_TYPE_FLOPPY, index, FDC_SECTOR_SIZE,
+        drive->block = g_kapi->block_register(
+            name, PDV_BLK_TYPE_FLOPPY, index, FDC_SECTOR_SIZE,
             drive->total_sectors, false, true,
             fdc_block_read, fdc_block_write, fdc_block_check_media,
             drive);
         if (drive->block) {
+            drive->block->eject = fdc_block_eject;
             memcpy(drive->block->model, "ISA Floppy Controller",
                    sizeof("ISA Floppy Controller"));
             if (drive->media_valid) {
@@ -562,18 +584,10 @@ int fdc_init(void) {
     return detected;
 }
 
-int fdc_has_drive(int drive) {
-    return drive >= 0 && drive < 2 && g_fdc_drives[drive].hardware_present;
-}
-
-unsigned int fdc_get_total_sectors(int drive) {
-    return drive >= 0 && drive < 2 ? g_fdc_drives[drive].total_sectors : 0;
-}
-
-media_state_t fdc_check_media(int drive) {
+static pdv_media_state_t fdc_check_media(int drive) {
     if (drive < 0 || drive >= 2 || !g_fdc_controller_ready ||
         !g_fdc_dma_ready || !g_fdc_drives[drive].hardware_present) {
-        return MEDIA_ABSENT;
+        return PDV_MEDIA_ABSENT;
     }
 
     fdc_drive_t* state = &g_fdc_drives[drive];
@@ -585,7 +599,7 @@ media_state_t fdc_check_media(int drive) {
     if (state->ejected) {
         if (!changed) {
             if (++state->absent_probe_delay < FDC_MEDIA_REVALIDATE_POLLS) {
-                return MEDIA_ABSENT;
+                return PDV_MEDIA_ABSENT;
             }
             state->absent_probe_delay = 0;
             force_probe = true;
@@ -602,7 +616,7 @@ media_state_t fdc_check_media(int drive) {
                     fdc_motor_off(state);
                 }
             }
-            return MEDIA_PRESENT;
+            return PDV_MEDIA_PRESENT;
         }
         state->absent_probe_delay = 0;
         force_probe = true;
@@ -610,23 +624,23 @@ media_state_t fdc_check_media(int drive) {
 
     if (!changed && !force_probe && state->absent_probe_delay > 0) {
         state->absent_probe_delay--;
-        return state->media_valid ? MEDIA_PRESENT : MEDIA_ABSENT;
+        return state->media_valid ? PDV_MEDIA_PRESENT : PDV_MEDIA_ABSENT;
     }
     state->absent_probe_delay = 2;
 
     bool old_media_valid = state->media_valid;
     uint32_t old_sectors = state->total_sectors;
     uint32_t old_serial = state->volume_serial;
-    media_state_t media = fdc_detect_media_locked(drive);
+    pdv_media_state_t media = fdc_detect_media_locked(drive);
     bool media_changed = changed || !old_media_valid ||
                          old_sectors != state->total_sectors ||
                          old_serial != state->volume_serial;
     fdc_update_block_capacity(state, media, media_changed);
-    if (media != MEDIA_PRESENT) fdc_motor_off(state);
+    if (media != PDV_MEDIA_PRESENT) fdc_motor_off(state);
     return media;
 }
 
-int fdc_eject(int drive) {
+static int fdc_eject(int drive) {
     if (drive < 0 || drive >= 2 || !g_fdc_drives[drive].hardware_present) {
         return -1;
     }
@@ -646,8 +660,8 @@ int fdc_eject(int drive) {
     return 0;
 }
 
-int fdc_read_sectors(int drive, unsigned int lba, unsigned int count,
-                     unsigned char* buffer) {
+static int fdc_read_sectors(int drive, unsigned int lba, unsigned int count,
+                            unsigned char* buffer) {
     if (drive < 0 || drive >= 2 || !buffer || count == 0) return -1;
     fdc_drive_t* state = &g_fdc_drives[drive];
     if (!state->media_valid ||
@@ -676,8 +690,8 @@ int fdc_read_sectors(int drive, unsigned int lba, unsigned int count,
     return 0;
 }
 
-int fdc_write_sectors(int drive, unsigned int lba, unsigned int count,
-                      const unsigned char* buffer) {
+static int fdc_write_sectors(int drive, unsigned int lba, unsigned int count,
+                             const unsigned char* buffer) {
     if (drive < 0 || drive >= 2 || !buffer || count == 0) return -1;
     fdc_drive_t* state = &g_fdc_drives[drive];
     if (!state->media_valid ||
@@ -705,4 +719,10 @@ int fdc_write_sectors(int drive, unsigned int lba, unsigned int count,
         completed += batch;
     }
     return 0;
+}
+
+int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
+    if (!kapi || kapi->ddk_version < PDV_DDK_VERSION_1_0) return -1;
+    g_kapi = kapi;
+    return fdc_init() >= 0 ? 0 : -1;
 }
