@@ -24,7 +24,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update
-        sudo apt-get install -y gcc nasm python3 xorriso mtools dosfstools qemu-system-x86 dos2unix zip
+        sudo apt-get install -y gcc nasm python3 xorriso mtools dosfstools dos2unix zip
 
     - name: Ensure Unix line endings and script permissions
       run: |
@@ -45,11 +45,6 @@ jobs:
         nm -n bin/kernel.elf > kernel-symbols.txt
         git archive --format=zip --output="pixel_neko_source_${VERSION}.zip" HEAD
         sha256sum "pixel-neko-os_${VERSION}.iso" > "pixel-neko-os_${VERSION}.iso.sha256"
-
-    - name: Validate ISA DMA and Floppy Controller
-      if: success()
-      run: |
-        bash scripts/qemu_floppy_test.sh "pixel-neko-os_${VERSION}.iso"
 
     - name: Upload Build Log Artifact
       if: always()

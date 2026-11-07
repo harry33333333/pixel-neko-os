@@ -20,7 +20,7 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -DUACPI_STATIC_TABLE_ARRAY_LEN=32 \
           -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm -Iapps \
           -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage \
-          -Idrivers/acpi/uacpi/include
+          -Idrivers/acpi/uacpi/include -Isdk/ddk/include
 
 NASMFLAGS ?= -f elf64
 
