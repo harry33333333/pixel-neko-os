@@ -3,21 +3,12 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "wm.h"
-static int in_ok(int mx, int my, int bx, int by);
 static int in_cl(int mx, int my, int cx, int cy);
 static int in_mi(int mx, int my, int cx, int cy);
 static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "font.h"
 #include "version.h"
 #include "port.h"
-#include "calc.h"
-#include "cpanel.h"
-#include "filemanager.h"
-#include "editor.h"
-#include "sysinfo.h"
-#include "puzzle.h"
-#include "imageviewer.h"
-#include "audioplayer.h"
 #include "audio.h"
 #include "wallpaper.h"
 #include "speaker.h"
@@ -32,13 +23,10 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "pxe.h"
 #include "string.h"
 #include "power.h"
-#include "installer.h"
 #include "vfs.h"
 #include "cpu.h"
 #include "ui_compat.h"
 #include "part.h"
-
-extern void check_revert_timer(void);
 
 extern int total_ram_mb;
 extern int usable_ram_mb;
@@ -59,32 +47,28 @@ static void show_opened(const char* name)
     redraw = 1; need_mr = 1;
 }
 
-static void my_itoa(unsigned int n, char* buf) {
-    if (n == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
-    int i = 0;
-    while(n > 0) {
-        buf[i++] = (n % 10) + '0';
-        n /= 10;
-    }
-    buf[i] = '\0';
-    int start = 0, end = i - 1;
-    while (start < end) {
-        char t = buf[start]; buf[start] = buf[end]; buf[end] = t;
-        start++; end--;
-    }
-}
-static void my_strcat(char* dest, const char* src) {
-    while(*dest) dest++;
-    while(*src) *dest++ = *src++;
-    *dest = '\0';
-}
-static void my_strcpy(char* dest, const char* src) {
-    while(*src) *dest++ = *src++;
-    *dest = '\0';
-}
+static const struct {
+    const char* filename;
+    const char* label;
+    unsigned char fallback_bg;
+    bool bypass_r0_prompt;
+} g_desktop_apps[10] = {
+    { "about.pxe",   "About",   1,  false },
+    { "clock.pxe",   "Clock",   2,  false },
+    { "calc.pxe",    "Calc",    4,  false },
+    { "cpanel.pxe",  "CPanel",  6,  false },
+    { "files.pxe",   "Files",   5,  false },
+    { "notepad.pxe", "Notepad", 3,  false },
+    { "sysinfo.pxe", "SysInfo", 7,  true  },
+    { "puzzle.pxe",  "Puzzle",  8,  false },
+    { "viewer.pxe",  "Viewer",  9,  false },
+    { "player.pxe",  "Player",  10, false }
+};
 
-static int wx=80, wy=52, ww=420, wh=200;
-static int desk_icon_x[11] = {0}, desk_icon_y[11] = {0};
+static uint8_t g_desk_icon_cache[10][16][16];
+static uint8_t g_desk_icon_loaded[10] = {0};
+
+static int desk_icon_x[10] = {0}, desk_icon_y[10] = {0};
 static int icon_dragging = -1;
 static int icon_drag_ox = 0, icon_drag_oy = 0;
 static int icon_drag_active = 0, icon_drag_bx = 0, icon_drag_by = 0;
@@ -98,37 +82,7 @@ static int last_click_icon = -1, last_s = -1;
 // Track previous click release for double-click timing (separate from visual selection)
 static int last_click_icon_prev = -1, last_click_time_prev = 0;
 
-static int wx2=100, wy2=70, ww2=180, wh2=90;
-static int ww2_def=180, wh2_def=90;
-static int wcx=95, wcy=50, wcw=170, wch=160;
-static int wcw_def=170, wch_def=160;
-static int cpx=85, cpy=50, cpw=310, cph=210;
-static int cpw_def=310, cph_def=210;
-static int fmx=85, fmy=45, fmw=440, fmh=260;
-static int fmw_def=440, fmh_def=260;
-int edv=0, edm=0;
-int fmv=0, fmm=0;
-static int wv=0, cv=0, clv=0, cpv=0;
-static int am=0, cm=0, clm=0, cpm=0;
-static int edx=90, edy=60, edw=300, edh=200;
-static int edw_def=300, edh_def=200;
-static int six=65, siy=35, siw=520, sih=250;
-static int siw_def=520, sih_def=250;
-static int siv=0, sim=0;
-static int pzx=110, pzy=50, pzw=180, pzh=200;
-static int pzw_def=180, pzh_def=200;
-static int pzv=0, pzm=0;
-static int imx=60, imy=35, imw=480, imh=340;
-static int imw_def=480, imh_def=340;
-
-static int npx=70, npy=45, npw=340, nph=215;
-static int npw_def=340, nph_def=215;
-int npv=0, npm=0;
-
-static int insx=80, insy=50, insw=340, insh=220;
-int insv=0, insm=0;
-
-#define WM_LEGACY_COUNT 11
+#define WM_LEGACY_COUNT 0
 #define WM_DYN_MAX      32
 #define WM_DYN_BASE     100
 #define WM_Z_COUNT      (WM_LEGACY_COUNT + WM_DYN_MAX)
@@ -186,7 +140,6 @@ static char r0_confirm_arg1[128];
 static int r0_confirm_has_arg1 = 0;
 
 static int z_order[WM_Z_COUNT] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     100, 101, 102, 103, 104, 105, 106, 107,
     108, 109, 110, 111, 112, 113, 114, 115,
     116, 117, 118, 119, 120, 121, 122, 123,
@@ -218,7 +171,6 @@ static int top_visible_win_id(void) {
 
 static int dragging=0, dgo=0, dgoy=0, dgw=0;
 static int drag_active=0, drag_bx=0, drag_by=0, drag_bw=0, drag_bh=0;
-static int okp=0, okbx=0, okby=0;
 static int clp=0, clcx=0, clcy=0, clw=0;
 static int mip=0, miw=0;
 
@@ -249,24 +201,6 @@ static void get_time(int*h,int*m,int*s){
         *h = hr;
         *m = min;
         *s = sec;
-    }
-}
-
-static void ok_btn(unsigned char* v, int bx, int by, int p)
-{
-    for(int y=by;y<by+12;y++)for(int x=bx;x<bx+32;x++)PUT_PIXEL(v, x, y, 7);
-    if(p){
-        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, by, 0);
-        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx, y, 0);
-        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, (by+11), 15);
-        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx+31, y, 15);
-        font_draw_text(v,bx+9,by+3,"OK",0);
-    } else {
-        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, by, 15);
-        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx, y, 15);
-        for(int x=bx;x<bx+32;x++) PUT_PIXEL(v, x, (by+11), 0);
-        for(int y=by;y<by+12;y++) PUT_PIXEL(v, bx+31, y, 0);
-        font_draw_text(v,bx+8,by+2,"OK",0);
     }
 }
 
@@ -342,60 +276,7 @@ static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, i
     }
 }
 
-static void window(unsigned char* v, int wx, int wy, const char* t, int ww, int wh, int rs, int active)
-{
-    int is_installer_win = (t[0] == 'I' && t[1] == 'n' && t[2] == 's' && t[3] == 't');
-    window_ex(v, wx, wy, t, ww, wh, rs, active, is_installer_win);
-}
-
-static void about_win(unsigned char* v, int wx, int wy)
-{
-    window(v,wx,wy,"About",ww,wh,0, (top_visible_win_id()==0));
-    int lx=wx+(ww-41)/2,ly=wy+25;
-    for(int y=ly+3;y<ly+18;y++)for(int x=lx-7;x<lx+48;x++)PUT_PIXEL(v, x, y, 1);
-    for(int x=lx-4;x<lx+45;x++)PUT_PIXEL(v, x, (ly+3), 9);
-    for(int y=ly;y<ly+12;y++)for(int x=lx;x<lx+12;x++)PUT_PIXEL(v, x, y, (y==ly||x==lx)?12:4);
-    for(int y=ly;y<ly+12;y++)for(int x=lx+10;x<lx+22;x++)PUT_PIXEL(v, x, y, (y==ly||x==lx+10)?10:2);
-    for(int y=ly+7;y<ly+19;y++)for(int x=lx+19;x<lx+31;x++)PUT_PIXEL(v, x, y, (y==ly+7||x==lx+19)?11:3);
-    for(int y=ly+7;y<ly+19;y++)for(int x=lx+29;x<lx+41;x++)PUT_PIXEL(v, x, y, (y==ly+7||x==lx+29)?13:5);
-    font_draw_text(v,lx+2,ly+24,"T",1);
-    font_draw_text(v,lx+10,ly+24,"B",2);
-    font_draw_text(v,lx+18,ly+24,"M",3);
-    font_draw_text(v,lx+26,ly+24,"K",5);
-    font_draw_text(v, wx+8, wy+60, "Codename Pixel Neko Next", 0);
-    font_draw_text(v, wx+8, wy+80, "Version " KERNEL_BUILD, 0);
-    font_draw_text(v, wx+8, wy+100, "(C) 2026 Tairitsu_tty / XNZM", 0);
-    
-    font_draw_text(v, wx+8, wy+120, "CPU:", 0);
-    char cpu_disp[64];
-    int max_chars = (ww - 56) / 8;
-    if (max_chars > 60) max_chars = 60;
-    if (max_chars < 1) max_chars = 1;
-    int ci = 0;
-    while (cpu_model_string[ci] && ci < max_chars) {
-        cpu_disp[ci] = cpu_model_string[ci];
-        ci++;
-    }
-    cpu_disp[ci] = '\0';
-    font_draw_text(v, wx+48, wy+120, cpu_disp, 0);
-    
-    char mem_str[64];
-    my_strcpy(mem_str, "Total RAM: ");
-    char num_buf[16];
-    my_itoa(total_ram_mb, num_buf);
-    my_strcat(mem_str, num_buf);
-    my_strcat(mem_str, " MB / Usable: ");
-    my_itoa(usable_ram_mb, num_buf);
-    my_strcat(mem_str, num_buf);
-    my_strcat(mem_str, " MB");
-    
-    font_draw_text(v, wx+8, wy+140, mem_str, 0);
-
-    int bx=wx+ww-50,by=wy+160;
-    ok_btn(v,bx,by,0);
-}
-
-static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* lb, int sel)
+static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, const char* lb, int sel)
 {
     if (sel) {
         for(int i=y-4; i<y+54; i++) for(int j=x-4; j<x+36; j++) PUT_PIXEL(v, j, i, 11);
@@ -403,8 +284,29 @@ static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* l
     
     unsigned char ic[16][16];
     for(int i=0;i<16;i++)for(int j=0;j<16;j++) ic[i][j]=255;
-    
-    if(bg==1){
+
+    bool custom_ok = false;
+    if (app_idx >= 0 && app_idx < 10) {
+        if (g_desk_icon_loaded[app_idx] == 0) {
+            if (pxe_load_builtin_icon16(g_desktop_apps[app_idx].filename,
+                                        g_desk_icon_cache[app_idx])) {
+                g_desk_icon_loaded[app_idx] = 1;
+            } else {
+                g_desk_icon_loaded[app_idx] = 2;
+            }
+        }
+        if (g_desk_icon_loaded[app_idx] == 1) {
+            for (int i = 0; i < 16; i++) {
+                for (int j = 0; j < 16; j++) {
+                    ic[i][j] = g_desk_icon_cache[app_idx][i][j];
+                }
+            }
+            custom_ok = true;
+        }
+    }
+
+    if (custom_ok) {
+    } else if(bg==1){
         for(int i=0;i<16;i++)for(int j=0;j<16;j++) ic[i][j]=9;
         for(int j=0;j<16;j++) ic[0][j]=11;
         for(int i=0;i<16;i++) ic[i][0]=11;
@@ -872,73 +774,7 @@ static void draw_others(unsigned char* v, int dgw)
     for (int i = 0; i < WM_Z_COUNT; i++) {
         int id = z_order[i];
         if (id + 1 == dgw) continue;
-        if (id == 0 && wv) {
-            if (!am) about_win(v, wx, wy);
-            else window(v,wx,wy,"About",ww,20,0,(active_win==0));
-        }
-        else if (id == 1 && cv) {
-            if (!cm) {
-                window(v,wx2,wy2,"Clock",ww2,wh2,1,(active_win==1));
-                int h,m,s; get_time(&h,&m,&s); char b[9];
-                b[0]='0'+h/10;b[1]='0'+h%10;b[2]=':';b[3]='0'+m/10;b[4]='0'+m%10;b[5]=':';b[6]='0'+s/10;b[7]='0'+s%10;b[8]=0;
-                font_draw_text(v, wx2+ww2/2-32, wy2+wh2/2-8, b, 0);
-            } else window(v,wx2,wy2,"Clock",ww2,20,0,(active_win==1));
-        }
-        else if (id == 2 && clv) {
-            if (!clm) {
-                window(v,wcx,wcy,"Calculator",wcw,wch,2,(active_win==2));
-                calc_draw(v, wcx, wcy, wcw, wch);
-            } else window(v,wcx,wcy,"Calculator",wcw,20,0,(active_win==2));
-        }
-        else if (id == 3 && cpv) {
-            if (!cpm) {
-                window(v,cpx,cpy,"Control Panel",cpw,cph,3,(active_win==3));
-                cpanel_draw(v, cpx, cpy, cpw, cph);
-            } else window(v,cpx,cpy,"Control Panel",cpw,20,0,(active_win==3));
-        }
-        else if (id == 4 && fmv) {
-            if (!fmm) {
-                window(v,fmx,fmy,"File Manager",fmw,fmh,4,(active_win==4));
-                fm_draw(v, fmx, fmy, fmw, fmh);
-            } else window(v,fmx,fmy,"File Manager",fmw,20,0,(active_win==4));
-        }
-        else if (id == 5 && edv) {
-            if (!edm) {
-                window(v,edx,edy,"Notepad",edw,edh,5,(active_win==5));
-                editor_draw(v, edx, edy+20, edw, edh-20);
-            } else window(v,edx,edy,"Notepad",edw,20,0,(active_win==5));
-        }
-        else if (id == 6 && siv) {
-            if (!sim) {
-                window(v,six,siy,"System Information",siw,sih,6,(active_win==6));
-                sysinfo_draw(v, six, siy, siw, sih);
-            } else window(v,six,siy,"System Information",siw,20,0,(active_win==6));
-        }
-        else if (id == 7 && pzv) {
-            if (!pzm) {
-                window(v,pzx,pzy,"15-Puzzle",pzw,pzh,7,(active_win==7));
-                puzzle_draw(v, pzx, pzy, pzw, pzh);
-            } else window(v,pzx,pzy,"15-Puzzle",pzw,20,0,(active_win==7));
-        }
-        else if (id == 8 && imv) {
-            if (!imm) {
-                window(v,imx,imy,imageviewer_get_title(),imw,imh,1,(active_win==8));
-                imageviewer_draw(v, imx, imy, imw, imh);
-            } else window(v,imx,imy,imageviewer_get_title(),imw,20,0,(active_win==8));
-        }
-        else if (id == 9 && npv) {
-            if (!npm) {
-                window(v,npx,npy,audioplayer_get_title(),npw,nph,0,(active_win==9));
-                audioplayer_draw(v, npx, npy, npw, nph);
-            } else window(v,npx,npy,audioplayer_get_title(),npw,20,0,(active_win==9));
-        }
-        else if (id == 10 && insv) {
-            if (!insm) {
-                window(v,insx,insy,"Install OS to Disk",insw,insh,0,(active_win==10));
-                installer_draw(v, insx, insy, insw, insh);
-            } else window(v,insx,insy,"Install OS to Disk",insw,20,0,(active_win==10));
-        }
-        else if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
+        if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
             const wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
             if (dw->used) {
                 blit_dyn_window(v, dw, (active_win == id));
@@ -1060,27 +896,16 @@ static void draw_menubar(unsigned char* v)
                 font_draw_text(v, 10, 24+54, "Shut Down Computer", 0);
             }
         } else if (!install_mode && menu_index == 0) { // File
-            if (active_win == 5 && edv && !edm) { // Notepad active
-                draw_menu_popup(v, 30, 20, 130, 4*18+4);
-                font_draw_text(v, 38, 24, "New", 0);
-                font_draw_text(v, 38, 24+18, "Save", 0);
-                font_draw_text(v, 38, 24+36, "Save As...", 0);
-                font_draw_text(v, 38, 24+54, "Quit (Not Save)", 0);
-            } else {
-                draw_menu_popup(v, 30, 20, 110, 1*18+4);
-                font_draw_text(v, 38, 24, "(Empty)", 8);
-            }
+            draw_menu_popup(v, 30, 20, 110, 1*18+4);
+            font_draw_text(v, 38, 24, "(Empty)", 8);
         } else if (!install_mode && menu_index == 1) { // Edit
             draw_menu_popup(v, 66, 20, 120, 6*18+4);
             font_draw_text(v, 74, 24, "Undo", 8);
-            int ed_active = (active_win == 5 && edv && !edm);
-            int has_sel = (ed_active && editor_has_selection());
-            font_draw_text(v, 74, 24+18, "Cut", has_sel ? 0 : 8);
-            font_draw_text(v, 74, 24+36, "Copy", has_sel ? 0 : 8);
-            extern char g_clipboard[4096];
-            font_draw_text(v, 74, 24+54, "Paste", (ed_active && g_clipboard[0]) ? 0 : 8);
-            font_draw_text(v, 74, 24+72, "Select All", ed_active ? 0 : 8);
-            font_draw_text(v, 74, 24+90, "Clear", has_sel ? 0 : 8);
+            font_draw_text(v, 74, 24+18, "Cut", 8);
+            font_draw_text(v, 74, 24+36, "Copy", 8);
+            font_draw_text(v, 74, 24+54, "Paste", 8);
+            font_draw_text(v, 74, 24+72, "Select All", 8);
+            font_draw_text(v, 74, 24+90, "Clear", 8);
         } else if (!install_mode && menu_index == 2) { // View
             draw_menu_popup(v, 106, 20, 160, 1*18+4);
             font_draw_text(v, 114, 24, "Clean Up Desktop", 0);
@@ -1125,7 +950,7 @@ static void layout_desktop_icons(void) {
     int rows_per_col = (screen_h - 40) / 52;
     if (rows_per_col < 2) rows_per_col = 2;
     if (rows_per_col > 6) rows_per_col = 6;
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 10; i++) {
         int col = i / rows_per_col;
         int row = i % rows_per_col;
         desk_icon_x[i] = screen_w - 60 - col * 64;
@@ -1194,23 +1019,6 @@ void wm_on_resolution_change(int w, int h) {
     (void)w;
     (void)h;
     layout_desktop_icons();
-    clamp_win_pos(&wx, &wy, &ww, &wh, 280, 180);
-    clamp_win_pos(&wx2, &wy2, &ww2, &wh2, 120, 70);
-    clamp_win_pos(&wcx, &wcy, &wcw, &wch, 150, 140);
-    clamp_win_pos(&cpx, &cpy, &cpw, &cph, 290, 200);
-    clamp_win_pos(&fmx, &fmy, &fmw, &fmh, 260, 180);
-    clamp_win_pos(&edx, &edy, &edw, &edh, 220, 150);
-    clamp_win_pos(&six, &siy, &siw, &sih, 300, 190);
-    clamp_win_pos(&pzx, &pzy, &pzw, &pzh, 160, 180);
-    clamp_win_pos(&imx, &imy, &imw, &imh, 240, 180);
-    clamp_win_pos(&npx, &npy, &npw, &nph, 280, 190);
-    if (insv) {
-        insx = 16;
-        insy = 30;
-        insw = screen_w - 32;
-        insh = screen_h - 50;
-        clamp_win_pos(&insx, &insy, &insw, &insh, 300, 190);
-    }
     for (int s = 0; s < WM_DYN_MAX; s++) {
         wm_dyn_win_t* dw = &g_dyn_wins[s];
         if (!dw->used) continue;
@@ -1242,32 +1050,14 @@ void wm_on_resolution_change(int w, int h) {
 }
 
 void wm_init(void){
-    wx=80;wy=52;ww=420;wh=200;wx2=100;wy2=70;ww2=180;wh2=90;ww2_def=180;wh2_def=90;
-    wcx=95;wcy=50;wcw=170;wch=160;wcw_def=170;wch_def=160;
-    cpx=85;cpy=50;cpw=310;cph=210;cpw_def=310;cph_def=210;
-    fmx=85;fmy=45;fmw=440;fmh=260;fmw_def=440;fmh_def=260;
-    edx=90;edy=60;edw=300;edh=200;edw_def=300;edh_def=200;
-    six=65;siy=40;siw=520;sih=250;siw_def=520;sih_def=250;
-    npx=70;npy=45;npw=340;nph=215;npw_def=340;nph_def=215;
-    pzx=110;pzy=50;pzw=180;pzh=200;pzw_def=180;pzh_def=200;
     layout_desktop_icons();
-    calc_init();cpanel_init();fm_init();sysinfo_init();puzzle_init();imageviewer_init();audioplayer_init();installer_init();redraw=1;
+    redraw = 1;
 }
 
 void wm_installer_activate(void) {
-    wv = cv = clv = cpv = fmv = edv = siv = pzv = imv = npv = 0;
     menu_open = 0;
     menu_index = -1;
-    insv = 1;
-    insm = 0;
-    insx = 16;
-    insy = 30;
-    insw = screen_w - 32;
-    insh = screen_h - 50;
-    if (insw < 360) insw = screen_w - 8;
-    if (insh < 280) insh = screen_h - 8;
-    installer_init();
-    bring_to_top(10);
+    pxe_launch_builtin_app("install.pxe", NULL, true);
     redraw = 1;
     need_mr = 1;
 }
@@ -1298,20 +1088,13 @@ void wm_draw(unsigned char* v){
         }
         if (!ui_install_mode_requested()) {
             int num_icons = 10;
-            for (int i=0; i<num_icons; i++) {
-                if (desk_icon_x[i] == 0 || desk_icon_x[i] > screen_w - 32) desk_icon_x[i] = screen_w - 60 - (i/6)*64;
-                if (desk_icon_y[i] == 0 || desk_icon_y[i] > screen_h - 32) desk_icon_y[i] = 30 + (i%6)*52;
+            for (int i = 0; i < num_icons; i++) {
+                if (desk_icon_x[i] == 0 || desk_icon_x[i] > screen_w - 32) desk_icon_x[i] = screen_w - 60 - (i / 6) * 64;
+                if (desk_icon_y[i] == 0 || desk_icon_y[i] > screen_h - 32) desk_icon_y[i] = 30 + (i % 6) * 52;
+                icon(v, desk_icon_x[i], desk_icon_y[i], i,
+                     g_desktop_apps[i].fallback_bg, g_desktop_apps[i].label,
+                     last_click_icon == i);
             }
-            icon(v,desk_icon_x[0],desk_icon_y[0],1,"About", last_click_icon == 0);
-            icon(v,desk_icon_x[1],desk_icon_y[1],2,"Clock", last_click_icon == 1);
-            icon(v,desk_icon_x[2],desk_icon_y[2],4,"Calc", last_click_icon == 2);
-            icon(v,desk_icon_x[3],desk_icon_y[3],6,"CPanel", last_click_icon == 3);
-            icon(v,desk_icon_x[4],desk_icon_y[4],5,"Files", last_click_icon == 4);
-            icon(v,desk_icon_x[5],desk_icon_y[5],3,"Notepad", last_click_icon == 5);
-            icon(v,desk_icon_x[6],desk_icon_y[6],7,"SysInfo", last_click_icon == 6);
-            icon(v,desk_icon_x[7],desk_icon_y[7],8,"Puzzle", last_click_icon == 7);
-            icon(v,desk_icon_x[8],desk_icon_y[8],9,"Viewer", last_click_icon == 8);
-            icon(v,desk_icon_x[9],desk_icon_y[9],10,"Player", last_click_icon == 9);
         }
         draw_all(v);
         draw_menubar(v);
@@ -1337,28 +1120,8 @@ static int in_icon(int mx, int my, int i) {
 
 static void open_icon_app(int clicked_icon) {
     if (ui_install_mode_requested() || clicked_icon < 0 || clicked_icon >= 10) return;
-    if(clicked_icon == 0) { wv = 1; am = 0; show_opened("About"); }
-    if(clicked_icon == 1) { cv = 1; cm = 0; ww2 = ww2_def; wh2 = wh2_def; show_opened("Clock"); }
-    if(clicked_icon == 2) { clv = 1; clm = 0; wcw = wcw_def; wch = wch_def; calc_init(); show_opened("Calc"); }
-    if(clicked_icon == 3) { cpv = 1; cpm = 0; cpw = cpw_def; cph = cph_def; cpanel_init(); show_opened("CPanel"); }
-    if(clicked_icon == 4) { fmv = 1; fmm = 0; fmw = fmw_def; fmh = fmh_def; fm_init(); show_opened("Files"); }
-    if(clicked_icon == 5) {
-        if (!edv) { extern void editor_init(void); editor_init(); }
-        edv = 1; edm = 0; edw = edw_def; edh = edh_def; show_opened("Notepad");
-    }
-    if(clicked_icon == 6) {
-        siv = 1; sim = 0; siw = siw_def; sih = sih_def; sysinfo_init(); show_opened("SysInfo");
-    }
-    if(clicked_icon == 7) {
-        pzv = 1; pzm = 0; pzw = pzw_def; pzh = pzh_def; puzzle_init(); show_opened("Puzzle");
-    }
-    if(clicked_icon == 8) {
-        imv = 1; imm = 0; imw = imw_def; imh = imh_def; imageviewer_show_sample(); show_opened("Viewer");
-    }
-    if(clicked_icon == 9) {
-        npv = 1; npm = 0; npw = npw_def; nph = nph_def; audioplayer_init(); show_opened("Player");
-    }
-    bring_to_top(clicked_icon);
+    pxe_launch_builtin_app(g_desktop_apps[clicked_icon].filename, NULL,
+                           g_desktop_apps[clicked_icon].bypass_r0_prompt);
     last_click_icon = -1;
     last_click_icon_prev = -1;
     last_click_time_prev = 0;
@@ -1368,7 +1131,6 @@ static void open_icon_app(int clicked_icon) {
     need_mr = 1;
 }
 
-static int in_ok(int mx, int my, int bx, int by) { return (mx>=bx && mx<bx+45 && my>=by && my<by+20); }
 static int in_cl(int mx, int my, int cx, int cy) { return (mx>=cx && mx<cx+12 && my>=cy && my<cy+12); }
 static int in_mi(int mx, int my, int cx, int cy) { return (mx>=cx && mx<cx+12 && my>=cy && my<cy+12); }
 static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh) {
@@ -1408,21 +1170,7 @@ int wm_get_input_event_tick(void){
 
 static void get_win_geom(int id, int* rx, int* ry, int* rw, int* rh, int* vis, int* min) {
     *rx = *ry = *rw = *rh = *vis = *min = 0;
-    if (id == 0) { *rx=wx; *ry=wy; *rw=ww; *rh=am?20:wh; *vis=wv; *min=am; }
-    else if (id == 1) { *rx=wx2; *ry=wy2; *rw=ww2; *rh=cm?20:wh2; *vis=cv; *min=cm; }
-    else if (id == 2) { *rx=wcx; *ry=wcy; *rw=wcw; *rh=clm?20:wch; *vis=clv; *min=clm; }
-    else if (id == 3) {
-        int extra = (!cpm && cpanel_has_open_dropdown()) ? 80 : 0;
-        *rx=cpx; *ry=cpy; *rw=cpw; *rh=(cpm?20:(cph+extra)); *vis=cpv; *min=cpm;
-    }
-    else if (id == 4) { *rx=fmx; *ry=fmy; *rw=fmw; *rh=fmm?20:fmh; *vis=fmv; *min=fmm; }
-    else if (id == 5) { *rx=edx; *ry=edy; *rw=edw; *rh=edm?20:edh; *vis=edv; *min=edm; }
-    else if (id == 6) { *rx=six; *ry=siy; *rw=siw; *rh=sim?20:sih; *vis=siv; *min=sim; }
-    else if (id == 7) { *rx=pzx; *ry=pzy; *rw=pzw; *rh=pzm?20:pzh; *vis=pzv; *min=pzm; }
-    else if (id == 8) { *rx=imx; *ry=imy; *rw=imw; *rh=imm?20:imh; *vis=imv; *min=imm; }
-    else if (id == 9) { *rx=npx; *ry=npy; *rw=npw; *rh=npm?20:nph; *vis=npv; *min=npm; }
-    else if (id == 10) { *rx=insx; *ry=insy; *rw=insw; *rh=insm?20:insh; *vis=insv; *min=insm; }
-    else if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
+    if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
         const wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
         if (dw->used) {
             *rx = dw->x;
@@ -1467,7 +1215,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         get_time(&h, &m, &s);
         if (s != last_s) {
             last_s = s;
-            check_revert_timer();
+        
             if (!dragging) redraw = 1;
         }
     }
@@ -1615,8 +1363,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     if (item == 0) { power_confirm = 1; }
                     if (item == 1) { power_confirm = 2; }
                 } else if (item >= 0 && item < 4) {
-                    if (item == 0) { wv = 1; am = 0; bring_to_top(0); }
-                    if (item == 1) { siv = 1; sim = 0; sysinfo_init(); bring_to_top(6); }
+                    if (item == 0) { pxe_launch_builtin_app("about.pxe", NULL, false); }
+                    if (item == 1) { pxe_launch_builtin_app("sysinfo.pxe", NULL, true); }
                     if (item == 2) { power_confirm = 1; }
                     if (item == 3) { power_confirm = 2; }
                 }
@@ -1643,31 +1391,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     }
                 }
             }
-        } else if (menu_index == 0 && !inst_mode) { // File
-            if (active_win == 5 && edv && !edm && mx >= 30 && mx < 30 + 130 && my >= 20 && my < 20 + 4*18 + 4) {
-                int item = (my - 24) / 18;
-                extern void editor_init(void);
-                extern void editor_save(void);
-                extern void editor_save_as(void);
-                if (item == 0) { editor_init(); redraw = 1; }
-                else if (item == 1) { editor_save(); redraw = 1; }
-                else if (item == 2) { editor_save_as(); redraw = 1; }
-                else if (item == 3) { edv = 0; editor_init(); redraw = 1; }
-            }
-        } else if (menu_index == 1 && !inst_mode) { // Edit
-            if (active_win == 5 && edv && !edm && mx >= 66 && mx < 66 + 120 && my >= 20 && my < 20 + 6*18 + 4) {
-                int item = (my - 24) / 18;
-                extern void editor_cut(void);
-                extern void editor_copy(void);
-                extern void editor_paste(void);
-                extern void editor_select_all(void);
-                extern void editor_clear(void);
-                if (item == 1) { editor_cut(); redraw = 1; }
-                else if (item == 2) { editor_copy(); redraw = 1; }
-                else if (item == 3) { editor_paste(); redraw = 1; }
-                else if (item == 4) { editor_select_all(); redraw = 1; }
-                else if (item == 5) { editor_clear(); redraw = 1; }
-            }
         } else if (menu_index == 2 && !inst_mode) { // View
             if (mx >= 106 && mx < 106 + 160 && my >= 20 && my < 20 + 1*18 + 4) {
                 layout_desktop_icons();
@@ -1677,9 +1400,9 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (mx >= 146 && mx < 146 + 172 && my >= 20 && my < 20 + 6*18 + 4) {
                 int item = (my - 24) / 18;
                 if (item >= 0 && item < 6) {
-                    if (item == 0 && !inst_mode) { wv = 1; am = 0; bring_to_top(0); }
-                    if (item == 1 && !inst_mode) { siv = 1; sim = 0; sysinfo_init(); bring_to_top(6); }
-                    if (item == 2 && !inst_mode) { pzv = 1; pzm = 0; puzzle_init(); bring_to_top(7); }
+                    if (item == 0 && !inst_mode) { pxe_launch_builtin_app("about.pxe", NULL, false); }
+                    if (item == 1 && !inst_mode) { pxe_launch_builtin_app("sysinfo.pxe", NULL, true); }
+                    if (item == 2 && !inst_mode) { pxe_launch_builtin_app("puzzle.pxe", NULL, false); }
                     if (item == 3 && !inst_mode) { speaker_beep(); show_opened("Trash Emptied"); }
                     if (item == 4) { power_confirm = 1; }
                     if (item == 5) { power_confirm = 2; }
@@ -1752,38 +1475,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Active window internal drag (scrollbars, sliders, image panning, audio seek)
-    if ((mb & 1) && !dragging && !resizing && icon_dragging == -1) {
-        if (active_win == 3 && cpv && !cpm) {
-            if (cpanel_drag(mx, my, cpx, cpy)) {
-                redraw = 1;
-            }
-        }
-        if (active_win == 4 && fmv && !fmm) {
-            if (fm_drag(mx, my, fmx, fmy, fmw, fmh)) {
-                redraw = 1;
-            }
-        }
-        if (active_win == 5 && edv && !edm && mx >= edx && mx < edx+edw && my >= edy+20 && my < edy+edh) {
-            if (editor_drag(mx, my, edx, edy+20, edw, edh-20)) {
-                redraw = 1;
-            }
-        }
-        if (active_win == 8 && imv && !imm && mx >= imx && mx < imx+imw && my >= imy+20 && my < imy+imh) {
-            imageviewer_drag(mx, my, imx, imy, imw, imh);
-        }
-        if (active_win == 9 && npv && !npm) {
-            if (audioplayer_drag(mx, my, npx, npy, npw, nph)) {
-                redraw = 1;
-            }
-        }
-    }
     if (mb_release) {
-        cpanel_release();
-        editor_release();
-        imageviewer_release();
-        audioplayer_release();
-        fm_release();
         if (g_pxe_capture_win >= WM_DYN_BASE && g_pxe_capture_win < WM_DYN_BASE + WM_DYN_MAX) {
             wm_dyn_win_t* dw = &g_dyn_wins[g_pxe_capture_win - WM_DYN_BASE];
             if (dw->used) {
@@ -1803,16 +1495,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     // Keyboard input to active window
     int key = keyboard_get_key();
     while (key != 0) {
-        if (active_win == 4 && fmv && !fmm) {
-            fm_handle_key(key);
-            redraw = 1;
-        } else if (active_win == 5 && edv && !edm) {
-            editor_handle_key(key);
-            redraw = 1;
-        } else if (active_win == 8 && imv && !imm) {
-            imageviewer_handle_key(key);
-            redraw = 1;
-        } else if (active_win >= WM_DYN_BASE && active_win < WM_DYN_BASE + WM_DYN_MAX) {
+        if (active_win >= WM_DYN_BASE && active_win < WM_DYN_BASE + WM_DYN_MAX) {
             wm_dyn_win_t* dw = &g_dyn_wins[active_win - WM_DYN_BASE];
             if (dw->used && !dw->shaded) {
                 int pxe_key = key;
@@ -1826,6 +1509,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 ev.type = PXE_EV_KEY_DOWN;
                 ev.win_id = dw->win_id;
                 ev.key = pxe_key;
+                ev.modifiers = keyboard_get_ctrl() ? PXE_MOD_CTRL : 0;
                 wm_dyn_push_event(dw, &ev);
             }
         }
@@ -1907,14 +1591,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 if (nh < dw->min_h + 20) nh = dw->min_h + 20;
                 if (nw > dw->alloc_stride + 2) nw = dw->alloc_stride + 2;
                 if (nh > dw->alloc_h + 20) nh = dw->alloc_h + 20;
-            } else if (dgw == 1) { nw = mx - wx2; nh = my - wy2; if(nw<120)nw=120; if(nh<70)nh=70; rx = wx2; ry = wy2; }
-            else if (dgw == 2) { nw = mx - wcx; nh = my - wcy; if(nw<140)nw=140; if(nh<140)nh=140; rx = wcx; ry = wcy; }
-            else if (dgw == 3) { nw = mx - cpx; nh = my - cpy; if(nw<280)nw=280; if(nh<190)nh=190; rx = cpx; ry = cpy; }
-            else if (dgw == 4) { nw = mx - fmx; nh = my - fmy; if(nw<240)nw=240; if(nh<160)nh=160; rx = fmx; ry = fmy; }
-            else if (dgw == 5) { nw = mx - edx; nh = my - edy; if(nw<200)nw=200; if(nh<150)nh=150; rx = edx; ry = edy; }
-            else if (dgw == 6) { nw = mx - six; nh = my - siy; if(nw<320)nw=320; if(nh<190)nh=190; rx = six; ry = siy; }
-            else if (dgw == 7) { nw = mx - pzx; nh = my - pzy; if(nw<160)nw=160; if(nh<180)nh=180; rx = pzx; ry = pzy; }
-            else if (dgw == 9) { nw = mx - imx; nh = my - imy; if(nw<220)nw=220; if(nh<160)nh=160; rx = imx; ry = imy; }
+            }
 
             if (rx + nw > screen_w) nw = screen_w - rx;
             if (ry + nh > screen_h) nh = screen_h - ry;
@@ -1939,14 +1616,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                             wm_dyn_push_simple(dw, PXE_EV_REDRAW);
                         }
                     }
-                } else if (dgw == 1) { ww2 = rs_bw; wh2 = rs_bh; }
-                else if (dgw == 2) { wcw = rs_bw; wch = rs_bh; }
-                else if (dgw == 3) { cpw = rs_bw; cph = rs_bh; }
-                else if (dgw == 4) { fmw = rs_bw; fmh = rs_bh; }
-                else if (dgw == 5) { edw = rs_bw; edh = rs_bh; }
-                else if (dgw == 6) { siw = rs_bw; sih = rs_bh; }
-                else if (dgw == 7) { pzw = rs_bw; pzh = rs_bh; }
-                else if (dgw == 9) { imw = rs_bw; imh = rs_bh; }
+                }
             }
             resizing = 0;
             rs_active = 0;
@@ -1969,20 +1639,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
                 nww = dw->client_w + 2;
                 nwh = dw->shaded ? 20 : (dw->client_h + 20);
-            } else {
-                nww = dgw==1?ww:dgw==2?ww2:dgw==3?wcw:dgw==4?cpw:dgw==5?fmw:dgw==6?edw:dgw==7?siw:dgw==8?pzw:dgw==9?imw:dgw==10?npw:insw;
-                nwh = dgw==1?wh:dgw==2?wh2:dgw==3?wch:dgw==4?cph:dgw==5?fmh:dgw==6?edh:dgw==7?sih:dgw==8?pzh:dgw==9?imh:dgw==10?nph:insh;
-                if (dgw==1&&am) nwh=20;
-                if (dgw==2&&cm) nwh=20;
-                if (dgw==3&&clm) nwh=20;
-                if (dgw==4&&cpm) nwh=20;
-                if (dgw==5&&fmm) nwh=20;
-                if (dgw==6&&edm) nwh=20;
-                if (dgw==7&&sim) nwh=20;
-                if (dgw==8&&pzm) nwh=20;
-                if (dgw==9&&imm) nwh=20;
-                if (dgw==10&&npm) nwh=20;
-                if (dgw==11&&insm) nwh=20;
             }
             if (nwx < 0) nwx = 0;
             if (nwy < 20) nwy = 20;
@@ -2003,11 +1659,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                         dw->x = drag_bx;
                         dw->y = drag_by;
                     }
-                } else {
-                    int* cwx = dgw==1?&wx:dgw==2?&wx2:dgw==3?&wcx:dgw==4?&cpx:dgw==5?&fmx:dgw==6?&edx:dgw==7?&six:dgw==8?&pzx:dgw==9?&imx:dgw==10?&npx:&insx;
-                    int* cwy = dgw==1?&wy:dgw==2?&wy2:dgw==3?&wcy:dgw==4?&cpy:dgw==5?&fmy:dgw==6?&edy:dgw==7?&siy:dgw==8?&pzy:dgw==9?&imy:dgw==10?&npy:&insy;
-                    *cwx = drag_bx;
-                    *cwy = drag_by;
                 }
             }
             dragging = 0;
@@ -2019,14 +1670,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
-    // Handle pending OK / Close / Minimize button releases
-    if (mb_release && okp) {
-        okp = 0;
-        if (in_ok(mx, my, okbx, okby)) { wv = 0; am = 0; }
-        redraw = 1;
-        need_mr = 1;
-        return;
-    }
+    // Handle pending Close / Minimize button releases
     if (mb_release && clp) {
         if (in_cl(mx, my, clcx, clcy)) {
             int win_id = clw - 1;
@@ -2035,16 +1679,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 if (dw->used) {
                     wm_dyn_push_simple(dw, PXE_EV_CLOSE);
                 }
-            } else if (clw==1) { wv=0; am=0; }
-            else if (clw==2) { cv=0; cm=0; }
-            else if (clw==3) { clv=0; clm=0; }
-            else if (clw==4) { cpv=0; cpm=0; }
-            else if (clw==5) { fmv=0; fmm=0; }
-            else if (clw==6) { edv=0; edm=0; }
-            else if (clw==7) { siv=0; sim=0; }
-            else if (clw==8) { pzv=0; pzm=0; }
-            else if (clw==9) { imv=0; imm=0; }
-            else if (clw==10) { npv=0; npm=0; audio_stop(); }
+            }
         }
         clp = 0;
         clw = 0;
@@ -2054,28 +1689,12 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
     if (mb_release && mip) {
         int win_id = miw - 1;
-        int mcx = 0, mcy = 0;
         if (win_id >= WM_DYN_BASE && win_id < WM_DYN_BASE + WM_DYN_MAX) {
             wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
-            mcx = dw->x + (dw->client_w + 2) - 16;
-            mcy = dw->y + 4;
+            int mcx = dw->x + (dw->client_w + 2) - 16;
+            int mcy = dw->y + 4;
             if (dw->used && in_mi(mx, my, mcx, mcy)) {
                 dw->shaded = !dw->shaded;
-            }
-        } else {
-            mcx = (miw==1?wx+ww-16:miw==2?wx2+ww2-16:miw==3?wcx+wcw-16:miw==4?cpx+cpw-16:miw==5?fmx+fmw-16:miw==6?edx+edw-16:miw==7?six+siw-16:miw==8?pzx+pzw-16:miw==9?imx+imw-16:miw==10?npx+npw-16:insx+insw-16);
-            mcy = (miw==1?wy+4:miw==2?wy2+4:miw==3?wcy+4:miw==4?cpy+4:miw==5?fmy+4:miw==6?edy+4:miw==7?siy+4:miw==8?pzy+4:miw==9?imy+4:miw==10?npy+4:insy+4);
-            if (in_mi(mx, my, mcx, mcy)) {
-                if (miw==1) am=!am;
-                else if (miw==2) cm=!cm;
-                else if (miw==3) clm=!clm;
-                else if (miw==4) cpm=!cpm;
-                else if (miw==5) fmm=!fmm;
-                else if (miw==6) edm=!edm;
-                else if (miw==7) sim=!sim;
-                else if (miw==8) pzm=!pzm;
-                else if (miw==9) imm=!imm;
-                else if (miw==10) npm=!npm;
             }
         }
         mip = 0;
@@ -2086,7 +1705,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
 
     // Handle new mouse button press: check topmost window first, then desktop icons
-    if (mb_press && !okp && !clp && !mip) {
+    if (mb_press && !clp && !mip) {
         int top_id = -1;
         int win_x = 0, win_y = 0, win_w = 0, win_h = 0, win_min = 0;
         for (int i = WM_Z_COUNT - 1; i >= 0; i--) {
@@ -2109,7 +1728,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             redraw = 1;
             need_mr = 1;
 
-            bool no_close = (top_id == 10);
+            bool no_close = false;
             if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
                 no_close = (g_dyn_wins[top_id - WM_DYN_BASE].flags & PXE_WIN_NO_CLOSE) != 0;
             }
@@ -2148,9 +1767,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
             // 3. If window is not minimized, check Resize Corner or Content Click
             if (!win_min) {
-                int real_h = (top_id == 3) ? cph : win_h;
-                bool can_resize = (top_id == 1 || top_id == 2 || top_id == 3 || top_id == 4 ||
-                                   top_id == 5 || top_id == 6 || top_id == 7 || top_id == 8);
+                int real_h = win_h;
+                bool can_resize = false;
                 if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
                     can_resize = (g_dyn_wins[top_id - WM_DYN_BASE].flags & PXE_WIN_RESIZABLE) != 0;
                 }
@@ -2162,7 +1780,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     rs_by = win_y;
                     rs_bw = win_w;
                     rs_bh = real_h;
-                    dgw = (top_id >= WM_DYN_BASE) ? 0 : ((top_id == 8) ? 9 : top_id);
+                    dgw = 0;
                     return;
                 }
 
@@ -2179,31 +1797,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                         ev.buttons = (uint32_t)(mb ? mb : mb_press);
                         wm_dyn_push_event(dw, &ev);
                     }
-                } else if (top_id == 0) {
-                    int bx = wx + ww - 50, by = wy + 160;
-                    if (in_ok(mx, my, bx, by)) {
-                        okp = 1; okbx = bx; okby = by;
-                        ok_btn(v, bx, by, 1);
-                        need_mr = 1;
-                    }
-                } else if (top_id == 2) {
-                    calc_click(v, mx, my, wcx, wcy, wcw, wch);
-                } else if (top_id == 3) {
-                    cpanel_click(v, mx, my, cpx, cpy, cpw, cph);
-                } else if (top_id == 4) {
-                    fm_click(v, mx, my, mb, fmx, fmy, fmw, fmh);
-                } else if (top_id == 5) {
-                    editor_click(mx, my, edx, edy + 20, edw, edh - 20);
-                } else if (top_id == 6) {
-                    sysinfo_click(mx, my, six, siy, siw, sih);
-                } else if (top_id == 7) {
-                    puzzle_click(mx, my, pzx, pzy, pzw, pzh);
-                } else if (top_id == 8) {
-                    imageviewer_click(v, mx, my, imx, imy, imw, imh);
-                } else if (top_id == 9) {
-                    audioplayer_click(v, mx, my, npx, npy, npw, nph);
-                } else if (top_id == 10) {
-                    installer_click(v, mx, my, insx, insy, insw, insh);
                 }
             }
             return;
@@ -2586,4 +2179,34 @@ void wm_request_ring0_launch(const char* path, const char* arg1) {
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
     speaker_beep();
+}
+
+void wm_request_desktop_redraw(void) {
+    uint64_t flags = wm_irq_save();
+    g_pxe_present_dirty = 1;
+    redraw = 1;
+    wm_irq_restore(flags);
+}
+
+void wm_notify_media_changed(void) {
+    uint64_t flags = wm_irq_save();
+    for (int i = 0; i < 10; i++) {
+        g_desk_icon_loaded[i] = 0;
+    }
+    g_pxe_present_dirty = 1;
+    redraw = 1;
+    wm_irq_restore(flags);
+
+    for (int s = 0; s < WM_DYN_MAX; s++) {
+        if (g_dyn_wins[s].used) {
+            pxe_event_t ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.type = PXE_EV_REDRAW;
+            ev.win_id = g_dyn_wins[s].win_id;
+            ev.w = g_dyn_wins[s].client_w;
+            ev.h = g_dyn_wins[s].client_h;
+            ev.arg0 = 1;
+            wm_dyn_push_event(&g_dyn_wins[s], &ev);
+        }
+    }
 }

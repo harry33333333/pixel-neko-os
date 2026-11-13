@@ -28,8 +28,8 @@ jobs:
 
     - name: Ensure Unix line endings and script permissions
       run: |
-        dos2unix Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile || \
-          sed -i 's/\r$//' Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile
+        dos2unix Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile apps/*/*.pxi apps/*/Makefile || \
+          sed -i 's/\r$//' Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile apps/*/*.pxi apps/*/Makefile
         chmod +x scripts/*.sh scripts/*.py sdk/tools/*.py
 
     - name: Build Kernel and Hybrid ISO

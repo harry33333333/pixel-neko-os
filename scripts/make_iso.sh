@@ -66,6 +66,18 @@ fi
 cp "${PXE_FILES[@]}" iso_root/DEMO/
 cp "${PXE_FILES[@]}" iso_root/payload/DEMO/
 
+# Copy modular built-in system applications (*.pxe in APPS\) for Live CD and offline installer payload
+REQUIRED_APPS=(about clock calc puzzle notepad cpanel player viewer files sysinfo install)
+for app_name in "${REQUIRED_APPS[@]}"; do
+    app_pxe="build/apps/${app_name}.pxe"
+    if [ ! -f "${app_pxe}" ]; then
+        echo "Error: Required built-in PXE app missing: ${app_pxe}! Run make first." >&2
+        exit 1
+    fi
+    cp "${app_pxe}" iso_root/APPS/
+    cp "${app_pxe}" iso_root/payload/APPS/
+done
+
 # Copy Limine BIOS & UEFI CD boot images
 cp boot/limine/limine-bios.sys iso_root/boot/limine/
 cp boot/limine/limine-bios-cd.bin iso_root/boot/limine/
@@ -99,7 +111,7 @@ Pixel Neko OS ${BUILD_ID} complete offline payload
 Static system executable: boot/kernel.elf
 Loadable hardware drivers: PDEVICE/*.pdv
 Native example PXE executables: DEMO/*.pxe
-System PXE app directory: APPS/ (reserved for modular system apps)
+System PXE applications: APPS/*.pxe (about, clock, calc, puzzle, notepad, cpanel, player, viewer, files, sysinfo, install)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
@@ -111,13 +123,17 @@ Loadable PDV drivers in PDEVICE/:
 - Audio: hdaudio.pdv, ac97.pdv, ct4810.pdv, cmi8738.pdv
 - Storage: fdc.pdv
 
+Built-in PXE applications in APPS/:
+- Ring 3: about.pxe, clock.pxe, calc.pxe, puzzle.pxe, notepad.pxe, cpanel.pxe, player.pxe, viewer.pxe, files.pxe
+- Ring 0: sysinfo.pxe, install.pxe
+
 Example PXE applications in DEMO/:
 - hello.pxe (Ring 3 GUI sandboxed demo with menu & crash test)
 - mini_taskmon.pxe (Ring 0 privileged process/memory monitor)
 
 Embedded in kernel.elf:
 - Core kernel, USB stack, boot storage and filesystems
-- Classic window manager, built-in desktop applications and bitmap resources
+- Classic window manager shell and PXE/PDV dynamic loaders
 
 The installer recursively releases this tree to the selected existing
 partition, then deploys Limine UEFI and BIOS boot files. The partition table

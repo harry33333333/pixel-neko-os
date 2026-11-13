@@ -33,7 +33,15 @@ extern int screen_bpp;
 extern int total_ram_mb;
 extern int usable_ram_mb;
 extern int g_desktop_pattern;
-extern char g_clipboard[4096];
+#include "image_dec.h"
+#include "wallpaper.h"
+#include "cpu.h"
+#include "wm.h"
+#include "fat.h"
+#include "gfx_accel.h"
+#include "audio.h"
+
+char g_clipboard[4096] = {0};
 
 /* Ring 0 PXE high-half slot arena: [0xFFFFFFFFC0000000 .. 0xFFFFFFFFE0000000) */
 #define PXE_R0_ARENA_BASE  0xFFFFFFFFC0000000ULL
@@ -264,6 +272,7 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     strncpy(out->os_build, KERNEL_BUILD, sizeof(out->os_build) - 1);
     strncpy(out->os_codename, OS_CODENAME, sizeof(out->os_codename) - 1);
     strncpy(out->cpu_model, cpu_model_string, sizeof(out->cpu_model) - 1);
+    strncpy(out->cpu_vendor, g_cpu_info.vendor, sizeof(out->cpu_vendor) - 1);
     out->cpu_freq_mhz    = g_cpu_info.mhz;
     out->total_ram_mb    = (uint32_t)total_ram_mb;
     out->usable_ram_mb   = (uint32_t)usable_ram_mb;
@@ -278,15 +287,64 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     } else {
         out->boot_mode = 0;
     }
-    out->system_drive    = settings_get_system_drive();
-    out->desktop_pattern = (uint8_t)g_desktop_pattern;
-    out->mouse_speed     = (uint8_t)mouse_get_speed();
-    out->volume          = (uint8_t)audio_get_volume();
+    out->system_drive      = settings_get_system_drive();
+    out->cdrom_drive       = vfs_get_boot_cdrom_letter();
+    out->desktop_pattern   = (uint8_t)g_desktop_pattern;
+    out->mouse_speed       = (uint8_t)mouse_get_speed();
+    out->volume            = (uint8_t)audio_get_volume();
+    out->wallpaper_active  = (uint8_t)(wallpaper_is_active() ? 1 : 0);
+    out->wallpaper_mode    = (uint8_t)wallpaper_get_mode();
+    out->settings_writable = (uint8_t)((out->system_drive != 0 && !vfs_is_booted_from_cdrom()) ? 1 : 0);
+    out->has_audio_hw      = (uint8_t)(audio_has_hardware() ? 1 : 0);
+    out->audio_muted       = (uint8_t)(audio_is_muted() ? 1 : 0);
+    out->gfx_is_2d_hw      = (uint8_t)(gfx_accel_is_hardware_2d_active() ? 1 : 0);
+    out->gfx_has_hw_cursor = (uint8_t)(gfx_accel_has_hardware_cursor() ? 1 : 0);
+    out->vram_bytes        = (uint64_t)gfx_accel_get_vram_size();
+
+    static const int k_res_w[4] = { 640, 800, 1024, 1280 };
+    static const int k_res_h[4] = { 480, 600,  768, 1024 };
+    static const int k_bpps[4]  = { 32, 24, 16, 8 };
+    uint16_t mask = 0;
+    for (int r = 0; r < 4; r++) {
+        for (int b = 0; b < 4; b++) {
+            if (gfx_accel_supports_bpp(k_res_w[r], k_res_h[r], k_bpps[b])) {
+                mask |= (uint16_t)(1u << (r * 4 + b));
+            }
+        }
+    }
+    out->mode_support_mask = mask;
+
+    uint32_t cflags = 0;
+    if (g_cpu_info.basic_edx & (1u << 25)) cflags |= PXE_CPU_SSE;
+    if (g_cpu_info.has_sse2 || (g_cpu_info.basic_edx & (1u << 26))) cflags |= PXE_CPU_SSE2;
+    if (g_cpu_info.has_sse3 || (g_cpu_info.basic_ecx & (1u << 0)))  cflags |= PXE_CPU_SSE3;
+    if (g_cpu_info.basic_ecx & (1u << 9))  cflags |= PXE_CPU_SSSE3;
+    if (g_cpu_info.basic_ecx & (1u << 19)) cflags |= PXE_CPU_SSE41;
+    if (g_cpu_info.basic_ecx & (1u << 20)) cflags |= PXE_CPU_SSE42;
+    if (g_cpu_info.basic_ecx & (1u << 28)) cflags |= PXE_CPU_AVX;
+    if (g_cpu_info.has_nx)                 cflags |= PXE_CPU_NX;
+    if (g_cpu_info.basic_edx & (1u << 3))  cflags |= PXE_CPU_PSE;
+    if (g_cpu_info.basic_edx & (1u << 6))  cflags |= PXE_CPU_PAE;
+    if (g_cpu_info.has_apic)               cflags |= PXE_CPU_APIC;
+    if (g_cpu_info.basic_ecx & (1u << 21)) cflags |= PXE_CPU_X2APIC;
+    if (g_cpu_info.basic_edx & (1u << 4))  cflags |= PXE_CPU_TSC;
+    if (g_cpu_info.basic_ecx & (1u << 30)) cflags |= PXE_CPU_RDRAND;
+    out->cpu_flags = cflags;
+
     if (gfx_accel_get_name()) {
         strncpy(out->gfx_backend, gfx_accel_get_name(), sizeof(out->gfx_backend) - 1);
     }
+    if (gfx_accel_get_status()) {
+        strncpy(out->gfx_status, gfx_accel_get_status(), sizeof(out->gfx_status) - 1);
+    }
+    if (gfx_accel_get_fallback_reason()) {
+        strncpy(out->gfx_fallback, gfx_accel_get_fallback_reason(), sizeof(out->gfx_fallback) - 1);
+    }
     if (audio_get_hardware_name()) {
         strncpy(out->audio_backend, audio_get_hardware_name(), sizeof(out->audio_backend) - 1);
+    }
+    if (audio_get_probe_status()) {
+        strncpy(out->audio_probe, audio_get_probe_status(), sizeof(out->audio_probe) - 1);
     }
     return 0;
 }
@@ -301,18 +359,55 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             int h = (arg0 >> 16) & 0xFFFF;
             int bpp = arg1;
             if (w < 320 || h < 200) return -NEKO_EINVAL;
+            if (w != screen_w || h != screen_h || bpp != screen_bpp) {
+                if (!gfx_accel_try_set_mode(w, h, bpp)) return -NEKO_EINVAL;
+            }
             settings_set_resolution(w, h, bpp);
+            wm_request_desktop_redraw();
+            return 0;
+        }
+        case PXE_CFG_APPLY_RESOLUTION: {
+            int w = arg0 & 0xFFFF;
+            int h = (arg0 >> 16) & 0xFFFF;
+            int bpp = arg1;
+            if (w < 320 || h < 200) return -NEKO_EINVAL;
+            if (!gfx_accel_try_set_mode(w, h, bpp)) return -NEKO_EINVAL;
+            wm_request_desktop_redraw();
             return 0;
         }
         case PXE_CFG_SET_PATTERN:
             settings_set_pattern(arg0);
+            wm_request_desktop_redraw();
             return 0;
-        case PXE_CFG_SET_WALLPAPER:
+        case PXE_CFG_SET_WALLPAPER: {
             if (!str_arg || !str_arg[0]) return -NEKO_EINVAL;
-            settings_set_wallpaper(str_arg, (wallpaper_mode_t)arg0);
+            image_t img;
+            image_init(&img);
+            char err_msg[96];
+            err_msg[0] = '\0';
+            if (image_load_from_file(str_arg, &img, err_msg, sizeof(err_msg)) != 0) {
+                return -NEKO_EINVAL;
+            }
+            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_TILE)
+                ? (wallpaper_mode_t)arg0 : WP_MODE_FILL;
+            int rc = wallpaper_set_image(&img, mode);
+            image_free(&img);
+            if (rc != 0) return -NEKO_ENOMEM;
+            settings_set_wallpaper(str_arg, mode);
+            wm_request_desktop_redraw();
             return 0;
+        }
+        case PXE_CFG_SET_WALLPAPER_MODE: {
+            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_TILE)
+                ? (wallpaper_mode_t)arg0 : WP_MODE_FILL;
+            wallpaper_set_mode(mode);
+            wm_request_desktop_redraw();
+            return 0;
+        }
         case PXE_CFG_CLEAR_WALLPAPER:
+            wallpaper_clear();
             settings_clear_wallpaper();
+            wm_request_desktop_redraw();
             return 0;
         case PXE_CFG_SET_MOUSE_SPEED:
             settings_set_mouse_speed(arg0);
@@ -905,17 +1000,34 @@ static int r0_api_raw_disk_rw(int disk_id, uint64_t lba, uint32_t count, void* b
 }
 
 static int r0_api_vfs_remount_all(void) {
+    fat_flush_all();
     part_scan_all();
     vfs_init();
     return 0;
 }
 
 static void r0_api_power_control(int action) {
+    fat_flush_all();
     if (action == PXE_POWER_REBOOT) {
         sys_reboot();
     } else if (action == PXE_POWER_SHUTDOWN) {
         sys_shutdown();
     }
+}
+
+static int r0_api_sync_filesystems(void) {
+    fat_flush_all();
+    return 0;
+}
+
+static int r0_api_init_uninit_disk(void) {
+    blkdev_t* dev = part_get_uninit_disk();
+    if (!dev) return -1;
+    part_initialize_disk(dev);
+    part_clear_uninit_disk();
+    part_scan_all();
+    vfs_init();
+    return 0;
 }
 
 static const pxe_ring0_api_t g_pxe_ring0_api = {
@@ -972,7 +1084,9 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .format_partition     = r0_api_format_partition,
     .raw_disk_rw          = r0_api_raw_disk_rw,
     .vfs_remount_all      = r0_api_vfs_remount_all,
-    .power_control        = r0_api_power_control
+    .power_control        = r0_api_power_control,
+    .sync_filesystems     = r0_api_sync_filesystems,
+    .init_uninit_disk     = r0_api_init_uninit_disk
 };
 
 /* =========================================================================
@@ -1524,6 +1638,114 @@ int pxe_spawn_file(const char* path, int argc, const char* const* argv,
     log_printf("[PXE ] Spawned '%s' (PID=%u, Ring %u, path=%s)\n",
                child->name, child->pid, (unsigned int)child->exec_ring, path);
     return (int)child->pid;
+}
+
+static bool pxe_try_apps_candidate(char drv, const char* filename, char* out_path, int out_size) {
+    if (drv < 'A' || drv > 'Z' || !filename || !*filename || !out_path) return false;
+    int flen = (int)strlen(filename);
+    if (8 + flen + 1 > out_size) return false;
+    out_path[0] = drv;
+    out_path[1] = ':';
+    out_path[2] = '\\';
+    out_path[3] = 'A';
+    out_path[4] = 'P';
+    out_path[5] = 'P';
+    out_path[6] = 'S';
+    out_path[7] = '\\';
+    memcpy(out_path + 8, filename, (size_t)flen + 1);
+
+    vfs_stream_t stream;
+    if (vfs_stream_open(out_path, &stream) == 0) {
+        vfs_stream_close(&stream);
+        return true;
+    }
+    return false;
+}
+
+bool pxe_resolve_builtin_app_path(const char* filename, char* out_path, int out_size) {
+    if (!filename || !*filename || !out_path || out_size < 16) return false;
+
+    char sys_drv = settings_get_system_drive();
+    char cd_drv  = vfs_get_boot_cdrom_letter();
+
+    if (sys_drv && pxe_try_apps_candidate(sys_drv, filename, out_path, out_size)) {
+        return true;
+    }
+    if (cd_drv && cd_drv != sys_drv &&
+        pxe_try_apps_candidate(cd_drv, filename, out_path, out_size)) {
+        return true;
+    }
+    for (char d = 'C'; d <= 'Z'; d++) {
+        if (d == sys_drv || d == cd_drv) continue;
+        if (pxe_try_apps_candidate(d, filename, out_path, out_size)) {
+            return true;
+        }
+    }
+    out_path[0] = '\0';
+    return false;
+}
+
+bool pxe_load_builtin_icon16(const char* filename, uint8_t out_icon[16][16]) {
+    if (!filename || !*filename || !out_icon) return false;
+    char path[96];
+    if (!pxe_resolve_builtin_app_path(filename, path, (int)sizeof(path))) return false;
+
+    vfs_stream_t stream;
+    if (vfs_stream_open(path, &stream) != 0) return false;
+
+    pxe_header_t hdr;
+    int hn = vfs_stream_read(&stream, &hdr, sizeof(hdr));
+    if (hn != (int)sizeof(hdr) || hdr.magic != PXE_MAGIC ||
+        hdr.rsrc_size < sizeof(pxe_resource_t) || hdr.rsrc_offset < sizeof(hdr)) {
+        vfs_stream_close(&stream);
+        return false;
+    }
+
+    if (vfs_stream_seek(&stream, (uint64_t)hdr.rsrc_offset) != 0) {
+        vfs_stream_close(&stream);
+        return false;
+    }
+
+    pxe_resource_t rsrc;
+    int rn = vfs_stream_read(&stream, &rsrc, sizeof(rsrc));
+    vfs_stream_close(&stream);
+    if (rn != (int)sizeof(rsrc)) return false;
+
+    bool has_pixel = false;
+    for (int i = 0; i < 256; i++) {
+        if (rsrc.icon_16x16[i] != 255u) {
+            has_pixel = true;
+            break;
+        }
+    }
+    if (!has_pixel) return false;
+
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            out_icon[y][x] = rsrc.icon_16x16[y * 16 + x];
+        }
+    }
+    return true;
+}
+
+int pxe_launch_builtin_app(const char* filename, const char* arg1, bool bypass_r0_prompt) {
+    char path[96];
+    if (!pxe_resolve_builtin_app_path(filename, path, (int)sizeof(path))) {
+        log_printf("[PXE ] Built-in app not found: %s\n", filename ? filename : "(null)");
+        wm_notify_banner("App not found in APPS\\");
+        return -1;
+    }
+
+    const char* argv[2];
+    argv[0] = path;
+    argv[1] = (arg1 && arg1[0]) ? arg1 : NULL;
+    int argc = (arg1 && arg1[0]) ? 2 : 1;
+    int pid = pxe_spawn_file(path, argc, argv, NULL, bypass_r0_prompt);
+    if (pid < 0) {
+        wm_notify_banner("Failed to launch app");
+        return pid;
+    }
+    return pid;
 }
 
 int pxe_ui_launch_from_path(const char* path, const char* arg1) {

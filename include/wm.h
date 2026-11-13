@@ -32,6 +32,8 @@ int  wm_pxe_win_poll_event(uint32_t owner_pid, int win_id, pxe_event_t* out_ev);
 int  wm_pxe_count_windows_for_pid(uint32_t pid);
 int  wm_pxe_focus_pid(uint32_t pid, const char* activate_arg);
 void wm_notify_banner(const char* msg);
+void wm_request_desktop_redraw(void);
+void wm_notify_media_changed(void);
 void wm_notify_app_crash(uint32_t pid, const char* app_name, const char* exc_name, uint64_t rip, uint64_t cr2);
 void wm_request_ring0_launch(const char* path, const char* arg1);
 

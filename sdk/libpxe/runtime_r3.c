@@ -131,6 +131,12 @@ int pxe_display_set_mode(int width, int height, int bpp) {
                               (long)wh, (long)bpp, 0);
 }
 
+int pxe_display_apply_mode(int width, int height, int bpp) {
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_APPLY_RESOLUTION,
+                              (long)wh, (long)bpp, 0);
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_PATTERN,
                               (long)pattern, 0, 0);
@@ -139,6 +145,11 @@ int pxe_desktop_set_pattern(int pattern) {
 int pxe_desktop_set_wallpaper(const char* path, int mode) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_WALLPAPER,
                               (long)mode, 0, (long)path);
+}
+
+int pxe_desktop_set_wallpaper_mode(int mode) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_WALLPAPER_MODE,
+                              (long)mode, 0, 0);
 }
 
 int pxe_desktop_clear_wallpaper(void) {

@@ -70,6 +70,9 @@
 #define PXE_BTN_RIGHT        (1u << 1)
 #define PXE_BTN_MIDDLE       (1u << 2)
 
+/* Keyboard modifier masks (ev.modifiers) */
+#define PXE_MOD_CTRL         (1u << 0)
+
 typedef struct {
     uint32_t type;       /* PXE_EV_* */
     int32_t  win_id;     /* Target window handle */
@@ -79,6 +82,7 @@ typedef struct {
     int32_t  h;          /* New client height (for PXE_EV_RESIZE) */
     uint32_t buttons;    /* PXE_BTN_* mask */
     int32_t  key;        /* Keycode for PXE_EV_KEY_DOWN */
+    uint32_t modifiers;  /* PXE_MOD_* mask */
     int32_t  arg0;       /* Menu index for PXE_EV_MENU */
     int32_t  arg1;       /* Menu item index for PXE_EV_MENU */
     char     text[64];   /* Optional payload (e.g. argv[1] on PXE_EV_ACTIVATE) */
@@ -137,6 +141,23 @@ typedef struct {
 } pxe_rtc_time_t;
 
 /* Basic non-privileged system summary */
+/* CPU feature flags reported in pxe_basic_sysinfo_t.cpu_flags */
+#define PXE_CPU_SSE          (1u << 0)
+#define PXE_CPU_SSE2         (1u << 1)
+#define PXE_CPU_SSE3         (1u << 2)
+#define PXE_CPU_SSSE3        (1u << 3)
+#define PXE_CPU_SSE41        (1u << 4)
+#define PXE_CPU_SSE42        (1u << 5)
+#define PXE_CPU_AVX          (1u << 6)
+#define PXE_CPU_AVX2         (1u << 7)
+#define PXE_CPU_NX           (1u << 8)
+#define PXE_CPU_PSE          (1u << 9)
+#define PXE_CPU_PAE          (1u << 10)
+#define PXE_CPU_APIC         (1u << 11)
+#define PXE_CPU_X2APIC       (1u << 12)
+#define PXE_CPU_TSC          (1u << 13)
+#define PXE_CPU_RDRAND       (1u << 14)
+
 typedef struct {
     char     os_name[32];
     char     os_build[24];
@@ -156,15 +177,34 @@ typedef struct {
     uint8_t  volume;          /* 0..100 */
     char     gfx_backend[48];
     char     audio_backend[48];
+    /* Extended Phase 3 fields (appended for ABI backward compatibility) */
+    char     cdrom_drive;       /* 'C'..'Z' or 0 */
+    uint8_t  wallpaper_active;  /* 1 if custom wallpaper active */
+    uint8_t  wallpaper_mode;    /* 0=Center, 1=Tile, 2=Stretch, 3=Fill */
+    uint8_t  settings_writable; /* 1 if persistent .pse write supported */
+    uint8_t  has_audio_hw;      /* 1 if real audio device active */
+    uint8_t  audio_muted;       /* 1 if audio muted */
+    uint8_t  gfx_is_2d_hw;      /* 1 if hardware 2D accel active */
+    uint8_t  gfx_has_hw_cursor; /* 1 if hardware cursor supported */
+    uint16_t mode_support_mask; /* bit (res_idx*4 + bpp_idx): 640/800/1024/1280 x 32/24/16/8 */
+    uint16_t _ext_pad;
+    uint32_t cpu_flags;         /* PXE_CPU_* bitmask */
+    uint64_t vram_bytes;
+    char     cpu_vendor[16];
+    char     gfx_status[48];
+    char     gfx_fallback[48];
+    char     audio_probe[48];
 } pxe_basic_sysinfo_t;
 
 /* System settings control commands (requires PXE_FLAG_SYS_SETTINGS in Ring 3) */
-#define PXE_CFG_SET_RESOLUTION   1
-#define PXE_CFG_SET_PATTERN      2
-#define PXE_CFG_SET_WALLPAPER    3
-#define PXE_CFG_CLEAR_WALLPAPER  4
-#define PXE_CFG_SET_MOUSE_SPEED  5
-#define PXE_CFG_SAVE_SETTINGS    6
+#define PXE_CFG_SET_RESOLUTION     1
+#define PXE_CFG_SET_PATTERN        2
+#define PXE_CFG_SET_WALLPAPER      3
+#define PXE_CFG_CLEAR_WALLPAPER    4
+#define PXE_CFG_SET_MOUSE_SPEED    5
+#define PXE_CFG_SAVE_SETTINGS      6
+#define PXE_CFG_APPLY_RESOLUTION   7
+#define PXE_CFG_SET_WALLPAPER_MODE 8
 
 /* Filesystem directory & drive structures */
 typedef struct {

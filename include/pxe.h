@@ -14,6 +14,9 @@ void pxe_subsystem_init(void);
 int  pxe_spawn_file(const char* path, int argc, const char* const* argv,
                     process_t* parent, bool bypass_r0_prompt);
 int  pxe_ui_launch_from_path(const char* path, const char* arg1);
+bool pxe_resolve_builtin_app_path(const char* filename, char* out_path, int out_size);
+int  pxe_launch_builtin_app(const char* filename, const char* arg1, bool bypass_r0_prompt);
+bool pxe_load_builtin_icon16(const char* filename, uint8_t out_icon[16][16]);
 void pxe_release_r0_image(process_t* process);
 bool pxe_is_trusted_apps_path(const char* path);
 

@@ -179,6 +179,8 @@ typedef struct pxe_ring0_api {
     int      (*raw_disk_rw)(int disk_id, uint64_t lba, uint32_t count, void* buf, int is_write);
     int      (*vfs_remount_all)(void);
     void     (*power_control)(int action);
+    int      (*sync_filesystems)(void);
+    int      (*init_uninit_disk)(void);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */
@@ -198,6 +200,8 @@ int  pxe_r0_format_partition(int part_idx, int fs_type, const char* label);
 int  pxe_r0_raw_disk_rw(int disk_id, uint64_t lba, uint32_t count, void* buf, bool is_write);
 int  pxe_r0_vfs_remount_all(void);
 void pxe_r0_power_control(int action);
+int  pxe_r0_sync_filesystems(void);
+int  pxe_r0_init_uninit_disk(void);
 
 #endif /* _PXE_RING0_H */
 

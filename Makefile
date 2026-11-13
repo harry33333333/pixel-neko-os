@@ -18,7 +18,7 @@ CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
           -DUACPI_USE_BUILTIN_STRING \
           -DUACPI_PLAIN_LOG_BUFFER_SIZE=256 \
           -DUACPI_STATIC_TABLE_ARRAY_LEN=32 \
-          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm -Iapps \
+          -Iinclude -Iarch/x86_64 -Ikernel/core -Ikernel/mm -Iwm \
           -Idrivers/video -Idrivers/audio -Idrivers/acpi -Idrivers/storage \
           -Idrivers/acpi/uacpi/include -Isdk/ddk/include
 
@@ -117,16 +117,7 @@ C_SRCS   = kernel/core/main.c \
            wm/font.c \
            wm/wallpaper.c \
            wm/image_dec.c \
-           wm/wm.c \
-           apps/calc.c \
-           apps/cpanel.c \
-           apps/editor.c \
-           apps/filemanager.c \
-           apps/sysinfo.c \
-           apps/puzzle.c \
-           apps/imageviewer.c \
-           apps/audioplayer.c \
-           apps/installer.c
+           wm/wm.c
 
 USER_CFLAGS ?= -m64 -march=core2 -msse2 -mno-red-zone \
                -ffreestanding -nostdlib -nostartfiles \
@@ -160,6 +151,11 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
                sdk/libpxe/gfx.c sdk/libpxe/str.c \
                $(wildcard sdk/include/pxe/*.h)
 
+# Built-in Modular PXE Applications (*.pxe in APPS\)
+APPS_OUT_DIR = build/apps
+APPS_PXE_NAMES = about clock calc puzzle notepad cpanel player viewer files sysinfo install
+APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
+
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
 C_OBJS   = $(C_SRCS:.c=.o) $(UACPI_SRCS:.c=.o)
@@ -168,15 +164,17 @@ OBJS     = $(ASM_OBJS) $(C_OBJS) $(USER_EMBED_OBJ)
 
 TARGET   = bin/kernel.elf
 
-.PHONY: all pdv pxe-sdk pxe-examples iso clean version
+.PHONY: all pdv pxe-sdk pxe-examples apps iso clean version
 
-all: version $(TARGET) $(PDV_TARGETS) $(PXE_EXAMPLES)
+all: version $(TARGET) $(PDV_TARGETS) $(PXE_EXAMPLES) $(APPS_PXE_TARGETS)
 
 pdv: $(PDV_TARGETS)
 
 pxe-sdk: $(PXE_SDK_STAMP)
 
 pxe-examples: $(PXE_EXAMPLES)
+
+apps: $(APPS_PXE_TARGETS)
 
 $(PXE_SDK_STAMP): $(PXE_SDK_DEPS)
 	@mkdir -p build
@@ -198,6 +196,16 @@ $(PXE_OUT_DIR)/mini_taskmon.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
 	$(MAKE) -C sdk/examples/mini_taskmon \
 		OBJ_DIR="$(abspath $(PXE_OUT_DIR)/obj_mini_taskmon)" \
 		OUT_DIR="$(abspath $(PXE_OUT_DIR))"
+
+define BUILD_BUILTIN_APP
+$$(APPS_OUT_DIR)/$(1).pxe: $$(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
+                           apps/$(1)/$(1).c apps/$(1)/$(1).pxi apps/$(1)/Makefile
+	$$(MAKE) -C apps/$(1) \
+		OBJ_DIR="$$(abspath $$(APPS_OUT_DIR)/obj_$(1))" \
+		OUT_DIR="$$(abspath $$(APPS_OUT_DIR))"
+endef
+
+$(foreach app,$(APPS_PXE_NAMES),$(eval $(call BUILD_BUILTIN_APP,$(app))))
 
 version:
 	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh

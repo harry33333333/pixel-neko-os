@@ -67,6 +67,12 @@ int pxe_display_set_mode(int width, int height, int bpp) {
     return __pxe_r0_api->sys_config(PXE_CFG_SET_RESOLUTION, wh, bpp, (const char*)0);
 }
 
+int pxe_display_apply_mode(int width, int height, int bpp) {
+    if (!__pxe_r0_api || !__pxe_r0_api->sys_config) return -1;
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    return __pxe_r0_api->sys_config(PXE_CFG_APPLY_RESOLUTION, wh, bpp, (const char*)0);
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_PATTERN, pattern, 0, (const char*)0) : -1;
@@ -75,6 +81,11 @@ int pxe_desktop_set_pattern(int pattern) {
 int pxe_desktop_set_wallpaper(const char* path, int mode) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_WALLPAPER, mode, 0, path) : -1;
+}
+
+int pxe_desktop_set_wallpaper_mode(int mode) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SET_WALLPAPER_MODE, mode, 0, (const char*)0) : -1;
 }
 
 int pxe_desktop_clear_wallpaper(void) {
@@ -439,4 +450,14 @@ void pxe_r0_power_control(int action) {
     if (__pxe_r0_api && __pxe_r0_api->power_control) {
         __pxe_r0_api->power_control(action);
     }
+}
+
+int pxe_r0_sync_filesystems(void) {
+    return (__pxe_r0_api && __pxe_r0_api->sync_filesystems)
+        ? __pxe_r0_api->sync_filesystems() : -1;
+}
+
+int pxe_r0_init_uninit_disk(void) {
+    return (__pxe_r0_api && __pxe_r0_api->init_uninit_disk)
+        ? __pxe_r0_api->init_uninit_disk() : -1;
 }

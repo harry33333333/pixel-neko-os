@@ -5,7 +5,6 @@
 #include "gfx_accel.h"
 #include "input.h"
 #include "keyboard.h"
-#include "filemanager.h"
 #include "mm.h"
 #include "pmm.h"
 #include "port.h"
@@ -445,7 +444,7 @@ static void ui_update_pointer(input_event_t* event) {
 void ui_desktop_poll(void) {
     if (!g_started) return;
     timer_update();
-    if (!g_install_mode && vfs_poll_media()) fm_refresh();
+    if (!g_install_mode && vfs_poll_media()) wm_notify_media_changed();
 
     int prev_mx = g_cursor_saved_x;
     int prev_my = g_cursor_saved_y;
