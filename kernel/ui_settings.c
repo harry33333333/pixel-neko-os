@@ -34,7 +34,7 @@ extern volatile struct limine_kernel_file_request kernel_file_request;
 extern int screen_w;
 extern int screen_h;
 extern int screen_bpp;
-extern int g_desktop_pattern;
+int g_desktop_pattern = 0;
 
 static settings_boot_mode_t g_boot_mode = SETTINGS_BOOT_LIVE;
 static char g_system_drive = 0;
