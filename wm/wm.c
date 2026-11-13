@@ -21,8 +21,16 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "audio.h"
 #include "wallpaper.h"
 #include "speaker.h"
+#include "input.h"
 #include "keyboard.h"
 #include "mm.h"
+#include "pmm.h"
+#include "vmm.h"
+#include "process.h"
+#include "scheduler.h"
+#include "neko_abi.h"
+#include "pxe.h"
+#include "string.h"
 #include "power.h"
 #include "installer.h"
 #include "vfs.h"
@@ -120,22 +128,101 @@ int npv=0, npm=0;
 static int insx=80, insy=50, insw=340, insh=220;
 int insv=0, insm=0;
 
-static int z_order[11] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+#define WM_LEGACY_COUNT 11
+#define WM_DYN_MAX      32
+#define WM_DYN_BASE     100
+#define WM_Z_COUNT      (WM_LEGACY_COUNT + WM_DYN_MAX)
+#define WM_EV_QUEUE_CAP 64
+
+typedef struct {
+    bool            used;
+    int             win_id;
+    uint32_t        owner_pid;
+    int             x, y;
+    int             client_w;
+    int             client_h;
+    int             min_w;
+    int             min_h;
+    int             alloc_stride;
+    int             alloc_h;
+    int             pitch;
+    uint32_t        format;
+    uint32_t        flags;
+    int             shaded;
+    char            title[48];
+    phys_addr_t     canvas_phys;
+    size_t          canvas_pages;
+    void*           canvas_kvirt;
+    uint64_t        canvas_uvirt;
+    bool            has_menu;
+    pxe_menu_bar_t  menu_bar;
+    pxe_event_t     ev_queue[WM_EV_QUEUE_CAP];
+    int             ev_head;
+    int             ev_tail;
+    int             ev_count;
+} wm_dyn_win_t;
+
+static wm_dyn_win_t g_dyn_wins[WM_DYN_MAX];
+static volatile int g_pxe_present_dirty = 0;
+static int g_pxe_capture_win = -1;
+static int g_last_pxe_mx = -1;
+static int g_last_pxe_my = -1;
+
+/* Crash Bomb Dialog State */
+static volatile int crash_dialog_active = 0;
+static int crash_ok_pressed = 0;
+static uint32_t crash_pid = 0;
+static char crash_app_name[32];
+static char crash_exc_name[40];
+static uint64_t crash_rip = 0;
+static uint64_t crash_cr2 = 0;
+
+/* Ring 0 Execution Confirmation Dialog State */
+static volatile int r0_confirm_active = 0;
+static int r0_cancel_pressed = 0;
+static int r0_run_pressed = 0;
+static char r0_confirm_path[128];
+static char r0_confirm_arg1[128];
+static int r0_confirm_has_arg1 = 0;
+
+static int z_order[WM_Z_COUNT] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    100, 101, 102, 103, 104, 105, 106, 107,
+    108, 109, 110, 111, 112, 113, 114, 115,
+    116, 117, 118, 119, 120, 121, 122, 123,
+    124, 125, 126, 127, 128, 129, 130, 131
+};
+
+static void get_win_geom(int id, int* rx, int* ry, int* rw, int* rh, int* vis, int* min);
+
 void bring_to_top(int id) {
     int i;
-    for(i=0; i<11; i++) if(z_order[i] == id) break;
-    if (i < 11) {
-        for(int j=i; j<10; j++) z_order[j] = z_order[j+1];
-        z_order[10] = id;
+    for (i = 0; i < WM_Z_COUNT; i++) {
+        if (z_order[i] == id) break;
+    }
+    if (i < WM_Z_COUNT) {
+        for (int j = i; j < WM_Z_COUNT - 1; j++) z_order[j] = z_order[j + 1];
+        z_order[WM_Z_COUNT - 1] = id;
     }
 }
+
+static int top_visible_win_id(void) {
+    for (int i = WM_Z_COUNT - 1; i >= 0; i--) {
+        int id = z_order[i];
+        int rx = 0, ry = 0, rw = 0, rh = 0, vis = 0, min = 0;
+        get_win_geom(id, &rx, &ry, &rw, &rh, &vis, &min);
+        if (vis) return id;
+    }
+    return -1;
+}
+
 static int dragging=0, dgo=0, dgoy=0, dgw=0;
 static int drag_active=0, drag_bx=0, drag_by=0, drag_bw=0, drag_bh=0;
 static int okp=0, okbx=0, okby=0;
 static int clp=0, clcx=0, clcy=0, clw=0;
 static int mip=0, miw=0;
 
-static int resizing=0;
+static int resizing=0, rs_win_id=-1;
 static int rs_active=0, rs_bx=0, rs_by=0, rs_bw=0, rs_bh=0;
 static int power_confirm=0;
 static int power_cancel_pressed=0, power_ok_pressed=0;
@@ -206,34 +293,40 @@ static void mi_btn(unsigned char* v, int cx, int cy, int p)
     }
 }
 
-static void window(unsigned char* v, int wx, int wy, const char* t, int ww, int wh, int rs, int active)
+static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, int wh, int rs, int active, int no_close)
 {
     // 1px black outline + inner background
     for(int y=wy;y<wy+wh&&y<screen_h;y++)for(int x=wx;x<wx+ww&&x<screen_w;x++) {
+        if (x < 0 || y < 0) continue;
         if(y==wy||y==wy+wh-1||x==wx||x==wx+ww-1) PUT_PIXEL(v, x, y, 0);
         else PUT_PIXEL(v, x, y, 7);
     }
     
     // Title bar area (white)
-    for(int y=wy+1;y<wy+18&&y<screen_h;y++)for(int x=wx+1;x<wx+ww-1&&x<screen_w;x++) PUT_PIXEL(v, x, y, 15);
-    for(int x=wx;x<wx+ww&&x<screen_w;x++) PUT_PIXEL(v, x, wy+18, 0); // Bottom line of title bar
+    for(int y=wy+1;y<wy+18&&y<screen_h;y++)for(int x=wx+1;x<wx+ww-1&&x<screen_w;x++) {
+        if (x >= 0 && y >= 0) PUT_PIXEL(v, x, y, 15);
+    }
+    for(int x=wx;x<wx+ww&&x<screen_w;x++) {
+        if (x >= 0 && wy+18 >= 0 && wy+18 < screen_h) PUT_PIXEL(v, x, wy+18, 0);
+    }
     
     int tw = 0; while(t[tw]) tw++;
     int tx = wx + (ww - tw*8)/2;
     
-    int is_installer_win = (t[0] == 'I' && t[1] == 'n' && t[2] == 's' && t[3] == 't');
     if (active) {
         // Draw stripes
         for (int y = wy+3; y <= wy+15; y+=2) {
-            for (int x = wx+2; x < wx+ww-2; x++) {
-                if ((!is_installer_win && ((x >= wx+4 && x <= wx+16) || (x >= wx+ww-18 && x <= wx+ww-6))) ||
+            if (y < 0 || y >= screen_h) continue;
+            for (int x = wx+2; x < wx+ww-2 && x < screen_w; x++) {
+                if (x < 0) continue;
+                if ((!no_close && ((x >= wx+4 && x <= wx+16) || (x >= wx+ww-18 && x <= wx+ww-6))) ||
                     (x >= tx-4 && x <= tx+tw*8+4)) continue;
                 PUT_PIXEL(v, x, y, 0);
             }
         }
     }
     
-    if (!is_installer_win) {
+    if (!no_close) {
         cl_btn(v,wx+4,wy+4,0);
         mi_btn(v,wx+ww-16,wy+4,0);
     }
@@ -244,14 +337,20 @@ static void window(unsigned char* v, int wx, int wy, const char* t, int ww, int 
         int c=10;
         for(int i=0;i<c;i++)for(int j=0;j<=i;j++){
             int px=wx+ww-c+j,py=wy+wh-c+i;
-            if(px<screen_w&&py<screen_h)PUT_PIXEL(v, px, py, 8);
+            if(px>=0&&px<screen_w&&py>=0&&py<screen_h)PUT_PIXEL(v, px, py, 8);
         }
     }
 }
 
+static void window(unsigned char* v, int wx, int wy, const char* t, int ww, int wh, int rs, int active)
+{
+    int is_installer_win = (t[0] == 'I' && t[1] == 'n' && t[2] == 's' && t[3] == 't');
+    window_ex(v, wx, wy, t, ww, wh, rs, active, is_installer_win);
+}
+
 static void about_win(unsigned char* v, int wx, int wy)
 {
-    window(v,wx,wy,"About",ww,wh,0, (z_order[10]==0));
+    window(v,wx,wy,"About",ww,wh,0, (top_visible_win_id()==0));
     int lx=wx+(ww-41)/2,ly=wy+25;
     for(int y=ly+3;y<ly+18;y++)for(int x=lx-7;x<lx+48;x++)PUT_PIXEL(v, x, y, 1);
     for(int x=lx-4;x<lx+45;x++)PUT_PIXEL(v, x, (ly+3), 9);
@@ -502,76 +601,310 @@ static void draw_uninit_disk_dialog(unsigned char* v)
     font_draw_text(v, obx+18, oby+3, "Initialize", uninit_init_pressed?15:0);
 }
 
+static inline void put_rgb32_pixel(unsigned char* v, int px, int py, uint32_t rgb) {
+    if (px < 0 || px >= screen_w || py < 0 || py >= screen_h) return;
+    if (screen_bpp >= 32) {
+        *(uint32_t*)(v + (size_t)py * (size_t)screen_pitch + (size_t)px * 4) = rgb & 0x00FFFFFFu;
+    } else if (screen_bpp == 24) {
+        unsigned char* p = v + (size_t)py * (size_t)screen_pitch + (size_t)px * 3;
+        p[0] = (unsigned char)(rgb & 0xFFu);
+        p[1] = (unsigned char)((rgb >> 8) & 0xFFu);
+        p[2] = (unsigned char)((rgb >> 16) & 0xFFu);
+    } else if (screen_bpp == 16) {
+        uint8_t r = (uint8_t)((rgb >> 16) & 0xFFu);
+        uint8_t g = (uint8_t)((rgb >> 8) & 0xFFu);
+        uint8_t b = (uint8_t)(rgb & 0xFFu);
+        *(uint16_t*)(v + (size_t)py * (size_t)screen_pitch + (size_t)px * 2) = RGB16(r, g, b);
+    } else {
+        uint32_t r = ((rgb >> 16) & 0xFFu) * 5u / 255u;
+        uint32_t g = ((rgb >> 8) & 0xFFu) * 5u / 255u;
+        uint32_t b = (rgb & 0xFFu) * 5u / 255u;
+        v[(size_t)py * (size_t)screen_pitch + (size_t)px] = (unsigned char)(32u + r + g * 6u + b * 36u);
+    }
+}
+
+static void blit_dyn_window(unsigned char* v, const wm_dyn_win_t* dw, int active) {
+    int ww_cur = dw->client_w + 2;
+    int wh_cur = dw->shaded ? 20 : (dw->client_h + 20);
+    int is_rs = (!dw->shaded && (dw->flags & PXE_WIN_RESIZABLE)) ? 1 : 0;
+    int no_cl = (dw->flags & PXE_WIN_NO_CLOSE) ? 1 : 0;
+
+    window_ex(v, dw->x, dw->y, dw->title, ww_cur, wh_cur, 0, active, no_cl);
+    if (dw->shaded || !dw->canvas_kvirt) return;
+
+    int cx0 = dw->x + 1;
+    int cy0 = dw->y + 19;
+    int cw = dw->client_w;
+    int ch = dw->client_h;
+    if (cw > dw->alloc_stride) cw = dw->alloc_stride;
+    if (ch > dw->alloc_h) ch = dw->alloc_h;
+
+    if (dw->format == PXE_CANVAS_RGB32) {
+        for (int ry = 0; ry < ch; ry++) {
+            int sy = cy0 + ry;
+            if (sy < 0 || sy >= screen_h) continue;
+            const uint32_t* src = (const uint32_t*)((const uint8_t*)dw->canvas_kvirt +
+                                                    (size_t)ry * (size_t)dw->pitch);
+            for (int rx = 0; rx < cw; rx++) {
+                int sx = cx0 + rx;
+                if (sx >= 0 && sx < screen_w) {
+                    put_rgb32_pixel(v, sx, sy, src[rx]);
+                }
+            }
+        }
+    } else {
+        for (int ry = 0; ry < ch; ry++) {
+            int sy = cy0 + ry;
+            if (sy < 0 || sy >= screen_h) continue;
+            const uint8_t* src = (const uint8_t*)dw->canvas_kvirt +
+                                 (size_t)ry * (size_t)dw->pitch;
+            for (int rx = 0; rx < cw; rx++) {
+                uint8_t c = src[rx];
+                if (c != 255) {
+                    PUT_PIXEL(v, cx0 + rx, sy, c);
+                }
+            }
+        }
+    }
+
+    if (is_rs) {
+        int c = 10;
+        for (int i = 0; i < c; i++) {
+            for (int j = 0; j <= i; j++) {
+                int px = dw->x + ww_cur - c + j;
+                int py = dw->y + wh_cur - c + i;
+                if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
+                    PUT_PIXEL(v, px, py, 8);
+                }
+            }
+        }
+    }
+}
+
+static void format_hex64(uint64_t val, char* out) {
+    static const char hex[] = "0123456789ABCDEF";
+    out[0] = '0';
+    out[1] = 'x';
+    for (int i = 0; i < 16; i++) {
+        out[2 + i] = hex[(val >> ((15 - i) * 4)) & 0xFu];
+    }
+    out[18] = '\0';
+}
+
+static void draw_crash_dialog(unsigned char* v) {
+    int dw = 380, dh = 144;
+    int dx = (screen_w - dw) / 2;
+    int dy = (screen_h - dh) / 2;
+
+    for(int y=dy;y<dy+dh;y++)for(int x=dx;x<dx+dw;x++)PUT_PIXEL(v, x, y, 0);
+    for(int y=dy+2;y<dy+dh-2;y++)for(int x=dx+2;x<dx+dw-2;x++)PUT_PIXEL(v, x, y, 15);
+    for(int y=dy+4;y<dy+dh-4;y++)for(int x=dx+4;x<dx+dw-4;x++) {
+        if (y==dy+4||y==dy+dh-5||x==dx+4||x==dx+dw-5) PUT_PIXEL(v, x, y, 0);
+        else PUT_PIXEL(v, x, y, 7);
+    }
+
+    /* Classic Mac System Bomb Icon (scaled 2x at dx+16, dy+18) */
+    int bx0 = dx + 16, by0 = dy + 18;
+    for (int iy = 4; iy < 15; iy++) {
+        for (int ix = 2; ix < 13; ix++) {
+            int ddx = ix - 7, ddy = iy - 9;
+            if (ddx*ddx + ddy*ddy <= 24) {
+                unsigned char col = (ix == 5 && iy == 7) ? 15 : 0;
+                PUT_PIXEL(v, bx0+ix*2, by0+iy*2, col);
+                PUT_PIXEL(v, bx0+ix*2+1, by0+iy*2, col);
+                PUT_PIXEL(v, bx0+ix*2, by0+iy*2+1, col);
+                PUT_PIXEL(v, bx0+ix*2+1, by0+iy*2+1, col);
+            }
+        }
+    }
+    for (int k = 0; k < 4; k++) {
+        PUT_PIXEL(v, bx0+18+k, by0+8-k, 8);
+        PUT_PIXEL(v, bx0+19+k, by0+8-k, 0);
+    }
+    PUT_PIXEL(v, bx0+23, by0+3, 14); PUT_PIXEL(v, bx0+24, by0+2, 12);
+    PUT_PIXEL(v, bx0+22, by0+2, 12); PUT_PIXEL(v, bx0+25, by0+4, 14);
+
+    font_draw_text(v, dx + 54, dy + 14, "Sorry, an application crashed.", 0);
+
+    char line1[64];
+    snprintf(line1, sizeof(line1), "App: %s (PID %u)", crash_app_name, crash_pid);
+    font_draw_text(v, dx + 54, dy + 34, line1, 0);
+
+    char line2[64];
+    snprintf(line2, sizeof(line2), "Fault: %s", crash_exc_name);
+    font_draw_text(v, dx + 54, dy + 52, line2, 4);
+
+    char rip_hex[20];
+    format_hex64(crash_rip, rip_hex);
+    char line3[64];
+    snprintf(line3, sizeof(line3), "RIP: %s", rip_hex);
+    font_draw_text(v, dx + 54, dy + 70, line3, 8);
+
+    char cr2_hex[20];
+    format_hex64(crash_cr2, cr2_hex);
+    char line4[64];
+    snprintf(line4, sizeof(line4), "CR2: %s", cr2_hex);
+    font_draw_text(v, dx + 54, dy + 88, line4, 8);
+
+    int obx = dx + dw - 96, oby = dy + dh - 32;
+    for(int y=oby;y<oby+22;y++)for(int x=obx;x<obx+80;x++)PUT_PIXEL(v, x, y, crash_ok_pressed?0:7);
+    for(int x=obx;x<obx+80;x++){PUT_PIXEL(v, x, oby, crash_ok_pressed?0:15);PUT_PIXEL(v, x, oby+21, crash_ok_pressed?15:0);}
+    for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, obx, y, crash_ok_pressed?0:15);PUT_PIXEL(v, obx+79, y, crash_ok_pressed?15:0);}
+    font_draw_text(v, obx + 32, oby + 3, "OK", crash_ok_pressed ? 15 : 0);
+}
+
+static void draw_r0_confirm_dialog(unsigned char* v) {
+    int dw = 380, dh = 124;
+    int dx = (screen_w - dw) / 2;
+    int dy = (screen_h - dh) / 2;
+
+    for(int y=dy;y<dy+dh;y++)for(int x=dx;x<dx+dw;x++)PUT_PIXEL(v, x, y, 8);
+    for(int y=dy+2;y<dy+dh-2;y++)for(int x=dx+2;x<dx+dw-2;x++)PUT_PIXEL(v, x, y, 7);
+    for(int x=dx+2;x<dx+dw-2;x++){PUT_PIXEL(v, x, dy+2, 15);PUT_PIXEL(v, x, dy+dh-3, 0);}
+    for(int y=dy+2;y<dy+dh-2;y++){PUT_PIXEL(v, dx+2, y, 15);PUT_PIXEL(v, dx+dw-3, y, 0);}
+
+    /* Yellow Warning Triangle */
+    int tx0 = dx + 26, ty0 = dy + 16;
+    for (int r = 0; r < 24; r++) {
+        int half = r / 2;
+        for (int c = -half; c <= half; c++) {
+            unsigned char col = (r == 23 || c == -half || c == half) ? 0 : 14;
+            PUT_PIXEL(v, tx0 + c, ty0 + r, col);
+        }
+    }
+    for (int r = 7; r <= 15; r++) { PUT_PIXEL(v, tx0, ty0 + r, 0); PUT_PIXEL(v, tx0 + 1, ty0 + r, 0); }
+    PUT_PIXEL(v, tx0, ty0 + 19, 0); PUT_PIXEL(v, tx0 + 1, ty0 + 19, 0);
+
+    font_draw_text(v, dx + 52, dy + 14, "Ring 0 Kernel Executable", 4);
+    font_draw_text(v, dx + 52, dy + 34, "Grant full Ring 0 hardware access?", 0);
+
+    char disp_path[44];
+    int plen = (int)strlen(r0_confirm_path);
+    if (plen <= 40) {
+        strcpy(disp_path, r0_confirm_path);
+    } else {
+        disp_path[0] = '.'; disp_path[1] = '.'; disp_path[2] = '.';
+        strcpy(disp_path + 3, r0_confirm_path + (plen - 37));
+    }
+    font_draw_text(v, dx + 20, dy + 56, disp_path, 1);
+
+    int cbx = dx + 40, oby = dy + 86;
+    for(int y=oby;y<oby+22;y++)for(int x=cbx;x<cbx+110;x++)PUT_PIXEL(v, x, y, r0_cancel_pressed?0:7);
+    for(int x=cbx;x<cbx+110;x++){PUT_PIXEL(v, x, oby, r0_cancel_pressed?0:15);PUT_PIXEL(v, x, oby+21, r0_cancel_pressed?15:0);}
+    for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, cbx, y, r0_cancel_pressed?0:15);PUT_PIXEL(v, cbx+109, y, r0_cancel_pressed?15:0);}
+    font_draw_text(v, cbx + 31, oby + 3, "Cancel", r0_cancel_pressed ? 15 : 0);
+
+    int obx = dx + 210;
+    for(int y=oby;y<oby+22;y++)for(int x=obx;x<obx+130;x++)PUT_PIXEL(v, x, y, 4);
+    for(int x=obx;x<obx+130;x++){PUT_PIXEL(v, x, oby, r0_run_pressed?0:12);PUT_PIXEL(v, x, oby+21, r0_run_pressed?12:0);}
+    for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, obx, y, r0_run_pressed?0:12);PUT_PIXEL(v, obx+129, y, r0_run_pressed?12:0);}
+    font_draw_text(v, obx + 17, oby + 3, "Run (Ring 0)", 15);
+}
+
+static wm_dyn_win_t* get_active_pxe_menubar_win(void) {
+    int active_id = top_visible_win_id();
+    if (active_id >= WM_DYN_BASE && active_id < WM_DYN_BASE + WM_DYN_MAX) {
+        wm_dyn_win_t* dw = &g_dyn_wins[active_id - WM_DYN_BASE];
+        if (dw->used && dw->has_menu && dw->menu_bar.menu_count > 0) {
+            return dw;
+        }
+    }
+    return NULL;
+}
+
+static void get_pxe_menu_span(const pxe_menu_bar_t* mb, int idx, int* out_x, int* out_w) {
+    int cur_x = 30;
+    for (int i = 0; i < mb->menu_count && i < PXE_MAX_MENUS; i++) {
+        int tw = (int)strlen(mb->menus[i].title) * 8 + 16;
+        if (tw < 40) tw = 40;
+        if (i == idx) {
+            *out_x = cur_x;
+            *out_w = tw;
+            return;
+        }
+        cur_x += tw + 4;
+    }
+    *out_x = cur_x;
+    *out_w = 40;
+}
+
 static void draw_others(unsigned char* v, int dgw)
 {
-    for (int i=0; i<11; i++) {
+    int active_win = top_visible_win_id();
+    for (int i = 0; i < WM_Z_COUNT; i++) {
         int id = z_order[i];
         if (id + 1 == dgw) continue;
         if (id == 0 && wv) {
             if (!am) about_win(v, wx, wy);
-            else window(v,wx,wy,"About",ww,20,0,(z_order[10]==0));
+            else window(v,wx,wy,"About",ww,20,0,(active_win==0));
         }
-        if (id == 1 && cv) {
+        else if (id == 1 && cv) {
             if (!cm) {
-                window(v,wx2,wy2,"Clock",ww2,wh2,1,(z_order[10]==1));
+                window(v,wx2,wy2,"Clock",ww2,wh2,1,(active_win==1));
                 int h,m,s; get_time(&h,&m,&s); char b[9];
                 b[0]='0'+h/10;b[1]='0'+h%10;b[2]=':';b[3]='0'+m/10;b[4]='0'+m%10;b[5]=':';b[6]='0'+s/10;b[7]='0'+s%10;b[8]=0;
                 font_draw_text(v, wx2+ww2/2-32, wy2+wh2/2-8, b, 0);
-            } else window(v,wx2,wy2,"Clock",ww2,20,0,(z_order[10]==1));
+            } else window(v,wx2,wy2,"Clock",ww2,20,0,(active_win==1));
         }
-        if (id == 2 && clv) {
+        else if (id == 2 && clv) {
             if (!clm) {
-                window(v,wcx,wcy,"Calculator",wcw,wch,2,(z_order[10]==2));
+                window(v,wcx,wcy,"Calculator",wcw,wch,2,(active_win==2));
                 calc_draw(v, wcx, wcy, wcw, wch);
-            } else window(v,wcx,wcy,"Calculator",wcw,20,0,(z_order[10]==2));
+            } else window(v,wcx,wcy,"Calculator",wcw,20,0,(active_win==2));
         }
-        if (id == 3 && cpv) {
+        else if (id == 3 && cpv) {
             if (!cpm) {
-                window(v,cpx,cpy,"Control Panel",cpw,cph,3,(z_order[10]==3));
+                window(v,cpx,cpy,"Control Panel",cpw,cph,3,(active_win==3));
                 cpanel_draw(v, cpx, cpy, cpw, cph);
-            } else window(v,cpx,cpy,"Control Panel",cpw,20,0,(z_order[10]==3));
+            } else window(v,cpx,cpy,"Control Panel",cpw,20,0,(active_win==3));
         }
-        if (id == 4 && fmv) {
+        else if (id == 4 && fmv) {
             if (!fmm) {
-                window(v,fmx,fmy,"File Manager",fmw,fmh,4,(z_order[10]==4));
+                window(v,fmx,fmy,"File Manager",fmw,fmh,4,(active_win==4));
                 fm_draw(v, fmx, fmy, fmw, fmh);
-            } else window(v,fmx,fmy,"File Manager",fmw,20,0,(z_order[10]==4));
+            } else window(v,fmx,fmy,"File Manager",fmw,20,0,(active_win==4));
         }
-        if (id == 5 && edv) {
+        else if (id == 5 && edv) {
             if (!edm) {
-                window(v,edx,edy,"Notepad",edw,edh,5,(z_order[10]==5));
+                window(v,edx,edy,"Notepad",edw,edh,5,(active_win==5));
                 editor_draw(v, edx, edy+20, edw, edh-20);
-            } else window(v,edx,edy,"Notepad",edw,20,0,(z_order[10]==5));
+            } else window(v,edx,edy,"Notepad",edw,20,0,(active_win==5));
         }
-        if (id == 6 && siv) {
+        else if (id == 6 && siv) {
             if (!sim) {
-                window(v,six,siy,"System Information",siw,sih,6,(z_order[10]==6));
+                window(v,six,siy,"System Information",siw,sih,6,(active_win==6));
                 sysinfo_draw(v, six, siy, siw, sih);
-            } else window(v,six,siy,"System Information",siw,20,0,(z_order[10]==6));
+            } else window(v,six,siy,"System Information",siw,20,0,(active_win==6));
         }
-        if (id == 7 && pzv) {
+        else if (id == 7 && pzv) {
             if (!pzm) {
-                window(v,pzx,pzy,"15-Puzzle",pzw,pzh,7,(z_order[10]==7));
+                window(v,pzx,pzy,"15-Puzzle",pzw,pzh,7,(active_win==7));
                 puzzle_draw(v, pzx, pzy, pzw, pzh);
-            } else window(v,pzx,pzy,"15-Puzzle",pzw,20,0,(z_order[10]==7));
+            } else window(v,pzx,pzy,"15-Puzzle",pzw,20,0,(active_win==7));
         }
-        if (id == 8 && imv) {
+        else if (id == 8 && imv) {
             if (!imm) {
-                window(v,imx,imy,imageviewer_get_title(),imw,imh,1,(z_order[10]==8));
+                window(v,imx,imy,imageviewer_get_title(),imw,imh,1,(active_win==8));
                 imageviewer_draw(v, imx, imy, imw, imh);
-            } else window(v,imx,imy,imageviewer_get_title(),imw,20,0,(z_order[10]==8));
+            } else window(v,imx,imy,imageviewer_get_title(),imw,20,0,(active_win==8));
         }
-        if (id == 9 && npv) {
+        else if (id == 9 && npv) {
             if (!npm) {
-                window(v,npx,npy,audioplayer_get_title(),npw,nph,0,(z_order[10]==9));
+                window(v,npx,npy,audioplayer_get_title(),npw,nph,0,(active_win==9));
                 audioplayer_draw(v, npx, npy, npw, nph);
-            } else window(v,npx,npy,audioplayer_get_title(),npw,20,0,(z_order[10]==9));
+            } else window(v,npx,npy,audioplayer_get_title(),npw,20,0,(active_win==9));
         }
-        if (id == 10 && insv) {
+        else if (id == 10 && insv) {
             if (!insm) {
-                window(v,insx,insy,"Install OS to Disk",insw,insh,0,(z_order[10]==10));
+                window(v,insx,insy,"Install OS to Disk",insw,insh,0,(active_win==10));
                 installer_draw(v, insx, insy, insw, insh);
-            } else window(v,insx,insy,"Install OS to Disk",insw,20,0,(z_order[10]==10));
+            } else window(v,insx,insy,"Install OS to Disk",insw,20,0,(active_win==10));
+        }
+        else if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
+            const wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
+            if (dw->used) {
+                blit_dyn_window(v, dw, (active_win == id));
+            }
         }
     }
 }
@@ -609,6 +942,8 @@ static void draw_menu_popup(unsigned char* v, int x, int y, int w, int h)
 static void draw_menubar(unsigned char* v)
 {
     bool install_mode = ui_install_mode_requested();
+    int active_win = top_visible_win_id();
+    wm_dyn_win_t* pxe_mb_win = (!install_mode) ? get_active_pxe_menubar_win() : NULL;
 
     for(int y=0; y<20; y++) for(int x=0; x<screen_w; x++) PUT_PIXEL(v, x, y, 15);
     for(int x=0; x<screen_w; x++) PUT_PIXEL(v, x, 20, 0);
@@ -618,8 +953,50 @@ static void draw_menubar(unsigned char* v)
         menu_open = 0;
         menu_index = -1;
     }
-    
-    if (menu_open) {
+
+    if (pxe_mb_win) {
+        const pxe_menu_bar_t* mb = &pxe_mb_win->menu_bar;
+        for (int m = 0; m < mb->menu_count && m < PXE_MAX_MENUS; m++) {
+            int mx_pos = 0, mw = 0;
+            get_pxe_menu_span(mb, m, &mx_pos, &mw);
+            if (menu_open && menu_index == m) {
+                for (int y = 2; y < 18; y++) {
+                    for (int x = mx_pos - 4; x < mx_pos + mw - 4 && x < screen_w; x++) {
+                        PUT_PIXEL(v, x, y, 1);
+                    }
+                }
+                font_draw_text(v, mx_pos + 4, 2, mb->menus[m].title, 15);
+            } else {
+                font_draw_text(v, mx_pos + 4, 2, mb->menus[m].title, 0);
+            }
+        }
+        if (menu_open) {
+            if (menu_index == 4) {
+                draw_menu_popup(v, 4, 20, 172, 4*18+4);
+                font_draw_text(v, 10, 24, "About Pixel Neko", 0);
+                font_draw_text(v, 10, 24+18, "System Information", 0);
+                font_draw_text(v, 10, 24+36, "Restart Computer", 0);
+                font_draw_text(v, 10, 24+54, "Shut Down Computer", 0);
+            } else if (menu_index >= 0 && menu_index < mb->menu_count && menu_index < PXE_MAX_MENUS) {
+                const pxe_menu_t* pm = &mb->menus[menu_index];
+                int mx_pos = 0, mw = 0;
+                get_pxe_menu_span(mb, menu_index, &mx_pos, &mw);
+                int cnt = pm->item_count;
+                if (cnt < 1) cnt = 1;
+                if (cnt > PXE_MAX_MENU_ITEMS) cnt = PXE_MAX_MENU_ITEMS;
+                draw_menu_popup(v, mx_pos - 4, 20, 176, cnt * 18 + 4);
+                if (pm->item_count <= 0) {
+                    font_draw_text(v, mx_pos + 4, 24, "(Empty)", 8);
+                } else {
+                    for (int it = 0; it < cnt; it++) {
+                        font_draw_text(v, mx_pos + 4, 24 + it * 18,
+                                       pm->items[it].label,
+                                       pm->items[it].enabled ? 0 : 8);
+                    }
+                }
+            }
+        }
+    } else if (menu_open) {
         if (menu_index != 4 && !install_mode) {
             int mx = 30 + menu_index * 40;
             int mw = (menu_index == 3) ? 64 : 40;
@@ -645,7 +1022,7 @@ static void draw_menubar(unsigned char* v)
                 font_draw_text(v, 10, 24+54, "Shut Down Computer", 0);
             }
         } else if (!install_mode && menu_index == 0) { // File
-            if (z_order[10] == 5 && edv && !edm) { // Notepad active
+            if (active_win == 5 && edv && !edm) { // Notepad active
                 draw_menu_popup(v, 30, 20, 130, 4*18+4);
                 font_draw_text(v, 38, 24, "New", 0);
                 font_draw_text(v, 38, 24+18, "Save", 0);
@@ -658,7 +1035,7 @@ static void draw_menubar(unsigned char* v)
         } else if (!install_mode && menu_index == 1) { // Edit
             draw_menu_popup(v, 66, 20, 120, 6*18+4);
             font_draw_text(v, 74, 24, "Undo", 8);
-            int ed_active = (z_order[10] == 5 && edv && !edm);
+            int ed_active = (active_win == 5 && edv && !edm);
             int has_sel = (ed_active && editor_has_selection());
             font_draw_text(v, 74, 24+18, "Cut", has_sel ? 0 : 8);
             font_draw_text(v, 74, 24+36, "Copy", has_sel ? 0 : 8);
@@ -731,6 +1108,50 @@ static void clamp_win_pos(int* x, int* y, int* w, int* h, int min_w, int min_h) 
     if (*y < 20) *y = 20;
 }
 
+static inline uint64_t wm_irq_save(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) :: "memory");
+    return rflags;
+}
+
+static inline void wm_irq_restore(uint64_t rflags) {
+    if (rflags & (1ULL << 9)) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
+static void wm_dyn_push_event(wm_dyn_win_t* dw, const pxe_event_t* ev) {
+    if (!dw || !dw->used || !ev) return;
+    uint64_t flags = wm_irq_save();
+    if (ev->type == PXE_EV_MOUSE_MOVE && dw->ev_count > 0) {
+        int last_idx = (dw->ev_tail - 1 + WM_EV_QUEUE_CAP) % WM_EV_QUEUE_CAP;
+        if (dw->ev_queue[last_idx].type == PXE_EV_MOUSE_MOVE) {
+            dw->ev_queue[last_idx] = *ev;
+            wm_irq_restore(flags);
+            scheduler_wake_win_waiters(dw->win_id);
+            return;
+        }
+    }
+    if (dw->ev_count < WM_EV_QUEUE_CAP) {
+        dw->ev_queue[dw->ev_tail] = *ev;
+        dw->ev_tail = (dw->ev_tail + 1) % WM_EV_QUEUE_CAP;
+        dw->ev_count++;
+    }
+    wm_irq_restore(flags);
+    scheduler_wake_win_waiters(dw->win_id);
+}
+
+static void wm_dyn_push_simple(wm_dyn_win_t* dw, uint32_t type) {
+    if (!dw || !dw->used) return;
+    pxe_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = type;
+    ev.win_id = dw->win_id;
+    ev.w = dw->client_w;
+    ev.h = dw->client_h;
+    wm_dyn_push_event(dw, &ev);
+}
+
 void wm_on_resolution_change(int w, int h) {
     (void)w;
     (void)h;
@@ -751,6 +1172,32 @@ void wm_on_resolution_change(int w, int h) {
         insw = screen_w - 32;
         insh = screen_h - 50;
         clamp_win_pos(&insx, &insy, &insw, &insh, 300, 190);
+    }
+    for (int s = 0; s < WM_DYN_MAX; s++) {
+        wm_dyn_win_t* dw = &g_dyn_wins[s];
+        if (!dw->used) continue;
+        int ow = dw->client_w + 2;
+        int oh = dw->client_h + 20;
+        int old_cw = dw->client_w;
+        int old_ch = dw->client_h;
+        if (dw->flags & PXE_WIN_RESIZABLE) {
+            clamp_win_pos(&dw->x, &dw->y, &ow, &oh, dw->min_w + 2, dw->min_h + 20);
+            int ncw = ow - 2;
+            int nch = oh - 20;
+            if (ncw > dw->alloc_stride) ncw = dw->alloc_stride;
+            if (nch > dw->alloc_h) nch = dw->alloc_h;
+            dw->client_w = ncw;
+            dw->client_h = nch;
+            if (ncw != old_cw || nch != old_ch) {
+                wm_dyn_push_simple(dw, PXE_EV_RESIZE);
+                wm_dyn_push_simple(dw, PXE_EV_REDRAW);
+            }
+        } else {
+            if (dw->x + ow > screen_w) dw->x = screen_w - ow;
+            if (dw->y + oh > screen_h) dw->y = screen_h - oh;
+            if (dw->x < 0) dw->x = 0;
+            if (dw->y < 20) dw->y = 20;
+        }
     }
     redraw = 1;
     need_mr = 1;
@@ -837,7 +1284,9 @@ void wm_draw(unsigned char* v){
             }
         }
         if(uninit_dialog_active) { draw_uninit_disk_dialog(v); }
-        if(power_confirm) {  draw_power_dialog(v); }
+        if(r0_confirm_active)    { draw_r0_confirm_dialog(v); }
+        if(crash_dialog_active)  { draw_crash_dialog(v); }
+        if(power_confirm)        { draw_power_dialog(v); }
     }
     redraw=0;
 }
@@ -935,6 +1384,17 @@ static void get_win_geom(int id, int* rx, int* ry, int* rw, int* rh, int* vis, i
     else if (id == 8) { *rx=imx; *ry=imy; *rw=imw; *rh=imm?20:imh; *vis=imv; *min=imm; }
     else if (id == 9) { *rx=npx; *ry=npy; *rw=npw; *rh=npm?20:nph; *vis=npv; *min=npm; }
     else if (id == 10) { *rx=insx; *ry=insy; *rw=insw; *rh=insm?20:insh; *vis=insv; *min=insm; }
+    else if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
+        const wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
+        if (dw->used) {
+            *rx = dw->x;
+            *ry = dw->y;
+            *rw = dw->client_w + 2;
+            *rh = dw->shaded ? 20 : (dw->client_h + 20);
+            *vis = 1;
+            *min = dw->shaded;
+        }
+    }
 }
 
 void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_release)
@@ -953,6 +1413,12 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 need_mr = 1;
             }
         }
+    }
+
+    if (g_pxe_present_dirty && !wm_is_dragging()) {
+        g_pxe_present_dirty = 0;
+        redraw = 1;
+        need_mr = 1;
     }
 
     // Poll RTC once every 100 ticks (1 Hz / 1 second) to prevent ISA bus stalls
@@ -974,10 +1440,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         int dy = (screen_h - dh) / 2;
         int cbx = dx + 20, oby = dy + 48, obx = dx + 110;
 
-        if(mb_press && mx>=cbx && mx<cbx+80 && my>=oby && my<oby+22){power_cancel_pressed=1;need_mr=1;}
+        if(mb_press && mx>=cbx && mx<cbx+80 && my>=oby && my<oby+22){power_cancel_pressed=1;redraw=1;need_mr=1;}
         if(mb_release && power_cancel_pressed){power_cancel_pressed=0;
             if(mx>=cbx && mx<cbx+80 && my>=oby && my<oby+22){power_confirm=0;redraw=1;}else{redraw=1;}}
-        if(mb_press && mx>=obx && mx<obx+80 && my>=oby && my<oby+22){power_ok_pressed=1;need_mr=1;}
+        if(mb_press && mx>=obx && mx<obx+80 && my>=oby && my<oby+22){power_ok_pressed=1;redraw=1;need_mr=1;}
         if(mb_release && power_ok_pressed){power_ok_pressed=0;
             if(mx>=obx && mx<obx+80 && my>=oby && my<oby+22){
                 if(power_confirm==1) {
@@ -987,6 +1453,81 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 }
             }else{redraw=1;}}
         if(redraw) { need_mr=1; }
+        return;
+    }
+
+    if (crash_dialog_active) {
+        int dw = 380, dh = 144;
+        int dx = (screen_w - dw) / 2;
+        int dy = (screen_h - dh) / 2;
+        int obx = dx + dw - 96, oby = dy + dh - 32;
+
+        if (mb_press && mx >= obx && mx < obx + 80 && my >= oby && my < oby + 22) {
+            crash_ok_pressed = 1;
+            redraw = 1;
+            need_mr = 1;
+        }
+        if (mb_release && crash_ok_pressed) {
+            crash_ok_pressed = 0;
+            if (mx >= obx && mx < obx + 80 && my >= oby && my < oby + 22) {
+                crash_dialog_active = 0;
+            }
+            redraw = 1;
+            need_mr = 1;
+        }
+        if (keyboard_get_key() == '\n') {
+            crash_dialog_active = 0;
+            crash_ok_pressed = 0;
+            redraw = 1;
+            need_mr = 1;
+        }
+        return;
+    }
+
+    if (r0_confirm_active) {
+        int dw = 380, dh = 124;
+        int dx = (screen_w - dw) / 2;
+        int dy = (screen_h - dh) / 2;
+        int cbx = dx + 40, obx = dx + 210, oby = dy + 86;
+
+        if (mb_press && mx >= cbx && mx < cbx + 110 && my >= oby && my < oby + 22) {
+            r0_cancel_pressed = 1;
+            redraw = 1;
+            need_mr = 1;
+        }
+        if (mb_release && r0_cancel_pressed) {
+            r0_cancel_pressed = 0;
+            if (mx >= cbx && mx < cbx + 110 && my >= oby && my < oby + 22) {
+                r0_confirm_active = 0;
+            }
+            redraw = 1;
+            need_mr = 1;
+        }
+        if (mb_press && mx >= obx && mx < obx + 130 && my >= oby && my < oby + 22) {
+            r0_run_pressed = 1;
+            redraw = 1;
+            need_mr = 1;
+        }
+        if (mb_release && r0_run_pressed) {
+            r0_run_pressed = 0;
+            if (mx >= obx && mx < obx + 130 && my >= oby && my < oby + 22) {
+                char launch_path[128];
+                char launch_arg1[128];
+                int has_arg1 = r0_confirm_has_arg1;
+                strcpy(launch_path, r0_confirm_path);
+                strcpy(launch_arg1, r0_confirm_arg1);
+                r0_confirm_active = 0;
+                redraw = 1;
+                need_mr = 1;
+                const char* argv_local[2];
+                argv_local[0] = launch_path;
+                argv_local[1] = has_arg1 ? launch_arg1 : NULL;
+                pxe_spawn_file(launch_path, has_arg1 ? 2 : 1, argv_local, NULL, true);
+            } else {
+                redraw = 1;
+                need_mr = 1;
+            }
+        }
         return;
     }
 
@@ -1022,6 +1563,9 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
+    int active_win = top_visible_win_id();
+    wm_dyn_win_t* pxe_mb_win = (!ui_install_mode_requested()) ? get_active_pxe_menubar_win() : NULL;
+
     // Menu bar interaction
     if (menu_open && mb_press) {
         bool inst_mode = ui_install_mode_requested();
@@ -1039,8 +1583,30 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     if (item == 3) { power_confirm = 2; }
                 }
             }
+        } else if (pxe_mb_win && !inst_mode) {
+            const pxe_menu_bar_t* mb_bar = &pxe_mb_win->menu_bar;
+            if (menu_index >= 0 && menu_index < mb_bar->menu_count && menu_index < PXE_MAX_MENUS) {
+                const pxe_menu_t* pm = &mb_bar->menus[menu_index];
+                int mx_pos = 0, mw = 0;
+                get_pxe_menu_span(mb_bar, menu_index, &mx_pos, &mw);
+                int cnt = pm->item_count;
+                if (cnt > PXE_MAX_MENU_ITEMS) cnt = PXE_MAX_MENU_ITEMS;
+                if (cnt > 0 && mx >= mx_pos - 4 && mx < mx_pos - 4 + 176 &&
+                    my >= 20 && my < 20 + cnt * 18 + 4) {
+                    int item = (my - 24) / 18;
+                    if (item >= 0 && item < cnt && pm->items[item].enabled) {
+                        pxe_event_t ev;
+                        memset(&ev, 0, sizeof(ev));
+                        ev.type = PXE_EV_MENU;
+                        ev.win_id = pxe_mb_win->win_id;
+                        ev.arg0 = menu_index;
+                        ev.arg1 = item;
+                        wm_dyn_push_event(pxe_mb_win, &ev);
+                    }
+                }
+            }
         } else if (menu_index == 0 && !inst_mode) { // File
-            if (z_order[10] == 5 && edv && !edm && mx >= 30 && mx < 30 + 130 && my >= 20 && my < 20 + 4*18 + 4) {
+            if (active_win == 5 && edv && !edm && mx >= 30 && mx < 30 + 130 && my >= 20 && my < 20 + 4*18 + 4) {
                 int item = (my - 24) / 18;
                 extern void editor_init(void);
                 extern void editor_save(void);
@@ -1051,7 +1617,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 else if (item == 3) { edv = 0; editor_init(); redraw = 1; }
             }
         } else if (menu_index == 1 && !inst_mode) { // Edit
-            if (z_order[10] == 5 && edv && !edm && mx >= 66 && mx < 66 + 120 && my >= 20 && my < 20 + 6*18 + 4) {
+            if (active_win == 5 && edv && !edm && mx >= 66 && mx < 66 + 120 && my >= 20 && my < 20 + 6*18 + 4) {
                 int item = (my - 24) / 18;
                 extern void editor_cut(void);
                 extern void editor_copy(void);
@@ -1090,8 +1656,32 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     if(mb_press && my < 20) {
         bool inst_mode = ui_install_mode_requested();
-        if (mx >= 4 && mx < 24) { menu_open = (menu_open && menu_index == 4) ? 0 : 1; menu_index = 4; redraw = 1; need_mr = 1; }
-        else if (!inst_mode && mx >= 30 && mx < 62) { menu_open = (menu_open && menu_index == 0) ? 0 : 1; menu_index = 0; redraw = 1; need_mr = 1; }
+        if (mx >= 4 && mx < 24) {
+            menu_open = (menu_open && menu_index == 4) ? 0 : 1;
+            menu_index = 4;
+            redraw = 1;
+            need_mr = 1;
+        } else if (!inst_mode && pxe_mb_win) {
+            const pxe_menu_bar_t* mb_bar = &pxe_mb_win->menu_bar;
+            int hit = -1;
+            for (int m = 0; m < mb_bar->menu_count && m < PXE_MAX_MENUS; m++) {
+                int mx_pos = 0, mw = 0;
+                get_pxe_menu_span(mb_bar, m, &mx_pos, &mw);
+                if (mx >= mx_pos - 4 && mx < mx_pos + mw - 4) {
+                    hit = m;
+                    break;
+                }
+            }
+            if (hit != -1) {
+                menu_open = (menu_open && menu_index == hit) ? 0 : 1;
+                menu_index = hit;
+                redraw = 1;
+                need_mr = 1;
+            } else {
+                menu_open = 0;
+                redraw = 1;
+            }
+        } else if (!inst_mode && mx >= 30 && mx < 62) { menu_open = (menu_open && menu_index == 0) ? 0 : 1; menu_index = 0; redraw = 1; need_mr = 1; }
         else if (!inst_mode && mx >= 70 && mx < 102) { menu_open = (menu_open && menu_index == 1) ? 0 : 1; menu_index = 1; redraw = 1; need_mr = 1; }
         else if (!inst_mode && mx >= 110 && mx < 142) { menu_open = (menu_open && menu_index == 2) ? 0 : 1; menu_index = 2; redraw = 1; need_mr = 1; }
         else if (!inst_mode && mx >= 150 && mx < 206) { menu_open = (menu_open && menu_index == 3) ? 0 : 1; menu_index = 3; redraw = 1; need_mr = 1; }
@@ -1099,27 +1689,52 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
+    // Mouse motion delivery to dynamic PXE windows
+    if ((mx != g_last_pxe_mx || my != g_last_pxe_my) && !wm_is_dragging() && !menu_open) {
+        g_last_pxe_mx = mx;
+        g_last_pxe_my = my;
+        int target_id = (g_pxe_capture_win >= WM_DYN_BASE) ? g_pxe_capture_win : active_win;
+        if (target_id >= WM_DYN_BASE && target_id < WM_DYN_BASE + WM_DYN_MAX) {
+            wm_dyn_win_t* dw = &g_dyn_wins[target_id - WM_DYN_BASE];
+            if (dw->used && !dw->shaded) {
+                int cx = mx - (dw->x + 1);
+                int cy = my - (dw->y + 19);
+                if (g_pxe_capture_win == target_id ||
+                    (cx >= 0 && cx < dw->client_w && cy >= 0 && cy < dw->client_h)) {
+                    pxe_event_t ev;
+                    memset(&ev, 0, sizeof(ev));
+                    ev.type = PXE_EV_MOUSE_MOVE;
+                    ev.win_id = dw->win_id;
+                    ev.x = cx;
+                    ev.y = cy;
+                    ev.buttons = (uint32_t)mb;
+                    wm_dyn_push_event(dw, &ev);
+                }
+            }
+        }
+    }
+
     // Active window internal drag (scrollbars, sliders, image panning, audio seek)
     if ((mb & 1) && !dragging && !resizing && icon_dragging == -1) {
-        if (z_order[10] == 3 && cpv && !cpm) {
+        if (active_win == 3 && cpv && !cpm) {
             if (cpanel_drag(mx, my, cpx, cpy)) {
                 redraw = 1;
             }
         }
-        if (z_order[10] == 4 && fmv && !fmm) {
+        if (active_win == 4 && fmv && !fmm) {
             if (fm_drag(mx, my, fmx, fmy, fmw, fmh)) {
                 redraw = 1;
             }
         }
-        if (z_order[10] == 5 && edv && !edm && mx >= edx && mx < edx+edw && my >= edy+20 && my < edy+edh) {
+        if (active_win == 5 && edv && !edm && mx >= edx && mx < edx+edw && my >= edy+20 && my < edy+edh) {
             if (editor_drag(mx, my, edx, edy+20, edw, edh-20)) {
                 redraw = 1;
             }
         }
-        if (z_order[10] == 8 && imv && !imm && mx >= imx && mx < imx+imw && my >= imy+20 && my < imy+imh) {
+        if (active_win == 8 && imv && !imm && mx >= imx && mx < imx+imw && my >= imy+20 && my < imy+imh) {
             imageviewer_drag(mx, my, imx, imy, imw, imh);
         }
-        if (z_order[10] == 9 && npv && !npm) {
+        if (active_win == 9 && npv && !npm) {
             if (audioplayer_drag(mx, my, npx, npy, npw, nph)) {
                 redraw = 1;
             }
@@ -1131,22 +1746,50 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         imageviewer_release();
         audioplayer_release();
         fm_release();
+        if (g_pxe_capture_win >= WM_DYN_BASE && g_pxe_capture_win < WM_DYN_BASE + WM_DYN_MAX) {
+            wm_dyn_win_t* dw = &g_dyn_wins[g_pxe_capture_win - WM_DYN_BASE];
+            if (dw->used) {
+                pxe_event_t ev;
+                memset(&ev, 0, sizeof(ev));
+                ev.type = PXE_EV_MOUSE_UP;
+                ev.win_id = dw->win_id;
+                ev.x = mx - (dw->x + 1);
+                ev.y = my - (dw->y + 19);
+                ev.buttons = (uint32_t)mb_release;
+                wm_dyn_push_event(dw, &ev);
+            }
+            g_pxe_capture_win = -1;
+        }
     }
 
     // Keyboard input to active window
     int key = keyboard_get_key();
     while (key != 0) {
-        if (z_order[10] == 4 && fmv && !fmm) {
+        if (active_win == 4 && fmv && !fmm) {
             fm_handle_key(key);
             redraw = 1;
-        }
-        if (z_order[10] == 5 && edv && !edm) {
+        } else if (active_win == 5 && edv && !edm) {
             editor_handle_key(key);
             redraw = 1;
-        }
-        if (z_order[10] == 8 && imv && !imm) {
+        } else if (active_win == 8 && imv && !imm) {
             imageviewer_handle_key(key);
             redraw = 1;
+        } else if (active_win >= WM_DYN_BASE && active_win < WM_DYN_BASE + WM_DYN_MAX) {
+            wm_dyn_win_t* dw = &g_dyn_wins[active_win - WM_DYN_BASE];
+            if (dw->used && !dw->shaded) {
+                int pxe_key = key;
+                if (pxe_key == INPUT_CODE_ENTER) {
+                    pxe_key = PXE_KEY_ENTER;
+                } else if (pxe_key >= INPUT_CODE_UP && pxe_key <= INPUT_CODE_DELETE) {
+                    pxe_key = PXE_KEY_UP + (pxe_key - INPUT_CODE_UP);
+                }
+                pxe_event_t ev;
+                memset(&ev, 0, sizeof(ev));
+                ev.type = PXE_EV_KEY_DOWN;
+                ev.win_id = dw->win_id;
+                ev.key = pxe_key;
+                wm_dyn_push_event(dw, &ev);
+            }
         }
         key = keyboard_get_key();
     }
@@ -1216,7 +1859,17 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     if (resizing) {
         if (mb & 1) {
             int nw = 0, nh = 0, rx = 0, ry = 0;
-            if (dgw == 1) { nw = mx - wx2; nh = my - wy2; if(nw<120)nw=120; if(nh<70)nh=70; rx = wx2; ry = wy2; }
+            if (rs_win_id >= WM_DYN_BASE && rs_win_id < WM_DYN_BASE + WM_DYN_MAX) {
+                wm_dyn_win_t* dw = &g_dyn_wins[rs_win_id - WM_DYN_BASE];
+                rx = dw->x;
+                ry = dw->y;
+                nw = mx - rx;
+                nh = my - ry;
+                if (nw < dw->min_w + 2) nw = dw->min_w + 2;
+                if (nh < dw->min_h + 20) nh = dw->min_h + 20;
+                if (nw > dw->alloc_stride + 2) nw = dw->alloc_stride + 2;
+                if (nh > dw->alloc_h + 20) nh = dw->alloc_h + 20;
+            } else if (dgw == 1) { nw = mx - wx2; nh = my - wy2; if(nw<120)nw=120; if(nh<70)nh=70; rx = wx2; ry = wy2; }
             else if (dgw == 2) { nw = mx - wcx; nh = my - wcy; if(nw<140)nw=140; if(nh<140)nh=140; rx = wcx; ry = wcy; }
             else if (dgw == 3) { nw = mx - cpx; nh = my - cpy; if(nw<280)nw=280; if(nh<190)nh=190; rx = cpx; ry = cpy; }
             else if (dgw == 4) { nw = mx - fmx; nh = my - fmy; if(nw<240)nw=240; if(nh<160)nh=160; rx = fmx; ry = fmy; }
@@ -1232,7 +1885,23 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             rs_active = 1;
         } else {
             if (rs_active) {
-                if (dgw == 1) { ww2 = rs_bw; wh2 = rs_bh; }
+                if (rs_win_id >= WM_DYN_BASE && rs_win_id < WM_DYN_BASE + WM_DYN_MAX) {
+                    wm_dyn_win_t* dw = &g_dyn_wins[rs_win_id - WM_DYN_BASE];
+                    if (dw->used) {
+                        int ncw = rs_bw - 2;
+                        int nch = rs_bh - 20;
+                        if (ncw < dw->min_w) ncw = dw->min_w;
+                        if (nch < dw->min_h) nch = dw->min_h;
+                        if (ncw > dw->alloc_stride) ncw = dw->alloc_stride;
+                        if (nch > dw->alloc_h) nch = dw->alloc_h;
+                        if (ncw != dw->client_w || nch != dw->client_h) {
+                            dw->client_w = ncw;
+                            dw->client_h = nch;
+                            wm_dyn_push_simple(dw, PXE_EV_RESIZE);
+                            wm_dyn_push_simple(dw, PXE_EV_REDRAW);
+                        }
+                    }
+                } else if (dgw == 1) { ww2 = rs_bw; wh2 = rs_bh; }
                 else if (dgw == 2) { wcw = rs_bw; wch = rs_bh; }
                 else if (dgw == 3) { cpw = rs_bw; cph = rs_bh; }
                 else if (dgw == 4) { fmw = rs_bw; fmh = rs_bh; }
@@ -1243,6 +1912,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             }
             resizing = 0;
             rs_active = 0;
+            rs_win_id = -1;
             dgw = 0;
             redraw = 1;
             need_mr = 1;
@@ -1255,19 +1925,27 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         if (mb & 1) {
             int nwx = mx - dgo;
             int nwy = my - dgoy;
-            int nww = dgw==1?ww:dgw==2?ww2:dgw==3?wcw:dgw==4?cpw:dgw==5?fmw:dgw==6?edw:dgw==7?siw:dgw==8?pzw:dgw==9?imw:dgw==10?npw:insw;
-            int nwh = dgw==1?wh:dgw==2?wh2:dgw==3?wch:dgw==4?cph:dgw==5?fmh:dgw==6?edh:dgw==7?sih:dgw==8?pzh:dgw==9?imh:dgw==10?nph:insh;
-            if (dgw==1&&am) nwh=20;
-            if (dgw==2&&cm) nwh=20;
-            if (dgw==3&&clm) nwh=20;
-            if (dgw==4&&cpm) nwh=20;
-            if (dgw==5&&fmm) nwh=20;
-            if (dgw==6&&edm) nwh=20;
-            if (dgw==7&&sim) nwh=20;
-            if (dgw==8&&pzm) nwh=20;
-            if (dgw==9&&imm) nwh=20;
-            if (dgw==10&&npm) nwh=20;
-            if (dgw==11&&insm) nwh=20;
+            int nww = 100, nwh = 20;
+            int win_id = dgw - 1;
+            if (win_id >= WM_DYN_BASE && win_id < WM_DYN_BASE + WM_DYN_MAX) {
+                wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
+                nww = dw->client_w + 2;
+                nwh = dw->shaded ? 20 : (dw->client_h + 20);
+            } else {
+                nww = dgw==1?ww:dgw==2?ww2:dgw==3?wcw:dgw==4?cpw:dgw==5?fmw:dgw==6?edw:dgw==7?siw:dgw==8?pzw:dgw==9?imw:dgw==10?npw:insw;
+                nwh = dgw==1?wh:dgw==2?wh2:dgw==3?wch:dgw==4?cph:dgw==5?fmh:dgw==6?edh:dgw==7?sih:dgw==8?pzh:dgw==9?imh:dgw==10?nph:insh;
+                if (dgw==1&&am) nwh=20;
+                if (dgw==2&&cm) nwh=20;
+                if (dgw==3&&clm) nwh=20;
+                if (dgw==4&&cpm) nwh=20;
+                if (dgw==5&&fmm) nwh=20;
+                if (dgw==6&&edm) nwh=20;
+                if (dgw==7&&sim) nwh=20;
+                if (dgw==8&&pzm) nwh=20;
+                if (dgw==9&&imm) nwh=20;
+                if (dgw==10&&npm) nwh=20;
+                if (dgw==11&&insm) nwh=20;
+            }
             if (nwx < 0) nwx = 0;
             if (nwy < 20) nwy = 20;
             if (nwx + nww > screen_w) nwx = screen_w - nww;
@@ -1280,10 +1958,19 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             drag_active = 1;
         } else {
             if (drag_active) {
-                int* cwx = dgw==1?&wx:dgw==2?&wx2:dgw==3?&wcx:dgw==4?&cpx:dgw==5?&fmx:dgw==6?&edx:dgw==7?&six:dgw==8?&pzx:dgw==9?&imx:dgw==10?&npx:&insx;
-                int* cwy = dgw==1?&wy:dgw==2?&wy2:dgw==3?&wcy:dgw==4?&cpy:dgw==5?&fmy:dgw==6?&edy:dgw==7?&siy:dgw==8?&pzy:dgw==9?&imy:dgw==10?&npy:&insy;
-                *cwx = drag_bx;
-                *cwy = drag_by;
+                int win_id = dgw - 1;
+                if (win_id >= WM_DYN_BASE && win_id < WM_DYN_BASE + WM_DYN_MAX) {
+                    wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
+                    if (dw->used) {
+                        dw->x = drag_bx;
+                        dw->y = drag_by;
+                    }
+                } else {
+                    int* cwx = dgw==1?&wx:dgw==2?&wx2:dgw==3?&wcx:dgw==4?&cpx:dgw==5?&fmx:dgw==6?&edx:dgw==7?&six:dgw==8?&pzx:dgw==9?&imx:dgw==10?&npx:&insx;
+                    int* cwy = dgw==1?&wy:dgw==2?&wy2:dgw==3?&wcy:dgw==4?&cpy:dgw==5?&fmy:dgw==6?&edy:dgw==7?&siy:dgw==8?&pzy:dgw==9?&imy:dgw==10?&npy:&insy;
+                    *cwx = drag_bx;
+                    *cwy = drag_by;
+                }
             }
             dragging = 0;
             drag_active = 0;
@@ -1304,7 +1991,13 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
     if (mb_release && clp) {
         if (in_cl(mx, my, clcx, clcy)) {
-            if (clw==1) { wv=0; am=0; }
+            int win_id = clw - 1;
+            if (win_id >= WM_DYN_BASE && win_id < WM_DYN_BASE + WM_DYN_MAX) {
+                wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
+                if (dw->used) {
+                    wm_dyn_push_simple(dw, PXE_EV_CLOSE);
+                }
+            } else if (clw==1) { wv=0; am=0; }
             else if (clw==2) { cv=0; cm=0; }
             else if (clw==3) { clv=0; clm=0; }
             else if (clw==4) { cpv=0; cpm=0; }
@@ -1322,19 +2015,30 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
     if (mb_release && mip) {
-        int mcx = (miw==1?wx+ww-16:miw==2?wx2+ww2-16:miw==3?wcx+wcw-16:miw==4?cpx+cpw-16:miw==5?fmx+fmw-16:miw==6?edx+edw-16:miw==7?six+siw-16:miw==8?pzx+pzw-16:miw==9?imx+imw-16:miw==10?npx+npw-16:insx+insw-16);
-        int mcy = (miw==1?wy+4:miw==2?wy2+4:miw==3?wcy+4:miw==4?cpy+4:miw==5?fmy+4:miw==6?edy+4:miw==7?siy+4:miw==8?pzy+4:miw==9?imy+4:miw==10?npy+4:insy+4);
-        if (in_mi(mx, my, mcx, mcy)) {
-            if (miw==1) am=!am;
-            else if (miw==2) cm=!cm;
-            else if (miw==3) clm=!clm;
-            else if (miw==4) cpm=!cpm;
-            else if (miw==5) fmm=!fmm;
-            else if (miw==6) edm=!edm;
-            else if (miw==7) sim=!sim;
-            else if (miw==8) pzm=!pzm;
-            else if (miw==9) imm=!imm;
-            else if (miw==10) npm=!npm;
+        int win_id = miw - 1;
+        int mcx = 0, mcy = 0;
+        if (win_id >= WM_DYN_BASE && win_id < WM_DYN_BASE + WM_DYN_MAX) {
+            wm_dyn_win_t* dw = &g_dyn_wins[win_id - WM_DYN_BASE];
+            mcx = dw->x + (dw->client_w + 2) - 16;
+            mcy = dw->y + 4;
+            if (dw->used && in_mi(mx, my, mcx, mcy)) {
+                dw->shaded = !dw->shaded;
+            }
+        } else {
+            mcx = (miw==1?wx+ww-16:miw==2?wx2+ww2-16:miw==3?wcx+wcw-16:miw==4?cpx+cpw-16:miw==5?fmx+fmw-16:miw==6?edx+edw-16:miw==7?six+siw-16:miw==8?pzx+pzw-16:miw==9?imx+imw-16:miw==10?npx+npw-16:insx+insw-16);
+            mcy = (miw==1?wy+4:miw==2?wy2+4:miw==3?wcy+4:miw==4?cpy+4:miw==5?fmy+4:miw==6?edy+4:miw==7?siy+4:miw==8?pzy+4:miw==9?imy+4:miw==10?npy+4:insy+4);
+            if (in_mi(mx, my, mcx, mcy)) {
+                if (miw==1) am=!am;
+                else if (miw==2) cm=!cm;
+                else if (miw==3) clm=!clm;
+                else if (miw==4) cpm=!cpm;
+                else if (miw==5) fmm=!fmm;
+                else if (miw==6) edm=!edm;
+                else if (miw==7) sim=!sim;
+                else if (miw==8) pzm=!pzm;
+                else if (miw==9) imm=!imm;
+                else if (miw==10) npm=!npm;
+            }
         }
         mip = 0;
         miw = 0;
@@ -1347,7 +2051,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     if (mb_press && !okp && !clp && !mip) {
         int top_id = -1;
         int win_x = 0, win_y = 0, win_w = 0, win_h = 0, win_min = 0;
-        for (int i = 10; i >= 0; i--) {
+        for (int i = WM_Z_COUNT - 1; i >= 0; i--) {
             int id = z_order[i];
             int rx, ry, rw, rh, vis, min;
             get_win_geom(id, &rx, &ry, &rw, &rh, &vis, &min);
@@ -1367,8 +2071,13 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             redraw = 1;
             need_mr = 1;
 
-            // 1. Check Close & Minimize buttons on title bar (disabled for Installer id==10)
-            if (top_id != 10) {
+            bool no_close = (top_id == 10);
+            if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
+                no_close = (g_dyn_wins[top_id - WM_DYN_BASE].flags & PXE_WIN_NO_CLOSE) != 0;
+            }
+
+            // 1. Check Close & Minimize buttons on title bar
+            if (!no_close) {
                 int cx = win_x + 4, cy = win_y + 3;
                 if (in_cl(mx, my, cx, cy)) {
                     clp = 1; clw = top_id + 1; clcx = cx; clcy = cy;
@@ -1402,20 +2111,37 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             // 3. If window is not minimized, check Resize Corner or Content Click
             if (!win_min) {
                 int real_h = (top_id == 3) ? cph : win_h;
-                if ((top_id == 1 || top_id == 2 || top_id == 3 || top_id == 4 ||
-                     top_id == 5 || top_id == 6 || top_id == 7 || top_id == 8) &&
-                    rs_dir(mx, my, win_x, win_y, win_w, real_h)) {
+                bool can_resize = (top_id == 1 || top_id == 2 || top_id == 3 || top_id == 4 ||
+                                   top_id == 5 || top_id == 6 || top_id == 7 || top_id == 8);
+                if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
+                    can_resize = (g_dyn_wins[top_id - WM_DYN_BASE].flags & PXE_WIN_RESIZABLE) != 0;
+                }
+                if (can_resize && rs_dir(mx, my, win_x, win_y, win_w, real_h)) {
                     resizing = 1;
                     rs_active = 0;
+                    rs_win_id = top_id;
                     rs_bx = win_x;
                     rs_by = win_y;
                     rs_bw = win_w;
                     rs_bh = real_h;
-                    dgw = (top_id == 8) ? 9 : top_id;
+                    dgw = (top_id >= WM_DYN_BASE) ? 0 : ((top_id == 8) ? 9 : top_id);
                     return;
                 }
 
-                if (top_id == 0) {
+                if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
+                    wm_dyn_win_t* dw = &g_dyn_wins[top_id - WM_DYN_BASE];
+                    if (dw->used) {
+                        g_pxe_capture_win = top_id;
+                        pxe_event_t ev;
+                        memset(&ev, 0, sizeof(ev));
+                        ev.type = PXE_EV_MOUSE_DOWN;
+                        ev.win_id = dw->win_id;
+                        ev.x = mx - (dw->x + 1);
+                        ev.y = my - (dw->y + 19);
+                        ev.buttons = (uint32_t)(mb ? mb : mb_press);
+                        wm_dyn_push_event(dw, &ev);
+                    }
+                } else if (top_id == 0) {
                     int bx = wx + ww - 50, by = wy + 160;
                     if (in_ok(mx, my, bx, by)) {
                         okp = 1; okbx = bx; okby = by;
@@ -1482,4 +2208,344 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
 
     if(redraw) need_mr=1;
+}
+
+/* =========================================================================
+ * Public PXE Dynamic Compositor & Notification API
+ * ========================================================================= */
+
+static void wm_pxe_destroy_slot(int slot) {
+    if (slot < 0 || slot >= WM_DYN_MAX) return;
+    uint64_t flags = wm_irq_save();
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used) {
+        wm_irq_restore(flags);
+        return;
+    }
+
+    int win_id = dw->win_id;
+    uint32_t owner_pid = dw->owner_pid;
+    phys_addr_t cphys = dw->canvas_phys;
+    size_t cpages = dw->canvas_pages;
+    uint64_t uvirt = dw->canvas_uvirt;
+
+    memset(dw, 0, sizeof(*dw));
+    if (g_pxe_capture_win == win_id) g_pxe_capture_win = -1;
+    wm_irq_restore(flags);
+
+    process_t* owner = process_find_by_pid(owner_pid);
+    if (owner) {
+        if (uvirt && owner->pml4 && owner->pml4 != vmm_get_kernel_pml4()) {
+            for (size_t pg = 0; pg < cpages; pg++) {
+                vmm_unmap_page(owner->pml4, uvirt + pg * PAGE_SIZE);
+            }
+        }
+        if (owner->mem_pages_used >= cpages) {
+            owner->mem_pages_used -= cpages;
+        } else {
+            owner->mem_pages_used = 0;
+        }
+    }
+
+    if (cphys && cpages > 0) {
+        pmm_free_pages(cphys, cpages);
+    }
+
+    scheduler_wake_win_waiters(win_id);
+    g_pxe_present_dirty = 1;
+}
+
+int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_surface_t* out_surf) {
+    if (!proc || !desc || !out_surf) return -1;
+
+    uint32_t format = (desc->format == PXE_CANVAS_RGB32) ? PXE_CANVAS_RGB32 : PXE_CANVAS_PAL8;
+    int cw = desc->w;
+    int ch = desc->h;
+    if (cw < 64) cw = 64;
+    if (cw > 1276) cw = 1276;
+    if (ch < 32) ch = 32;
+    if (ch > 996) ch = 996;
+
+    int min_w = (desc->min_w > 64) ? desc->min_w : 64;
+    int min_h = (desc->min_h > 32) ? desc->min_h : 32;
+    if (min_w > cw) min_w = cw;
+    if (min_h > ch) min_h = ch;
+
+    int alloc_stride = (desc->flags & PXE_WIN_RESIZABLE) ? 1280 : cw;
+    int alloc_h      = (desc->flags & PXE_WIN_RESIZABLE) ? 1024 : ch;
+    int bpp_bytes    = (format == PXE_CANVAS_RGB32) ? 4 : 1;
+    int pitch        = alloc_stride * bpp_bytes;
+    size_t total_sz  = (size_t)pitch * (size_t)alloc_h;
+    size_t pages     = (total_sz + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    uint64_t irq_flags = wm_irq_save();
+    int slot = -1;
+    for (int i = 0; i < WM_DYN_MAX; i++) {
+        if (!g_dyn_wins[i].used) {
+            slot = i;
+            memset(&g_dyn_wins[i], 0, sizeof(g_dyn_wins[i]));
+            g_dyn_wins[i].used = true;
+            g_dyn_wins[i].win_id = WM_DYN_BASE + i;
+            g_dyn_wins[i].owner_pid = proc->pid;
+            break;
+        }
+    }
+    wm_irq_restore(irq_flags);
+    if (slot < 0) return -1;
+
+    phys_addr_t cphys = pmm_alloc_pages(pages);
+    if (!cphys) {
+        g_dyn_wins[slot].used = false;
+        return -1;
+    }
+
+    void* kvirt = phys_to_virt(cphys);
+    if (format == PXE_CANVAS_RGB32) {
+        uint32_t* p32 = (uint32_t*)kvirt;
+        size_t count = (pages * PAGE_SIZE) / 4;
+        for (size_t k = 0; k < count; k++) p32[k] = 0x00C0C0C0u;
+    } else {
+        memset(kvirt, PXE_COL_LIGHT_GRAY, pages * PAGE_SIZE);
+    }
+
+    uint64_t uvirt = 0;
+    if (proc->exec_ring == 3) {
+        uvirt = proc->next_shm_virt;
+        proc->next_shm_virt += NEKO_SHM_STRIDE;
+        if (!process_map_shared(proc, cphys, uvirt, pages * PAGE_SIZE)) {
+            pmm_free_pages(cphys, pages);
+            g_dyn_wins[slot].used = false;
+            return -1;
+        }
+    }
+    proc->mem_pages_used += pages;
+
+    static int s_cascade = 0;
+    int ow = cw + 2;
+    int oh = ch + 20;
+    int wx_pos = desc->x;
+    int wy_pos = desc->y;
+    if (desc->flags & PXE_WIN_CENTERED) {
+        wx_pos = (screen_w - ow) / 2;
+        wy_pos = 20 + (screen_h - 20 - oh) / 2;
+    } else if (wx_pos < 0 || wy_pos < 0) {
+        int step = s_cascade % 6;
+        s_cascade++;
+        wx_pos = 72 + step * 24;
+        wy_pos = 42 + step * 22;
+    }
+    if (wx_pos + ow > screen_w) wx_pos = screen_w - ow;
+    if (wy_pos + oh > screen_h) wy_pos = screen_h - oh;
+    if (wx_pos < 0) wx_pos = 0;
+    if (wy_pos < 20) wy_pos = 20;
+
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    dw->x = wx_pos;
+    dw->y = wy_pos;
+    dw->client_w = cw;
+    dw->client_h = ch;
+    dw->min_w = min_w;
+    dw->min_h = min_h;
+    dw->alloc_stride = alloc_stride;
+    dw->alloc_h = alloc_h;
+    dw->pitch = pitch;
+    dw->format = format;
+    dw->flags = desc->flags;
+    dw->shaded = 0;
+    dw->canvas_phys = cphys;
+    dw->canvas_pages = pages;
+    dw->canvas_kvirt = kvirt;
+    dw->canvas_uvirt = uvirt;
+    strncpy(dw->title, desc->title, sizeof(dw->title) - 1);
+    dw->title[sizeof(dw->title) - 1] = '\0';
+
+    out_surf->pixels = (proc->exec_ring == 3) ? (void*)(uintptr_t)uvirt : kvirt;
+    out_surf->width  = cw;
+    out_surf->height = ch;
+    out_surf->stride = alloc_stride;
+    out_surf->pitch  = pitch;
+    out_surf->format = format;
+
+    irq_flags = wm_irq_save();
+    bring_to_top(dw->win_id);
+    wm_irq_restore(irq_flags);
+
+    wm_dyn_push_simple(dw, PXE_EV_REDRAW);
+    wm_notify_banner(dw->title);
+    g_pxe_present_dirty = 1;
+    return dw->win_id;
+}
+
+int wm_pxe_win_destroy(uint32_t owner_pid, int win_id) {
+    int slot = win_id - WM_DYN_BASE;
+    if (slot < 0 || slot >= WM_DYN_MAX) return -1;
+    if (!g_dyn_wins[slot].used || g_dyn_wins[slot].owner_pid != owner_pid) return -1;
+    wm_pxe_destroy_slot(slot);
+    return 0;
+}
+
+void wm_pxe_destroy_all_for_pid(uint32_t pid) {
+    if (pid == 0) return;
+    for (int i = 0; i < WM_DYN_MAX; i++) {
+        if (g_dyn_wins[i].used && g_dyn_wins[i].owner_pid == pid) {
+            wm_pxe_destroy_slot(i);
+        }
+    }
+}
+
+int wm_pxe_win_set_title(uint32_t owner_pid, int win_id, const char* title) {
+    int slot = win_id - WM_DYN_BASE;
+    if (slot < 0 || slot >= WM_DYN_MAX || !title) return -1;
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != owner_pid) return -1;
+    strncpy(dw->title, title, sizeof(dw->title) - 1);
+    dw->title[sizeof(dw->title) - 1] = '\0';
+    g_pxe_present_dirty = 1;
+    return 0;
+}
+
+int wm_pxe_win_set_menu(uint32_t owner_pid, int win_id, const pxe_menu_bar_t* menu) {
+    int slot = win_id - WM_DYN_BASE;
+    if (slot < 0 || slot >= WM_DYN_MAX) return -1;
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != owner_pid) return -1;
+    if (!menu || menu->menu_count <= 0) {
+        dw->has_menu = false;
+        memset(&dw->menu_bar, 0, sizeof(dw->menu_bar));
+    } else {
+        dw->menu_bar = *menu;
+        if (dw->menu_bar.menu_count > PXE_MAX_MENUS) {
+            dw->menu_bar.menu_count = PXE_MAX_MENUS;
+        }
+        dw->has_menu = true;
+    }
+    g_pxe_present_dirty = 1;
+    return 0;
+}
+
+int wm_pxe_win_get_surface(struct process* proc, int win_id, pxe_win_surface_t* out_surf) {
+    int slot = win_id - WM_DYN_BASE;
+    if (!proc || !out_surf || slot < 0 || slot >= WM_DYN_MAX) return -1;
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != proc->pid) return -1;
+    out_surf->pixels = (proc->exec_ring == 3) ? (void*)(uintptr_t)dw->canvas_uvirt : dw->canvas_kvirt;
+    out_surf->width  = dw->client_w;
+    out_surf->height = dw->client_h;
+    out_surf->stride = dw->alloc_stride;
+    out_surf->pitch  = dw->pitch;
+    out_surf->format = dw->format;
+    return 0;
+}
+
+int wm_pxe_win_present(uint32_t owner_pid, int win_id, int rx, int ry, int rw, int rh) {
+    (void)rx; (void)ry; (void)rw; (void)rh;
+    int slot = win_id - WM_DYN_BASE;
+    if (slot < 0 || slot >= WM_DYN_MAX) return -1;
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != owner_pid) return -1;
+    g_pxe_present_dirty = 1;
+    return 0;
+}
+
+int wm_pxe_win_poll_event(uint32_t owner_pid, int win_id, pxe_event_t* out_ev) {
+    int slot = win_id - WM_DYN_BASE;
+    if (!out_ev || slot < 0 || slot >= WM_DYN_MAX) return -1;
+    uint64_t flags = wm_irq_save();
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != owner_pid) {
+        wm_irq_restore(flags);
+        return -1;
+    }
+    if (dw->ev_count <= 0) {
+        wm_irq_restore(flags);
+        return 0;
+    }
+    *out_ev = dw->ev_queue[dw->ev_head];
+    dw->ev_head = (dw->ev_head + 1) % WM_EV_QUEUE_CAP;
+    dw->ev_count--;
+    wm_irq_restore(flags);
+    return 1;
+}
+
+int wm_pxe_count_windows_for_pid(uint32_t pid) {
+    int cnt = 0;
+    for (int i = 0; i < WM_DYN_MAX; i++) {
+        if (g_dyn_wins[i].used && g_dyn_wins[i].owner_pid == pid) cnt++;
+    }
+    return cnt;
+}
+
+int wm_pxe_focus_pid(uint32_t pid, const char* activate_arg) {
+    int focused = 0;
+    for (int i = 0; i < WM_DYN_MAX; i++) {
+        wm_dyn_win_t* dw = &g_dyn_wins[i];
+        if (dw->used && dw->owner_pid == pid) {
+            dw->shaded = 0;
+            uint64_t flags = wm_irq_save();
+            bring_to_top(dw->win_id);
+            wm_irq_restore(flags);
+
+            pxe_event_t ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.type = PXE_EV_ACTIVATE;
+            ev.win_id = dw->win_id;
+            if (activate_arg && activate_arg[0]) {
+                strncpy(ev.text, activate_arg, sizeof(ev.text) - 1);
+            }
+            wm_dyn_push_event(dw, &ev);
+            focused = 1;
+        }
+    }
+    if (focused) g_pxe_present_dirty = 1;
+    return focused ? 0 : -1;
+}
+
+void wm_notify_banner(const char* msg) {
+    if (!msg) return;
+    uint64_t flags = wm_irq_save();
+    int i = 0;
+    while (msg[i] && i < (int)sizeof(opened_msg) - 1) {
+        opened_msg[i] = msg[i];
+        i++;
+    }
+    opened_msg[i] = '\0';
+    opened_msg_timer = 120;
+    g_pxe_present_dirty = 1;
+    wm_irq_restore(flags);
+}
+
+void wm_notify_app_crash(uint32_t pid, const char* app_name, const char* exc_name, uint64_t rip, uint64_t cr2) {
+    uint64_t flags = wm_irq_save();
+    crash_pid = pid;
+    memset(crash_app_name, 0, sizeof(crash_app_name));
+    memset(crash_exc_name, 0, sizeof(crash_exc_name));
+    if (app_name) strncpy(crash_app_name, app_name, sizeof(crash_app_name) - 1);
+    if (exc_name) strncpy(crash_exc_name, exc_name, sizeof(crash_exc_name) - 1);
+    crash_rip = rip;
+    crash_cr2 = cr2;
+    crash_ok_pressed = 0;
+    crash_dialog_active = 1;
+    g_pxe_present_dirty = 1;
+    wm_irq_restore(flags);
+    speaker_beep();
+}
+
+void wm_request_ring0_launch(const char* path, const char* arg1) {
+    if (!path || !path[0]) return;
+    uint64_t flags = wm_irq_save();
+    memset(r0_confirm_path, 0, sizeof(r0_confirm_path));
+    memset(r0_confirm_arg1, 0, sizeof(r0_confirm_arg1));
+    strncpy(r0_confirm_path, path, sizeof(r0_confirm_path) - 1);
+    if (arg1 && arg1[0]) {
+        strncpy(r0_confirm_arg1, arg1, sizeof(r0_confirm_arg1) - 1);
+        r0_confirm_has_arg1 = 1;
+    } else {
+        r0_confirm_has_arg1 = 0;
+    }
+    r0_cancel_pressed = 0;
+    r0_run_pressed = 0;
+    r0_confirm_active = 1;
+    g_pxe_present_dirty = 1;
+    wm_irq_restore(flags);
+    speaker_beep();
 }

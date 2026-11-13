@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 200
+PIXEL_NEKO_BUILD_NUMBER ?= 210
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -71,6 +71,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/process/scheduler.c \
            kernel/process/elf.c \
            kernel/process/ipc.c \
+           kernel/process/pxe.c \
            kernel/splash.c \
            kernel/driver.c \
            kernel/pdv.c \
@@ -148,6 +149,17 @@ PDV_DRIVERS = vmwgfx mach64 nvg7x fdc ac97 ct4810 cmi8738 hdaudio
 PDV_OUT_DIR = build/pdevice
 PDV_TARGETS = $(patsubst %,$(PDV_OUT_DIR)/%.pdv,$(PDV_DRIVERS))
 
+# Native PXE SDK & Example Executables (*.pxe in DEMO\)
+PXE_OUT_DIR = build/pxe_examples
+PXE_EXAMPLES = $(PXE_OUT_DIR)/hello.pxe $(PXE_OUT_DIR)/mini_taskmon.pxe
+PXE_SDK_STAMP = build/pxe_sdk.stamp
+PXE_SDK_DEPS = sdk/pxe_app.mk \
+               include/neko_abi.h \
+               sdk/crt/crt0_r3.asm sdk/crt/crt0_r0.asm sdk/crt/pxe_pie.ld \
+               sdk/libpxe/runtime_r3.c sdk/libpxe/runtime_r0.c \
+               sdk/libpxe/gfx.c sdk/libpxe/str.c \
+               $(wildcard sdk/include/pxe/*.h)
+
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
 C_OBJS   = $(C_SRCS:.c=.o) $(UACPI_SRCS:.c=.o)
@@ -156,11 +168,36 @@ OBJS     = $(ASM_OBJS) $(C_OBJS) $(USER_EMBED_OBJ)
 
 TARGET   = bin/kernel.elf
 
-.PHONY: all pdv iso clean version
+.PHONY: all pdv pxe-sdk pxe-examples iso clean version
 
-all: version $(TARGET) $(PDV_TARGETS)
+all: version $(TARGET) $(PDV_TARGETS) $(PXE_EXAMPLES)
 
 pdv: $(PDV_TARGETS)
+
+pxe-sdk: $(PXE_SDK_STAMP)
+
+pxe-examples: $(PXE_EXAMPLES)
+
+$(PXE_SDK_STAMP): $(PXE_SDK_DEPS)
+	@mkdir -p build
+	$(MAKE) -C sdk/examples/hello_gui sdk_libs
+	@touch $@
+
+$(PXE_OUT_DIR)/hello.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
+                          sdk/examples/hello_gui/hello.c \
+                          sdk/examples/hello_gui/hello.pxi \
+                          sdk/examples/hello_gui/Makefile
+	$(MAKE) -C sdk/examples/hello_gui \
+		OBJ_DIR="$(abspath $(PXE_OUT_DIR)/obj_hello)" \
+		OUT_DIR="$(abspath $(PXE_OUT_DIR))"
+
+$(PXE_OUT_DIR)/mini_taskmon.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
+                                 sdk/examples/mini_taskmon/mini_taskmon.c \
+                                 sdk/examples/mini_taskmon/mini_taskmon.pxi \
+                                 sdk/examples/mini_taskmon/Makefile
+	$(MAKE) -C sdk/examples/mini_taskmon \
+		OBJ_DIR="$(abspath $(PXE_OUT_DIR)/obj_mini_taskmon)" \
+		OUT_DIR="$(abspath $(PXE_OUT_DIR))"
 
 version:
 	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh
@@ -221,4 +258,4 @@ iso: all
 	@bash scripts/make_iso.sh
 
 clean:
-	rm -rf bin build iso_root $(OBJS) *.iso *.log boot/limine/limine
+	rm -rf bin build iso_root $(OBJS) *.iso *.log boot/limine/limine sdk/lib sdk/crt/*.o

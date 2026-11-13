@@ -28,9 +28,9 @@ jobs:
 
     - name: Ensure Unix line endings and script permissions
       run: |
-        dos2unix Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk drivers/pdv/*/*.pdi || \
-          sed -i 's/\r$//' Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk drivers/pdv/*/*.pdi
-        chmod +x scripts/*.sh scripts/*.py
+        dos2unix Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile || \
+          sed -i 's/\r$//' Makefile boot/limine.conf boot/limine-installed.conf scripts/*.sh scripts/*.py sdk/ddk/pdv_driver.mk sdk/pxe_app.mk sdk/crt/*.ld sdk/crt/*.asm sdk/tools/*.py drivers/pdv/*/*.pdi sdk/examples/*/*.pxi sdk/examples/*/Makefile
+        chmod +x scripts/*.sh scripts/*.py sdk/tools/*.py
 
     - name: Build Kernel and Hybrid ISO
       run: |
@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A200a"
+          VERSION="26A210a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -84,21 +84,22 @@ jobs:
       with:
         tag_name: ${{ env.TAG_NAME }}
         target_commitish: ${{ github.sha }}
-        name: "Pixel Neko OS ${{ env.TAG_NAME }} (Native PDV Drivers)"
+        name: "Pixel Neko OS ${{ env.TAG_NAME }} (PXE Executable & SDK Runtime)"
         body: |
           ## Pixel Neko OS ${{ env.TAG_NAME }} (Snow Neko)
 
-          > **Pre-release (Beta Phase 1)**: Native self-contained loadable driver architecture (`PDEVICE\*.pdv`).
+          > **Pre-release (Beta Phase 2)**: Dual-Ring Native `*.pxe` Executable Architecture, Window Compositor & SDK (`sdk/`).
 
-          ### Loadable PDV Driver Architecture (`*.pdv`)
-          - Added native `*.pdv` driver container format (`PDV1`), build-time `.pdi` hardware matching manifests, `scripts/mkpdv.py` packager, and standalone DDK (`sdk/ddk/`).
-          - Added kernel ELF64 `ET_REL` module loader with strict W^X high-half virtual memory protection (`0xFFFFFFFF90000000`–`0xFFFFFFFFBFFFFFFF`), CRC32 validation, and `pdv_kernel_api_t` DDI table.
-          - Automatic hardware enumeration and driver loading from `<CD>:\PDEVICE\*.pdv` in Live/Installer mode and `<SYS>:\PDEVICE\*.pdv` on local installed systems (with `nopdv=1` Safe Mode bypass).
-          - Migrated 8 display, audio, and legacy storage drivers out of `kernel.elf` into `PDEVICE\`:
-            - Display: `vmwgfx.pdv`, `mach64.pdv`, `nvg7x.pdv`
-            - Audio: `hdaudio.pdv`, `ac97.pdv`, `ct4810.pdv`, `cmi8738.pdv`
-            - Storage: `fdc.pdv`
-          - USB controllers/classes and core boot storage remain built into `kernel.elf`.
+          ### Native PXE Architecture (`*.pxe`)
+          - Standardized `PXE\x01` container format (`pxe_format.h`), `.pxi` application manifests, IEEE 802.3 CRC32 verification, 16x16 icon resources, and `sdk/tools/mkpxe.py` packager.
+          - Dual-Ring ELF64 PIE loader (`kernel/process/pxe.c`):
+            - **Ring 3 (`PXE_RING_3`)**: W^X per-process page tables, dynamic heap (`sbrk`), `SYSCALL`/`IRET` runtime, and Mac System Bomb crash isolation dialog (`wm_notify_app_crash`).
+            - **Ring 0 (`PXE_RING_0`)**: High-half PIE slot loading (`0xFFFFFFFFC0000000`–`0xFFFFFFFFEFFFFFFF`), `g_pxe_ring0_api` dispatch table, and untrusted Ring 0 desktop confirmation prompt.
+          - Dynamic Window Compositor (`wm/wm.c`) supporting up to 32 PXE canvases (`PAL8` / `RGB32`), live resizing, top menu bar integration, and File Manager double-click `.pxe` launching.
+          - Native SDK (`sdk/pxe_app.mk`, `sdk/crt/`, `sdk/libpxe/`, `sdk/include/pxe/`) with example apps packaged under `DEMO/`:
+            - `DEMO\hello.pxe` (Ring 3 GUI demo + crash recovery test)
+            - `DEMO\mini_taskmon.pxe` (Ring 0 privileged process & memory monitor)
+          - Provisioned `APPS\` and `DEMO\` directories in Live CD and offline installer payload (`iso_root/payload/`).
 
           ### Release Assets
           - **Bootable hybrid ISO**: `pixel-neko-os_${{ env.VERSION }}.iso`
@@ -106,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes Phase 1 of the modular driver architecture on `beta` as `v26A200a`.
+          This revision publishes Phase 2 (Native PXE Runtime & SDK) on `beta` as `v26A210a`.
         prerelease: true
         make_latest: false
         files: |

@@ -6,6 +6,7 @@
 #include "vfs.h"
 #include "disk.h"
 #include "wm.h"
+#include "pxe.h"
 #include "speaker.h"
 
 #define MAX_FM_FILES 512
@@ -343,7 +344,18 @@ static void open_file(int idx) {
             audioplayer_open_file(full);
             npv = 1; npm = 0;
             bring_to_top(9);
+        } else if (ext[0] == 'p' && ext[1] == 'x' && ext[2] == 'e') {
+            char full[256];
+            my_strcpy(full, current_path);
+            int flen = my_strlen(full);
+            if (flen > 0 && full[flen-1] != '\\') my_strcat(full, "\\");
+            my_strcat(full, files[idx].name);
+            if (pxe_ui_launch_from_path(full, NULL) < 0) {
+                show_error_msg("PXE Launch Failed", "Invalid or corrupted image");
+            }
+            redraw = 1;
         } else {
+            show_error_msg("Action failed", "Or unsupported.");
             show_error = 1;
             error_timer = 300;
         }

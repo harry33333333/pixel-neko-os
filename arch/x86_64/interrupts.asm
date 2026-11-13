@@ -6,6 +6,7 @@ default rel
 
 extern c_exception_handler
 extern c_irq_handler
+extern c_kernel_yield_handler
 extern arch_restore_trap_frame
 
 %macro ISR_NOERRCODE 1
@@ -110,31 +111,36 @@ common_isr_stub:
     ; 3. Clear direction flag (System V ABI requirement)
     cld
 
-    ; 4. Call C-level exception dispatcher
+    ; 4. Call C-level exception dispatcher (returns trap_frame_t* in RAX)
     call c_exception_handler
+    mov rsp, rax
+    jmp arch_restore_trap_frame
 
-    ; 5. Restore registers
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rbp
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-
-    ; 6. Clean up error code and interrupt number
-    add rsp, 16
-
-    ; 7. 64-bit interrupt return
-    iretq
+; Software Interrupt 0x81: Cooperative Kernel Thread Yield / Sleep / Exit
+global isr_kernel_yield
+isr_kernel_yield:
+    push 0
+    push 0x81
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    cld
+    call c_kernel_yield_handler
+    mov rsp, rax
+    jmp arch_restore_trap_frame
 
 ; Common IRQ Handler Stub
 common_irq_stub:

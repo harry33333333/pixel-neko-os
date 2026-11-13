@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A200a"
+    BUILD_ID="26A210a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -31,8 +31,8 @@ fi
 
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
-mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE
-mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE
+mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE iso_root/APPS iso_root/DEMO
+mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE iso_root/payload/APPS iso_root/payload/DEMO
 mkdir -p iso_root/payload/system
 
 # Copy kernel
@@ -54,6 +54,17 @@ if [ "${#PDV_FILES[@]}" -eq 0 ]; then
 fi
 cp "${PDV_FILES[@]}" iso_root/PDEVICE/
 cp "${PDV_FILES[@]}" iso_root/payload/PDEVICE/
+
+# Copy native loadable PXE example executables for Live CD and offline installer payload
+shopt -s nullglob
+PXE_FILES=(build/pxe_examples/*.pxe)
+shopt -u nullglob
+if [ "${#PXE_FILES[@]}" -eq 0 ]; then
+    echo "Error: No PXE example binaries found in build/pxe_examples/! Run make first."
+    exit 1
+fi
+cp "${PXE_FILES[@]}" iso_root/DEMO/
+cp "${PXE_FILES[@]}" iso_root/payload/DEMO/
 
 # Copy Limine BIOS & UEFI CD boot images
 cp boot/limine/limine-bios.sys iso_root/boot/limine/
@@ -87,6 +98,8 @@ Pixel Neko OS ${BUILD_ID} complete offline payload
 
 Static system executable: boot/kernel.elf
 Loadable hardware drivers: PDEVICE/*.pdv
+Native example PXE executables: DEMO/*.pxe
+System PXE app directory: APPS/ (reserved for modular system apps)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
@@ -97,6 +110,10 @@ Loadable PDV drivers in PDEVICE/:
 - Display: vmwgfx.pdv, mach64.pdv, nvg7x.pdv
 - Audio: hdaudio.pdv, ac97.pdv, ct4810.pdv, cmi8738.pdv
 - Storage: fdc.pdv
+
+Example PXE applications in DEMO/:
+- hello.pxe (Ring 3 GUI sandboxed demo with menu & crash test)
+- mini_taskmon.pxe (Ring 0 privileged process/memory monitor)
 
 Embedded in kernel.elf:
 - Core kernel, USB stack, boot storage and filesystems

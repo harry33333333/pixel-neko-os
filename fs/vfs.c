@@ -608,6 +608,39 @@ int vfs_write_file(const char* path, const unsigned char* buffer,
     return VFS_ERR_READONLY;
 }
 
+int vfs_mkdir(const char* path) {
+    if (!path) return VFS_ERR_NOT_FOUND;
+    vfs_drive_t* drive = vfs_get_drive(path[0]);
+    if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
+    if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+        return fat_create_dir(path) == 0 ? VFS_OK : VFS_ERR_IO;
+    }
+    return VFS_ERR_UNSUPPORTED;
+}
+
+int vfs_unlink(const char* path) {
+    if (!path) return VFS_ERR_NOT_FOUND;
+    vfs_drive_t* drive = vfs_get_drive(path[0]);
+    if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
+    if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+        return fat_delete(path) == 0 ? VFS_OK : VFS_ERR_IO;
+    }
+    return VFS_ERR_UNSUPPORTED;
+}
+
+int vfs_rename(const char* old_path, const char* new_path) {
+    if (!old_path || !new_path) return VFS_ERR_NOT_FOUND;
+    vfs_drive_t* drive = vfs_get_drive(old_path[0]);
+    if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
+    if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+        return fat_rename(old_path, new_path) == 0 ? VFS_OK : VFS_ERR_IO;
+    }
+    return VFS_ERR_UNSUPPORTED;
+}
+
 int vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb,
                         int* is_known) {
     vfs_drive_t* drive = vfs_get_drive(letter);
