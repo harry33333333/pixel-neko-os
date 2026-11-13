@@ -3,25 +3,25 @@ OUTPUT_ARCH(i386:x86-64)
 
 PHDRS
 {
-    text    PT_LOAD FLAGS(5); /* PF_R | PF_X */
     rodata  PT_LOAD FLAGS(4); /* PF_R */
+    text    PT_LOAD FLAGS(5); /* PF_R | PF_X */
     data    PT_LOAD FLAGS(6); /* PF_R | PF_W */
     dynamic PT_DYNAMIC FLAGS(6);
 }
 
 SECTIONS
 {
-    /* Keep base >= 0x1000 so no defined symbol ever has st_value == 0 */
-    . = 0x1000;
-
-    .text : ALIGN(0x1000) {
-        *(.text .text.*)
-        *(.plt .plt.* .iplt)
-    } :text
-
-    . = ALIGN(0x1000);
+    /*
+     * GNU ld -pie forces e_type = ET_EXEC if the lowest PT_LOAD segment starts
+     * at p_vaddr != 0. Put .rodata (PF_R) at vaddr 0 with a 16-byte sentinel so
+     * PT_LOAD[0] is at vaddr 0 (preserving ET_DYN), while every real symbol in
+     * .rodata/.text/.data keeps st_value != 0 (required by pxe.c relocator).
+     */
+    . = 0;
 
     .rodata : ALIGN(0x1000) {
+        QUAD(0x4F4B454E5F505845);
+        QUAD(0x0000000100000000);
         *(.rodata .rodata.*)
     } :rodata
 
@@ -38,6 +38,13 @@ SECTIONS
     .dynstr   : { *(.dynstr) } :rodata
     .hash     : { *(.hash) } :rodata
     .gnu.hash : { *(.gnu.hash) } :rodata
+
+    . = ALIGN(0x1000);
+
+    .text : ALIGN(0x1000) {
+        *(.text .text.*)
+        *(.plt .plt.* .iplt)
+    } :text
 
     . = ALIGN(0x1000);
 
