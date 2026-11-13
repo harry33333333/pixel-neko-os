@@ -569,12 +569,22 @@ static void ct4810_stop_dma(void) {
     }
 }
 
+static unsigned int ct4810_get_dma_frame_pos(void);
+
 static void ct4810_pause_dma(int pause) {
     if (!g_ct_present || !g_ct_io_base) return;
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    if (pause) sctrl |= CT_SERIAL_P2_PAUSE;
-    else sctrl &= ~CT_SERIAL_P2_PAUSE;
-    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+    if (pause) {
+        sctrl |= CT_SERIAL_P2_PAUSE;
+        ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+    } else {
+        unsigned int frame = ct4810_get_dma_frame_pos();
+        g_ct_last_seen_frame = frame;
+        g_ct_last_half_playing = (frame < CT_DMA_HALF_FRAMES) ? 0 : 1;
+        g_ct_last_toggle_tick = global_tick;
+        sctrl &= ~CT_SERIAL_P2_PAUSE;
+        ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+    }
 }
 
 static void ct4810_set_volume(int master_vol, int pcm_vol) {

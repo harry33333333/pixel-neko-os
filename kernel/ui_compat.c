@@ -649,8 +649,14 @@ void ui_desktop_poll(void) {
     ui_draw_cursor(backbuffer);
 
     if (full_sync) {
+        int dx, dy, dw, dh;
+        while (wm_pop_dirty_rect(&dx, &dy, &dw, &dh)) {}
         copy_fullscreen_to_lfb(backbuffer);
     } else {
+        int dx, dy, dw, dh;
+        while (wm_pop_dirty_rect(&dx, &dy, &dw, &dh)) {
+            copy_rect_to_lfb(backbuffer, dx, dy, dw, dh);
+        }
         if (has_drag_box && (box_changed || moved)) {
             ui_sync_drag_box_to_lfb(backbuffer, bx, by, bw, bh);
         }

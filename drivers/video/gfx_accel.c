@@ -136,11 +136,30 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
     *out_count = cnt;
 }
 
+static bool gfx_names_equal(const char* a, const char* b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (*a != *b) return false;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 int gfx_accel_register_pdv_driver(const pdv_display_driver_t* drv) {
     if (!drv || !drv->name || !drv->probe) return -1;
-    if (g_pdv_display_count >= MAX_PDV_DISPLAY_DRIVERS) return -1;
 
-    int slot = g_pdv_display_count++;
+    int slot = -1;
+    for (int i = 0; i < g_pdv_display_count; i++) {
+        if (gfx_names_equal(g_pdv_display_drivers[i].name, drv->name)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_pdv_display_count >= MAX_PDV_DISPLAY_DRIVERS) return -1;
+        slot = g_pdv_display_count++;
+    }
     g_pdv_display_drivers[slot] = *drv;
     g_pdv_display_descs[slot].name     = g_pdv_display_drivers[slot].name;
     g_pdv_display_descs[slot].category = DRIVER_CATEGORY_DISPLAY;

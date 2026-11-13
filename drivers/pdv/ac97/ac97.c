@@ -298,6 +298,10 @@ static void ac97_pause_dma(int pause) {
         nabm_write8(AC97_NABM_PO_CR, 0);
         g_ac97_paused = 1;
     } else {
+        uint8_t civ = nabm_read8(AC97_NABM_PO_CIV) & 0x1FU;
+        g_ac97_last_half = (civ < 16) ? 0 : 1;
+        nabm_write16(AC97_NABM_PO_SR, AC97_SR_W1C_MASK);
+        nabm_write8(AC97_NABM_PO_LVI, (uint8_t)((civ + AC97_BDL_ENTRIES - 1) & 0x1FU));
         nabm_write8(AC97_NABM_PO_CR, AC97_CR_RPBM);
         g_ac97_paused = 0;
     }

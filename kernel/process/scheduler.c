@@ -292,6 +292,7 @@ void scheduler_compositor_entry(void) {
         usb_poll();
         audio_poll();
         ui_desktop_poll();
+        audio_poll();
         scheduler_reap_zombies();
 
         if (g_acpi_shutdown_test_requested && g_tick_count >= 200) {

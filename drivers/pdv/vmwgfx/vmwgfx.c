@@ -22,6 +22,10 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_CAP_8BIT_EMULATION  0x00000100U
 #define SVGA_CAP_3D              0x00000200U
 #define SVGA_CAP_EXTENDED_FIFO   0x00000400U
+#define SVGA_CAP_GMR             0x00100000U
+#define SVGA_CAP_GMR2            0x00400000U
+#define SVGA_CAP_SCREEN_OBJECT_2 0x00800000U
+#define SVGA_CAP_GBOBJECTS       0x08000000U
 
 #define SVGA_ID_0 0x90000000U
 #define SVGA_ID_1 0x90000001U
@@ -49,7 +53,10 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_REG_CONFIG_DONE    20
 #define SVGA_REG_SYNC           21
 #define SVGA_REG_BUSY           22
+#define SVGA_REG_GUEST_ID       23
 #define SVGA_REG_CURSOR_ID      24
+#define SVGA_REG_MEMORY_SIZE    47
+#define GUEST_OS_OTHER          0x5010U
 #define SVGA_REG_CURSOR_X       25
 #define SVGA_REG_CURSOR_Y       26
 #define SVGA_REG_CURSOR_ON      27
@@ -92,12 +99,16 @@ static unsigned int g_fifo_size;
 static unsigned int g_fifo_min;
 static unsigned int g_fifo_max;
 static unsigned int g_vram_size;
+static unsigned int g_raw_vram_size;
+static unsigned int g_memory_size;
 static unsigned int g_fb_size;
 static uint64_t g_bar1_size;
 static unsigned int g_capabilities;
 static unsigned int g_interface_id;
 static unsigned int g_max_width;
 static unsigned int g_max_height;
+static unsigned int g_raw_max_width;
+static unsigned int g_raw_max_height;
 static int g_boot_width;
 static int g_boot_height;
 static int g_width;
@@ -269,9 +280,6 @@ static void svga_upload_default_palette(void) {
 static uint64_t svga_effective_fb_limit(void) {
     uint64_t limit = 0;
     if (g_vram_size > 0) limit = (uint64_t)g_vram_size;
-    if (g_fb_size > 0 && (limit == 0 || (uint64_t)g_fb_size < limit)) {
-        limit = (uint64_t)g_fb_size;
-    }
     if (g_bar1_size > 0 && (limit == 0 || g_bar1_size < limit)) {
         limit = g_bar1_size;
     }
@@ -429,17 +437,44 @@ static int vmware_svga_probe_hw(void) {
         return 0;
     }
 
+    svga_write_reg(SVGA_REG_GUEST_ID, GUEST_OS_OTHER);
     g_capabilities = svga_read_reg(SVGA_REG_CAPABILITIES);
-    g_vram_size = svga_read_reg(SVGA_REG_VRAM_SIZE);
+    g_raw_vram_size = svga_read_reg(SVGA_REG_VRAM_SIZE);
     g_fb_size = svga_read_reg(SVGA_REG_FB_SIZE);
     g_bar1_size = g_pci->bar[1].size;
-    if (g_vram_size == 0 && g_bar1_size > 0) {
+    g_memory_size = 0;
+    if ((g_capabilities & (SVGA_CAP_GMR | SVGA_CAP_GMR2 | SVGA_CAP_GBOBJECTS)) != 0U) {
+        unsigned int mem_sz = svga_read_reg(SVGA_REG_MEMORY_SIZE);
+        if (mem_sz != 0xFFFFFFFFU) {
+            g_memory_size = mem_sz;
+        }
+    }
+    g_vram_size = g_raw_vram_size;
+    if (g_memory_size > g_raw_vram_size && g_bar1_size > (uint64_t)g_raw_vram_size) {
+        uint64_t usable = (uint64_t)g_memory_size;
+        if (g_bar1_size > 0 && g_bar1_size < usable) {
+            usable = g_bar1_size;
+        }
+        g_vram_size = (usable > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (unsigned int)usable;
+    } else if (g_vram_size == 0 && g_bar1_size > 0) {
         g_vram_size = (g_bar1_size > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (unsigned int)g_bar1_size;
     }
-    g_max_width = svga_read_reg(SVGA_REG_MAX_WIDTH);
-    g_max_height = svga_read_reg(SVGA_REG_MAX_HEIGHT);
+    g_raw_max_width = svga_read_reg(SVGA_REG_MAX_WIDTH);
+    g_raw_max_height = svga_read_reg(SVGA_REG_MAX_HEIGHT);
+    g_max_width = g_raw_max_width;
+    g_max_height = g_raw_max_height;
     if (g_max_width < PDV_DISPLAY_MIN_WIDTH) g_max_width = 1920;
     if (g_max_height < PDV_DISPLAY_MIN_HEIGHT) g_max_height = 1200;
+    if (g_vram_size >= 32U * 1024U * 1024U) {
+        if (g_max_width < 3840U) g_max_width = 3840U;
+        if (g_max_height < 2160U) g_max_height = 2160U;
+    } else if (g_vram_size >= 16U * 1024U * 1024U) {
+        if (g_max_width < 2560U) g_max_width = 2560U;
+        if (g_max_height < 1600U) g_max_height = 1600U;
+    } else if (g_vram_size >= 4U * 1024U * 1024U) {
+        if (g_max_width < 1920U) g_max_width = 1920U;
+        if (g_max_height < 1200U) g_max_height = 1200U;
+    }
 
     pdv_fb_surface_t boot_surf;
     g_kapi->fb_get_surface(&boot_surf);
@@ -459,10 +494,12 @@ static int vmware_svga_probe_hw(void) {
     g_probed = 1;
     svga_rebuild_mode_table();
     g_status = "Detected, mode not configured";
-    klog_info("[SVGA] %s id=0x%X caps=0x%X vram=%uKB fb_ap=%uKB bar1=%uKB max=%ux%u modes=%d",
+    klog_info("[SVGA] %s id=0x%X caps=0x%X raw_vram=%uKB mem=%uKB eff_vram=%uKB fb=%uKB bar1=%uKB raw_max=%ux%u eff_max=%ux%u modes=%d",
               g_name, g_interface_id, g_capabilities,
+              g_raw_vram_size / 1024U, g_memory_size / 1024U,
               g_vram_size / 1024U, g_fb_size / 1024U,
               (unsigned int)(g_bar1_size / 1024ULL),
+              g_raw_max_width, g_raw_max_height,
               g_max_width, g_max_height, g_svga_mode_count);
     return 1;
 }
@@ -544,20 +581,26 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
         svga_write_reg(SVGA_REG_BPP, (unsigned int)cand_bpp);
         svga_write_reg(SVGA_REG_ENABLE, 1);
 
+        unsigned int active_enable = svga_read_reg(SVGA_REG_ENABLE);
         unsigned int active_width = svga_read_reg(SVGA_REG_WIDTH);
         unsigned int active_height = svga_read_reg(SVGA_REG_HEIGHT);
         unsigned int active_bpp = svga_read_reg(SVGA_REG_BPP);
+        unsigned int active_fb_size = svga_read_reg(SVGA_REG_FB_SIZE);
         unsigned int cand_pitch = svga_read_reg(SVGA_REG_BYTES_PER_LINE);
         unsigned int cand_fb = svga_read_reg(SVGA_REG_FB_START);
         unsigned int cand_off = svga_read_reg(SVGA_REG_FB_OFFSET);
         unsigned int minimum_pitch = (unsigned int)width * svga_bytes_per_pixel(cand_bpp);
         uint64_t fb_need = (uint64_t)cand_pitch * (uint64_t)(unsigned int)height;
 
-        if ((active_width == 0 || active_width == (unsigned int)width) &&
-            (active_height == 0 || active_height == (unsigned int)height) &&
+        if (active_enable != 0 &&
+            active_width == (unsigned int)width &&
+            active_height == (unsigned int)height &&
             (active_bpp == 0 || active_bpp == (unsigned int)cand_bpp) &&
             cand_fb != 0 && cand_pitch >= minimum_pitch &&
-            (fb_limit == 0 || (uint64_t)cand_off + fb_need <= fb_limit)) {
+            (active_fb_size == 0 || (uint64_t)active_fb_size >= fb_need) &&
+            (fb_limit == 0 || (uint64_t)cand_off + fb_need <= fb_limit) &&
+            (g_bar1_size == 0 || (uint64_t)cand_off + fb_need <= g_bar1_size)) {
+            if (active_fb_size > 0) g_fb_size = active_fb_size;
             hw_bpp = cand_bpp;
             pitch = cand_pitch;
             framebuffer = cand_fb;

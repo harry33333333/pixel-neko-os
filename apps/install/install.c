@@ -1366,7 +1366,8 @@ static int run_installation(installer_t* inst) {
         "system\\limine-installed.conf",
         "system\\PAYLOAD.TXT",
         "APPS\\install.pxe",
-        "APPS\\sysinfo.pxe"
+        "APPS\\sysinfo.pxe",
+        "APPS\\taskmgr.pxe"
     };
     for (size_t i = 0; i < sizeof(req_files) / sizeof(req_files[0]); i++) {
         char p[80];

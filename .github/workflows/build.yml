@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A221a"
+          VERSION="26A222a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -97,6 +97,7 @@ jobs:
             - **Ring 0 (`PXE_RING_0`)**: High-half PIE slot loading (`0xFFFFFFFFC0000000`–`0xFFFFFFFFEFFFFFFF`), `g_pxe_ring0_api` dispatch table, and untrusted Ring 0 desktop confirmation prompt.
           - Dynamic Window Compositor (`wm/wm.c`) supporting up to 32 PXE canvases (`PAL8` / `RGB32`), live resizing, top menu bar integration, and File Manager double-click `.pxe` launching.
           - Native SDK (`sdk/pxe_app.mk`, `sdk/crt/`, `sdk/libpxe/`, `sdk/include/pxe/`) with example apps packaged under `DEMO/`:
+            - `APPS\taskmgr.pxe` (System Task Manager, Ring 0, global `Ctrl+Shift+Esc` & menu bar)
             - `DEMO\hello.pxe` (Ring 3 GUI demo + crash recovery test)
             - `DEMO\mini_taskmon.pxe` (Ring 0 privileged process & memory monitor)
           - Provisioned `APPS\` and `DEMO\` directories in Live CD and offline installer payload (`iso_root/payload/`).
@@ -107,7 +108,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes Fixed 800x600 XP Boot Progress -> Local Saved Resolution & Fullscreen Unclosable NT6-Style Step-by-Step Installer on `beta` as `v26A221a`.
+          This revision publishes PDV Rescan Deduplication, Flicker-Free NekoPlayer + Stutter/Pause-Freeze HDA/Audio Fixes, Integrated Task Manager (`Ctrl+Shift+Esc`), VMware SVGA VRAM/MEMORY_SIZE Fix (16-32 MB `1080p@32bpp`), and Audio `*.pdv` Spec on `beta` as `v26A222a`.
         prerelease: true
         make_latest: false
         files: |

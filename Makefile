@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 221
+PIXEL_NEKO_BUILD_NUMBER ?= 222
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -153,7 +153,7 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
 
 # Built-in Modular PXE Applications (*.pxe in APPS\)
 APPS_OUT_DIR = build/apps
-APPS_PXE_NAMES = about clock calc puzzle notepad cpanel player viewer files sysinfo install
+APPS_PXE_NAMES = about clock calc puzzle notepad cpanel player viewer files sysinfo taskmgr install
 APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
 
 # Object Files

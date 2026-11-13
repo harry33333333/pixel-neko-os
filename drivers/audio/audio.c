@@ -32,11 +32,30 @@ static const pdv_audio_driver_t* g_active_driver = 0;
 static int g_audio_initialized = 0;
 static char g_last_probe_status[96] = "No Audio Device";
 
+static int audio_names_equal(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 int audio_register_pdv_driver(const pdv_audio_driver_t* drv) {
     if (!drv || !drv->name || !drv->probe) return -1;
-    if (g_pdv_audio_count >= MAX_PDV_AUDIO_DRIVERS) return -1;
 
-    int slot = g_pdv_audio_count++;
+    int slot = -1;
+    for (int i = 0; i < g_pdv_audio_count; i++) {
+        if (audio_names_equal(g_pdv_audio_drivers[i].name, drv->name)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_pdv_audio_count >= MAX_PDV_AUDIO_DRIVERS) return -1;
+        slot = g_pdv_audio_count++;
+    }
     g_pdv_audio_drivers[slot] = *drv;
     g_pdv_audio_descs[slot].name     = g_pdv_audio_drivers[slot].name;
     g_pdv_audio_descs[slot].category = DRIVER_CATEGORY_AUDIO;
@@ -549,11 +568,11 @@ int audio_play_file(const char* filepath) {
 
 void audio_pause(void) {
     if (g_audio_state == AUDIO_STATE_PLAYING) {
-        if (g_active_driver) {
-            g_active_driver->set_volume(0, 0);
-            g_active_driver->pause_dma(1);
-        }
         g_audio_state = AUDIO_STATE_PAUSED;
+        if (g_active_driver) {
+            g_active_driver->pause_dma(1);
+            g_active_driver->set_volume(0, 0);
+        }
         for (int i = 0; i < 10; i++) g_spectrum_bands[i] = 0;
         g_vu_l = 0;
         g_vu_r = 0;
@@ -703,8 +722,15 @@ void audio_poll(void) {
     if (g_audio_state != AUDIO_STATE_PLAYING) return;
     if (!audio_has_hardware() || !g_active_driver) return;
 
+    enable_fpu();
+
     int dec_count = 0;
-    int max_dec = (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) ? 48 : 12;
+    int max_dec = 0;
+    if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2U)) {
+        max_dec = 8;
+    } else if (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) {
+        max_dec = 4;
+    }
     static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
            dec_count < max_dec) {
@@ -735,6 +761,30 @@ void audio_poll(void) {
 
     int half_needed = g_active_driver->poll_half_needed();
     if (half_needed >= 0) {
+        for (int fill_try = 0;
+             fill_try < 8 && !g_eof_reached && g_queue_bytes < AUDIO_DMA_HALF_BYTES;
+             fill_try++) {
+            int samples_read = 0;
+            if (g_active_dec == DEC_WAV) {
+                samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
+            } else if (g_active_dec == DEC_FLAC) {
+                samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
+            } else if (g_active_dec == DEC_MP3) {
+                samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+            }
+            if (samples_read > 0) {
+                audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
+                                   g_audio_info.sample_rate,
+                                   g_audio_info.channels,
+                                   g_audio_info.bit_depth,
+                                   g_audio_info.is_float);
+            } else if (samples_read < 0) {
+                g_eof_reached = 1;
+                break;
+            } else {
+                break;
+            }
+        }
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
             unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
@@ -772,6 +822,7 @@ void audio_poll(void) {
         } else {
             g_active_driver->silence_half(half_needed);
             if (g_eof_reached) {
+                g_active_driver->silence_half(1 - half_needed);
                 audio_stop();
                 return;
             }

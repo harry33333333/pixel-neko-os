@@ -245,12 +245,13 @@ static int hda_direct_command(unsigned int codec, unsigned short nid,
                               unsigned short verb, unsigned short payload,
                               unsigned int* response) {
     int ready = 0;
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
+    for (int i = 0; i < 2000; i++) {
         if (!(hda_read16(HDA_REG_IRS) & HDA_IRS_BUSY)) {
             ready = 1;
             break;
         }
-        hda_delay();
+        if (i > 1500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
     if (!ready) return 0;
     if (hda_read16(HDA_REG_IRS) & HDA_IRS_VALID) {
@@ -260,14 +261,15 @@ static int hda_direct_command(unsigned int codec, unsigned short nid,
     unsigned int command = (codec << 28) | ((unsigned int)nid << 20) |
                            ((unsigned int)verb << 8) | payload;
     hda_write32(HDA_REG_IC, command);
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
+    for (int i = 0; i < 2000; i++) {
         if (hda_read16(HDA_REG_IRS) & HDA_IRS_VALID) {
             if (response) *response = hda_read32(HDA_REG_IR);
             else (void)hda_read32(HDA_REG_IR);
             hda_write16(HDA_REG_IRS, HDA_IRS_VALID);
             return 1;
         }
-        hda_delay();
+        if (i > 1500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
     return 0;
 }
@@ -290,14 +292,15 @@ static int hda_corb_command(unsigned int codec, unsigned short nid,
     pdv_dma_flush(g_kapi, &g_corb);
     hda_write16(HDA_REG_CORBWP, (unsigned short)g_corb_wp);
 
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
+    for (int i = 0; i < 4000; i++) {
         unsigned int wp = hda_read16(HDA_REG_RIRBWP) & 0xFFU;
         if (wp != old_wp) {
             unsigned int index = wp % HDA_RIRB_ENTRIES;
             if (response) *response = rirb[index].response;
             return 1;
         }
-        hda_delay();
+        if (i > 3500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
     return 0;
 }
@@ -607,8 +610,11 @@ static unsigned int hda_amp_payload(unsigned int caps, int volume,
     return payload;
 }
 
+static int g_hda_last_applied_vol = -1;
+
 static void hda_apply_volume(void) {
     if (!g_present || g_best_route_count == 0) return;
+    g_hda_last_applied_vol = g_volume;
     for (int i = 0; i < g_best_route_count; i++) {
         hda_widget_t* widget = &g_widgets[g_best_route[i]];
         int input_index = g_best_input_index[i];
@@ -895,23 +901,24 @@ static unsigned int hda_stream_format(int rate) {
 }
 
 static void hda_stream_reset(void) {
-    unsigned int control = hda_read32(g_stream_base + HDA_SD_CTL);
-    hda_write32(g_stream_base + HDA_SD_CTL,
-                control & ~(HDA_SD_RUN | HDA_SD_RESET));
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
-        if (!(hda_read32(g_stream_base + HDA_SD_CTL) & HDA_SD_RUN)) {
+    hda_write8(g_stream_base + HDA_SD_CTL,
+               (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) & ~(HDA_SD_RUN | HDA_SD_RESET)));
+    for (int i = 0; i < 4000; i++) {
+        if (!(hda_read8(g_stream_base + HDA_SD_CTL) & HDA_SD_RUN)) {
             break;
         }
-        hda_delay();
+        if (i > 3500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
-    hda_write32(g_stream_base + HDA_SD_CTL,
-                hda_read32(g_stream_base + HDA_SD_CTL) | HDA_SD_RESET);
-    for (int i = 0; i < 1000; i++) hda_delay();
-    hda_write32(g_stream_base + HDA_SD_CTL,
-                hda_read32(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RESET);
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
-        if (!(hda_read32(g_stream_base + HDA_SD_CTL) & HDA_SD_RESET)) break;
-        hda_delay();
+    hda_write8(g_stream_base + HDA_SD_CTL,
+               (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) | HDA_SD_RESET));
+    for (int i = 0; i < 64; i++) hda_delay();
+    hda_write8(g_stream_base + HDA_SD_CTL,
+               (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RESET));
+    for (int i = 0; i < 4000; i++) {
+        if (!(hda_read8(g_stream_base + HDA_SD_CTL) & HDA_SD_RESET)) break;
+        if (i > 3500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
     hda_write8(g_stream_base + HDA_SD_STS, HDA_SD_ERRORS);
 }
@@ -971,6 +978,7 @@ static void hdaudio_start_dma(void) {
     g_running = 1;
     g_paused = 0;
     g_last_current_half = 0;
+    g_hda_last_applied_vol = -1;
     hda_apply_volume();
     klog_info("[HDA ] stream start tag=%u rate=%u BDL=0x%llx PCM=0x%llx",
               (unsigned int)HDA_STREAM_TAG, (unsigned int)g_rate,
@@ -982,11 +990,12 @@ static void hdaudio_stop_dma(void) {
     if (!g_present) return;
     g_running = 0;
     g_paused = 0;
-    hda_write32(g_stream_base + HDA_SD_CTL,
-                hda_read32(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RUN);
-    for (int i = 0; i < HDA_WAIT_LOOPS; i++) {
-        if (!(hda_read32(g_stream_base + HDA_SD_CTL) & HDA_SD_RUN)) break;
-        hda_delay();
+    hda_write8(g_stream_base + HDA_SD_CTL,
+               (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RUN));
+    for (int i = 0; i < 4000; i++) {
+        if (!(hda_read8(g_stream_base + HDA_SD_CTL) & HDA_SD_RUN)) break;
+        if (i > 3500) hda_delay();
+        else __asm__ volatile("pause" ::: "memory");
     }
     int converter = g_best_route[0];
     if (converter >= 0 && converter < g_widget_count) {
@@ -1000,12 +1009,21 @@ static void hdaudio_stop_dma(void) {
 static void hdaudio_pause_dma(int pause) {
     if (!g_present || !g_running) return;
     if (pause) {
-        hda_write32(g_stream_base + HDA_SD_CTL,
-                    hda_read32(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RUN);
+        hda_write8(g_stream_base + HDA_SD_CTL,
+                   (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) & ~HDA_SD_RUN));
+        for (int i = 0; i < 4000; i++) {
+            if (!(hda_read8(g_stream_base + HDA_SD_CTL) & HDA_SD_RUN)) break;
+            if (i > 3500) hda_delay();
+            else __asm__ volatile("pause" ::: "memory");
+        }
         g_paused = 1;
     } else {
-        hda_write32(g_stream_base + HDA_SD_CTL,
-                    hda_read32(g_stream_base + HDA_SD_CTL) | HDA_SD_RUN);
+        hda_write8(g_stream_base + HDA_SD_STS, HDA_SD_ERRORS);
+        unsigned int position = hda_read32(g_stream_base + HDA_SD_LPIB);
+        if (position >= HDA_DMA_BYTES) position = 0;
+        g_last_current_half = (position < HDA_HALF_BYTES) ? 0 : 1;
+        hda_write8(g_stream_base + HDA_SD_CTL,
+                   (unsigned char)(hda_read8(g_stream_base + HDA_SD_CTL) | HDA_SD_RUN));
         g_paused = 0;
     }
 }
@@ -1014,6 +1032,7 @@ static void hdaudio_set_volume(int master_vol, int pcm_vol) {
     int volume = (master_vol + pcm_vol) / 2;
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
+    if (volume == g_volume && g_hda_last_applied_vol == volume) return;
     g_volume = volume;
     hda_apply_volume();
 }

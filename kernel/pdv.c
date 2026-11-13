@@ -330,6 +330,28 @@ static char pdv_tolower(char c) {
     return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
 }
 
+static bool pdv_str_ieq(const char* a, const char* b) {
+    if (!a || !b || !a[0] || !b[0]) return false;
+    while (*a && *b) {
+        if (pdv_tolower(*a) != pdv_tolower(*b)) return false;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static bool pdv_is_loaded(const char* filename, const char* driver_name) {
+    for (int i = 0; i < g_loaded_pdv_count; i++) {
+        if (filename && filename[0] && pdv_str_ieq(g_loaded_pdvs[i].filename, filename)) {
+            return true;
+        }
+        if (driver_name && driver_name[0] && pdv_str_ieq(g_loaded_pdvs[i].driver_name, driver_name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool pdv_ends_with_pdv(const char* name) {
     if (!name) return false;
     size_t len = strlen(name);
@@ -775,6 +797,15 @@ fail_free_phys:
 int pdv_load_file(const char* vfs_path, bool safe_mode, bool check_hw_match) {
     if (!vfs_path) return -1;
 
+    /* Extract basename early so already-loaded drivers skip redundant disk I/O */
+    const char* base_name = vfs_path;
+    for (const char* p = vfs_path; *p; p++) {
+        if (*p == '\\' || *p == '/') base_name = p + 1;
+    }
+    if (pdv_is_loaded(base_name, NULL)) {
+        return 1; /* Already loaded */
+    }
+
     vfs_dirent_t dirent;
     if (vfs_find_file(vfs_path, &dirent) != VFS_OK || dirent.is_dir ||
         dirent.size < sizeof(pdv_header_t) || dirent.size > 4U * 1024U * 1024U) {
@@ -823,18 +854,19 @@ int pdv_load_file(const char* vfs_path, bool safe_mode, bool check_hw_match) {
         return 1; /* Skipped by safe_mode policy */
     }
 
+    char dname[33];
+    pdv_safe_str(dname, sizeof(dname), hdr->driver_name, sizeof(hdr->driver_name));
+    if (pdv_is_loaded(base_name, dname)) {
+        pmm_free_pages(buf_phys, buf_pages);
+        return 1; /* Already loaded */
+    }
+
     const pdv_match_rule_t* rules = (const pdv_match_rule_t*)(buf + hdr->match_table_off);
     if (check_hw_match) {
         if (!(hdr->flags & PDV_FLAG_BOOT_START) || !pdv_matches_hardware(hdr, rules)) {
             pmm_free_pages(buf_phys, buf_pages);
             return 1; /* Hardware not present on this machine */
         }
-    }
-
-    /* Extract basename for logging */
-    const char* base_name = vfs_path;
-    for (const char* p = vfs_path; *p; p++) {
-        if (*p == '\\' || *p == '/') base_name = p + 1;
     }
 
     int load_rc = pdv_load_and_start_elf(buf + hdr->elf_payload_off,

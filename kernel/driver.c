@@ -14,16 +14,27 @@ static driver_record_t g_drivers[DRIVER_MAX];
 static int g_driver_count;
 static int g_active[5] = { -1, -1, -1, -1, -1 };
 
+static int driver_names_equal(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 int driver_register(const driver_descriptor_t* descriptor) {
     if (!descriptor || !descriptor->name || !descriptor->probe) return -1;
-    if (g_driver_count >= DRIVER_MAX) return -2;
 
     for (int i = 0; i < g_driver_count; i++) {
         if (g_drivers[i].descriptor.category == descriptor->category &&
-            g_drivers[i].descriptor.name == descriptor->name) {
+            driver_names_equal(g_drivers[i].descriptor.name, descriptor->name)) {
+            g_drivers[i].descriptor = *descriptor;
             return 0;
         }
     }
+    if (g_driver_count >= DRIVER_MAX) return -2;
 
     g_drivers[g_driver_count].descriptor = *descriptor;
     g_drivers[g_driver_count].state = DRIVER_STATE_REGISTERED;

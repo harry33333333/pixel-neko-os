@@ -17,6 +17,7 @@ void wm_draw(unsigned char* v);
 int wm_is_dragging(void);
 int wm_get_drag_box(int* x, int* y, int* w, int* h);
 int wm_need_mouse_reset(void);
+int wm_pop_dirty_rect(int* x, int* y, int* w, int* h);
 void wm_set_input_event_tick(int tick);
 int wm_get_input_event_tick(void);
 

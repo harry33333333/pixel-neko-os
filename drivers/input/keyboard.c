@@ -135,6 +135,10 @@ int keyboard_get_ctrl(void) {
     return g_ctrl ? 1 : 0;
 }
 
+int keyboard_get_shift(void) {
+    return g_shift ? 1 : 0;
+}
+
 void keyboard_push_virtual(int key) {
     if (key) legacy_push(key);
 }

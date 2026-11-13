@@ -486,9 +486,12 @@ static void submit_load_pdv(sysinfo_app_t* s) {
     }
     int rc = pxe_r0_load_pdv_file(s->load_path);
     refresh_all(s);
-    if (rc >= 0) {
+    if (rc == 0) {
         s->notice_is_err = 0;
         snprintf(s->notice, sizeof(s->notice), "Loaded driver (%d total active).", s->pdv_count);
+    } else if (rc > 0) {
+        s->notice_is_err = 0;
+        snprintf(s->notice, sizeof(s->notice), "Driver already loaded or skipped (%d active).", s->pdv_count);
     } else {
         s->notice_is_err = 1;
         snprintf(s->notice, sizeof(s->notice), "Load failed (err=%d). Check path / PDV1 / HW match.", rc);
@@ -501,7 +504,7 @@ static void do_rescan_pdevice(sysinfo_app_t* s) {
     refresh_all(s);
     if (rc >= 0) {
         s->notice_is_err = 0;
-        snprintf(s->notice, sizeof(s->notice), "PDEVICE\\ rescan complete (%d active drivers).", s->pdv_count);
+        snprintf(s->notice, sizeof(s->notice), "PDEVICE\\ rescan complete (%d new, %d active).", rc, s->pdv_count);
     } else {
         s->notice_is_err = 1;
         snprintf(s->notice, sizeof(s->notice), "PDEVICE\\ rescan failed (err=%d).", rc);

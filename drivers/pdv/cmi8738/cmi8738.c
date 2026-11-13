@@ -345,13 +345,23 @@ static void cmi8738_stop_dma(void) {
     }
 }
 
+static unsigned int cmi8738_get_dma_frame_pos(void);
+
 static void cmi8738_pause_dma(int pause) {
     if (!g_cmi_present || !g_cmi_io_base) return;
 
     unsigned int f0 = cmi_read32(CMI_REG_FUNCTRL0);
-    if (pause) f0 |= CMI_PAUSE0;
-    else       f0 &= ~CMI_PAUSE0;
-    cmi_write32(CMI_REG_FUNCTRL0, f0);
+    if (pause) {
+        f0 |= CMI_PAUSE0;
+        cmi_write32(CMI_REG_FUNCTRL0, f0);
+    } else {
+        unsigned int frame = cmi8738_get_dma_frame_pos();
+        g_last_seen_frame = frame;
+        g_last_half_playing = (frame < CMI_DMA_HALF_FRAMES) ? 0 : 1;
+        g_last_toggle_tick = global_tick;
+        f0 &= ~CMI_PAUSE0;
+        cmi_write32(CMI_REG_FUNCTRL0, f0);
+    }
 }
 
 static void cmi8738_set_volume(int master_vol, int pcm_vol) {

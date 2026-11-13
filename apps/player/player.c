@@ -37,6 +37,13 @@ typedef struct {
     int  open_modal;
     char open_input[256];
     int  open_len;
+
+    uint8_t* back_pixels;
+    uint8_t* bg_cache;
+    int      back_w;
+    int      back_h;
+    int      back_pitch;
+    size_t   back_cap;
 } player_t;
 
 static int has_audio_ext(const char* name) {
@@ -188,14 +195,46 @@ static const int k_btn_x[7] = { 10, 50, 96, 142, 188, 228, 278 };
 static const int k_btn_w[7] = { 36, 42, 42,  42,  36,  46,  54 };
 static const char* k_btn_lbl[7] = { "|<<", ">", "||", "[]", ">>|", "Open", "Mute" };
 
-static void render_player(const pxe_win_surface_t* surf, const player_t* pl) {
-    /* Classic dithered dark platinum panel */
-    for (int y = 0; y < surf->height; y++) {
-        for (int x = 0; x < surf->width; x++) {
-            pxe_put_pixel(surf, x, y, ((x + y) & 1) ? PXE_COL_LIGHT_GRAY : PXE_COL_DARK_GRAY);
+static int ensure_backbuffer(player_t* pl, const pxe_win_surface_t* surf) {
+    if (!surf || !surf->pixels || surf->width <= 0 || surf->height <= 0 || surf->pitch <= 0) {
+        return -1;
+    }
+    size_t need = (size_t)surf->height * (size_t)surf->pitch;
+    if (pl->back_pixels && pl->bg_cache &&
+        pl->back_w == surf->width && pl->back_h == surf->height &&
+        pl->back_pitch == surf->pitch && pl->back_cap >= need) {
+        return 0;
+    }
+    if (need > pl->back_cap) {
+        uint8_t* np = (uint8_t*)malloc(need);
+        uint8_t* nb = (uint8_t*)malloc(need);
+        if (!np || !nb) {
+            if (np) free(np);
+            if (nb) free(nb);
+            return -1;
+        }
+        if (pl->back_pixels) free(pl->back_pixels);
+        if (pl->bg_cache) free(pl->bg_cache);
+        pl->back_pixels = np;
+        pl->bg_cache = nb;
+        pl->back_cap = need;
+    }
+    pl->back_w = surf->width;
+    pl->back_h = surf->height;
+    pl->back_pitch = surf->pitch;
+
+    pxe_win_surface_t bg_surf = *surf;
+    bg_surf.pixels = pl->bg_cache;
+    for (int y = 0; y < bg_surf.height; y++) {
+        uint8_t* row = pl->bg_cache + (size_t)y * (size_t)bg_surf.pitch;
+        for (int x = 0; x < bg_surf.width; x++) {
+            row[x] = (uint8_t)(((x + y) & 1) ? PXE_COL_LIGHT_GRAY : PXE_COL_DARK_GRAY);
         }
     }
+    return 0;
+}
 
+static void render_player_lcd_seek(const pxe_win_surface_t* surf, const player_t* pl) {
     /* 1. Retro LCD panel */
     int lcd_x = 10, lcd_y = 8, lcd_w = surf->width - 20, lcd_h = 68;
     pxe_draw_bevel_box(surf, lcd_x, lcd_y, lcd_w, lcd_h, 1, PXE_COL_BLACK);
@@ -300,7 +339,9 @@ static void render_player(const pxe_win_surface_t* surf, const player_t* pl) {
         pxe_fill_rect(surf, sb_x + 2, sb_y + 2, prog_w, sb_h - 4, PXE_COL_BLUE);
     }
     pxe_draw_bevel_box(surf, sb_x + 2 + prog_w, sb_y - 2, 7, sb_h + 4, 0, PXE_COL_LIGHT_GRAY);
+}
 
+static void render_player_body(const pxe_win_surface_t* surf, const player_t* pl) {
     /* 3. Transport buttons (y=104) */
     int dis = !pl->st.has_hardware;
     for (int i = 0; i < 7; i++) {
@@ -383,6 +424,59 @@ static void render_player(const pxe_win_surface_t* surf, const player_t* pl) {
     }
 }
 
+static void present_player_frame(player_t* pl, int win_id, const pxe_win_surface_t* surf,
+                                 int full_redraw) {
+    if (ensure_backbuffer(pl, surf) != 0) {
+        /* Fallback direct draw if OOM */
+        for (int y = 0; y < surf->height; y++) {
+            uint8_t* row = (uint8_t*)surf->pixels + (size_t)y * (size_t)surf->pitch;
+            for (int x = 0; x < surf->width; x++) {
+                row[x] = (uint8_t)(((x + y) & 1) ? PXE_COL_LIGHT_GRAY : PXE_COL_DARK_GRAY);
+            }
+        }
+        render_player_lcd_seek(surf, pl);
+        render_player_body(surf, pl);
+        pxe_win_present(win_id);
+        return;
+    }
+
+    pxe_win_surface_t off = *surf;
+    off.pixels = pl->back_pixels;
+    size_t row_bytes = (size_t)surf->width;
+    if (full_redraw || pl->open_modal) {
+        size_t total = (size_t)surf->height * (size_t)surf->pitch;
+        memcpy(pl->back_pixels, pl->bg_cache, total);
+        render_player_lcd_seek(&off, pl);
+        render_player_body(&off, pl);
+        for (int y = 0; y < surf->height; y++) {
+            memcpy((uint8_t*)surf->pixels + (size_t)y * (size_t)surf->pitch,
+                   pl->back_pixels + (size_t)y * (size_t)surf->pitch, row_bytes);
+        }
+        pxe_win_present(win_id);
+    } else {
+        int y0 = 8;
+        int rh = 92;
+        if (y0 + rh > surf->height) rh = surf->height - y0;
+        if (rh > 0) {
+            for (int y = y0; y < y0 + rh; y++) {
+                memcpy(pl->back_pixels + (size_t)y * (size_t)surf->pitch,
+                       pl->bg_cache + (size_t)y * (size_t)surf->pitch, row_bytes);
+            }
+            render_player_lcd_seek(&off, pl);
+            int x0 = 8;
+            int rw = surf->width - 16;
+            if (rw > 0) {
+                for (int y = y0; y < y0 + rh; y++) {
+                    memcpy((uint8_t*)surf->pixels + (size_t)y * (size_t)surf->pitch + x0,
+                           pl->back_pixels + (size_t)y * (size_t)surf->pitch + x0,
+                           (size_t)rw);
+                }
+                pxe_win_present_rect(win_id, x0, y0, rw, rh);
+            }
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     player_t* pl = (player_t*)calloc(1, sizeof(player_t));
     if (!pl) return 1;
@@ -427,7 +521,9 @@ int main(int argc, char** argv) {
     pl->open_len = 3;
 
     int dirty = 1;
+    int lcd_dirty = 0;
     int running = 1;
+    uint64_t next_anim_tick = 0;
 
     while (running) {
         pxe_event_t ev;
@@ -620,44 +716,65 @@ int main(int argc, char** argv) {
         if (rc < 0) break;
 
         /* Periodic telemetry update for spectrum / VU / marquee / clock */
+        uint64_t now_tick = pxe_get_ticks();
         pxe_audio_status_t cur;
         if (pxe_audio_get_status(&cur) == 0) {
-            if (cur.state != pl->st.state ||
-                cur.position_sec != pl->st.position_sec ||
-                cur.volume != pl->st.volume ||
-                cur.muted != pl->st.muted ||
-                cur.has_hardware != pl->st.has_hardware ||
-                cur.state == 1) {
+            int core_changed = (cur.state != pl->st.state ||
+                                cur.position_sec != pl->st.position_sec ||
+                                cur.duration_sec != pl->st.duration_sec ||
+                                cur.volume != pl->st.volume ||
+                                cur.muted != pl->st.muted ||
+                                cur.has_hardware != pl->st.has_hardware);
+            int meter_changed = (cur.state == 1 && now_tick >= next_anim_tick &&
+                                 (cur.vu_left != pl->st.vu_left ||
+                                  cur.vu_right != pl->st.vu_right ||
+                                  memcmp(cur.spectrum, pl->st.spectrum, sizeof(cur.spectrum)) != 0));
+            if (core_changed || meter_changed) {
+                if (cur.state != pl->st.state ||
+                    cur.volume != pl->st.volume ||
+                    cur.muted != pl->st.muted ||
+                    cur.has_hardware != pl->st.has_hardware) {
+                    dirty = 1;
+                } else {
+                    lcd_dirty = 1;
+                }
                 pl->st = cur;
-                dirty = 1;
             }
         }
 
         if (!pl->st.has_hardware) {
             pl->blink_tick++;
-            if ((pl->blink_tick % 10) == 0) dirty = 1;
-        } else if (pl->st.state == 1) {
+            if ((pl->blink_tick % 10) == 0) lcd_dirty = 1;
+        } else if (pl->st.state == 1 && now_tick >= next_anim_tick) {
             int tlen = (int)strlen(pl->display_title);
             if (tlen > 28) {
                 pl->marquee_tick++;
-                if ((pl->marquee_tick % 3) == 0) {
+                if ((pl->marquee_tick % 2) == 0) {
                     pl->marquee_pos++;
                     if (pl->marquee_pos >= tlen + 4) pl->marquee_pos = 0;
-                    dirty = 1;
+                    lcd_dirty = 1;
                 }
             }
         }
 
-        if (dirty && running) {
-            render_player(&surf, pl);
-            pxe_win_present(win_id);
+        if (now_tick >= next_anim_tick) {
+            next_anim_tick = now_tick + 7; /* ~70 ms (~14 Hz) smooth meter & marquee pacing */
+        }
+
+        if ((dirty || lcd_dirty) && running) {
+            present_player_frame(pl, win_id, &surf, dirty);
             dirty = 0;
-        } else if (running) {
-            pxe_sleep_ms(50);
+            lcd_dirty = 0;
+        }
+        if (running) {
+            pxe_sleep_ms((pl->drag_seek || pl->drag_vol) ? 16 : 45);
         }
     }
 
     pxe_win_destroy(win_id);
+    if (pl->back_pixels) free(pl->back_pixels);
+    if (pl->bg_cache) free(pl->bg_cache);
     free(pl);
     return 0;
 }
+
