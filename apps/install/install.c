@@ -64,10 +64,6 @@ typedef struct {
     int  log_count;
 } installer_t;
 
-static uint16_t get_le16(const uint8_t* p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-
 static uint32_t get_le32(const uint8_t* p) {
     return (uint32_t)p[0]
          | ((uint32_t)p[1] << 8)

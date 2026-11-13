@@ -182,7 +182,7 @@ static int uninit_dialog_active=0;
 static int uninit_dialog_checked=0;
 static int uninit_ignore_pressed=0, uninit_init_pressed=0;
 
-static void icon(unsigned char* v, int x, int y, unsigned char bg, const char* lb, int sel);
+static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, const char* lb, int sel);
 
 static unsigned char cmos_read(unsigned char a){outb(0x70,a);return inb(0x71);}
 static int bcd_to_int(unsigned char b){return(b>>4)*10+(b&0x0F);}
@@ -816,7 +816,6 @@ static void draw_menu_popup(unsigned char* v, int x, int y, int w, int h)
 static void draw_menubar(unsigned char* v)
 {
     bool install_mode = ui_install_mode_requested();
-    int active_win = top_visible_win_id();
     wm_dyn_win_t* pxe_mb_win = (!install_mode) ? get_active_pxe_menubar_win() : NULL;
 
     for(int y=0; y<20; y++) for(int x=0; x<screen_w; x++) PUT_PIXEL(v, x, y, 15);
