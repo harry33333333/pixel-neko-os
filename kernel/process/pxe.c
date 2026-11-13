@@ -349,6 +349,57 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     return 0;
 }
 
+int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
+    if (!out) return -NEKO_EINVAL;
+    memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+
+    int has_drv = gfx_accel_has_valid_driver();
+    uint32_t flags = 0;
+    if (has_drv) {
+        flags |= PXE_DISP_FLAG_DRIVER_ACTIVE | PXE_DISP_FLAG_UNLIMITED_RES;
+    }
+    if (gfx_accel_is_hardware_2d_active()) {
+        flags |= PXE_DISP_FLAG_HW_2D;
+    }
+    out->flags       = flags;
+    out->current_w   = screen_w;
+    out->current_h   = screen_h;
+    out->current_bpp = screen_bpp;
+    out->min_w       = GFX_MIN_WIDTH;
+    out->min_h       = GFX_MIN_HEIGHT;
+    out->max_w       = gfx_accel_get_max_width();
+    out->max_h       = gfx_accel_get_max_height();
+    out->bpp_mask    = (uint32_t)gfx_accel_get_supported_bpp_mask();
+    out->vram_bytes  = (uint64_t)gfx_accel_get_vram_size();
+
+    if (gfx_accel_get_name()) {
+        strncpy(out->driver_name, gfx_accel_get_name(), sizeof(out->driver_name) - 1);
+    }
+    if (gfx_accel_get_status()) {
+        strncpy(out->driver_status, gfx_accel_get_status(), sizeof(out->driver_status) - 1);
+    }
+
+    int total = gfx_accel_get_mode_count();
+    if (total > (int)PXE_DISP_MAX_MODES) total = (int)PXE_DISP_MAX_MODES;
+    int written = 0;
+    for (int i = 0; i < total; i++) {
+        int mw = 0, mh = 0;
+        unsigned char bmask = 0;
+        unsigned char pref = 0;
+        if (gfx_accel_get_mode(i, &mw, &mh, &bmask, &pref)) {
+            out->modes[written].width = (uint16_t)mw;
+            out->modes[written].height = (uint16_t)mh;
+            out->modes[written].bpp_mask = bmask;
+            out->modes[written].preferred = pref;
+            out->modes[written].reserved = 0U;
+            written++;
+        }
+    }
+    out->mode_count = written;
+    return 0;
+}
+
 int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char* str_arg) {
     if (proc && proc->exec_ring == 3 && !(proc->pxe_flags & PXE_FLAG_SYS_SETTINGS)) {
         return -NEKO_EPERM;
@@ -358,7 +409,7 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             int w = arg0 & 0xFFFF;
             int h = (arg0 >> 16) & 0xFFFF;
             int bpp = arg1;
-            if (w < 320 || h < 200) return -NEKO_EINVAL;
+            if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT) return -NEKO_EINVAL;
             if (w != screen_w || h != screen_h || bpp != screen_bpp) {
                 if (!gfx_accel_try_set_mode(w, h, bpp)) return -NEKO_EINVAL;
             }
@@ -370,7 +421,7 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             int w = arg0 & 0xFFFF;
             int h = (arg0 >> 16) & 0xFFFF;
             int bpp = arg1;
-            if (w < 320 || h < 200) return -NEKO_EINVAL;
+            if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT) return -NEKO_EINVAL;
             if (!gfx_accel_try_set_mode(w, h, bpp)) return -NEKO_EINVAL;
             wm_request_desktop_redraw();
             return 0;
@@ -1086,7 +1137,8 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .vfs_remount_all      = r0_api_vfs_remount_all,
     .power_control        = r0_api_power_control,
     .sync_filesystems     = r0_api_sync_filesystems,
-    .init_uninit_disk     = r0_api_init_uninit_disk
+    .init_uninit_disk     = r0_api_init_uninit_disk,
+    .get_display_caps     = pxe_kern_get_display_caps
 };
 
 /* =========================================================================

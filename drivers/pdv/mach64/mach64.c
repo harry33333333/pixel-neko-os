@@ -23,7 +23,9 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_CRTC_GEN_CNTL        0x001C
 #define MACH64_MEM_CNTL             0x00B0
 #define MACH64_GEN_TEST_CNTL        0x00D0
+#define MACH64_CNFG_CNTL            0x00DC
 #define MACH64_CNFG_CHIP_ID         0x00E0
+#define MACH64_CNFG_STAT0           0x00E4
 #define MACH64_DST_OFF_PITCH        0x0100
 #define MACH64_DST_Y_X              0x010C
 #define MACH64_DST_WIDTH_HEIGHT     0x0118
@@ -40,76 +42,197 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_GUI_TRAJ_CNTL        0x0330
 #define MACH64_GUI_STAT             0x0338
 
+#define MACH64_MAX_MODES            24
+
 static int g_ati_active = 0;
 static const char* g_ati_chip_name = "None";
-static unsigned int g_ati_vram_bytes = 4 * 1024 * 1024;
+static const char* g_ati_status = "Not detected";
+static unsigned int g_ati_vram_bytes = 2U * 1024U * 1024U;
 static volatile unsigned char* g_ati_regs = 0;
-static volatile unsigned char* g_ati_lfb = 0;
+static unsigned short g_ati_io_base = 0;
 static int g_cur_w = 800, g_cur_h = 600;
+static int g_boot_w = 1024, g_boot_h = 768;
+static pdv_display_mode_t g_ati_modes[MACH64_MAX_MODES];
+static int g_ati_mode_count = 0;
 
 static inline unsigned int mach64_read32(unsigned int reg) {
-    if (!g_ati_regs) return 0xFFFFFFFFU;
-    return *(volatile unsigned int*)(g_ati_regs + reg);
+    if (g_ati_regs) {
+        return pdv_mmio_read32((volatile const void*)(g_ati_regs + reg));
+    }
+    if (g_ati_io_base && reg < 0x100U) {
+        return pdv_inl((uint16_t)(g_ati_io_base + reg));
+    }
+    return 0xFFFFFFFFU;
 }
 
-static inline void mach64_write32(unsigned int reg, unsigned int val) {
-    if (!g_ati_regs) return;
-    *(volatile unsigned int*)(g_ati_regs + reg) = val;
-}
-
-static unsigned int mach64_pitch_units(int w) {
-    return (((unsigned int)w + 7U) & ~7U) / 8U;
-}
-
-static unsigned int mach64_pixel_code(int bpp) {
-    if (bpp <= 8) return 2;
-    if (bpp == 15) return 3;
-    if (bpp == 16) return 4;
-    if (bpp == 24) return 5;
-    return 6;
+static unsigned int mach64_decode_mem_cntl_bytes(unsigned int mem_cntl) {
+    static const unsigned int k_kb[8] = {
+        512U, 1024U, 2048U, 4096U, 6144U, 8192U, 12288U, 16384U
+    };
+    return k_kb[mem_cntl & 0x07U] * 1024U;
 }
 
 static volatile unsigned char* mach64_try_regs(uint64_t phys_base,
                                                unsigned short device) {
     if (!phys_base) return 0;
-    volatile unsigned int* regs =
-        (volatile unsigned int*)g_kapi->mmio_map_uc(phys_base, 0x1000);
+    volatile unsigned char* regs =
+        (volatile unsigned char*)g_kapi->mmio_map_uc(phys_base, 0x1000);
     if (!regs) return 0;
-    unsigned int chip_id = regs[MACH64_CNFG_CHIP_ID / 4];
-    unsigned int h_total = regs[0];
+    unsigned int chip_id = pdv_mmio_read32((volatile const void*)(regs + MACH64_CNFG_CHIP_ID));
+    unsigned int h_total = pdv_mmio_read32((volatile const void*)regs);
     if (chip_id == 0xFFFFFFFFU || h_total == 0xFFFFFFFFU) return 0;
     if ((unsigned short)(chip_id & 0xFFFFU) == device) {
-        return (volatile unsigned char*)regs;
+        return regs;
     }
     return 0;
 }
 
 static volatile unsigned char* mach64_find_register_base(
-    uint64_t bar0_phys, uint64_t bar2_phys, unsigned short device) {
-    if (bar2_phys) {
-        uint64_t base = (bar2_phys & ~0xFULL) + 0x400ULL;
-        volatile unsigned char* regs = mach64_try_regs(base, device);
+    const pdv_pci_device_t* pci, uint64_t bar0_phys, uint64_t bar2_phys,
+    unsigned short device) {
+    if (bar2_phys && pci->bar[2].size >= 0x1000ULL) {
+        uint64_t b2 = bar2_phys & ~0xFULL;
+        volatile unsigned char* regs = mach64_try_regs(b2 + 0x400ULL, device);
+        if (regs) return regs;
+        regs = mach64_try_regs(b2, device);
         if (regs) return regs;
     }
 
-    volatile unsigned char* regs8 =
-        mach64_try_regs(bar0_phys + 0x7FFC00ULL, device);
-    if (regs8) return regs8;
+    if (pci->bar[0].size >= 0x800000ULL) {
+        volatile unsigned char* regs8 =
+            mach64_try_regs(bar0_phys + 0x7FFC00ULL, device);
+        if (regs8) return regs8;
+    }
 
-    volatile unsigned char* regs4 =
-        mach64_try_regs(bar0_phys + 0x3FFC00ULL, device);
-    if (regs4) return regs4;
+    if (pci->bar[0].size >= 0x400000ULL) {
+        volatile unsigned char* regs4 =
+            mach64_try_regs(bar0_phys + 0x3FFC00ULL, device);
+        if (regs4) return regs4;
+    }
 
     return 0;
 }
 
-static inline void wait_fifo(int entries) {
-    if (!g_ati_regs) return;
-    int timeout = 100000;
-    while (((mach64_read32(MACH64_FIFO_STAT) & 0xFFFFU) <=
-            (unsigned int)(0x8000U >> entries)) &&
-           --timeout) {
+static int mach64_uc_probe_offset(uint64_t bar0_phys,
+                                  volatile unsigned int* base_ptr,
+                                  volatile unsigned int* dummy_ptr,
+                                  uint64_t offset) {
+    volatile unsigned char* page =
+        (volatile unsigned char*)g_kapi->mmio_map_uc(bar0_phys + offset, 0x1000);
+    if (!page) return 0;
+    volatile unsigned int* p = (volatile unsigned int*)page;
+    volatile unsigned int* p_chk = (volatile unsigned int*)(page + 0x40);
+
+    unsigned int save_base = *base_ptr;
+    unsigned int save_p = *p;
+    unsigned int save_chk = *p_chk;
+    unsigned int save_dummy = *dummy_ptr;
+
+    unsigned int pat = 0xA55A3C00U ^ (unsigned int)(offset >> 12);
+    unsigned int pat_inv = ~pat;
+    unsigned int pat_chk = 0x5A3C9600U ^ (unsigned int)(offset >> 12);
+
+    *p = pat;
+    *p_chk = pat_chk;
+    *dummy_ptr = 0x12345678U;
+    (void)*dummy_ptr;
+
+    unsigned int rb = *p;
+    unsigned int rb_chk = *p_chk;
+    unsigned int rb_base = *base_ptr;
+    unsigned int pat_swapped = __builtin_bswap32(pat);
+    int ok = (rb == pat && rb_chk == pat_chk &&
+              rb_base != pat && rb_base != pat_swapped && rb_base != pat_chk);
+
+    if (ok) {
+        *p = pat_inv;
+        *dummy_ptr = 0x87654321U;
+        (void)*dummy_ptr;
+        if (*p != pat_inv || *base_ptr == pat_inv ||
+            *base_ptr == __builtin_bswap32(pat_inv)) {
+            ok = 0;
+        }
     }
+
+    *dummy_ptr = save_dummy;
+    *p_chk = save_chk;
+    *p = save_p;
+    *base_ptr = save_base;
+    return ok;
+}
+
+static unsigned int mach64_detect_vram_bytes(const pdv_pci_device_t* pci,
+                                             uint64_t bar0_phys,
+                                             int has_regs) {
+    uint64_t aper_limit = pci->bar[0].size;
+    if (aper_limit == 0 || aper_limit > 16ULL * 1024ULL * 1024ULL) {
+        aper_limit = 8ULL * 1024ULL * 1024ULL;
+    }
+
+    unsigned int reg_vram = 0;
+    if (has_regs) {
+        unsigned int mem_cntl = mach64_read32(MACH64_MEM_CNTL);
+        unsigned int cnfg_cntl = mach64_read32(MACH64_CNFG_CNTL);
+        if (mem_cntl != 0xFFFFFFFFU) {
+            reg_vram = mach64_decode_mem_cntl_bytes(mem_cntl);
+        }
+        if (cnfg_cntl != 0xFFFFFFFFU) {
+            unsigned int ap = cnfg_cntl & 0x03U;
+            if (ap == 1U && aper_limit > 4ULL * 1024ULL * 1024ULL) {
+                /* 4MB aperture: upper 4MB is Big-Endian mirror; never probe it! */
+                aper_limit = 4ULL * 1024ULL * 1024ULL;
+            } else if (ap == 2U && aper_limit > 8ULL * 1024ULL * 1024ULL) {
+                aper_limit = 8ULL * 1024ULL * 1024ULL;
+            }
+        }
+    } else if (aper_limit > 4ULL * 1024ULL * 1024ULL) {
+        /* Without CNFG_CNTL we cannot verify 8MB vs 4MB BE mirror, so avoid >=4MB alias */
+        aper_limit = 4ULL * 1024ULL * 1024ULL;
+    }
+
+    volatile unsigned char* base_page =
+        (volatile unsigned char*)g_kapi->mmio_map_uc(bar0_phys + 0x1000ULL, 0x1000);
+    if (!base_page) {
+        return reg_vram ? reg_vram : (2U * 1024U * 1024U);
+    }
+
+    volatile unsigned int* base_ptr = (volatile unsigned int*)base_page;
+    volatile unsigned int* dummy_ptr = (volatile unsigned int*)(base_page + 0x100);
+
+    unsigned int probed = 1U * 1024U * 1024U;
+    if (aper_limit >= 0x104000ULL &&
+        mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x101000ULL)) {
+        probed = 2U * 1024U * 1024U;
+        if (aper_limit >= 0x204000ULL &&
+            mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x201000ULL) &&
+            aper_limit >= 0x304000ULL &&
+            mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x301000ULL)) {
+            probed = 4U * 1024U * 1024U;
+            if (aper_limit >= 0x404000ULL &&
+                mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x401000ULL)) {
+                probed = 6U * 1024U * 1024U;
+                if (aper_limit >= 0x604000ULL &&
+                    mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x601000ULL)) {
+                    probed = 8U * 1024U * 1024U;
+                }
+            }
+        }
+    } else if (aper_limit >= 0x084000ULL &&
+               !mach64_uc_probe_offset(bar0_phys, base_ptr, dummy_ptr, 0x081000ULL)) {
+        probed = 512U * 1024U;
+    }
+
+    if (reg_vram > 0) {
+        if (reg_vram <= (unsigned int)aper_limit) {
+            return (probed < reg_vram) ? probed : reg_vram;
+        }
+        /* Card has >=8MB in a 4MB aperture: respect verified 4MB probe if >=4MB */
+        if (probed >= 4U * 1024U * 1024U) {
+            return reg_vram;
+        }
+        return probed;
+    }
+    return probed;
 }
 
 static void ati_mach64_sync(void) {
@@ -119,10 +242,82 @@ static void ati_mach64_sync(void) {
     }
 }
 
+static int ati_mach64_supports_bpp(int w, int h, int bpp) {
+    if (!g_ati_active) return 0;
+    if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
+    if (w > g_boot_w || h > g_boot_h) return 0;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
+    uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
+                     (uint64_t)(unsigned int)(bpp / 8);
+    return (bytes <= (uint64_t)g_ati_vram_bytes) ? 1 : 0;
+}
+
+static void ati_mach64_build_modes(void) {
+    static const int k_preset_w[] = {
+        640, 800, 1024, 1152, 1280, 1280, 1280, 1280,
+        1366, 1400, 1440, 1600, 1600, 1680, 1920, 1920
+    };
+    static const int k_preset_h[] = {
+        480, 600, 768, 864, 720, 800, 960, 1024,
+        768, 1050, 900, 900, 1200, 1050, 1080, 1200
+    };
+    static const int k_bpps[4] = { 8, 16, 24, 32 };
+    int cnt = 0;
+    int presets = (int)(sizeof(k_preset_w) / sizeof(k_preset_w[0]));
+
+    for (int i = 0; i < presets && cnt < MACH64_MAX_MODES; i++) {
+        int w = k_preset_w[i];
+        int h = k_preset_h[i];
+        uint8_t mask = 0;
+        for (int b = 0; b < 4; b++) {
+            if (ati_mach64_supports_bpp(w, h, k_bpps[b])) {
+                mask |= pdv_bpp_to_mask(k_bpps[b]);
+            }
+        }
+        if (mask != 0) {
+            g_ati_modes[cnt].width = (uint16_t)w;
+            g_ati_modes[cnt].height = (uint16_t)h;
+            g_ati_modes[cnt].bpp_mask = mask;
+            g_ati_modes[cnt].preferred = (w == g_boot_w && h == g_boot_h) ? 1U : 0U;
+            g_ati_modes[cnt].reserved = 0U;
+            cnt++;
+        }
+    }
+
+    if (g_boot_w >= PDV_DISPLAY_MIN_WIDTH && g_boot_h >= PDV_DISPLAY_MIN_HEIGHT &&
+        cnt < MACH64_MAX_MODES) {
+        int dup = 0;
+        for (int j = 0; j < cnt; j++) {
+            if ((int)g_ati_modes[j].width == g_boot_w &&
+                (int)g_ati_modes[j].height == g_boot_h) {
+                dup = 1;
+                break;
+            }
+        }
+        if (!dup) {
+            uint8_t mask = 0;
+            for (int b = 0; b < 4; b++) {
+                if (ati_mach64_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
+                    mask |= pdv_bpp_to_mask(k_bpps[b]);
+                }
+            }
+            if (mask != 0) {
+                g_ati_modes[cnt].width = (uint16_t)g_boot_w;
+                g_ati_modes[cnt].height = (uint16_t)g_boot_h;
+                g_ati_modes[cnt].bpp_mask = mask;
+                g_ati_modes[cnt].preferred = 1U;
+                g_ati_modes[cnt].reserved = 0U;
+                cnt++;
+            }
+        }
+    }
+    g_ati_mode_count = cnt;
+}
+
 static int ati_mach64_probe_hw(void) {
     g_ati_active = 0;
     g_ati_regs = 0;
-    g_ati_lfb = 0;
+    g_ati_io_base = 0;
 
     for (int index = 0; index < g_kapi->pci_get_device_count(); index++) {
         const pdv_pci_device_t* pci = g_kapi->pci_get_device(index);
@@ -162,159 +357,79 @@ static int ati_mach64_probe_hw(void) {
         g_kapi->pci_enable_memory(pci);
         g_kapi->pci_enable_bus_master(pci);
 
+        if (pci->bar[1].valid && pci->bar[1].is_io && pci->bar[1].size >= 256ULL) {
+            g_ati_io_base = (unsigned short)pci->bar[1].address;
+        }
+
         g_ati_chip_name = name;
-        g_ati_lfb = (volatile unsigned char*)g_kapi->mmio_map_wc(
-            bar0_phys, 8 * 1024 * 1024);
-        g_ati_regs = mach64_find_register_base(bar0_phys, bar2_phys, device);
-
-        if (g_ati_lfb) {
-            volatile unsigned int* p0 = (volatile unsigned int*)(g_ati_lfb);
-            volatile unsigned int* p1 =
-                (volatile unsigned int*)(g_ati_lfb + 1 * 1024 * 1024);
-            volatile unsigned int* p2 =
-                (volatile unsigned int*)(g_ati_lfb + 2 * 1024 * 1024);
-            volatile unsigned int* p4 =
-                (volatile unsigned int*)(g_ati_lfb + 4 * 1024 * 1024);
-
-            unsigned int save0 = *p0;
-            unsigned int save1 = *p1;
-            unsigned int save2 = *p2;
-            unsigned int save4 = *p4;
-
-            *p0 = 0xA55A1234U;
-            *p1 = 0x5AA54321U;
-            if (*p1 != 0x5AA54321U || *p0 == 0x5AA54321U) {
-                g_ati_vram_bytes = 1 * 1024 * 1024;
-            } else {
-                *p2 = 0x5AA5789AU;
-                if (*p2 != 0x5AA5789AU || *p0 == 0x5AA5789AU) {
-                    g_ati_vram_bytes = 2 * 1024 * 1024;
-                } else {
-                    *p4 = 0x5AA5BCDEU;
-                    if (*p4 != 0x5AA5BCDEU || *p0 == 0x5AA5BCDEU) {
-                        g_ati_vram_bytes = 4 * 1024 * 1024;
-                    } else {
-                        g_ati_vram_bytes = 8 * 1024 * 1024;
-                    }
-                }
+        g_ati_regs = mach64_find_register_base(pci, bar0_phys, bar2_phys, device);
+        int has_regs = (g_ati_regs != 0) ? 1 : 0;
+        if (!has_regs && g_ati_io_base) {
+            unsigned int io_chip = pdv_inl((uint16_t)(g_ati_io_base + MACH64_CNFG_CHIP_ID));
+            if (io_chip != 0xFFFFFFFFU && (unsigned short)(io_chip & 0xFFFFU) == device) {
+                has_regs = 1;
             }
-
-            *p0 = save0;
-            *p1 = save1;
-            *p2 = save2;
-            *p4 = save4;
         }
 
-        if (g_ati_regs) {
-            mach64_write32(MACH64_GEN_TEST_CNTL,
-                           mach64_read32(MACH64_GEN_TEST_CNTL) | (1U << 8));
-            ati_mach64_sync();
-            mach64_write32(MACH64_GEN_TEST_CNTL,
-                           mach64_read32(MACH64_GEN_TEST_CNTL) & ~(1U << 8));
-        }
+        g_ati_vram_bytes = mach64_detect_vram_bytes(pci, bar0_phys, has_regs);
+
+        pdv_fb_surface_t surf;
+        g_kapi->fb_get_surface(&surf);
+        g_boot_w = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : 1024;
+        g_boot_h = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : 768;
+        g_cur_w = g_boot_w;
+        g_cur_h = g_boot_h;
 
         g_ati_active = 1;
-        klog_info("[ATI ] active %s BAR0=0x%llx vram=%uKB regs=%s",
+        ati_mach64_build_modes();
+        g_status = (g_ati_vram_bytes <= 2U * 1024U * 1024U)
+                   ? "Active (LFB, <=2MB VRAM limit)"
+                   : "Active (LFB, VRAM verified)";
+        klog_info("[ATI ] active %s BAR0=0x%llx vram=%uKB regs=%s modes=%d",
                   g_ati_chip_name, (unsigned long long)bar0_phys,
                   g_ati_vram_bytes / 1024U,
-                  g_ati_regs ? "mapped" : "lfb-only");
+                  has_regs ? "verified" : "probe-only",
+                  g_ati_mode_count);
         return 1;
     }
     return 0;
 }
 
 static int ati_mach64_probe_entry(void) {
-    if (!ati_mach64_probe_hw()) return 0;
-    g_ati_active = 0;
-    g_kapi->fb_apply_ati_cap();
-    return 0; /* Keep safe linear WC framebuffer active with 1024x768x16 cap */
+    return ati_mach64_probe_hw();
 }
 
 static int ati_mach64_is_active(void) { return g_ati_active; }
+static int ati_mach64_is_2d_active(void) { return 0; }
 static const char* ati_mach64_get_chip_name(void) { return g_ati_chip_name; }
-static const char* ati_mach64_get_status(void) { return "GUI accelerator active"; }
+static const char* ati_mach64_get_status(void) { return g_ati_status; }
 static unsigned int ati_mach64_get_vram_size(void) { return g_ati_vram_bytes; }
 
-static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
-    if (!g_ati_active) return 0;
-    g_cur_w = w;
-    g_cur_h = h;
-    if (!g_ati_regs) return 1;
+static int ati_mach64_get_mode_count(void) {
+    return g_ati_active ? g_ati_mode_count : 0;
+}
 
-    ati_mach64_sync();
-    unsigned int pitch_units = mach64_pitch_units(w);
-    mach64_write32(MACH64_DST_OFF_PITCH, (pitch_units & 0x3FFU) << 22);
-    mach64_write32(MACH64_SRC_OFF_PITCH, (pitch_units & 0x3FFU) << 22);
-
-    unsigned int code = mach64_pixel_code(bpp);
-    mach64_write32(MACH64_DP_PIX_WIDTH,
-                   code | (code << 8) | (code << 16) | (1U << 24));
-
-    unsigned int chain_mask = 0x8080U;
-    if (bpp == 15) chain_mask = 0x4210U;
-    else if (bpp == 16) chain_mask = 0x8410U;
-    mach64_write32(MACH64_DP_CHAIN_MASK, chain_mask);
-
-    mach64_write32(MACH64_SC_LEFT_RIGHT,
-                   ((unsigned int)(w - 1) & 0x3FFFU) << 16);
-    mach64_write32(MACH64_SC_TOP_BOTTOM,
-                   ((unsigned int)(h - 1) & 0x7FFFU) << 16);
-    mach64_write32(MACH64_DP_MIX, 0x00070007U);
+static int ati_mach64_get_mode(int index, pdv_display_mode_t* out_mode) {
+    if (!g_ati_active || !out_mode || index < 0 || index >= g_ati_mode_count) {
+        return 0;
+    }
+    *out_mode = g_ati_modes[index];
     return 1;
 }
 
-static void ati_mach64_fill_rect(int x, int y, int w, int h, unsigned int color) {
-    if (!g_ati_active || !g_ati_regs) return;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > g_cur_w) w = g_cur_w - x;
-    if (y + h > g_cur_h) h = g_cur_h - y;
-    if (w <= 0 || h <= 0) return;
-
-    wait_fifo(5);
-    mach64_write32(MACH64_DP_FRGD_CLR, color);
-    mach64_write32(MACH64_DP_SRC, 0x00000100U);
-    mach64_write32(MACH64_DP_MIX, 0x00070007U);
-    mach64_write32(MACH64_DST_Y_X,
-                   ((unsigned int)x << 16) | ((unsigned int)y & 0xFFFFU));
-    mach64_write32(MACH64_DST_WIDTH_HEIGHT,
-                   ((unsigned int)w << 16) | ((unsigned int)h & 0xFFFFU));
+static int ati_mach64_get_max_width(void) {
+    return g_ati_active ? g_boot_w : 0;
 }
 
-static void ati_mach64_screen_blt(int sx, int sy, int dx, int dy, int w, int h) {
-    if (!g_ati_active || !g_ati_regs) return;
-    if (sx < 0) { w += sx; dx -= sx; sx = 0; }
-    if (sy < 0) { h += sy; dy -= sy; sy = 0; }
-    if (dx < 0) { w += dx; sx -= dx; dx = 0; }
-    if (dy < 0) { h += dy; sy -= dy; dy = 0; }
-    if (sx + w > g_cur_w) w = g_cur_w - sx;
-    if (sy + h > g_cur_h) h = g_cur_h - sy;
-    if (dx + w > g_cur_w) w = g_cur_w - dx;
-    if (dy + h > g_cur_h) h = g_cur_h - dy;
-    if (w <= 0 || h <= 0) return;
+static int ati_mach64_get_max_height(void) {
+    return g_ati_active ? g_boot_h : 0;
+}
 
-    unsigned int traj = 0x0003U;
-    if (dy > sy) {
-        traj &= ~0x0002U;
-        sy += h - 1;
-        dy += h - 1;
-    }
-    if (dx > sx) {
-        traj &= ~0x0001U;
-        sx += w - 1;
-        dx += w - 1;
-    }
-
-    wait_fifo(5);
-    mach64_write32(MACH64_GUI_TRAJ_CNTL, traj);
-    mach64_write32(MACH64_DP_SRC, 0x00000300U);
-    mach64_write32(MACH64_DP_MIX, 0x00070007U);
-    mach64_write32(MACH64_SRC_Y_X,
-                   ((unsigned int)sx << 16) | ((unsigned int)sy & 0xFFFFU));
-    mach64_write32(MACH64_DST_Y_X,
-                   ((unsigned int)dx << 16) | ((unsigned int)dy & 0xFFFFU));
-    mach64_write32(MACH64_DST_WIDTH_HEIGHT,
-                   ((unsigned int)w << 16) | ((unsigned int)h & 0xFFFFU));
+static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
+    if (!ati_mach64_supports_bpp(w, h, bpp)) return 0;
+    g_cur_w = w;
+    g_cur_h = h;
+    return 1;
 }
 
 static const pdv_display_driver_t g_mach64_drv = {
@@ -327,17 +442,21 @@ static const pdv_display_driver_t g_mach64_drv = {
     .get_name             = ati_mach64_get_chip_name,
     .get_status           = ati_mach64_get_status,
     .is_active            = ati_mach64_is_active,
-    .is_2d_active         = ati_mach64_is_active,
+    .is_2d_active         = ati_mach64_is_2d_active,
     .get_vram_size        = ati_mach64_get_vram_size,
-    .can_set_mode         = 0,
-    .supports_bpp         = 0,
+    .can_set_mode         = ati_mach64_supports_bpp,
+    .supports_bpp         = ati_mach64_supports_bpp,
     .set_mode             = ati_mach64_set_mode_bpp,
-    .fill_rect            = ati_mach64_fill_rect,
-    .screen_blt           = ati_mach64_screen_blt,
+    .fill_rect            = 0,
+    .screen_blt           = 0,
     .present_rect         = 0,
     .sync                 = ati_mach64_sync,
     .has_hw_cursor        = 0,
     .set_cursor           = 0,
+    .get_mode_count       = ati_mach64_get_mode_count,
+    .get_mode             = ati_mach64_get_mode,
+    .get_max_width        = ati_mach64_get_max_width,
+    .get_max_height       = ati_mach64_get_max_height,
 };
 
 int pdv_driver_entry(const pdv_kernel_api_t* kapi) {

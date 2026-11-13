@@ -1889,21 +1889,40 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
     if (!proc || !desc || !out_surf) return -1;
 
     uint32_t format = (desc->format == PXE_CANVAS_RGB32) ? PXE_CANVAS_RGB32 : PXE_CANVAS_PAL8;
+    int max_cw = (screen_w > 64) ? (screen_w - 4) : 1276;
+    int max_ch = (screen_h > 64) ? (screen_h - 28) : 996;
     int cw = desc->w;
     int ch = desc->h;
     if (cw < 64) cw = 64;
-    if (cw > 1276) cw = 1276;
+    if (cw > max_cw) cw = max_cw;
     if (ch < 32) ch = 32;
-    if (ch > 996) ch = 996;
+    if (ch > max_ch) ch = max_ch;
 
     int min_w = (desc->min_w > 64) ? desc->min_w : 64;
     int min_h = (desc->min_h > 32) ? desc->min_h : 32;
     if (min_w > cw) min_w = cw;
     if (min_h > ch) min_h = ch;
 
-    int alloc_stride = (desc->flags & PXE_WIN_RESIZABLE) ? 1280 : cw;
-    int alloc_h      = (desc->flags & PXE_WIN_RESIZABLE) ? 1024 : ch;
+    int res_w = (screen_w > cw) ? screen_w : cw;
+    int res_h = (screen_h > ch) ? screen_h : ch;
+    if (res_w < 1280) res_w = 1280;
+    if (res_h < 1024) res_h = 1024;
+
+    int alloc_stride = (desc->flags & PXE_WIN_RESIZABLE) ? res_w : cw;
+    int alloc_h      = (desc->flags & PXE_WIN_RESIZABLE) ? res_h : ch;
     int bpp_bytes    = (format == PXE_CANVAS_RGB32) ? 4 : 1;
+    uint64_t need64  = (uint64_t)(unsigned int)alloc_stride *
+                       (uint64_t)(unsigned int)alloc_h *
+                       (uint64_t)(unsigned int)bpp_bytes;
+    if (need64 > NEKO_SHM_STRIDE) {
+        /* Fallback clamp within SHM stride */
+        alloc_stride = cw;
+        alloc_h = ch;
+        need64 = (uint64_t)(unsigned int)alloc_stride *
+                 (uint64_t)(unsigned int)alloc_h *
+                 (uint64_t)(unsigned int)bpp_bytes;
+        if (need64 > NEKO_SHM_STRIDE) return -1;
+    }
     int pitch        = alloc_stride * bpp_bytes;
     size_t total_sz  = (size_t)pitch * (size_t)alloc_h;
     size_t pages     = (total_sz + PAGE_SIZE - 1) / PAGE_SIZE;

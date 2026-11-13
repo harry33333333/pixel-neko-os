@@ -28,6 +28,7 @@
 #define NEKO_SYSCALL_GET_RTC       22
 #define NEKO_SYSCALL_GET_SYSINFO   23
 #define NEKO_SYSCALL_SYS_CONFIG    24
+#define NEKO_SYSCALL_GET_DISP_CAPS 25
 
 /* PXE GUI & Compositor Syscalls (30..39) */
 #define NEKO_SYSCALL_WIN_CREATE    30
@@ -70,7 +71,7 @@
 
 #define NEKO_USER_LIMIT            0x0000800000000000ULL
 #define NEKO_SHM_BASE              0x0000600000000000ULL
-#define NEKO_SHM_STRIDE            0x0000000000800000ULL /* 8 MB stride per mapped surface */
+#define NEKO_SHM_STRIDE            0x0000000004000000ULL /* 64 MB stride per mapped surface */
 #define NEKO_TEST_QUEUE_ID         1ULL
 #define NEKO_TEST_RESPONSE_QUEUE_ID 2ULL
 #define NEKO_TEST_SHM_ID           1ULL

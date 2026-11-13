@@ -125,6 +125,10 @@ int pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out) {
     return (int)_pxe_syscall1(NEKO_SYSCALL_GET_SYSINFO, (long)out);
 }
 
+int pxe_display_get_caps(pxe_display_caps_t* out) {
+    return (int)_pxe_syscall1(NEKO_SYSCALL_GET_DISP_CAPS, (long)out);
+}
+
 int pxe_display_set_mode(int width, int height, int bpp) {
     int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_RESOLUTION,

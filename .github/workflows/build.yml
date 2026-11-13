@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A210a"
+          VERSION="26A220a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -107,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes Phase 2 (Native PXE Runtime & SDK) on `beta` as `v26A210a`.
+          This revision publishes Dynamic Display Modes, Accurate VRAM Probing, 1024x768@16b Fallback & PXE/PDV Developer Docs on `beta` as `v26A220a`.
         prerelease: true
         make_latest: false
         files: |

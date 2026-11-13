@@ -8,7 +8,7 @@
  * Available ONLY to PXE_RING_0 executables (e.g. sysinfo.pxe, install.pxe, taskmgr.pxe).
  */
 
-#define PXE_R0_API_VERSION  0x0100u
+#define PXE_R0_API_VERSION  0x0101u
 
 /* Process states */
 #define PXE_PROC_READY      0u
@@ -181,6 +181,7 @@ typedef struct pxe_ring0_api {
     void     (*power_control)(int action);
     int      (*sync_filesystems)(void);
     int      (*init_uninit_disk)(void);
+    int      (*get_display_caps)(pxe_display_caps_t* out);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */

@@ -8,10 +8,10 @@ subsystem      = GUI
 flags          = SINGLE_INST | SYS_SETTINGS
 stack_size     = 64K
 heap_init_size = 64K
-def_w          = 340
-def_h          = 264
-min_w          = 340
-min_h          = 264
+def_w          = 360
+def_h          = 304
+min_w          = 360
+min_h          = 304
 
 [icon]
 row00 = fffffffffffffff0
@@ -30,3 +30,4 @@ row12 = f88ffffffffff880
 row13 = f888888888888880
 row14 = f888888888888880
 row15 = f000000000000000
+

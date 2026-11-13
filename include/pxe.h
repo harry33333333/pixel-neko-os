@@ -23,6 +23,7 @@ bool pxe_is_trusted_apps_path(const char* path);
 /* Shared Kernel Runtime Backend (used by both syscall.c and g_pxe_ring0_api) */
 int  pxe_kern_get_rtc(pxe_rtc_time_t* out);
 int  pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out);
+int  pxe_kern_get_display_caps(pxe_display_caps_t* out);
 int  pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char* str_arg);
 int  pxe_kern_clipboard_op(int is_set, char* buf, size_t max_len);
 

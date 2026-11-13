@@ -44,10 +44,14 @@ extern int screen_w;
 extern int screen_h;
 extern int screen_bpp;
 extern int screen_pitch;
-extern unsigned char backbuffer[];
+extern unsigned char* backbuffer;
 
 extern unsigned short palette16[256];
 extern unsigned int palette32[256];
+
+bool ui_can_allocate_resolution(int width, int height, int bpp);
+bool set_resolution_ex(int width, int height, int bpp);
+void set_resolution(int width, int height, int bpp);
 
 #define RGB16(r, g, b) (unsigned short)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF8) >> 3))
 

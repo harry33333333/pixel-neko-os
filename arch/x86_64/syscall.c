@@ -366,6 +366,16 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
             break;
         }
 
+        case NEKO_SYSCALL_GET_DISP_CAPS: {
+            if (!frame->rdi) { result = -NEKO_EINVAL; break; }
+            pxe_display_caps_t caps;
+            result = pxe_kern_get_display_caps(&caps);
+            if (result >= 0 && !process_copy_to_user(process, frame->rdi, &caps, sizeof(caps))) {
+                result = -NEKO_EFAULT;
+            }
+            break;
+        }
+
         case NEKO_SYSCALL_SYS_CONFIG: {
             char str_arg[128];
             const char* kstr = NULL;

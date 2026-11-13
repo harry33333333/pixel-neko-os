@@ -196,6 +196,45 @@ typedef struct {
     char     audio_probe[48];
 } pxe_basic_sysinfo_t;
 
+/* Display mode & capability query ABI */
+#define PXE_DISP_BPP_8              (1u << 0)
+#define PXE_DISP_BPP_16             (1u << 1)
+#define PXE_DISP_BPP_24             (1u << 2)
+#define PXE_DISP_BPP_32             (1u << 3)
+#define PXE_DISP_BPP_ALL            (PXE_DISP_BPP_8 | PXE_DISP_BPP_16 | PXE_DISP_BPP_24 | PXE_DISP_BPP_32)
+
+#define PXE_DISP_MAX_MODES          48u
+#define PXE_DISP_FLAG_DRIVER_ACTIVE (1u << 0)
+#define PXE_DISP_FLAG_HW_2D         (1u << 1)
+#define PXE_DISP_FLAG_UNLIMITED_RES (1u << 2)
+
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    uint8_t  bpp_mask;
+    uint8_t  preferred;
+    uint16_t reserved;
+} pxe_display_mode_t;
+
+typedef struct {
+    uint32_t           struct_size;
+    uint32_t           flags;
+    int32_t            current_w;
+    int32_t            current_h;
+    int32_t            current_bpp;
+    int32_t            min_w;
+    int32_t            min_h;
+    int32_t            max_w;
+    int32_t            max_h;
+    uint32_t           bpp_mask;
+    uint64_t           vram_bytes;
+    int32_t            mode_count;
+    int32_t            reserved;
+    char               driver_name[48];
+    char               driver_status[48];
+    pxe_display_mode_t modes[PXE_DISP_MAX_MODES];
+} pxe_display_caps_t;
+
 /* System settings control commands (requires PXE_FLAG_SYS_SETTINGS in Ring 3) */
 #define PXE_CFG_SET_RESOLUTION     1
 #define PXE_CFG_SET_PATTERN        2

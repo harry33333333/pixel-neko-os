@@ -14,6 +14,7 @@ void     pxe_debug_log(const char* msg);
 
 int      pxe_get_rtc_time(pxe_rtc_time_t* out);
 int      pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out);
+int      pxe_display_get_caps(pxe_display_caps_t* out);
 
 /* Settings control (requires PXE_FLAG_SYS_SETTINGS in Ring 3 or Ring 0) */
 int      pxe_display_set_mode(int width, int height, int bpp);

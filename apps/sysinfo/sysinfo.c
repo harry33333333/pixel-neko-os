@@ -31,6 +31,7 @@ typedef struct {
     int sb_drag_start_off;
 
     pxe_basic_sysinfo_t info;
+    pxe_display_caps_t  disp;
     pxe_r0_mem_info_t   mem;
     pxe_r0_pci_info_t   pci[MAX_PCI];
     int pci_count;
@@ -142,6 +143,9 @@ static void refresh_all(sysinfo_app_t* s) {
     memset(&s->info, 0, sizeof(s->info));
     pxe_sys_get_basic_info(&s->info);
 
+    memset(&s->disp, 0, sizeof(s->disp));
+    (void)pxe_display_get_caps(&s->disp);
+
     memset(&s->mem, 0, sizeof(s->mem));
     pxe_r0_get_memory_summary(&s->mem);
 
@@ -251,15 +255,23 @@ static void render_overview(const pxe_win_surface_t* surf, const sysinfo_app_t* 
     pxe_draw_hline(surf, x, y + 30, rw, PXE_COL_DARK_GRAY);
     y += 38;
 
-    snprintf(buf, sizeof(buf), "%dx%d @ %dbpp | VRAM %llu MB | %s",
-             s->info.screen_w, s->info.screen_h, s->info.screen_bpp,
-             (unsigned long long)(s->info.vram_bytes / (1024ull * 1024ull)),
-             s->info.gfx_backend[0] ? s->info.gfx_backend : "Framebuffer");
+    char vram_str[24];
+    fmt_kb(s->info.vram_bytes / 1024ull, vram_str, sizeof(vram_str));
+    if (s->disp.struct_size == sizeof(s->disp)) {
+        snprintf(buf, sizeof(buf), "%dx%d @ %dbpp | VRAM %s | Max %dx%d",
+                 s->info.screen_w, s->info.screen_h, s->info.screen_bpp,
+                 vram_str, s->disp.max_w, s->disp.max_h);
+    } else {
+        snprintf(buf, sizeof(buf), "%dx%d @ %dbpp | VRAM %s | %s",
+                 s->info.screen_w, s->info.screen_h, s->info.screen_bpp,
+                 vram_str,
+                 s->info.gfx_backend[0] ? s->info.gfx_backend : "Framebuffer");
+    }
     draw_kv(surf, x, y, "Display:", buf, PXE_COL_BLACK);
 
-    snprintf(buf, sizeof(buf), "2D:%s | HWCurs:%s | %s",
+    snprintf(buf, sizeof(buf), "2D:%s | Drv:%s | %s",
              s->info.gfx_is_2d_hw ? "Yes" : "No",
-             s->info.gfx_has_hw_cursor ? "Yes" : "No",
+             (s->disp.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) ? "Active" : "Fallback",
              s->info.gfx_status[0] ? s->info.gfx_status
                                    : (s->info.gfx_fallback[0] ? s->info.gfx_fallback : "OK"));
     draw_kv(surf, x, y + 16, "Gfx Accel:", buf,

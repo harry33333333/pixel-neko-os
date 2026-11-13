@@ -61,6 +61,11 @@ int pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out) {
         ? __pxe_r0_api->get_basic_sysinfo(out) : -1;
 }
 
+int pxe_display_get_caps(pxe_display_caps_t* out) {
+    return (__pxe_r0_api && __pxe_r0_api->get_display_caps)
+        ? __pxe_r0_api->get_display_caps(out) : -1;
+}
+
 int pxe_display_set_mode(int width, int height, int bpp) {
     if (!__pxe_r0_api || !__pxe_r0_api->sys_config) return -1;
     int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);

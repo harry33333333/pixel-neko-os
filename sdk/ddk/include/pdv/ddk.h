@@ -239,6 +239,34 @@ typedef struct {
     void        (*stop)(void);
 } pdv_driver_descriptor_t;
 
+#define PDV_DISPLAY_MIN_WIDTH   640
+#define PDV_DISPLAY_MIN_HEIGHT  480
+#define PDV_FALLBACK_MAX_WIDTH  1024
+#define PDV_FALLBACK_MAX_HEIGHT 768
+#define PDV_FALLBACK_MAX_BPP    16
+
+#define PDV_BPP_MASK_8       (1U << 0)
+#define PDV_BPP_MASK_16      (1U << 1)
+#define PDV_BPP_MASK_24      (1U << 2)
+#define PDV_BPP_MASK_32      (1U << 3)
+#define PDV_BPP_MASK_ALL_STD (PDV_BPP_MASK_8 | PDV_BPP_MASK_16 | PDV_BPP_MASK_24 | PDV_BPP_MASK_32)
+
+static inline uint8_t pdv_bpp_to_mask(int bpp) {
+    if (bpp == 8)  return (uint8_t)PDV_BPP_MASK_8;
+    if (bpp == 16) return (uint8_t)PDV_BPP_MASK_16;
+    if (bpp == 24) return (uint8_t)PDV_BPP_MASK_24;
+    if (bpp == 32) return (uint8_t)PDV_BPP_MASK_32;
+    return 0U;
+}
+
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    uint8_t  bpp_mask;
+    uint8_t  preferred;
+    uint16_t reserved;
+} pdv_display_mode_t;
+
 typedef struct {
     const char*  name;
     int          priority;
@@ -260,6 +288,10 @@ typedef struct {
     void         (*sync)(void);
     int          (*has_hw_cursor)(void);
     int          (*set_cursor)(int x, int y, int visible);
+    int          (*get_mode_count)(void);
+    int          (*get_mode)(int index, pdv_display_mode_t* out_mode); /* 1=ok, 0=err */
+    int          (*get_max_width)(void);
+    int          (*get_max_height)(void);
 } pdv_display_driver_t;
 
 typedef struct {

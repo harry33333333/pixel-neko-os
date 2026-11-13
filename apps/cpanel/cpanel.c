@@ -5,12 +5,6 @@
 #include <pxe/audio.h>
 #include <pxe/str.h>
 
-static const int k_res_w[4] = { 640, 800, 1024, 1280 };
-static const int k_res_h[4] = { 480, 600,  768, 1024 };
-static const char* k_res_names[4] = {
-    "640 x 480", "800 x 600", "1024 x 768", "1280 x 1024"
-};
-
 static const int k_bpps[4] = { 32, 24, 16, 8 };
 static const char* k_bpp_names[4] = {
     "32-bit (TrueCol)", "24-bit (TrueCol)", "16-bit (HighCol)", "8-bit  (256 Col)"
@@ -21,10 +15,14 @@ static const char* k_pat_names[6] = {
     "3: Brick Tile", "4: Slate Gray", "5: Solid Gray"
 };
 
+#define CPANEL_DROPDOWN_VIS 8
+
 typedef struct {
     pxe_basic_sysinfo_t info;
+    pxe_display_caps_t  caps;
     int sel_res;
     int sel_bpp;
+    int res_scroll;
     int pattern;
     int mouse_speed; /* 1..5 */
     int volume;      /* 0..100 */
@@ -42,24 +40,67 @@ typedef struct {
     int wp_modal;
     char wp_path[128];
     int wp_len;
-    char notice[48];
+    char notice[56];
 } cpanel_t;
 
-static int mode_supported(const pxe_basic_sysinfo_t* info, int r, int b) {
-    if (r < 0 || r > 3 || b < 0 || b > 3) return 0;
-    if (info->mode_support_mask == 0) return 1;
-    return (info->mode_support_mask >> (r * 4 + b)) & 1u;
+static uint8_t bpp_idx_to_mask(int b_idx) {
+    if (b_idx == 0) return PXE_DISP_BPP_32;
+    if (b_idx == 1) return PXE_DISP_BPP_24;
+    if (b_idx == 2) return PXE_DISP_BPP_16;
+    if (b_idx == 3) return PXE_DISP_BPP_8;
+    return 0u;
 }
 
-static int res_supported(const pxe_basic_sysinfo_t* info, int r) {
-    for (int b = 0; b < 4; b++) {
-        if (mode_supported(info, r, b)) return 1;
+static int mode_supported(const cpanel_t* cp, int r_idx, int b_idx) {
+    if (!cp || r_idx < 0 || r_idx >= cp->caps.mode_count || b_idx < 0 || b_idx > 3) {
+        return 0;
     }
-    return 0;
+    uint8_t bit = bpp_idx_to_mask(b_idx);
+    return (cp->caps.modes[r_idx].bpp_mask & bit) ? 1 : 0;
+}
+
+static void format_vram_str(uint64_t bytes, char* out, size_t cap) {
+    uint64_t kb = bytes / 1024ULL;
+    if (kb >= 1024ULL) {
+        snprintf(out, cap, "%u.%uMB",
+                 (unsigned)(kb / 1024ULL),
+                 (unsigned)(((kb % 1024ULL) * 10ULL) / 1024ULL));
+    } else {
+        snprintf(out, cap, "%uKB", (unsigned)kb);
+    }
+}
+
+static void clamp_res_scroll(cpanel_t* cp) {
+    int max_scroll = cp->caps.mode_count - CPANEL_DROPDOWN_VIS;
+    if (max_scroll < 0) max_scroll = 0;
+    if (cp->res_scroll > max_scroll) cp->res_scroll = max_scroll;
+    if (cp->res_scroll < 0) cp->res_scroll = 0;
 }
 
 static void sync_from_sysinfo(cpanel_t* cp) {
     pxe_sys_get_basic_info(&cp->info);
+    if (pxe_display_get_caps(&cp->caps) != 0 || cp->caps.mode_count <= 0) {
+        memset(&cp->caps, 0, sizeof(cp->caps));
+        cp->caps.struct_size = sizeof(cp->caps);
+        cp->caps.current_w = cp->info.screen_w > 0 ? cp->info.screen_w : 640;
+        cp->caps.current_h = cp->info.screen_h > 0 ? cp->info.screen_h : 480;
+        cp->caps.current_bpp = (cp->info.screen_bpp == 8 || cp->info.screen_bpp == 16)
+                               ? cp->info.screen_bpp : 16;
+        cp->caps.min_w = 640;
+        cp->caps.min_h = 480;
+        cp->caps.max_w = 1024;
+        cp->caps.max_h = 768;
+        cp->caps.bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.vram_bytes = cp->info.vram_bytes;
+        cp->caps.modes[0].width = 640;  cp->caps.modes[0].height = 480;
+        cp->caps.modes[0].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.modes[1].width = 800;  cp->caps.modes[1].height = 600;
+        cp->caps.modes[1].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.modes[2].width = 1024; cp->caps.modes[2].height = 768;
+        cp->caps.modes[2].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.mode_count = 3;
+    }
+
     cp->mouse_speed = (int)cp->info.mouse_speed;
     if (cp->mouse_speed < 1) cp->mouse_speed = 1;
     if (cp->mouse_speed > 5) cp->mouse_speed = 5;
@@ -68,18 +109,40 @@ static void sync_from_sysinfo(cpanel_t* cp) {
     if (cp->volume < 0) cp->volume = 0;
     if (cp->volume > 100) cp->volume = 100;
 
-    for (int r = 0; r < 4; r++) {
-        if (cp->info.screen_w == k_res_w[r] && cp->info.screen_h == k_res_h[r]) {
-            cp->sel_res = r;
+    int found_res = -1;
+    for (int r = 0; r < cp->caps.mode_count; r++) {
+        if ((int)cp->caps.modes[r].width == cp->info.screen_w &&
+            (int)cp->caps.modes[r].height == cp->info.screen_h) {
+            found_res = r;
             break;
         }
     }
+    if (found_res < 0 && cp->caps.mode_count > 0) {
+        found_res = cp->caps.mode_count - 1;
+    }
+    cp->sel_res = (found_res >= 0) ? found_res : 0;
+
+    cp->sel_bpp = 2; /* 16-bit fallback default */
     for (int b = 0; b < 4; b++) {
-        if (cp->info.screen_bpp == k_bpps[b]) {
+        if (cp->info.screen_bpp == k_bpps[b] && mode_supported(cp, cp->sel_res, b)) {
             cp->sel_bpp = b;
             break;
         }
     }
+    if (!mode_supported(cp, cp->sel_res, cp->sel_bpp)) {
+        for (int b = 0; b < 4; b++) {
+            if (mode_supported(cp, cp->sel_res, b)) {
+                cp->sel_bpp = b;
+                break;
+            }
+        }
+    }
+    if (cp->sel_res >= cp->res_scroll + CPANEL_DROPDOWN_VIS) {
+        cp->res_scroll = cp->sel_res - CPANEL_DROPDOWN_VIS + 1;
+    } else if (cp->sel_res < cp->res_scroll) {
+        cp->res_scroll = cp->sel_res;
+    }
+    clamp_res_scroll(cp);
 }
 
 static void draw_combo(const pxe_win_surface_t* surf, int bx, int by, int bw, int bh,
@@ -133,90 +196,150 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
 
     /* 3. Resolution & Color Depth (y=60, 86) */
     pxe_draw_text(surf, 10, 60, "Resolution:", PXE_COL_BLACK);
-    draw_combo(surf, 126, 58, 174, 20, k_res_names[cp->sel_res]);
+    char res_lbl[32];
+    if (cp->sel_res >= 0 && cp->sel_res < cp->caps.mode_count) {
+        snprintf(res_lbl, sizeof(res_lbl), "%u x %u%s",
+                 (unsigned)cp->caps.modes[cp->sel_res].width,
+                 (unsigned)cp->caps.modes[cp->sel_res].height,
+                 cp->caps.modes[cp->sel_res].preferred ? " *" : "");
+    } else {
+        snprintf(res_lbl, sizeof(res_lbl), "%dx%d",
+                 cp->info.screen_w, cp->info.screen_h);
+    }
+    draw_combo(surf, 126, 58, 204, 20, res_lbl);
 
     pxe_draw_text(surf, 10, 86, "Color Depth:", PXE_COL_BLACK);
-    draw_combo(surf, 126, 84, 174, 20, k_bpp_names[cp->sel_bpp]);
+    draw_combo(surf, 126, 84, 204, 20, k_bpp_names[cp->sel_bpp]);
 
     /* 4. Desktop Pattern (y=114) */
     pxe_draw_text(surf, 10, 114, "Pattern:", PXE_COL_BLACK);
     pxe_draw_button(surf, 126, 112, 22, 20, "<", 0, 1);
-    pxe_draw_button(surf, 278, 112, 22, 20, ">", 0, 1);
-    pxe_draw_bevel_box(surf, 150, 112, 126, 20, 1, PXE_COL_WHITE);
-    pxe_draw_text_small(surf, 156, 119, k_pat_names[cp->pattern], PXE_COL_BLACK);
+    pxe_draw_button(surf, 308, 112, 22, 20, ">", 0, 1);
+    pxe_draw_bevel_box(surf, 150, 112, 156, 20, 1, PXE_COL_WHITE);
+    pxe_draw_text_small(surf, 158, 119, k_pat_names[cp->pattern], PXE_COL_BLACK);
 
     /* 5. Wallpaper Mode / Clear / Browse (y=142) */
     pxe_draw_text(surf, 10, 142, "Wallpaper:", PXE_COL_BLACK);
     if (cp->info.wallpaper_active) {
         int m = (int)cp->info.wallpaper_mode;
-        draw_mode_btn(surf, 96,  140, 36, 20, "Fill",  m == 0);
-        draw_mode_btn(surf, 134, 140, 34, 20, "Fit",   m == 1);
-        draw_mode_btn(surf, 170, 140, 44, 20, "Stret", m == 2);
-        draw_mode_btn(surf, 216, 140, 36, 20, "Tile",  m == 3);
-        draw_mode_btn(surf, 254, 140, 34, 20, "Off",   0);
-        draw_mode_btn(surf, 290, 140, 40, 20, "Path..", 0);
+        draw_mode_btn(surf, 96,  140, 38, 20, "Fill",  m == 0);
+        draw_mode_btn(surf, 136, 140, 36, 20, "Fit",   m == 1);
+        draw_mode_btn(surf, 174, 140, 48, 20, "Stret", m == 2);
+        draw_mode_btn(surf, 224, 140, 38, 20, "Tile",  m == 3);
+        draw_mode_btn(surf, 264, 140, 36, 20, "Off",   0);
+        draw_mode_btn(surf, 302, 140, 48, 20, "Path..", 0);
     } else {
         pxe_draw_text_small(surf, 96, 146, "None (Pattern Active)", PXE_COL_DARK_GRAY);
-        draw_mode_btn(surf, 254, 140, 76, 20, "Set File..", 0);
+        draw_mode_btn(surf, 270, 140, 80, 20, "Set File..", 0);
     }
 
-    /* 6. Driver / Persistence info (y=170..192) */
+    /* 6. Driver / VRAM / Persistence info (y=168..246) */
     pxe_draw_hline(surf, 10, 168, surf->width - 20, PXE_COL_DARK_GRAY);
     pxe_draw_hline(surf, 10, 169, surf->width - 20, PXE_COL_WHITE);
 
+    const char* drv_name = cp->caps.driver_name[0]
+        ? cp->caps.driver_name
+        : (cp->info.gfx_backend[0] ? cp->info.gfx_backend : "Framebuffer");
     pxe_draw_text_small(surf, 10, 176, "Display:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 66, 176,
-                        cp->info.gfx_backend[0] ? cp->info.gfx_backend : "Framebuffer",
-                        cp->info.gfx_is_2d_hw ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
+    pxe_draw_text_small(surf, 70, 176, drv_name,
+                        (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
+                            ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
+
+    char vram_str[16];
+    char cap_line[64];
+    format_vram_str(cp->caps.vram_bytes, vram_str, sizeof(vram_str));
+    if (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) {
+        snprintf(cap_line, sizeof(cap_line), "VRAM:%s  Max:%dx%d  Min:640x480",
+                 vram_str, cp->caps.max_w, cp->caps.max_h);
+    } else {
+        snprintf(cap_line, sizeof(cap_line), "Fallback(No Drv): Max 1024x768 @ 8/16b");
+    }
+    pxe_draw_text_small(surf, 10, 194, "Limits:", PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 70, 194, cap_line,
+                        (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
+                            ? PXE_COL_BLACK : PXE_COL_BROWN);
+
+    uint8_t sel_mask = (cp->sel_res >= 0 && cp->sel_res < cp->caps.mode_count)
+                       ? cp->caps.modes[cp->sel_res].bpp_mask : 0u;
+    char bpp_line[48];
+    snprintf(bpp_line, sizeof(bpp_line), "%s%s%s%s%s",
+             (sel_mask & PXE_DISP_BPP_8)  ? "8b "  : "",
+             (sel_mask & PXE_DISP_BPP_16) ? "16b " : "",
+             (sel_mask & PXE_DISP_BPP_24) ? "24b " : "",
+             (sel_mask & PXE_DISP_BPP_32) ? "32b"  : "",
+             (sel_mask == 0) ? "None" : "");
+    pxe_draw_text_small(surf, 10, 212, "BPP Mode:", PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 70, 212, bpp_line, PXE_COL_DARK_BLUE);
 
     if (cp->notice[0]) {
-        pxe_draw_text_small(surf, 10, 194, cp->notice, PXE_COL_DARK_GREEN);
+        pxe_draw_text_small(surf, 10, 234, cp->notice, PXE_COL_DARK_GREEN);
     } else if (!cp->info.settings_writable) {
-        pxe_draw_text_small(surf, 10, 194, "Live Mode: .pse settings read-only", PXE_COL_BROWN);
+        pxe_draw_text_small(surf, 10, 234, "Live Mode: .pse settings read-only", PXE_COL_BROWN);
     } else {
-        pxe_draw_text_small(surf, 10, 194, "Changes persist to SYSTEM.PSE", PXE_COL_DARK_GRAY);
+        pxe_draw_text_small(surf, 10, 234, "Changes persist to SYSTEM.PSE", PXE_COL_DARK_GRAY);
     }
 
-    /* 7. Bottom Actions (y=218) */
+    /* 7. Bottom Actions (y=260) */
     if (cp->revert_sec > 0) {
         char rbuf[32];
         snprintf(rbuf, sizeof(rbuf), "Revert in %2ds...", cp->revert_sec);
-        pxe_draw_text(surf, 12, 222, rbuf, PXE_COL_DARK_RED);
-        pxe_draw_button(surf, 168, 218, 148, 24, "Keep (OK)", 0, 1);
+        pxe_draw_text(surf, 12, 264, rbuf, PXE_COL_DARK_RED);
+        pxe_draw_button(surf, 188, 260, 156, 24, "Keep (OK)", 0, 1);
     } else {
-        pxe_draw_button(surf, 10,  218, 102, 24, "Apply Mode", 0, 1);
-        pxe_draw_button(surf, 120, 218, 102, 24, "Save (.pse)", 0, 1);
-        pxe_draw_button(surf, 230, 218, 100, 24, "OK", 0, 1);
+        pxe_draw_button(surf, 10,  260, 108, 24, "Apply Mode", 0, 1);
+        pxe_draw_button(surf, 126, 260, 108, 24, "Save (.pse)", 0, 1);
+        pxe_draw_button(surf, 242, 260, 108, 24, "OK", 0, 1);
     }
 
     /* 8. Open Dropdowns on top */
     if (cp->res_open) {
-        int dx = 126, dy = 78, dw = 174, dh = 4 * 18 + 2;
+        int vis = (cp->caps.mode_count <= CPANEL_DROPDOWN_VIS)
+                  ? cp->caps.mode_count : CPANEL_DROPDOWN_VIS;
+        if (vis < 1) vis = 1;
+        int has_sb = (cp->caps.mode_count > CPANEL_DROPDOWN_VIS);
+        int dx = 126, dy = 78, dw = 204, dh = vis * 18 + 2;
+        int list_w = has_sb ? (dw - 18) : (dw - 2);
         pxe_fill_rect(surf, dx, dy, dw, dh, PXE_COL_WHITE);
         pxe_draw_rect(surf, dx, dy, dw, dh, PXE_COL_BLACK);
-        for (int i = 0; i < 4; i++) {
-            int iy = dy + 1 + i * 18;
-            int sup = res_supported(&cp->info, i);
-            if (i == cp->sel_res && sup) {
-                pxe_fill_rect(surf, dx + 1, iy, dw - 2, 18, PXE_COL_BLUE);
+        for (int row = 0; row < vis; row++) {
+            int idx = cp->res_scroll + row;
+            if (idx >= cp->caps.mode_count) break;
+            int iy = dy + 1 + row * 18;
+            if (idx == cp->sel_res) {
+                pxe_fill_rect(surf, dx + 1, iy, list_w, 18, PXE_COL_BLUE);
             }
-            uint32_t fg = !sup ? PXE_COL_DARK_GRAY :
-                          (i == cp->sel_res ? PXE_COL_WHITE : PXE_COL_BLACK);
-            pxe_draw_text_small(surf, dx + 6, iy + 5, k_res_names[i], fg);
+            char item_lbl[32];
+            snprintf(item_lbl, sizeof(item_lbl), "%u x %u%s",
+                     (unsigned)cp->caps.modes[idx].width,
+                     (unsigned)cp->caps.modes[idx].height,
+                     cp->caps.modes[idx].preferred ? " *" : "");
+            uint32_t fg = (idx == cp->sel_res) ? PXE_COL_WHITE : PXE_COL_BLACK;
+            pxe_draw_text_small(surf, dx + 6, iy + 5, item_lbl, fg);
+        }
+        if (has_sb) {
+            int sbx = dx + dw - 18;
+            pxe_draw_vline(surf, sbx, dy + 1, dh - 2, PXE_COL_DARK_GRAY);
+            pxe_draw_bevel_box(surf, sbx + 1, dy + 1, 16, 18, 0, PXE_COL_LIGHT_GRAY);
+            pxe_draw_text_small(surf, sbx + 6, dy + 5, "^", PXE_COL_BLACK);
+            pxe_draw_bevel_box(surf, sbx + 1, dy + dh - 19, 16, 18, 0, PXE_COL_LIGHT_GRAY);
+            pxe_draw_text_small(surf, sbx + 6, dy + dh - 15, "v", PXE_COL_BLACK);
         }
     } else if (cp->bpp_open) {
-        int dx = 126, dy = 104, dw = 174, dh = 4 * 18 + 2;
+        int dx = 126, dy = 104, dw = 204, dh = 4 * 18 + 2;
         pxe_fill_rect(surf, dx, dy, dw, dh, PXE_COL_WHITE);
         pxe_draw_rect(surf, dx, dy, dw, dh, PXE_COL_BLACK);
         for (int i = 0; i < 4; i++) {
             int iy = dy + 1 + i * 18;
-            int sup = mode_supported(&cp->info, cp->sel_res, i);
+            int sup = mode_supported(cp, cp->sel_res, i);
             if (i == cp->sel_bpp && sup) {
                 pxe_fill_rect(surf, dx + 1, iy, dw - 2, 18, PXE_COL_BLUE);
             }
-            const char* lbl = sup ? k_bpp_names[i] :
-                              (i == 0 ? "32-bit (Unsupported)" :
-                               i == 1 ? "24-bit (Unsupported)" : k_bpp_names[i]);
+            char ubuf[32];
+            const char* lbl = k_bpp_names[i];
+            if (!sup) {
+                snprintf(ubuf, sizeof(ubuf), "%d-bit (Unsupported)", k_bpps[i]);
+                lbl = ubuf;
+            }
             uint32_t fg = !sup ? PXE_COL_DARK_GRAY :
                           (i == cp->sel_bpp ? PXE_COL_WHITE : PXE_COL_BLACK);
             pxe_draw_text_small(surf, dx + 6, iy + 5, lbl, fg);
@@ -243,9 +366,19 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
 }
 
 static void start_apply_mode(cpanel_t* cp) {
-    int tw = k_res_w[cp->sel_res];
-    int th = k_res_h[cp->sel_res];
+    if (cp->sel_res < 0 || cp->sel_res >= cp->caps.mode_count) {
+        pxe_beep();
+        snprintf(cp->notice, sizeof(cp->notice), "No valid resolution selected.");
+        return;
+    }
+    int tw = (int)cp->caps.modes[cp->sel_res].width;
+    int th = (int)cp->caps.modes[cp->sel_res].height;
     int tb = k_bpps[cp->sel_bpp];
+    if (!mode_supported(cp, cp->sel_res, cp->sel_bpp)) {
+        pxe_beep();
+        snprintf(cp->notice, sizeof(cp->notice), "Unsupported mode / VRAM limit.");
+        return;
+    }
     if (tw == cp->info.screen_w && th == cp->info.screen_h && tb == cp->info.screen_bpp) {
         snprintf(cp->notice, sizeof(cp->notice), "Already using this display mode.");
         return;
@@ -258,7 +391,7 @@ static void start_apply_mode(cpanel_t* cp) {
         pxe_get_rtc_time(&rtc);
         cp->revert_sec = 15;
         cp->last_rtc_sec = (int)rtc.second;
-        pxe_sys_get_basic_info(&cp->info);
+        sync_from_sysinfo(cp);
         snprintf(cp->notice, sizeof(cp->notice), "Click Keep (OK) to confirm mode.");
     } else {
         pxe_beep();
@@ -274,10 +407,10 @@ int main(int argc, char** argv) {
     memset(&desc, 0, sizeof(desc));
     desc.x = 120;
     desc.y = 48;
-    desc.w = 340;
-    desc.h = 264;
-    desc.min_w = 340;
-    desc.min_h = 264;
+    desc.w = 360;
+    desc.h = 304;
+    desc.min_w = 360;
+    desc.min_h = 304;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
     strcpy(desc.title, "Control Panel");
@@ -361,6 +494,37 @@ int main(int argc, char** argv) {
                     cp.wp_path[cp.wp_len] = '\0';
                     dirty = 1;
                 }
+            } else if (ev.type == PXE_EV_KEY_DOWN && cp.res_open) {
+                if (ev.key == PXE_KEY_ESC || ev.key == PXE_KEY_ENTER) {
+                    cp.res_open = 0;
+                    dirty = 1;
+                } else if (ev.key == PXE_KEY_UP && cp.sel_res > 0) {
+                    cp.sel_res--;
+                    if (cp.sel_res < cp.res_scroll) cp.res_scroll = cp.sel_res;
+                    if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
+                        for (int b = 0; b < 4; b++) {
+                            if (mode_supported(&cp, cp.sel_res, b)) {
+                                cp.sel_bpp = b;
+                                break;
+                            }
+                        }
+                    }
+                    dirty = 1;
+                } else if (ev.key == PXE_KEY_DOWN && cp.sel_res + 1 < cp.caps.mode_count) {
+                    cp.sel_res++;
+                    if (cp.sel_res >= cp.res_scroll + CPANEL_DROPDOWN_VIS) {
+                        cp.res_scroll = cp.sel_res - CPANEL_DROPDOWN_VIS + 1;
+                    }
+                    if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
+                        for (int b = 0; b < 4; b++) {
+                            if (mode_supported(&cp, cp.sel_res, b)) {
+                                cp.sel_bpp = b;
+                                break;
+                            }
+                        }
+                    }
+                    dirty = 1;
+                }
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
                 int mx = ev.x, my = ev.y;
 
@@ -387,13 +551,32 @@ int main(int argc, char** argv) {
                 }
 
                 if (cp.res_open) {
-                    if (pxe_point_in_rect(mx, my, 126, 79, 174, 4 * 18)) {
-                        int idx = (my - 79) / 18;
-                        if (idx >= 0 && idx < 4 && res_supported(&cp.info, idx)) {
+                    int vis = (cp.caps.mode_count <= CPANEL_DROPDOWN_VIS)
+                              ? cp.caps.mode_count : CPANEL_DROPDOWN_VIS;
+                    if (vis < 1) vis = 1;
+                    int has_sb = (cp.caps.mode_count > CPANEL_DROPDOWN_VIS);
+                    int dx = 126, dy = 78, dw = 204, dh = vis * 18 + 2;
+                    int list_w = has_sb ? (dw - 18) : (dw - 2);
+                    int sbx = dx + dw - 18;
+                    if (has_sb && pxe_point_in_rect(mx, my, sbx, dy + 1, 18, 18)) {
+                        if (cp.res_scroll > 0) cp.res_scroll--;
+                        dirty = 1;
+                        continue;
+                    }
+                    if (has_sb && pxe_point_in_rect(mx, my, sbx, dy + dh - 19, 18, 18)) {
+                        int max_sc = cp.caps.mode_count - CPANEL_DROPDOWN_VIS;
+                        if (cp.res_scroll < max_sc) cp.res_scroll++;
+                        dirty = 1;
+                        continue;
+                    }
+                    if (pxe_point_in_rect(mx, my, dx + 1, dy + 1, list_w, vis * 18)) {
+                        int row = (my - (dy + 1)) / 18;
+                        int idx = cp.res_scroll + row;
+                        if (idx >= 0 && idx < cp.caps.mode_count) {
                             cp.sel_res = idx;
-                            if (!mode_supported(&cp.info, cp.sel_res, cp.sel_bpp)) {
+                            if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
                                 for (int b = 0; b < 4; b++) {
-                                    if (mode_supported(&cp.info, cp.sel_res, b)) {
+                                    if (mode_supported(&cp, cp.sel_res, b)) {
                                         cp.sel_bpp = b;
                                         break;
                                     }
@@ -407,9 +590,9 @@ int main(int argc, char** argv) {
                 }
 
                 if (cp.bpp_open) {
-                    if (pxe_point_in_rect(mx, my, 126, 105, 174, 4 * 18)) {
+                    if (pxe_point_in_rect(mx, my, 126, 105, 204, 4 * 18)) {
                         int idx = (my - 105) / 18;
-                        if (idx >= 0 && idx < 4 && mode_supported(&cp.info, cp.sel_res, idx)) {
+                        if (idx >= 0 && idx < 4 && mode_supported(&cp, cp.sel_res, idx)) {
                             cp.sel_bpp = idx;
                         }
                     }
@@ -443,12 +626,12 @@ int main(int argc, char** argv) {
                 }
 
                 /* Dropdowns */
-                if (pxe_point_in_rect(mx, my, 126, 58, 174, 20)) {
+                if (pxe_point_in_rect(mx, my, 126, 58, 204, 20)) {
                     cp.res_open = 1;
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 126, 84, 174, 20)) {
+                if (pxe_point_in_rect(mx, my, 126, 84, 204, 20)) {
                     cp.bpp_open = 1;
                     dirty = 1;
                     continue;
@@ -463,7 +646,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 278, 112, 22, 20)) {
+                if (pxe_point_in_rect(mx, my, 308, 112, 22, 20)) {
                     cp.pattern = (cp.pattern + 1) % 6;
                     pxe_desktop_set_pattern(cp.pattern);
                     pxe_settings_save();
@@ -474,40 +657,40 @@ int main(int argc, char** argv) {
 
                 /* Wallpaper row */
                 if (cp.info.wallpaper_active) {
-                    if (pxe_point_in_rect(mx, my, 96, 140, 36, 20)) {
+                    if (pxe_point_in_rect(mx, my, 96, 140, 38, 20)) {
                         pxe_desktop_set_wallpaper_mode(0);
                         sync_from_sysinfo(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 134, 140, 34, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 136, 140, 36, 20)) {
                         pxe_desktop_set_wallpaper_mode(1);
                         sync_from_sysinfo(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 170, 140, 44, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 174, 140, 48, 20)) {
                         pxe_desktop_set_wallpaper_mode(2);
                         sync_from_sysinfo(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 216, 140, 36, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 224, 140, 38, 20)) {
                         pxe_desktop_set_wallpaper_mode(3);
                         sync_from_sysinfo(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 254, 140, 34, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 264, 140, 36, 20)) {
                         pxe_desktop_clear_wallpaper();
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper cleared.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 290, 140, 40, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 302, 140, 48, 20)) {
                         cp.wp_modal = 1;
                         dirty = 1;
                     }
-                } else if (pxe_point_in_rect(mx, my, 254, 140, 76, 20)) {
+                } else if (pxe_point_in_rect(mx, my, 270, 140, 80, 20)) {
                     cp.wp_modal = 1;
                     dirty = 1;
                 }
 
                 /* Bottom actions */
                 if (cp.revert_sec > 0) {
-                    if (pxe_point_in_rect(mx, my, 168, 218, 148, 24)) {
+                    if (pxe_point_in_rect(mx, my, 188, 260, 156, 24)) {
                         cp.revert_sec = 0;
                         pxe_display_set_mode(cp.info.screen_w, cp.info.screen_h, cp.info.screen_bpp);
                         pxe_settings_save();
@@ -516,10 +699,10 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     }
                 } else {
-                    if (pxe_point_in_rect(mx, my, 10, 218, 102, 24)) {
+                    if (pxe_point_in_rect(mx, my, 10, 260, 108, 24)) {
                         start_apply_mode(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 120, 218, 102, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 126, 260, 108, 24)) {
                         if (pxe_settings_save() == 0) {
                             snprintf(cp.notice, sizeof(cp.notice), "Saved settings to .pse.");
                         } else {
@@ -527,9 +710,11 @@ int main(int argc, char** argv) {
                             snprintf(cp.notice, sizeof(cp.notice), "Save failed (read-only medium?).");
                         }
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 230, 218, 100, 24)) {
-                        int tw = k_res_w[cp.sel_res];
-                        int th = k_res_h[cp.sel_res];
+                    } else if (pxe_point_in_rect(mx, my, 242, 260, 108, 24)) {
+                        int tw = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
+                                 ? (int)cp.caps.modes[cp.sel_res].width : cp.info.screen_w;
+                        int th = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
+                                 ? (int)cp.caps.modes[cp.sel_res].height : cp.info.screen_h;
                         int tb = k_bpps[cp.sel_bpp];
                         if (tw != cp.info.screen_w || th != cp.info.screen_h || tb != cp.info.screen_bpp) {
                             start_apply_mode(&cp);
@@ -573,3 +758,4 @@ int main(int argc, char** argv) {
     pxe_win_destroy(win_id);
     return 0;
 }
+

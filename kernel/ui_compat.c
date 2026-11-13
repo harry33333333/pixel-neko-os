@@ -14,8 +14,9 @@
 #include "vfs.h"
 #include "wm.h"
 
-#define UI_MAX_WIDTH 1280
-#define UI_MAX_HEIGHT 1024
+#define UI_MIN_WIDTH 640
+#define UI_MIN_HEIGHT 480
+#define UI_BOOT_FALLBACK_BYTES (1024U * 768U * 2U)
 
 #define CURSOR_W 12
 #define CURSOR_H 17
@@ -24,7 +25,10 @@ int screen_w;
 int screen_h;
 int screen_bpp;
 int screen_pitch;
-unsigned char backbuffer[UI_MAX_WIDTH * UI_MAX_HEIGHT * 4];
+static unsigned char g_boot_backbuffer[UI_BOOT_FALLBACK_BYTES];
+unsigned char* backbuffer = g_boot_backbuffer;
+static phys_addr_t g_backbuffer_phys = 0;
+static size_t g_backbuffer_pages = 0;
 unsigned char* lfb;
 unsigned short palette16[256];
 unsigned int palette32[256];
@@ -84,16 +88,69 @@ static void ui_build_palette(void) {
     }
 }
 
+static size_t ui_calc_backbuffer_pages(int width, int height, int bpp,
+                                       uint64_t* out_bytes) {
+    if (width < UI_MIN_WIDTH || height < UI_MIN_HEIGHT) return 0;
+    if (width > 16384 || height > 16384) return 0;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
+    uint64_t bpp_bytes = (uint64_t)(unsigned int)(bpp / 8);
+    uint64_t bytes = (uint64_t)(unsigned int)width *
+                     (uint64_t)(unsigned int)height * bpp_bytes;
+    if (out_bytes) *out_bytes = bytes;
+    return (size_t)((bytes + PAGE_SIZE - 1) / PAGE_SIZE);
+}
+
+bool ui_can_allocate_resolution(int width, int height, int bpp) {
+    uint64_t bytes = 0;
+    size_t need_pages = ui_calc_backbuffer_pages(width, height, bpp, &bytes);
+    if (need_pages == 0) return false;
+    if (bytes <= UI_BOOT_FALLBACK_BYTES) return true;
+    if (g_backbuffer_phys != 0 && need_pages <= g_backbuffer_pages) return true;
+    return (uint64_t)need_pages + 512ULL <= pmm_get_free_page_count();
+}
+
 void ui_compat_init(void) {
     screen_w = (int)g_main_surface.width;
     screen_h = (int)g_main_surface.height;
-    if (screen_w <= 0 || screen_w > UI_MAX_WIDTH) screen_w = 1280;
-    if (screen_h <= 0 || screen_h > UI_MAX_HEIGHT) screen_h = 800;
-    screen_bpp = 32;
-    screen_pitch = screen_w * 4;
+    if (screen_w < UI_MIN_WIDTH) screen_w = UI_MIN_WIDTH;
+    if (screen_h < UI_MIN_HEIGHT) screen_h = UI_MIN_HEIGHT;
+
+    int bpp = (int)g_main_surface.bpp;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) {
+        bpp = 16;
+    }
+    screen_bpp = bpp;
+    int bytes_per_pixel = screen_bpp / 8;
+    screen_pitch = screen_w * bytes_per_pixel;
     lfb = (unsigned char*)g_main_surface.framebuffer_virt;
     ui_build_palette();
-    memset(backbuffer, 0, (size_t)screen_pitch * (size_t)screen_h);
+
+    uint64_t need_bytes = (uint64_t)(unsigned int)screen_pitch *
+                          (uint64_t)(unsigned int)screen_h;
+    size_t pages = (size_t)((need_bytes + PAGE_SIZE - 1) / PAGE_SIZE);
+    if (need_bytes <= UI_BOOT_FALLBACK_BYTES) {
+        backbuffer = g_boot_backbuffer;
+        g_backbuffer_phys = 0;
+        g_backbuffer_pages = 0;
+    } else {
+        phys_addr_t phys = (pages > 0) ? pmm_alloc_pages(pages) : 0;
+        if (phys != 0) {
+            backbuffer = (unsigned char*)phys_to_virt(phys);
+            g_backbuffer_phys = phys;
+            g_backbuffer_pages = pages;
+        } else {
+            screen_w = 1024;
+            screen_h = 768;
+            screen_bpp = 16;
+            screen_pitch = screen_w * 2;
+            need_bytes = (uint64_t)(unsigned int)screen_pitch *
+                         (uint64_t)(unsigned int)screen_h;
+            backbuffer = g_boot_backbuffer;
+            g_backbuffer_phys = 0;
+            g_backbuffer_pages = 0;
+        }
+    }
+    memset(backbuffer, 0, (size_t)need_bytes);
 
     if (g_hhdm.total_memory_bytes > 0) {
         total_ram_mb = (int)((g_hhdm.total_memory_bytes + 0x7FFFFULL) / (1024 * 1024));
@@ -209,11 +266,41 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
     int hw_h = (int)g_main_surface.height;
     if (hw_w <= 0 || hw_h <= 0) return;
 
+    lfb = (unsigned char*)g_main_surface.framebuffer_virt;
     if (screen_w == hw_w && screen_h == hw_h) {
         for (int row = 0; row < height; row++) {
             int sy = y + row;
-            if (screen_bpp == 32 && g_main_surface.bpp == 32 &&
-                g_main_surface.format == PIXEL_FORMAT_RGB888) {
+            if (screen_bpp == 8 && g_main_surface.bpp == 8) {
+                volatile uint8_t* dst =
+                    (volatile uint8_t*)(lfb +
+                                        (size_t)sy * g_main_surface.pitch +
+                                        (size_t)x);
+                const uint8_t* src =
+                    (const uint8_t*)(source + (size_t)sy * (size_t)screen_pitch +
+                                     (size_t)x);
+                for (int column = 0; column < width; column++) {
+                    dst[column] = src[column];
+                }
+            } else if (screen_bpp == 16 && g_main_surface.bpp == 16 &&
+                       g_main_surface.red_mask_size == 5 &&
+                       g_main_surface.green_mask_size == 6 &&
+                       g_main_surface.blue_mask_size == 5 &&
+                       g_main_surface.red_mask_shift == 11) {
+                volatile uint16_t* dst =
+                    (volatile uint16_t*)(lfb +
+                                         (size_t)sy * g_main_surface.pitch +
+                                         (size_t)x * 2);
+                const uint16_t* src =
+                    (const uint16_t*)(source + (size_t)sy * (size_t)screen_pitch +
+                                      (size_t)x * 2);
+                for (int column = 0; column < width; column++) {
+                    dst[column] = src[column];
+                }
+            } else if (screen_bpp == 32 && g_main_surface.bpp == 32 &&
+                       ((g_main_surface.red_mask_shift == 16 &&
+                         g_main_surface.green_mask_shift == 8 &&
+                         g_main_surface.blue_mask_shift == 0) ||
+                        g_main_surface.format == PIXEL_FORMAT_RGB888)) {
                 volatile uint32_t* dst =
                     (volatile uint32_t*)(lfb +
                                          (size_t)sy * g_main_surface.pitch +
@@ -325,26 +412,61 @@ static void ui_sync_drag_box_to_lfb(const unsigned char* surface,
     }
 }
 
-void set_resolution(int width, int height, int bpp) {
-    if (width < 320) width = 320;
-    if (width > UI_MAX_WIDTH) width = UI_MAX_WIDTH;
-    if (height < 200) height = 200;
-    if (height > UI_MAX_HEIGHT) height = UI_MAX_HEIGHT;
-    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) bpp = 32;
+bool set_resolution_ex(int width, int height, int bpp) {
+    if (width < UI_MIN_WIDTH) width = UI_MIN_WIDTH;
+    if (height < UI_MIN_HEIGHT) height = UI_MIN_HEIGHT;
+    if (width > 16384 || height > 16384) return false;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) bpp = 16;
 
-    if (g_cursor_saved_valid) {
+    uint64_t need_bytes = 0;
+    size_t need_pages = ui_calc_backbuffer_pages(width, height, bpp, &need_bytes);
+    if (need_pages == 0) return false;
+
+    unsigned char* new_buf = NULL;
+    phys_addr_t new_phys = 0;
+    size_t new_pages = 0;
+    bool reuse_existing = false;
+
+    if (need_bytes <= UI_BOOT_FALLBACK_BYTES) {
+        new_buf = g_boot_backbuffer;
+    } else if (g_backbuffer_phys != 0 && need_pages <= g_backbuffer_pages &&
+               (g_backbuffer_pages - need_pages) < 128) {
+        reuse_existing = true;
+        new_buf = backbuffer;
+        new_phys = g_backbuffer_phys;
+        new_pages = g_backbuffer_pages;
+    } else {
+        new_phys = pmm_alloc_pages(need_pages);
+        if (new_phys == 0) return false;
+        new_buf = (unsigned char*)phys_to_virt(new_phys);
+        new_pages = need_pages;
+    }
+
+    if (g_cursor_saved_valid && backbuffer) {
         mouse_reset(backbuffer);
     }
-    if (g_drag_box_saved) {
+    if (g_drag_box_saved && backbuffer) {
         ui_xor_drag_box(backbuffer, g_drag_bx, g_drag_by, g_drag_bw, g_drag_bh);
         g_drag_box_saved = false;
     }
 
+    phys_addr_t old_phys = g_backbuffer_phys;
+    size_t old_pages = g_backbuffer_pages;
+
+    backbuffer = new_buf;
+    g_backbuffer_phys = new_phys;
+    g_backbuffer_pages = new_pages;
+
     screen_w = width;
     screen_h = height;
     screen_bpp = bpp;
-    int bytes_per_pixel = (bpp <= 8) ? 1 : ((bpp <= 16) ? 2 : ((bpp <= 24) ? 3 : 4));
+    int bytes_per_pixel = screen_bpp / 8;
     screen_pitch = screen_w * bytes_per_pixel;
+    lfb = (unsigned char*)g_main_surface.framebuffer_virt;
+
+    if (!reuse_existing && old_phys != 0 && old_phys != new_phys) {
+        pmm_free_pages(old_phys, old_pages);
+    }
 
     if (g_mouse_x >= screen_w) g_mouse_x = screen_w - 1;
     if (g_mouse_y >= screen_h) g_mouse_y = screen_h - 1;
@@ -352,8 +474,13 @@ void set_resolution(int width, int height, int bpp) {
     if (g_mouse_y < 0) g_mouse_y = 0;
 
     mouse_invalidate();
-    memset(backbuffer, 0, (size_t)screen_pitch * (size_t)screen_h);
+    memset(backbuffer, 0, (size_t)need_bytes);
     wm_on_resolution_change(screen_w, screen_h);
+    return true;
+}
+
+void set_resolution(int width, int height, int bpp) {
+    (void)set_resolution_ex(width, height, bpp);
 }
 
 static void ui_draw_cursor(unsigned char* surface) {

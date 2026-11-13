@@ -19,6 +19,8 @@ static const pdv_kernel_api_t* g_kapi;
 #define PCI_DEV_6600LE_NV43_B  0x0142
 #define PCI_CAP_ID_EXP         0x10
 
+#define NV_MAX_MODES           24
+
 static const pdv_pci_device_t* g_pci;
 static int g_active;
 static unsigned int g_vram_size;
@@ -26,6 +28,10 @@ static uint64_t g_bar0;
 static uint64_t g_bar1;
 static uint64_t g_bar1_size;
 static int g_primary_7300gt;
+static int g_boot_w = 1024;
+static int g_boot_h = 768;
+static pdv_display_mode_t g_nv_modes[NV_MAX_MODES];
+static int g_nv_mode_count;
 static const char* g_name = "NVIDIA PCIe";
 static const char* g_status = "Not detected";
 
@@ -41,6 +47,106 @@ static int nvidia_framebuffer_in_bar(uint64_t framebuffer, uint64_t size) {
     uint64_t offset = framebuffer - g_bar1;
     if (size && offset >= size) return 0;
     return 1;
+}
+
+static int nvidia_g7x_supports_bpp(int w, int h, int bpp) {
+    if (!g_active) return 0;
+    if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
+    if (w > g_boot_w || h > g_boot_h) return 0;
+    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
+    uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
+                     (uint64_t)(unsigned int)(bpp / 8);
+    if (g_vram_size > 0 && bytes > (uint64_t)g_vram_size) return 0;
+    if (g_bar1_size > 0 && bytes > g_bar1_size) return 0;
+    return 1;
+}
+
+static void nvidia_g7x_build_modes(void) {
+    static const int k_preset_w[] = {
+        640, 800, 1024, 1152, 1280, 1280, 1280, 1280,
+        1366, 1400, 1440, 1600, 1600, 1680, 1920, 1920,
+        2560, 2560, 3840
+    };
+    static const int k_preset_h[] = {
+        480, 600, 768, 864, 720, 800, 960, 1024,
+        768, 1050, 900, 900, 1200, 1050, 1080, 1200,
+        1440, 1600, 2160
+    };
+    static const int k_bpps[4] = { 8, 16, 24, 32 };
+    int cnt = 0;
+    int presets = (int)(sizeof(k_preset_w) / sizeof(k_preset_w[0]));
+
+    for (int i = 0; i < presets && cnt < NV_MAX_MODES; i++) {
+        int w = k_preset_w[i];
+        int h = k_preset_h[i];
+        uint8_t mask = 0;
+        for (int b = 0; b < 4; b++) {
+            if (nvidia_g7x_supports_bpp(w, h, k_bpps[b])) {
+                mask |= pdv_bpp_to_mask(k_bpps[b]);
+            }
+        }
+        if (mask != 0) {
+            g_nv_modes[cnt].width = (uint16_t)w;
+            g_nv_modes[cnt].height = (uint16_t)h;
+            g_nv_modes[cnt].bpp_mask = mask;
+            g_nv_modes[cnt].preferred = (w == g_boot_w && h == g_boot_h) ? 1U : 0U;
+            g_nv_modes[cnt].reserved = 0U;
+            cnt++;
+        }
+    }
+
+    if (g_boot_w >= PDV_DISPLAY_MIN_WIDTH && g_boot_h >= PDV_DISPLAY_MIN_HEIGHT &&
+        cnt < NV_MAX_MODES) {
+        int dup = 0;
+        for (int j = 0; j < cnt; j++) {
+            if ((int)g_nv_modes[j].width == g_boot_w &&
+                (int)g_nv_modes[j].height == g_boot_h) {
+                dup = 1;
+                break;
+            }
+        }
+        if (!dup) {
+            uint8_t mask = 0;
+            for (int b = 0; b < 4; b++) {
+                if (nvidia_g7x_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
+                    mask |= pdv_bpp_to_mask(k_bpps[b]);
+                }
+            }
+            if (mask != 0) {
+                g_nv_modes[cnt].width = (uint16_t)g_boot_w;
+                g_nv_modes[cnt].height = (uint16_t)g_boot_h;
+                g_nv_modes[cnt].bpp_mask = mask;
+                g_nv_modes[cnt].preferred = 1U;
+                g_nv_modes[cnt].reserved = 0U;
+                cnt++;
+            }
+        }
+    }
+    g_nv_mode_count = cnt;
+}
+
+static int nvidia_g7x_get_mode_count(void) {
+    return g_active ? g_nv_mode_count : 0;
+}
+
+static int nvidia_g7x_get_mode(int index, pdv_display_mode_t* out_mode) {
+    if (!g_active || !out_mode || index < 0 || index >= g_nv_mode_count) {
+        return 0;
+    }
+    *out_mode = g_nv_modes[index];
+    return 1;
+}
+
+static int nvidia_g7x_get_max_width(void) {
+    return g_active ? g_boot_w : 0;
+}
+
+static int nvidia_g7x_get_max_height(void) {
+    return g_active ? g_boot_h : 0;
+}
+
+static int nvidia_g7x_set_mode(int w, int h, int bpp) {
+    return nvidia_g7x_supports_bpp(w, h, bpp);
 }
 
 static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys) {
@@ -149,7 +255,12 @@ static int nvidia_g7x_probe(void) {
 
         unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0);
         g_vram_size = hw_vram ? hw_vram : (vram ? vram : (unsigned int)bar_size);
+        g_boot_w = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
+        g_boot_h = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
+        if (g_boot_w < PDV_DISPLAY_MIN_WIDTH) g_boot_w = PDV_DISPLAY_MIN_WIDTH;
+        if (g_boot_h < PDV_DISPLAY_MIN_HEIGHT) g_boot_h = PDV_DISPLAY_MIN_HEIGHT;
         g_active = 1;
+        nvidia_g7x_build_modes();
 
         if (g_bar1 && nvidia_framebuffer_in_bar(
                           surf.framebuffer_phys, bar_size)) {
@@ -157,11 +268,11 @@ static int nvidia_g7x_probe(void) {
         } else {
             g_status = "Linear WC aperture active";
         }
-        klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB",
+        klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB modes=%d",
                   g_name, dev->vendor, dev->device, dev->revision, pcie,
                   (unsigned long long)g_bar0, (unsigned long long)g_bar1,
                   (unsigned long long)surf.framebuffer_phys,
-                  g_vram_size / (1024U * 1024U));
+                  g_vram_size / (1024U * 1024U), g_nv_mode_count);
         return 1;
     }
     return 0;
@@ -278,15 +389,19 @@ static const pdv_display_driver_t g_nvg7x_drv = {
     .is_active            = nvidia_g7x_is_active,
     .is_2d_active         = nvidia_g7x_is_2d_active,
     .get_vram_size        = nvidia_g7x_get_vram_size,
-    .can_set_mode         = 0,
-    .supports_bpp         = 0,
-    .set_mode             = 0,
+    .can_set_mode         = nvidia_g7x_supports_bpp,
+    .supports_bpp         = nvidia_g7x_supports_bpp,
+    .set_mode             = nvidia_g7x_set_mode,
     .fill_rect            = nvidia_g7x_fill_rect,
     .screen_blt           = nvidia_g7x_screen_blt,
     .present_rect         = nvidia_g7x_present_rect,
     .sync                 = nvidia_g7x_sync,
     .has_hw_cursor        = 0,
     .set_cursor           = 0,
+    .get_mode_count       = nvidia_g7x_get_mode_count,
+    .get_mode             = nvidia_g7x_get_mode,
+    .get_max_width        = nvidia_g7x_get_max_width,
+    .get_max_height       = nvidia_g7x_get_max_height,
 };
 
 int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
