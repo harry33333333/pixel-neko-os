@@ -382,7 +382,7 @@ static int ati_mach64_probe_hw(void) {
 
         g_ati_active = 1;
         ati_mach64_build_modes();
-        g_status = (g_ati_vram_bytes <= 2U * 1024U * 1024U)
+        g_ati_status = (g_ati_vram_bytes <= 2U * 1024U * 1024U)
                    ? "Active (LFB, <=2MB VRAM limit)"
                    : "Active (LFB, VRAM verified)";
         klog_info("[ATI ] active %s BAR0=0x%llx vram=%uKB regs=%s modes=%d",
