@@ -28,8 +28,18 @@
 #define STATE_DONE       2
 #define STATE_ERROR      3
 
-#define ROW_H 18
+#define ROW_H 21
 #define SB_W  14
+
+typedef enum {
+    STEP_WELCOME = 0,
+    STEP_SELECT,
+    STEP_REINSTALL_WARN,
+    STEP_FORMAT,
+    STEP_CONFIRM,
+    STEP_PROGRESS,
+    STEP_COMPLETE
+} install_step_t;
 
 typedef struct {
     char rel[160];
@@ -62,6 +72,15 @@ typedef struct {
 
     char logs[MAX_LOG_LINES][84];
     int  log_count;
+
+    install_step_t step;
+    int install_mode;
+    int skip_format;
+    int reinstall_ack;
+    int install_error;
+    uint8_t existing_on_disk[MAX_RAW_PARTS];
+    uint8_t existing_on_target[MAX_RAW_PARTS];
+    char existing_letter[MAX_RAW_PARTS];
 } installer_t;
 
 static uint32_t get_le32(const uint8_t* p) {
@@ -136,12 +155,148 @@ static void fmt_sectors(uint64_t sectors, char* out, size_t cap) {
     }
 }
 
+#define RGB_COL(hex24) (0xFF000000u | (uint32_t)(hex24))
+
+typedef struct {
+    int cw, ch;
+    int card_x, card_y, card_w, card_h;
+    int hdr_h, step_h;
+    int body_x, body_y, body_w, body_h;
+    int foot_y, foot_h;
+    int back_x, back_y, back_w, back_h;
+    int next_x, next_y, next_w, next_h;
+    int exit_x, exit_y, exit_w, exit_h;
+    int shut_x, shut_y, shut_w, shut_h;
+    int wbtn_x, wbtn_y, wbtn_w, wbtn_h;
+    int list_x, list_y, list_w, list_h, vis_rows;
+    int ref_x, ref_y, ref_w, ref_h;
+    int init_x, init_y, init_w, init_h;
+    int fcard_x, fcard_w, fcard_h, fcard_y0, fcard_y1, fcard_y2;
+    int lbl_x, lbl_y, lbl_w, lbl_h;
+} nt6_layout_t;
+
+static int part_supports_fat32(const pxe_r0_part_info_t* p) {
+    return p && p->total_sectors >= 65536ull;
+}
+
+static int part_supports_fat16(const pxe_r0_part_info_t* p) {
+    return p && p->total_sectors <= 4194304ull;
+}
+
+static int part_supports_skip_fmt(const pxe_r0_part_info_t* p) {
+    return p && (p->fs_type == PART_FS_FAT16 || p->fs_type == PART_FS_FAT32);
+}
+
+static void calc_nt6_layout(const pxe_win_surface_t* surf, nt6_layout_t* l) {
+    memset(l, 0, sizeof(*l));
+    l->cw = (surf && surf->width > 0) ? surf->width : 798;
+    l->ch = (surf && surf->height > 0) ? surf->height : 560;
+
+    l->card_w = (l->cw >= 730) ? 700 : (l->cw - 20);
+    if (l->card_w < 580) l->card_w = l->cw - 8;
+    l->card_h = (l->ch >= 520) ? 486 : (l->ch - 26);
+    if (l->card_h < 400) l->card_h = l->ch - 8;
+    l->card_x = (l->cw - l->card_w) / 2;
+    l->card_y = (l->ch >= 520) ? ((l->ch - l->card_h) / 2 + 8) : ((l->ch - l->card_h) / 2);
+
+    l->hdr_h  = 48;
+    l->step_h = 26;
+    l->foot_h = 44;
+    l->foot_y = l->card_y + l->card_h - l->foot_h;
+
+    l->body_x = l->card_x + 20;
+    l->body_y = l->card_y + l->hdr_h + l->step_h + 10;
+    l->body_w = l->card_w - 40;
+    l->body_h = l->foot_y - l->body_y - 8;
+
+    int by = l->foot_y + 9;
+    l->back_w = 94;  l->back_h = 26;
+    l->back_x = l->card_x + 16; l->back_y = by;
+
+    l->exit_w = 82;  l->exit_h = 26;
+    l->exit_x = l->back_x + l->back_w + 10; l->exit_y = by;
+
+    l->next_w = 136; l->next_h = 26;
+    l->next_x = l->card_x + l->card_w - l->next_w - 16; l->next_y = by;
+
+    l->shut_w = 104; l->shut_h = 26;
+    l->shut_x = l->next_x - l->shut_w - 10; l->shut_y = by;
+
+    /* Welcome "Install now" CTA inside right pane */
+    l->wbtn_w = 176; l->wbtn_h = 34;
+    l->wbtn_x = l->body_x + 196;
+    l->wbtn_y = l->body_y + l->body_h - 54;
+
+    /* Partition table & refresh/init controls */
+    l->ref_w  = 88;  l->ref_h  = 22;
+    l->ref_x  = l->body_x + l->body_w - l->ref_w;
+    l->ref_y  = l->body_y + 2;
+    l->init_w = 102; l->init_h = 22;
+    l->init_x = l->ref_x - l->init_w - 8;
+    l->init_y = l->ref_y;
+
+    l->list_x = l->body_x;
+    l->list_y = l->body_y + 66;
+    l->list_w = l->body_w - SB_W;
+    l->list_h = (l->body_h >= 340) ? 164 : 132;
+    l->vis_rows = (l->list_h - 4) / ROW_H;
+    if (l->vis_rows < 1) l->vis_rows = 1;
+
+    /* Format radio cards & volume label box */
+    l->fcard_x  = l->body_x;
+    l->fcard_w  = l->body_w;
+    l->fcard_h  = (l->body_h >= 340) ? 58 : 50;
+    l->fcard_y0 = l->body_y + 42;
+    l->fcard_y1 = l->fcard_y0 + l->fcard_h + 8;
+    l->fcard_y2 = l->fcard_y1 + l->fcard_h + 8;
+    l->lbl_x    = l->body_x + 124;
+    l->lbl_y    = l->fcard_y2 + l->fcard_h + 12;
+    l->lbl_w    = 176;
+    l->lbl_h    = 24;
+}
+
 static void sync_fs_choice_to_selection(installer_t* inst) {
     if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) return;
     const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
+    if (inst->skip_format) {
+        if (part_supports_skip_fmt(p)) {
+            inst->fs_choice = 0;
+            return;
+        }
+        inst->skip_format = 0;
+    }
     if (inst->fs_choice == 0) {
-        if (p->fs_type != PART_FS_FAT16 && p->fs_type != PART_FS_FAT32) {
-            inst->fs_choice = (p->total_sectors >= 65536ull) ? PART_FS_FAT32 : PART_FS_FAT16;
+        inst->fs_choice = part_supports_fat32(p) ? PART_FS_FAT32 : PART_FS_FAT16;
+    } else if (inst->fs_choice == PART_FS_FAT32 && !part_supports_fat32(p)) {
+        inst->fs_choice = PART_FS_FAT16;
+    } else if (inst->fs_choice == PART_FS_FAT16 && !part_supports_fat16(p)) {
+        inst->fs_choice = PART_FS_FAT32;
+    }
+}
+
+static void detect_existing_os(installer_t* inst) {
+    for (int i = 0; i < MAX_RAW_PARTS; i++) {
+        inst->existing_on_disk[i] = 0;
+        inst->existing_on_target[i] = 0;
+        inst->existing_letter[i] = 0;
+    }
+    for (int i = 0; i < inst->part_count; i++) {
+        char letter = inst->parts[i].mounted_letter;
+        if (!letter) continue;
+        char kpath[48], ppath[48];
+        pxe_dirent_t st;
+        snprintf(kpath, sizeof(kpath), "%c:\\boot\\kernel.elf", letter);
+        snprintf(ppath, sizeof(ppath), "%c:\\system\\PAYLOAD.TXT", letter);
+        if (pxe_stat(kpath, &st) == 0 && !st.is_dir && st.size > 0 &&
+            pxe_stat(ppath, &st) == 0 && !st.is_dir && st.size > 0) {
+            inst->existing_on_target[i] = 1;
+            inst->existing_letter[i] = letter;
+            for (int j = 0; j < inst->part_count; j++) {
+                if (inst->parts[j].disk_index == inst->parts[i].disk_index) {
+                    inst->existing_on_disk[j] = 1;
+                    if (!inst->existing_letter[j]) inst->existing_letter[j] = letter;
+                }
+            }
         }
     }
 }
@@ -173,133 +328,611 @@ static void refresh_partitions(installer_t* inst) {
         if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) {
             inst->sel_part = 0;
         }
-        sync_fs_choice_to_selection(inst);
+    }
+    detect_existing_os(inst);
+    sync_fs_choice_to_selection(inst);
+}
+
+static void draw_nt6_btn(const pxe_win_surface_t* surf, int x, int y, int w, int h,
+                         const char* label, int style, int enabled) {
+    /* style: 0=silver neutral, 1=NT6 blue primary, 2=NT6 green confirm */
+    uint32_t bg, border, hi, fg;
+    if (!enabled) {
+        bg = RGB_COL(0xDFE4EA);
+        border = RGB_COL(0x9AA5B1);
+        hi = RGB_COL(0xEDF1F5);
+        fg = RGB_COL(0x7B8794);
+    } else if (style == 1) {
+        bg = RGB_COL(0x0B5ED7);
+        border = RGB_COL(0x083B8A);
+        hi = RGB_COL(0x4B8DF0);
+        fg = RGB_COL(0xFFFFFF);
+    } else if (style == 2) {
+        bg = RGB_COL(0x168A3E);
+        border = RGB_COL(0x0E5C29);
+        hi = RGB_COL(0x47B86C);
+        fg = RGB_COL(0xFFFFFF);
+    } else {
+        bg = RGB_COL(0xE8EEF4);
+        border = RGB_COL(0x7D8C9C);
+        hi = RGB_COL(0xFFFFFF);
+        fg = RGB_COL(0x102A43);
+    }
+    pxe_fill_rect(surf, x, y, w, h, bg);
+    if (h > 6) {
+        pxe_fill_rect(surf, x + 1, y + 1, w - 2, 2, hi);
+    }
+    pxe_draw_rect(surf, x, y, w, h, border);
+    if (label && label[0]) {
+        int tw = (int)strlen(label) * 8;
+        if (tw <= w - 8) {
+            pxe_draw_text(surf, x + (w - tw) / 2, y + (h - 16) / 2, label, fg);
+        } else {
+            int sw = (int)strlen(label) * 6;
+            pxe_draw_text_small(surf, x + (w - sw) / 2, y + (h - 8) / 2, label, fg);
+        }
+    }
+}
+
+static void draw_nt6_backdrop(const pxe_win_surface_t* surf, const installer_t* inst) {
+    int bands = 16;
+    int band_h = (surf->height + bands - 1) / bands;
+    for (int i = 0; i < bands; i++) {
+        uint32_t r = (uint32_t)(8 + (i < 8 ? i * 2 : (15 - i) * 2));
+        uint32_t g = (uint32_t)(48 + (i < 8 ? i * 7 : (15 - i) * 5));
+        uint32_t b = (uint32_t)(78 + (i < 8 ? i * 8 : (15 - i) * 6));
+        int yy = i * band_h;
+        pxe_fill_rect(surf, 0, yy, surf->width, band_h, RGB_COL((r << 16) | (g << 8) | b));
+    }
+    /* Subtle NT6 diagonal aurora accent strips */
+    pxe_fill_rect(surf, 0, 0, surf->width, 4, RGB_COL(0x38BDF8));
+    char brand[96];
+    snprintf(brand, sizeof(brand), "Pixel Neko OS Setup  |  Build %s",
+             inst->sysinfo.os_build[0] ? inst->sysinfo.os_build : "26A221a");
+    pxe_draw_text_small(surf, 18, 12, brand, RGB_COL(0xE0F2FE));
+    if (inst->install_mode) {
+        const char* hint = "Use Apple Menu to Restart / Shut Down";
+        int hw = (int)strlen(hint) * 6;
+        if (surf->width - hw - 18 > 280) {
+            pxe_draw_text_small(surf, surf->width - hw - 18, 12, hint, RGB_COL(0xBAE6FD));
+        }
+    }
+}
+
+static void draw_neko_badge(const pxe_win_surface_t* surf, int x, int y) {
+    pxe_fill_rect(surf, x,      y,      14, 14, RGB_COL(0xDC2626));
+    pxe_fill_rect(surf, x + 14, y,      14, 14, RGB_COL(0x16A34A));
+    pxe_fill_rect(surf, x,      y + 14, 14, 14, RGB_COL(0x2563EB));
+    pxe_fill_rect(surf, x + 14, y + 14, 14, 14, RGB_COL(0xEAB308));
+    pxe_draw_rect(surf, x, y, 28, 28, RGB_COL(0x0F172A));
+    pxe_fill_rect(surf, x + 9, y + 9, 10, 10, RGB_COL(0xFFFFFF));
+    pxe_put_pixel(surf, x + 10, y + 8, RGB_COL(0xFFFFFF));
+    pxe_put_pixel(surf, x + 17, y + 8, RGB_COL(0xFFFFFF));
+    pxe_put_pixel(surf, x + 12, y + 12, RGB_COL(0x0F172A));
+    pxe_put_pixel(surf, x + 15, y + 12, RGB_COL(0x0F172A));
+    pxe_put_pixel(surf, x + 13, y + 15, RGB_COL(0x0F172A));
+}
+
+static void render_step_welcome(const pxe_win_surface_t* surf, const installer_t* inst,
+                                const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y, bw = l->body_w, bh = l->body_h;
+    int lw = 174;
+    pxe_fill_rect(surf, bx, by + 4, lw, bh - 12, RGB_COL(0x0D4A6E));
+    pxe_draw_rect(surf, bx, by + 4, lw, bh - 12, RGB_COL(0x082F49));
+    draw_neko_badge(surf, bx + (lw - 28) / 2, by + 48);
+    pxe_draw_text(surf, bx + 20, by + 92, "Pixel Neko OS", RGB_COL(0xFFFFFF));
+    pxe_draw_text_small(surf, bx + 26, by + 116, "Snow Neko Edition", RGB_COL(0x7DD3FC));
+    pxe_draw_hline(surf, bx + 18, by + 140, lw - 36, RGB_COL(0x38BDF8));
+    char bstr[40];
+    snprintf(bstr, sizeof(bstr), "Build %s",
+             inst->sysinfo.os_build[0] ? inst->sysinfo.os_build : "26A221a");
+    pxe_draw_text_small(surf, bx + 26, by + 156, bstr, RGB_COL(0xE0F2FE));
+    char mstr[40];
+    snprintf(mstr, sizeof(mstr), "Boot CD: %c:\\",
+             inst->sysinfo.cdrom_drive ? inst->sysinfo.cdrom_drive : '-');
+    pxe_draw_text_small(surf, bx + 26, by + 176, mstr, RGB_COL(0xBAE6FD));
+
+    int rx = bx + lw + 22;
+    int rw = bw - lw - 22;
+    pxe_draw_text(surf, rx, by + 8, "Welcome to Pixel Neko OS Setup", RGB_COL(0x0C4A6E));
+    pxe_draw_hline(surf, rx, by + 30, rw, RGB_COL(0xCBD5E1));
+    pxe_draw_text_small(surf, rx, by + 44,
+                        "This guided wizard installs Pixel Neko OS onto an existing",
+                        RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx, by + 60,
+                        "fixed-disk partition cleanly step by step.",
+                        RGB_COL(0x334155));
+
+    pxe_fill_rect(surf, rx, by + 84, rw, 108, RGB_COL(0xF8FAFC));
+    pxe_draw_rect(surf, rx, by + 84, rw, 108, RGB_COL(0xCBD5E1));
+    pxe_draw_text_small(surf, rx + 12, by + 94,  "Setup Steps Overview:", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, rx + 12, by + 114, "1. Select destination disk & partition", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 132, "2. Check existing OS & select filesystem (FAT32/FAT16)", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 150, "3. Review configuration & install bootloader", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 168, "4. Reboot into standalone Pixel Neko OS", RGB_COL(0x334155));
+
+    char sysline[96];
+    snprintf(sysline, sizeof(sysline), "Hardware: %u MB RAM | %dx%d | %s",
+             inst->sysinfo.total_ram_mb, inst->sysinfo.screen_w, inst->sysinfo.screen_h,
+             inst->install_mode ? "Installer Mode" : "Live Session");
+    int maxc = rw / 6;
+    if (maxc > 4 && (int)strlen(sysline) > maxc) sysline[maxc] = '\0';
+    pxe_draw_text_small(surf, rx, by + 206, sysline, RGB_COL(0x475569));
+
+    draw_nt6_btn(surf, l->wbtn_x, l->wbtn_y, l->wbtn_w, l->wbtn_h, "Install now >", 2, 1);
+}
+
+static void render_step_select(const pxe_win_surface_t* surf, const installer_t* inst,
+                               const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y;
+    pxe_draw_text(surf, bx, by, "Where do you want to install Pixel Neko OS?", RGB_COL(0x0C4A6E));
+    pxe_draw_text_small(surf, bx, by + 24,
+                        "Select an existing disk partition. Partition geometry is preserved.",
+                        RGB_COL(0x475569));
+
+    draw_nt6_btn(surf, l->init_x, l->init_y, l->init_w, l->init_h, "Init Disk", 0, 1);
+    draw_nt6_btn(surf, l->ref_x,  l->ref_y,  l->ref_w,  l->ref_h,  "Refresh",   0, 1);
+
+    /* Table Column Header Bar */
+    int hdr_y = l->list_y - 20;
+    pxe_fill_rect(surf, l->list_x, hdr_y, l->list_w + SB_W, 20, RGB_COL(0xE2E8F0));
+    pxe_draw_rect(surf, l->list_x, hdr_y, l->list_w + SB_W, 20, RGB_COL(0x94A3B8));
+    pxe_draw_text_small(surf, l->list_x + 8, hdr_y + 6,
+                        "Part   Device       Size       FS      Drv  OS Status",
+                        RGB_COL(0x0F172A));
+
+    pxe_fill_rect(surf, l->list_x, l->list_y, l->list_w, l->list_h, RGB_COL(0xFFFFFF));
+    pxe_draw_rect(surf, l->list_x, l->list_y, l->list_w, l->list_h, RGB_COL(0x94A3B8));
+
+    if (inst->part_count == 0) {
+        pxe_draw_text_small(surf, l->list_x + 14, l->list_y + 28,
+                            "No writable fixed-disk partition found.", RGB_COL(0xB91C1C));
+        pxe_draw_text_small(surf, l->list_x + 14, l->list_y + 48,
+                            "If the VM disk is blank, click [Init Disk] and then [Refresh].",
+                            RGB_COL(0x475569));
+    } else {
+        for (int i = 0; i < l->vis_rows; i++) {
+            int idx = inst->part_scroll + i;
+            if (idx >= inst->part_count) break;
+            const pxe_r0_part_info_t* p = &inst->parts[idx];
+            int ry = l->list_y + 2 + i * ROW_H;
+            int sel = (idx == inst->sel_part);
+            uint32_t rbg = sel ? RGB_COL(0x0B5ED7)
+                               : ((i & 1) ? RGB_COL(0xF8FAFC) : RGB_COL(0xFFFFFF));
+            uint32_t rfg = sel ? RGB_COL(0xFFFFFF) : RGB_COL(0x0F172A);
+            pxe_fill_rect(surf, l->list_x + 1, ry, l->list_w - 2, ROW_H, rbg);
+
+            char sz[16], drv[6], os_s[22], line[112];
+            fmt_sectors(p->total_sectors, sz, sizeof(sz));
+            if (p->mounted_letter) snprintf(drv, sizeof(drv), "%c:", p->mounted_letter);
+            else snprintf(drv, sizeof(drv), "--");
+            if (inst->existing_on_target[idx]) snprintf(os_s, sizeof(os_s), "Existing OS");
+            else if (inst->existing_on_disk[idx]) snprintf(os_s, sizeof(os_s), "OS on Disk");
+            else snprintf(os_s, sizeof(os_s), "Clean/Other");
+
+            snprintf(line, sizeof(line),
+                     "D%dP%-2d  %-11.11s  %-9.9s  %-6.6s  %-3.3s  %s",
+                     p->disk_index, p->part_index,
+                     p->disk_name[0] ? p->disk_name : "Disk",
+                     sz, p->fs_name[0] ? p->fs_name : "RAW",
+                     drv, os_s);
+            int maxc = (l->list_w - 14) / 6;
+            if (maxc > 3 && (int)strlen(line) > maxc) line[maxc] = '\0';
+            pxe_draw_text_small(surf, l->list_x + 8, ry + 6, line, rfg);
+        }
+    }
+    pxe_draw_scrollbar(surf, l->list_x + l->list_w, l->list_y, SB_W, l->list_h,
+                       inst->part_scroll, l->vis_rows, inst->part_count);
+
+    int info_y = l->list_y + l->list_h + 10;
+    int info_h = (l->body_y + l->body_h) - info_y - 4;
+    if (info_h > 44) {
+        pxe_fill_rect(surf, l->body_x, info_y, l->body_w, info_h, RGB_COL(0xF1F5F9));
+        pxe_draw_rect(surf, l->body_x, info_y, l->body_w, info_h, RGB_COL(0xCBD5E1));
+        if (inst->sel_part >= 0 && inst->sel_part < inst->part_count) {
+            const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
+            char d1[96], d2[96];
+            snprintf(d1, sizeof(d1),
+                     "Selected: Disk %d Partition %d (%s) | Start LBA: %llu | Sectors: %llu",
+                     p->disk_index, p->part_index, p->disk_name[0] ? p->disk_name : "HDD",
+                     (unsigned long long)p->start_lba, (unsigned long long)p->total_sectors);
+            if (inst->existing_on_disk[inst->sel_part]) {
+                snprintf(d2, sizeof(d2),
+                         "Notice: Existing Pixel Neko OS found on %c:\\ (Next shows warning).",
+                         inst->existing_letter[inst->sel_part] ? inst->existing_letter[inst->sel_part] : '?');
+            } else {
+                snprintf(d2, sizeof(d2),
+                         "All other partitions on this disk remain untouched.");
+            }
+            pxe_draw_text_small(surf, l->body_x + 10, info_y + 10, d1, RGB_COL(0x0F172A));
+            pxe_draw_text_small(surf, l->body_x + 10, info_y + 28, d2,
+                                inst->existing_on_disk[inst->sel_part]
+                                    ? RGB_COL(0xB45309) : RGB_COL(0x475569));
+        } else {
+            pxe_draw_text_small(surf, l->body_x + 10, info_y + 18,
+                                "Select a partition from the list above to continue.",
+                                RGB_COL(0x64748B));
+        }
+    }
+}
+
+static void render_step_reinstall_warn(const pxe_win_surface_t* surf, const installer_t* inst,
+                                       const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y, bw = l->body_w;
+    pxe_fill_rect(surf, bx, by + 6, bw, 72, RGB_COL(0xFEF3C7));
+    pxe_draw_rect(surf, bx, by + 6, bw, 72, RGB_COL(0xD97706));
+    pxe_fill_rect(surf, bx + 16, by + 20, 28, 28, RGB_COL(0xD97706));
+    pxe_draw_text(surf, bx + 26, by + 26, "!", RGB_COL(0xFFFFFF));
+    pxe_draw_text(surf, bx + 56, by + 18, "Existing Pixel Neko OS Detected", RGB_COL(0x92400E));
+    if (inst->sel_part >= 0 && inst->sel_part < inst->part_count) {
+        char sub[96];
+        char drv = inst->existing_letter[inst->sel_part]
+                       ? inst->existing_letter[inst->sel_part] : '?';
+        if (inst->existing_on_target[inst->sel_part]) {
+            snprintf(sub, sizeof(sub),
+                     "Target Disk %d Partition %d already contains Pixel Neko OS (%c:\\).",
+                     inst->parts[inst->sel_part].disk_index,
+                     inst->parts[inst->sel_part].part_index,
+                     drv);
+        } else {
+            snprintf(sub, sizeof(sub),
+                     "Another partition on Disk %d already contains Pixel Neko OS (%c:\\).",
+                     inst->parts[inst->sel_part].disk_index,
+                     drv);
+        }
+        pxe_draw_text_small(surf, bx + 56, by + 44, sub, RGB_COL(0x78350F));
+    }
+
+    pxe_fill_rect(surf, bx, by + 94, bw, 152, RGB_COL(0xFFFFFF));
+    pxe_draw_rect(surf, bx, by + 94, bw, 152, RGB_COL(0xCBD5E1));
+    pxe_draw_text_small(surf, bx + 16, by + 108, "Before continuing, please note:", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, bx + 20, by + 132,
+                        "- Reinstalling will overwrite system binaries, APPS\\*.pxe, and PDEVICE\\*.pdv.",
+                        RGB_COL(0x334155));
+    pxe_draw_text_small(surf, bx + 20, by + 154,
+                        "- Disk MBR/Limine Stage 2 bootloader will be updated on this disk.",
+                        RGB_COL(0x334155));
+    pxe_draw_text_small(surf, bx + 20, by + 176,
+                        "- Existing saved settings (\\system\\PIXEL.pse) may be reset or lost.",
+                        RGB_COL(0x334155));
+    pxe_draw_text_small(surf, bx + 20, by + 198,
+                        "- Choosing Format on the next step erases ALL files on the selected partition.",
+                        RGB_COL(0xB91C1C));
+
+    pxe_draw_text_small(surf, bx, by + 262,
+                        "Click [< Back] to pick a different partition, or [Continue >] to proceed.",
+                        RGB_COL(0x475569));
+}
+
+static void draw_format_card(const pxe_win_surface_t* surf, int x, int y, int w, int h,
+                             const char* title, const char* desc, int selected, int enabled) {
+    uint32_t bg = !enabled ? RGB_COL(0xF1F5F9)
+                           : (selected ? RGB_COL(0xEBF4FF) : RGB_COL(0xFFFFFF));
+    uint32_t brd = !enabled ? RGB_COL(0xCBD5E1)
+                            : (selected ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
+    pxe_fill_rect(surf, x, y, w, h, bg);
+    pxe_draw_rect(surf, x, y, w, h, brd);
+    if (selected && enabled) {
+        pxe_draw_rect(surf, x + 1, y + 1, w - 2, h - 2, brd);
+    }
+    /* Radio circle */
+    int rx = x + 14, ry = y + (h - 14) / 2;
+    pxe_draw_rect(surf, rx, ry, 14, 14, enabled ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
+    if (selected && enabled) {
+        pxe_fill_rect(surf, rx + 3, ry + 3, 8, 8, RGB_COL(0x0B5ED7));
+    }
+    pxe_draw_text(surf, x + 40, y + 10, title,
+                  enabled ? RGB_COL(0x0F172A) : RGB_COL(0x94A3B8));
+    pxe_draw_text_small(surf, x + 40, y + 32, desc,
+                        enabled ? (selected ? RGB_COL(0x1E40AF) : RGB_COL(0x475569))
+                                : RGB_COL(0x94A3B8));
+}
+
+static void render_step_format(const pxe_win_surface_t* surf, const installer_t* inst,
+                               const nt6_layout_t* l) {
+    const pxe_r0_part_info_t* p =
+        (inst->sel_part >= 0 && inst->sel_part < inst->part_count)
+            ? &inst->parts[inst->sel_part] : NULL;
+    int en_f32  = part_supports_fat32(p);
+    int en_f16  = part_supports_fat16(p);
+    int en_skip = part_supports_skip_fmt(p);
+
+    pxe_draw_text(surf, l->body_x, l->body_y,
+                  "Select Destination Filesystem & Label", RGB_COL(0x0C4A6E));
+    pxe_draw_text_small(surf, l->body_x, l->body_y + 22,
+                        "Choose whether to format the selected partition or keep existing data.",
+                        RGB_COL(0x475569));
+
+    draw_format_card(surf, l->fcard_x, l->fcard_y0, l->fcard_w, l->fcard_h,
+                     "Format as FAT32 (Recommended)",
+                     en_f32 ? "Clean FAT32 format. Removes all existing files on partition."
+                            : "Partition is smaller than minimum 32 MB for FAT32.",
+                     (!inst->skip_format && inst->fs_choice == PART_FS_FAT32), en_f32);
+
+    draw_format_card(surf, l->fcard_x, l->fcard_y1, l->fcard_w, l->fcard_h,
+                     "Format as FAT16 (Legacy Compatibility)",
+                     en_f16 ? "Classic FAT16 format (up to ~2 GB). Removes all files on partition."
+                            : "Partition exceeds ~2 GB FAT16 limit.",
+                     (!inst->skip_format && inst->fs_choice == PART_FS_FAT16), en_f16);
+
+    draw_format_card(surf, l->fcard_x, l->fcard_y2, l->fcard_w, l->fcard_h,
+                     "Keep Existing Filesystem (Direct Release / Upgrade)",
+                     en_skip ? "Keeps existing FAT16/FAT32 volume and writes OS files directly."
+                             : "Requires an existing formatted FAT16 or FAT32 partition.",
+                     (inst->skip_format || inst->fs_choice == 0), en_skip);
+
+    pxe_draw_text_small(surf, l->body_x, l->lbl_y + 8, "Volume Label:", RGB_COL(0x0F172A));
+    pxe_fill_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xFFFFFF));
+    pxe_draw_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h,
+                  inst->label_focus ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
+    pxe_draw_text(surf, l->lbl_x + 8, l->lbl_y + 4, inst->label, RGB_COL(0x0F172A));
+    if (inst->label_focus) {
+        pxe_draw_vline(surf, l->lbl_x + 8 + inst->label_len * 8, l->lbl_y + 4, 16, RGB_COL(0x0B5ED7));
+    }
+    pxe_draw_text_small(surf, l->lbl_x + l->lbl_w + 12, l->lbl_y + 8,
+                        "(Click box to edit, up to 11 chars)", RGB_COL(0x64748B));
+}
+
+static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t* inst,
+                                const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y, bw = l->body_w;
+    pxe_draw_text(surf, bx, by, "Ready to Install Pixel Neko OS", RGB_COL(0x0C4A6E));
+    pxe_draw_text_small(surf, bx, by + 22,
+                        "Review the installation summary below before modifying your disk.",
+                        RGB_COL(0x475569));
+
+    pxe_fill_rect(surf, bx, by + 44, bw, 184, RGB_COL(0xFFFFFF));
+    pxe_draw_rect(surf, bx, by + 44, bw, 184, RGB_COL(0x94A3B8));
+
+    if (inst->sel_part >= 0 && inst->sel_part < inst->part_count) {
+        const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
+        char sz[16], r1[88], r2[88], r3[88], r4[88], r5[88];
+        fmt_sectors(p->total_sectors, sz, sizeof(sz));
+        snprintf(r1, sizeof(r1), "Disk %d, Partition %d  (%s)",
+                 p->disk_index, p->part_index, p->disk_name[0] ? p->disk_name : "Fixed Disk");
+        snprintf(r2, sizeof(r2), "%s  (%llu sectors, Start LBA %llu)",
+                 sz, (unsigned long long)p->total_sectors, (unsigned long long)p->start_lba);
+        const char* fs_action =
+            (inst->fs_choice == 0) ? "Keep existing FAT filesystem (Skip Format)"
+                                   : (inst->fs_choice == PART_FS_FAT32 ? "Format as FAT32"
+                                                                       : "Format as FAT16");
+        snprintf(r3, sizeof(r3), "%s", fs_action);
+        snprintf(r4, sizeof(r4), "%s", inst->label[0] ? inst->label : "PIXELNEKO");
+        snprintf(r5, sizeof(r5), "Limine BIOS Stage 1/2 + Local Offline Boot Config");
+
+        int y0 = by + 58;
+        pxe_draw_text_small(surf, bx + 16, y0 + 0,   "Target Partition:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 150, y0 + 0,  r1, RGB_COL(0x0F172A));
+        pxe_draw_text_small(surf, bx + 16, y0 + 28,  "Geometry / Size:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 150, y0 + 28, r2, RGB_COL(0x0F172A));
+        pxe_draw_text_small(surf, bx + 16, y0 + 56,  "Filesystem Mode:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 150, y0 + 56, r3,
+                            inst->fs_choice == 0 ? RGB_COL(0x166534) : RGB_COL(0xB91C1C));
+        pxe_draw_text_small(surf, bx + 16, y0 + 84,  "Volume Label:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 150, y0 + 84, r4, RGB_COL(0x0F172A));
+        pxe_draw_text_small(surf, bx + 16, y0 + 112, "Bootloader:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 150, y0 + 112, r5, RGB_COL(0x0F172A));
+        pxe_draw_text_small(surf, bx + 16, y0 + 140, "Payload Source:", RGB_COL(0x475569));
+        char r6[64];
+        snprintf(r6, sizeof(r6), "Optical / Live Media (%c:\\payload)",
+                 inst->sysinfo.cdrom_drive ? inst->sysinfo.cdrom_drive : '-');
+        pxe_draw_text_small(surf, bx + 150, y0 + 140, r6, RGB_COL(0x0F172A));
+    }
+
+    int nw_y = by + 240;
+    if (inst->fs_choice != 0) {
+        pxe_fill_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xFEF2F2));
+        pxe_draw_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xDC2626));
+        pxe_draw_text_small(surf, bx + 12, nw_y + 16,
+                            "Warning: Clicking [Install] will FORMAT the selected partition and erase all data!",
+                            RGB_COL(0x991B1B));
+    } else {
+        pxe_fill_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xECFDF5));
+        pxe_draw_rect(surf, bx, nw_y, bw, 42, RGB_COL(0x16A34A));
+        pxe_draw_text_small(surf, bx + 12, nw_y + 16,
+                            "Existing FAT partition preserved. Click [Install] to release files & update boot.",
+                            RGB_COL(0x166534));
+    }
+}
+
+static void render_step_progress(const pxe_win_surface_t* surf, const installer_t* inst,
+                                 const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y, bw = l->body_w, bh = l->body_h;
+    pxe_draw_text(surf, bx, by, "Installing Pixel Neko OS...", RGB_COL(0x0C4A6E));
+    pxe_draw_text_small(surf, bx, by + 22,
+                        "Your computer stays active during setup. Please do not power off.",
+                        RGB_COL(0x475569));
+
+    static const char* const k_tasks[5] = {
+        "Preparing and mounting target partition",
+        "Scanning installation payload media (\\payload)",
+        "Copying kernel, system apps (.pxe) & drivers (.pdv)",
+        "Deploying offline Limine boot configuration",
+        "Installing Limine BIOS bootloader & verifying files"
+    };
+    static const int k_min_pct[5] = { 0, 18, 24, 68, 82 };
+    static const int k_done_pct[5] = { 18, 24, 68, 82, 100 };
+
+    pxe_fill_rect(surf, bx, by + 40, bw, 114, RGB_COL(0xFFFFFF));
+    pxe_draw_rect(surf, bx, by + 40, bw, 114, RGB_COL(0xCBD5E1));
+    for (int i = 0; i < 5; i++) {
+        int ty = by + 48 + i * 20;
+        int done = (inst->progress >= k_done_pct[i]);
+        int active = (!done && inst->progress >= k_min_pct[i]);
+        const char* tag = done ? "[OK]" : (active ? "[>>]" : "[  ]");
+        uint32_t col = done ? RGB_COL(0x15803D)
+                            : (active ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
+        pxe_draw_text_small(surf, bx + 14, ty, tag, col);
+        pxe_draw_text_small(surf, bx + 46, ty, k_tasks[i],
+                            done ? RGB_COL(0x166534)
+                                 : (active ? RGB_COL(0x0F172A) : RGB_COL(0x64748B)));
+    }
+
+    char pct_s[16];
+    snprintf(pct_s, sizeof(pct_s), "%3d%%", inst->progress);
+    pxe_draw_text_small(surf, bx, by + 162,
+                        inst->stage[0] ? inst->stage : "Working...", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, bx + bw - 30, by + 162, pct_s, RGB_COL(0x0F172A));
+
+    int bar_y = by + 178;
+    pxe_fill_rect(surf, bx, bar_y, bw, 18, RGB_COL(0xE2E8F0));
+    pxe_draw_rect(surf, bx, bar_y, bw, 18, RGB_COL(0x94A3B8));
+    int fw = ((bw - 4) * inst->progress) / 100;
+    if (fw > bw - 4) fw = bw - 4;
+    if (fw > 0) {
+        pxe_fill_rect(surf, bx + 2, bar_y + 2, fw, 14, RGB_COL(0x22A84B));
+        pxe_fill_rect(surf, bx + 2, bar_y + 2, fw, 5,  RGB_COL(0x4ADE80));
+    }
+
+    if (inst->status_detail[0]) {
+        pxe_draw_text_small(surf, bx, by + 202, inst->status_detail, RGB_COL(0x475569));
+    }
+
+    int log_y = by + 218;
+    int log_h = bh - 222;
+    if (log_h >= 48) {
+        pxe_fill_rect(surf, bx, log_y, bw, log_h, RGB_COL(0x0F172A));
+        pxe_draw_rect(surf, bx, log_y, bw, log_h, RGB_COL(0x334155));
+        int max_vis = (log_h - 8) / 13;
+        int start_l = (inst->log_count > max_vis) ? (inst->log_count - max_vis) : 0;
+        for (int i = start_l; i < inst->log_count; i++) {
+            pxe_draw_text_small(surf, bx + 8, log_y + 5 + (i - start_l) * 13,
+                                inst->logs[i], RGB_COL(0x4ADE80));
+        }
+    }
+}
+
+static void render_step_complete(const pxe_win_surface_t* surf, const installer_t* inst,
+                                 const nt6_layout_t* l) {
+    int bx = l->body_x, by = l->body_y, bw = l->body_w, bh = l->body_h;
+    int ok = (inst->install_error == 0);
+    pxe_fill_rect(surf, bx, by + 6, bw, 76,
+                  ok ? RGB_COL(0xECFDF5) : RGB_COL(0xFEF2F2));
+    pxe_draw_rect(surf, bx, by + 6, bw, 76,
+                  ok ? RGB_COL(0x16A34A) : RGB_COL(0xDC2626));
+    pxe_fill_rect(surf, bx + 16, by + 22, 32, 32,
+                  ok ? RGB_COL(0x16A34A) : RGB_COL(0xDC2626));
+    pxe_draw_text(surf, bx + 24, by + 30, ok ? "OK" : "!!", RGB_COL(0xFFFFFF));
+
+    if (ok) {
+        pxe_draw_text(surf, bx + 60, by + 18,
+                      "Pixel Neko OS Installation Complete", RGB_COL(0x14532D));
+        pxe_draw_text_small(surf, bx + 60, by + 44,
+                            "System files and Limine bootloader were written successfully.",
+                            RGB_COL(0x166534));
+        pxe_draw_text_small(surf, bx + 60, by + 60,
+                            "Remove installation CD/ISO media before clicking [Reboot System].",
+                            RGB_COL(0x15803D));
+    } else {
+        char etitle[64];
+        snprintf(etitle, sizeof(etitle), "Installation Failed (Error %d)", inst->install_error);
+        pxe_draw_text(surf, bx + 60, by + 18, etitle, RGB_COL(0x991B1B));
+        pxe_draw_text_small(surf, bx + 60, by + 44,
+                            inst->stage[0] ? inst->stage : "Check installation log below.",
+                            RGB_COL(0xB91C1C));
+    }
+
+    int log_y = by + 96;
+    int log_h = bh - 102;
+    if (log_h >= 60) {
+        pxe_fill_rect(surf, bx, log_y, bw, log_h, RGB_COL(0x0F172A));
+        pxe_draw_rect(surf, bx, log_y, bw, log_h, RGB_COL(0x334155));
+        int max_vis = (log_h - 10) / 14;
+        int start_l = (inst->log_count > max_vis) ? (inst->log_count - max_vis) : 0;
+        for (int i = start_l; i < inst->log_count; i++) {
+            pxe_draw_text_small(surf, bx + 10, log_y + 6 + (i - start_l) * 14,
+                                inst->logs[i],
+                                ok ? RGB_COL(0x4ADE80) : RGB_COL(0xFCA5A5));
+        }
     }
 }
 
 static void render_installer(const installer_t* inst) {
     const pxe_win_surface_t* surf = &inst->surf;
-    pxe_fill_rect(surf, 0, 0, surf->width, surf->height, PXE_COL_LIGHT_GRAY);
+    nt6_layout_t l;
+    calc_nt6_layout(surf, &l);
 
-    /* Top Banner */
-    pxe_fill_rect(surf, 0, 0, surf->width, 44, PXE_COL_DARK_BLUE);
-    pxe_draw_text(surf, 12, 6, "Pixel Neko OS Offline Installer (Ring 0)", PXE_COL_WHITE);
-    char hdr_sub[96];
-    snprintf(hdr_sub, sizeof(hdr_sub),
-             "Installs system payload, APPS/*.pxe, PDEVICE/*.pdv & Limine Boot | CD: %c:\\",
-             inst->sysinfo.cdrom_drive ? inst->sysinfo.cdrom_drive : '-');
-    pxe_draw_text_small(surf, 12, 26, hdr_sub, PXE_COL_CYAN);
+    draw_nt6_backdrop(surf, inst);
 
-    /* Step 1: Partitions */
-    pxe_draw_text_small(surf, 10, 52, "1. Target Fixed Disk Partition:", PXE_COL_BLACK);
-    int busy = (inst->state == STATE_INSTALLING);
-    pxe_draw_button(surf, 344, 48, 90, 20, "Init Disk", 0, !busy);
-    pxe_draw_button(surf, 440, 48, 90, 20, "Refresh", 0, !busy);
+    /* Dialog outer shadow & frame */
+    pxe_fill_rect(surf, l.card_x + 4, l.card_y + 4, l.card_w, l.card_h, RGB_COL(0x041C2B));
+    pxe_fill_rect(surf, l.card_x, l.card_y, l.card_w, l.card_h, RGB_COL(0xF8FAFC));
+    pxe_draw_rect(surf, l.card_x, l.card_y, l.card_w, l.card_h, RGB_COL(0x0B2D45));
 
-    int lx = 10, ly = 72, lw = surf->width - 20 - SB_W, lh = 94;
-    int vis = (lh - 4) / ROW_H;
-    pxe_draw_bevel_box(surf, lx, ly, lw, lh, 1, PXE_COL_WHITE);
+    /* Card top header */
+    pxe_fill_rect(surf, l.card_x + 1, l.card_y + 1, l.card_w - 2, l.hdr_h, RGB_COL(0xFFFFFF));
+    draw_neko_badge(surf, l.card_x + 14, l.card_y + 10);
+    pxe_draw_text(surf, l.card_x + 52, l.card_y + 8, "Install Pixel Neko OS", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, l.card_x + 52, l.card_y + 28,
+                        "Guided Setup Wizard (Ring 0)", RGB_COL(0x64748B));
 
-    if (inst->part_count == 0) {
-        pxe_draw_text_small(surf, lx + 10, ly + 22,
-                            "No writable fixed-disk partition found.", PXE_COL_DARK_RED);
-        pxe_draw_text_small(surf, lx + 10, ly + 40,
-                            "If the disk is blank/unpartitioned, click [Init Disk] above.",
-                            PXE_COL_DARK_GRAY);
-    } else {
-        for (int i = 0; i < vis; i++) {
-            int idx = inst->part_scroll + i;
-            if (idx >= inst->part_count) break;
-            const pxe_r0_part_info_t* p = &inst->parts[idx];
-            int ry = ly + 2 + i * ROW_H;
-            int sel = (idx == inst->sel_part);
-            uint8_t fg = sel ? PXE_COL_WHITE : PXE_COL_BLACK;
-            if (sel) {
-                pxe_fill_rect(surf, lx + 2, ry, lw - 4, ROW_H, PXE_COL_DARK_BLUE);
-            }
-            char sz[16], line[96];
-            fmt_sectors(p->total_sectors, sz, sizeof(sz));
-            char drv_s[4];
-            if (p->mounted_letter) snprintf(drv_s, sizeof(drv_s), "%c:", p->mounted_letter);
-            else snprintf(drv_s, sizeof(drv_s), "--");
-            snprintf(line, sizeof(line),
-                     "P%d D%d %-10.10s  %-8.8s  %-7.7s  LBA:%-7llu %s %s",
-                     p->part_index, p->disk_index,
-                     p->disk_name[0] ? p->disk_name : "Disk",
-                     sz,
-                     p->fs_name[0] ? p->fs_name : "RAW",
-                     (unsigned long long)p->start_lba,
-                     drv_s,
-                     p->label[0] ? p->label : "");
-            int maxc = (lw - 10) / 6;
-            if (maxc > 3 && (int)strlen(line) > maxc) line[maxc] = '\0';
-            pxe_draw_text_small(surf, lx + 6, ry + 5, line, fg);
+    /* Two-phase NT6 setup progress breadcrumb bar */
+    int sy = l.card_y + l.hdr_h;
+    pxe_fill_rect(surf, l.card_x + 1, sy, l.card_w - 2, l.step_h, RGB_COL(0xE6EEF6));
+    pxe_draw_hline(surf, l.card_x + 1, sy, l.card_w - 2, RGB_COL(0xCBD5E1));
+    pxe_draw_hline(surf, l.card_x + 1, sy + l.step_h - 1, l.card_w - 2, RGB_COL(0xB8C9DB));
+
+    int phase_collect = (inst->step <= STEP_CONFIRM);
+    int phase_install = (inst->step >= STEP_PROGRESS);
+    pxe_draw_text_small(surf, l.card_x + 20, sy + 9,
+                        phase_collect ? "[*] 1. Collecting information"
+                                      : "[OK] 1. Collecting information",
+                        phase_collect ? RGB_COL(0x0B5ED7) : RGB_COL(0x15803D));
+    pxe_draw_text_small(surf, l.card_x + 250, sy + 9,
+                        inst->step == STEP_COMPLETE && inst->install_error == 0
+                            ? "[OK] 2. Installing Pixel Neko OS"
+                            : (phase_install ? "[*] 2. Installing Pixel Neko OS"
+                                             : "[ ] 2. Installing Pixel Neko OS"),
+                        inst->step == STEP_COMPLETE && inst->install_error == 0
+                            ? RGB_COL(0x15803D)
+                            : (phase_install ? RGB_COL(0x0B5ED7) : RGB_COL(0x64748B)));
+
+    /* Current step body */
+    switch (inst->step) {
+        case STEP_WELCOME:        render_step_welcome(surf, inst, &l); break;
+        case STEP_SELECT:         render_step_select(surf, inst, &l); break;
+        case STEP_REINSTALL_WARN: render_step_reinstall_warn(surf, inst, &l); break;
+        case STEP_FORMAT:         render_step_format(surf, inst, &l); break;
+        case STEP_CONFIRM:        render_step_confirm(surf, inst, &l); break;
+        case STEP_PROGRESS:       render_step_progress(surf, inst, &l); break;
+        case STEP_COMPLETE:       render_step_complete(surf, inst, &l); break;
+    }
+
+    /* Footer bar */
+    pxe_fill_rect(surf, l.card_x + 1, l.foot_y, l.card_w - 2, l.foot_h - 1, RGB_COL(0xE9EEF4));
+    pxe_draw_hline(surf, l.card_x + 1, l.foot_y, l.card_w - 2, RGB_COL(0xCBD5E1));
+
+    if (inst->step == STEP_WELCOME) {
+        if (!inst->install_mode) {
+            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "Exit", 0, 1);
         }
-    }
-    pxe_draw_scrollbar(surf, lx + lw, ly, SB_W, lh, inst->part_scroll, vis, inst->part_count);
-
-    /* Step 2: Filesystem & Label */
-    pxe_draw_text_small(surf, 10, 178, "2. Format:", PXE_COL_BLACK);
-    pxe_draw_button(surf, 80,  173, 64, 22,
-                    inst->fs_choice == PART_FS_FAT32 ? "*FAT32" : "FAT32",
-                    inst->fs_choice == PART_FS_FAT32, !busy);
-    pxe_draw_button(surf, 148, 173, 64, 22,
-                    inst->fs_choice == PART_FS_FAT16 ? "*FAT16" : "FAT16",
-                    inst->fs_choice == PART_FS_FAT16, !busy);
-    pxe_draw_button(surf, 216, 173, 92, 22,
-                    inst->fs_choice == 0 ? "*Skip Format" : "Skip Format",
-                    inst->fs_choice == 0, !busy);
-
-    pxe_draw_text_small(surf, 322, 178, "Label:", PXE_COL_BLACK);
-    pxe_draw_bevel_box(surf, 366, 173, 164, 22, 1, PXE_COL_WHITE);
-    if (inst->label_focus && !busy) {
-        pxe_draw_rect(surf, 367, 174, 162, 20, PXE_COL_BLUE);
-    }
-    pxe_draw_text(surf, 372, 176, inst->label, PXE_COL_BLACK);
-    if (inst->label_focus && !busy) {
-        pxe_draw_vline(surf, 372 + inst->label_len * 8, 176, 16, PXE_COL_BLACK);
-    }
-
-    /* Step 3: Progress & Log */
-    pxe_draw_text_small(surf, 10, 206, inst->stage[0] ? inst->stage : "Ready to install.",
-                        inst->state == STATE_ERROR ? PXE_COL_DARK_RED
-                                                   : (inst->state == STATE_DONE ? PXE_COL_DARK_GREEN
-                                                                                : PXE_COL_DARK_BLUE));
-    char pct[16];
-    snprintf(pct, sizeof(pct), "%3d%%", inst->progress);
-    pxe_draw_text_small(surf, surf->width - 38, 206, pct, PXE_COL_BLACK);
-
-    pxe_draw_bevel_box(surf, 10, 222, surf->width - 20, 18, 1, PXE_COL_WHITE);
-    int bar_max = surf->width - 24;
-    int bar_w = (inst->progress * bar_max) / 100;
-    if (bar_w > bar_max) bar_w = bar_max;
-    if (bar_w > 0) {
-        uint8_t bcol = (inst->state == STATE_ERROR) ? PXE_COL_RED
-                     : (inst->state == STATE_DONE ? PXE_COL_DARK_GREEN : PXE_COL_BLUE);
-        pxe_fill_rect(surf, 12, 224, bar_w, 14, bcol);
-    }
-    if (inst->status_detail[0]) {
-        pxe_draw_text_small(surf, 12, 244, inst->status_detail, PXE_COL_DARK_GRAY);
-    }
-
-    int log_y = 258, log_h = 98;
-    pxe_draw_bevel_box(surf, 10, log_y, surf->width - 20, log_h, 1, PXE_COL_BLACK);
-    int max_vis_logs = 7;
-    int start_log = (inst->log_count > max_vis_logs) ? (inst->log_count - max_vis_logs) : 0;
-    for (int i = start_log; i < inst->log_count; i++) {
-        int ry = log_y + 4 + (i - start_log) * 13;
-        pxe_draw_text_small(surf, 16, ry, inst->logs[i], PXE_COL_GREEN);
-    }
-
-    /* Bottom Buttons */
-    if (inst->state == STATE_INSTALLING) {
-        pxe_draw_text(surf, 14, 370, "Installing... Do not power off the machine!", PXE_COL_DARK_RED);
-    } else if (inst->state == STATE_DONE) {
-        pxe_draw_button(surf, 10,  364, 96,  26, "Close", 0, 1);
-        pxe_draw_button(surf, 374, 364, 156, 26, "Reboot System", 0, 1);
-    } else {
-        pxe_draw_button(surf, 10,  364, 96,  26, "Exit", 0, 1);
-        pxe_draw_button(surf, 374, 364, 156, 26, "Install OS", 0, inst->sel_part >= 0);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, 1);
+    } else if (inst->step == STEP_SELECT) {
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, inst->sel_part >= 0);
+    } else if (inst->step == STEP_REINSTALL_WARN) {
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Continue >", 1, 1);
+    } else if (inst->step == STEP_FORMAT) {
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, 1);
+    } else if (inst->step == STEP_CONFIRM) {
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Install", 2, 1);
+    } else if (inst->step == STEP_PROGRESS) {
+        pxe_draw_text_small(surf, l.card_x + 18, l.foot_y + 16,
+                            "Installing... Please wait until setup finishes.", RGB_COL(0xB91C1C));
+    } else if (inst->step == STEP_COMPLETE) {
+        if (inst->install_error == 0) {
+            if (!inst->install_mode) {
+                draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "Exit", 0, 1);
+            }
+            draw_nt6_btn(surf, l.shut_x, l.shut_y, l.shut_w, l.shut_h, "Shut Down", 0, 1);
+            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Reboot System", 2, 1);
+        } else {
+            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w + 18, l.back_h, "< Retry Setup", 0, 1);
+            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Reboot System", 1, 1);
+        }
     }
 }
 
@@ -776,7 +1409,10 @@ static int run_installation(installer_t* inst) {
 
 static void start_install(installer_t* inst) {
     if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) return;
+    inst->install_error = 0;
+    inst->step = STEP_PROGRESS;
     int rc = run_installation(inst);
+    inst->install_error = rc;
     if (rc == 0) {
         inst->state = STATE_DONE;
         pxe_beep();
@@ -786,6 +1422,181 @@ static void start_install(installer_t* inst) {
         snprintf(est, sizeof(est), "Installation failed (code %d).", rc);
         snprintf(inst->stage, sizeof(inst->stage), "%s", est);
         pxe_beep();
+    }
+    inst->step = STEP_COMPLETE;
+    pump_and_present(inst);
+}
+
+static void handle_installer_click(installer_t* inst, int mx, int my, int* running) {
+    nt6_layout_t l;
+    calc_nt6_layout(&inst->surf, &l);
+
+    if (inst->step != STEP_FORMAT) {
+        inst->label_focus = 0;
+    }
+
+    switch (inst->step) {
+        case STEP_WELCOME:
+            if (!inst->install_mode &&
+                pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                *running = 0;
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.wbtn_x, l.wbtn_y, l.wbtn_w, l.wbtn_h) ||
+                pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                inst->step = STEP_SELECT;
+                refresh_partitions(inst);
+            }
+            break;
+
+        case STEP_SELECT:
+            if (pxe_point_in_rect(mx, my, l.init_x, l.init_y, l.init_w, l.init_h)) {
+                int irc = pxe_r0_init_uninit_disk();
+                pxe_r0_vfs_remount_all();
+                refresh_partitions(inst);
+                char msg[80];
+                snprintf(msg, sizeof(msg), "Init Disk finished (rc=%d, parts=%d).",
+                         irc, inst->part_count);
+                add_log(inst, msg);
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.ref_x, l.ref_y, l.ref_w, l.ref_h)) {
+                pxe_r0_vfs_remount_all();
+                refresh_partitions(inst);
+                add_log(inst, "Refreshed disk and partition list.");
+                return;
+            }
+            {
+                int max_scr = inst->part_count - l.vis_rows;
+                if (max_scr < 0) max_scr = 0;
+                if (pxe_point_in_rect(mx, my, l.list_x + l.list_w, l.list_y, SB_W, l.list_h)) {
+                    if (my < l.list_y + l.list_h / 2) {
+                        if (inst->part_scroll > 0) inst->part_scroll--;
+                    } else {
+                        if (inst->part_scroll < max_scr) inst->part_scroll++;
+                    }
+                    return;
+                }
+                if (pxe_point_in_rect(mx, my, l.list_x, l.list_y, l.list_w, l.list_h)) {
+                    int row = (my - l.list_y - 2) / ROW_H;
+                    int idx = inst->part_scroll + row;
+                    if (row >= 0 && idx >= 0 && idx < inst->part_count) {
+                        inst->sel_part = idx;
+                        sync_fs_choice_to_selection(inst);
+                    }
+                    return;
+                }
+            }
+            if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                inst->step = STEP_WELCOME;
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h) &&
+                inst->sel_part >= 0 && inst->sel_part < inst->part_count) {
+                inst->reinstall_ack = 0;
+                sync_fs_choice_to_selection(inst);
+                inst->step = inst->existing_on_disk[inst->sel_part]
+                                 ? STEP_REINSTALL_WARN : STEP_FORMAT;
+            }
+            break;
+
+        case STEP_REINSTALL_WARN:
+            if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                inst->reinstall_ack = 0;
+                inst->step = STEP_SELECT;
+            } else if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                inst->reinstall_ack = 1;
+                inst->step = STEP_FORMAT;
+            }
+            break;
+
+        case STEP_FORMAT: {
+            const pxe_r0_part_info_t* p =
+                (inst->sel_part >= 0 && inst->sel_part < inst->part_count)
+                    ? &inst->parts[inst->sel_part] : NULL;
+            if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y0, l.fcard_w, l.fcard_h)) {
+                inst->label_focus = 0;
+                if (part_supports_fat32(p)) {
+                    inst->skip_format = 0;
+                    inst->fs_choice = PART_FS_FAT32;
+                }
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y1, l.fcard_w, l.fcard_h)) {
+                inst->label_focus = 0;
+                if (part_supports_fat16(p)) {
+                    inst->skip_format = 0;
+                    inst->fs_choice = PART_FS_FAT16;
+                }
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y2, l.fcard_w, l.fcard_h)) {
+                inst->label_focus = 0;
+                if (part_supports_skip_fmt(p)) {
+                    inst->skip_format = 1;
+                    inst->fs_choice = 0;
+                }
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.lbl_x, l.lbl_y, l.lbl_w, l.lbl_h)) {
+                inst->label_focus = 1;
+                return;
+            }
+            inst->label_focus = 0;
+            if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                inst->step = (inst->sel_part >= 0 && inst->existing_on_disk[inst->sel_part])
+                                 ? STEP_REINSTALL_WARN : STEP_SELECT;
+                return;
+            }
+            if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                sync_fs_choice_to_selection(inst);
+                inst->step = STEP_CONFIRM;
+            }
+            break;
+        }
+
+        case STEP_CONFIRM:
+            if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                inst->step = STEP_FORMAT;
+            } else if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                start_install(inst);
+            }
+            break;
+
+        case STEP_PROGRESS:
+            break;
+
+        case STEP_COMPLETE:
+            if (inst->install_error == 0) {
+                if (!inst->install_mode &&
+                    pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
+                    *running = 0;
+                    return;
+                }
+                if (pxe_point_in_rect(mx, my, l.shut_x, l.shut_y, l.shut_w, l.shut_h)) {
+                    pxe_r0_sync_filesystems();
+                    pxe_r0_power_control(PXE_POWER_SHUTDOWN);
+                    return;
+                }
+                if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                    pxe_r0_sync_filesystems();
+                    pxe_r0_power_control(PXE_POWER_REBOOT);
+                }
+            } else {
+                if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w + 18, l.back_h)) {
+                    inst->state = STATE_IDLE;
+                    inst->progress = 0;
+                    inst->install_error = 0;
+                    inst->step = STEP_SELECT;
+                    refresh_partitions(inst);
+                    return;
+                }
+                if (pxe_point_in_rect(mx, my, l.next_x, l.next_y, l.next_w, l.next_h)) {
+                    pxe_r0_sync_filesystems();
+                    pxe_r0_power_control(PXE_POWER_REBOOT);
+                }
+            }
+            break;
     }
 }
 
@@ -801,21 +1612,39 @@ int main(int argc, char** argv) {
     inst->fs_choice = PART_FS_FAT32;
     inst->sel_part = -1;
     inst->state = STATE_IDLE;
-    strcpy(inst->stage, "Select a target partition and click Install OS.");
+    inst->step = STEP_WELCOME;
+    strcpy(inst->stage, "Select a target partition and proceed step by step.");
 
     refresh_partitions(inst);
+    inst->install_mode = (inst->sysinfo.boot_mode == 1) ? 1 : 0;
     add_log(inst, "Installer ready. Ring 0 privileged disk/VFS APIs active.");
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
-    desc.x = 56;
-    desc.y = 28;
-    desc.w = 540;
-    desc.h = 400;
-    desc.min_w = 540;
-    desc.min_h = 400;
-    desc.format = PXE_CANVAS_PAL8;
-    desc.flags = PXE_WIN_DEFAULT;
+    if (inst->install_mode) {
+        int fw = (inst->sysinfo.screen_w > 64) ? (inst->sysinfo.screen_w - 2) : 798;
+        int fh = (inst->sysinfo.screen_h > 64) ? (inst->sysinfo.screen_h - 40) : 560;
+        desc.x = 0;
+        desc.y = 20;
+        desc.w = fw;
+        desc.h = fh;
+        desc.min_w = fw;
+        desc.min_h = fh;
+        desc.flags = PXE_WIN_NO_CLOSE;
+    } else {
+        int ww = (inst->sysinfo.screen_w > 700) ? 680 : (inst->sysinfo.screen_w - 16);
+        int wh = (inst->sysinfo.screen_h > 530) ? 472 : (inst->sysinfo.screen_h - 48);
+        if (ww < 540) ww = 540;
+        if (wh < 400) wh = 400;
+        desc.x = -1;
+        desc.y = -1;
+        desc.w = ww;
+        desc.h = wh;
+        desc.min_w = ww;
+        desc.min_h = wh;
+        desc.flags = PXE_WIN_NO_CLOSE | PXE_WIN_CENTERED;
+    }
+    desc.format = PXE_CANVAS_RGB32;
     strcpy(desc.title, "Install Pixel Neko OS");
 
     inst->win_id = pxe_win_create(&desc, &inst->surf);
@@ -833,7 +1662,11 @@ int main(int argc, char** argv) {
         while ((rc = pxe_win_poll_event(inst->win_id, &ev)) > 0) {
             switch (ev.type) {
                 case PXE_EV_CLOSE:
-                    if (inst->state != STATE_INSTALLING) running = 0;
+                    if (!inst->install_mode && inst->state != STATE_INSTALLING) running = 0;
+                    break;
+                case PXE_EV_RESIZE:
+                    pxe_win_get_surface(inst->win_id, &inst->surf);
+                    dirty = 1;
                     break;
                 case PXE_EV_REDRAW:
                 case PXE_EV_ACTIVATE:
@@ -842,105 +1675,13 @@ int main(int argc, char** argv) {
                 case PXE_EV_MOUSE_DOWN: {
                     if (!(ev.buttons & PXE_BTN_LEFT)) break;
                     if (inst->state == STATE_INSTALLING) break;
-                    int mx = ev.x, my = ev.y;
-
-                    /* Init Disk / Refresh */
-                    if (pxe_point_in_rect(mx, my, 344, 48, 90, 20)) {
-                        int irc = pxe_r0_init_uninit_disk();
-                        pxe_r0_vfs_remount_all();
-                        refresh_partitions(inst);
-                        char msg[80];
-                        snprintf(msg, sizeof(msg), "Init Disk finished (rc=%d, parts=%d).",
-                                 irc, inst->part_count);
-                        add_log(inst, msg);
-                        dirty = 1;
-                        break;
-                    }
-                    if (pxe_point_in_rect(mx, my, 440, 48, 90, 20)) {
-                        pxe_r0_vfs_remount_all();
-                        refresh_partitions(inst);
-                        add_log(inst, "Refreshed disk and partition list.");
-                        dirty = 1;
-                        break;
-                    }
-
-                    /* Partition list & scrollbar */
-                    int lx = 10, ly = 72, lw = inst->surf.width - 20 - SB_W, lh = 94;
-                    int vis = (lh - 4) / ROW_H;
-                    int max_scr = inst->part_count - vis;
-                    if (max_scr < 0) max_scr = 0;
-
-                    if (pxe_point_in_rect(mx, my, lx + lw, ly, SB_W, lh)) {
-                        if (my < ly + lh / 2) {
-                            if (inst->part_scroll > 0) inst->part_scroll--;
-                        } else {
-                            if (inst->part_scroll < max_scr) inst->part_scroll++;
-                        }
-                        dirty = 1;
-                        break;
-                    }
-                    if (pxe_point_in_rect(mx, my, lx, ly, lw, lh)) {
-                        int row = (my - ly - 2) / ROW_H;
-                        int idx = inst->part_scroll + row;
-                        if (row >= 0 && idx >= 0 && idx < inst->part_count) {
-                            inst->sel_part = idx;
-                            sync_fs_choice_to_selection(inst);
-                        }
-                        inst->label_focus = 0;
-                        dirty = 1;
-                        break;
-                    }
-
-                    /* Format choice */
-                    if (pxe_point_in_rect(mx, my, 80, 173, 64, 22)) {
-                        inst->fs_choice = PART_FS_FAT32;
-                        inst->label_focus = 0;
-                        dirty = 1;
-                        break;
-                    }
-                    if (pxe_point_in_rect(mx, my, 148, 173, 64, 22)) {
-                        inst->fs_choice = PART_FS_FAT16;
-                        inst->label_focus = 0;
-                        dirty = 1;
-                        break;
-                    }
-                    if (pxe_point_in_rect(mx, my, 216, 173, 92, 22)) {
-                        inst->fs_choice = 0;
-                        inst->label_focus = 0;
-                        dirty = 1;
-                        break;
-                    }
-
-                    /* Label input focus */
-                    if (pxe_point_in_rect(mx, my, 366, 173, 164, 22)) {
-                        inst->label_focus = 1;
-                        dirty = 1;
-                        break;
-                    }
-                    inst->label_focus = 0;
-
-                    /* Bottom actions */
-                    if (inst->state == STATE_DONE) {
-                        if (pxe_point_in_rect(mx, my, 10, 364, 96, 26)) {
-                            running = 0;
-                        } else if (pxe_point_in_rect(mx, my, 374, 364, 156, 26)) {
-                            pxe_r0_sync_filesystems();
-                            pxe_r0_power_control(PXE_POWER_REBOOT);
-                        }
-                    } else {
-                        if (pxe_point_in_rect(mx, my, 10, 364, 96, 26)) {
-                            running = 0;
-                        } else if (pxe_point_in_rect(mx, my, 374, 364, 156, 26) &&
-                                   inst->sel_part >= 0) {
-                            start_install(inst);
-                            dirty = 1;
-                        }
-                    }
+                    handle_installer_click(inst, ev.x, ev.y, &running);
+                    dirty = 1;
                     break;
                 }
                 case PXE_EV_KEY_DOWN:
                     if (inst->state == STATE_INSTALLING) break;
-                    if (inst->label_focus) {
+                    if (inst->step == STEP_FORMAT && inst->label_focus) {
                         if (ev.key == PXE_KEY_BACKSPACE) {
                             if (inst->label_len > 0) inst->label[--inst->label_len] = '\0';
                             dirty = 1;

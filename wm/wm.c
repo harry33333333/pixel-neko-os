@@ -1728,8 +1728,13 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             need_mr = 1;
 
             bool no_close = false;
+            bool no_drag = false;
             if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
-                no_close = (g_dyn_wins[top_id - WM_DYN_BASE].flags & PXE_WIN_NO_CLOSE) != 0;
+                uint32_t wflags = g_dyn_wins[top_id - WM_DYN_BASE].flags;
+                no_close = (wflags & PXE_WIN_NO_CLOSE) != 0;
+                if (ui_install_mode_requested() && no_close) {
+                    no_drag = true;
+                }
             }
 
             // 1. Check Close & Minimize buttons on title bar
@@ -1751,7 +1756,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             }
 
             // 2. Check Title Bar for Window Dragging (full 19px height)
-            if (my >= win_y && my < win_y + 19) {
+            if (!no_drag && my >= win_y && my < win_y + 19) {
                 dragging = 1;
                 drag_active = 0;
                 dgw = top_id + 1;
@@ -1888,11 +1893,22 @@ static void wm_pxe_destroy_slot(int slot) {
 int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_surface_t* out_surf) {
     if (!proc || !desc || !out_surf) return -1;
 
+    uint32_t win_flags = desc->flags;
+    if (proc->pxe_flags & PXE_FLAG_NO_CLOSE) {
+        win_flags |= PXE_WIN_NO_CLOSE;
+    }
+    bool install_locked = ui_install_mode_requested() &&
+                          ((win_flags & PXE_WIN_NO_CLOSE) != 0);
+    if (install_locked) {
+        win_flags |= PXE_WIN_NO_CLOSE;
+        win_flags &= ~PXE_WIN_RESIZABLE;
+    }
+
     uint32_t format = (desc->format == PXE_CANVAS_RGB32) ? PXE_CANVAS_RGB32 : PXE_CANVAS_PAL8;
-    int max_cw = (screen_w > 64) ? (screen_w - 4) : 1276;
-    int max_ch = (screen_h > 64) ? (screen_h - 28) : 996;
-    int cw = desc->w;
-    int ch = desc->h;
+    int max_cw = (screen_w > 64) ? (screen_w - 2) : 638;
+    int max_ch = (screen_h > 64) ? (screen_h - 40) : 440;
+    int cw = install_locked ? max_cw : desc->w;
+    int ch = install_locked ? max_ch : desc->h;
     if (cw < 64) cw = 64;
     if (cw > max_cw) cw = max_cw;
     if (ch < 32) ch = 32;
@@ -1908,8 +1924,8 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
     if (res_w < 1280) res_w = 1280;
     if (res_h < 1024) res_h = 1024;
 
-    int alloc_stride = (desc->flags & PXE_WIN_RESIZABLE) ? res_w : cw;
-    int alloc_h      = (desc->flags & PXE_WIN_RESIZABLE) ? res_h : ch;
+    int alloc_stride = (win_flags & PXE_WIN_RESIZABLE) ? res_w : cw;
+    int alloc_h      = (win_flags & PXE_WIN_RESIZABLE) ? res_h : ch;
     int bpp_bytes    = (format == PXE_CANVAS_RGB32) ? 4 : 1;
     uint64_t need64  = (uint64_t)(unsigned int)alloc_stride *
                        (uint64_t)(unsigned int)alloc_h *
@@ -1974,7 +1990,10 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
     int oh = ch + 20;
     int wx_pos = desc->x;
     int wy_pos = desc->y;
-    if (desc->flags & PXE_WIN_CENTERED) {
+    if (install_locked) {
+        wx_pos = 0;
+        wy_pos = 20;
+    } else if (win_flags & PXE_WIN_CENTERED) {
         wx_pos = (screen_w - ow) / 2;
         wy_pos = 20 + (screen_h - 20 - oh) / 2;
     } else if (wx_pos < 0 || wy_pos < 0) {
@@ -1999,7 +2018,7 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
     dw->alloc_h = alloc_h;
     dw->pitch = pitch;
     dw->format = format;
-    dw->flags = desc->flags;
+    dw->flags = win_flags;
     dw->shaded = 0;
     dw->canvas_phys = cphys;
     dw->canvas_pages = pages;
