@@ -260,9 +260,9 @@ int pxe_kern_get_rtc(pxe_rtc_time_t* out) {
 int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
-    strncpy(out->os_name, KERNEL_NAME, sizeof(out->os_name) - 1);
+    strncpy(out->os_name, OS_NAME, sizeof(out->os_name) - 1);
     strncpy(out->os_build, KERNEL_BUILD, sizeof(out->os_build) - 1);
-    strncpy(out->os_codename, KERNEL_CODENAME, sizeof(out->os_codename) - 1);
+    strncpy(out->os_codename, OS_CODENAME, sizeof(out->os_codename) - 1);
     strncpy(out->cpu_model, cpu_model_string, sizeof(out->cpu_model) - 1);
     out->cpu_freq_mhz    = g_cpu_info.mhz;
     out->total_ram_mb    = (uint32_t)total_ram_mb;

@@ -691,6 +691,33 @@ static void format_hex64(uint64_t val, char* out) {
     out[18] = '\0';
 }
 
+static size_t crash_append_str(char* dst, size_t cap, size_t pos, const char* src) {
+    if (!dst || cap == 0 || pos >= cap - 1 || !src) return pos;
+    while (*src && pos < cap - 1) {
+        dst[pos++] = *src++;
+    }
+    dst[pos] = '\0';
+    return pos;
+}
+
+static size_t crash_append_u32(char* dst, size_t cap, size_t pos, uint32_t val) {
+    char rev[16];
+    int n = 0;
+    if (val == 0) {
+        rev[n++] = '0';
+    } else {
+        while (val > 0 && n < (int)sizeof(rev)) {
+            rev[n++] = (char)('0' + (val % 10u));
+            val /= 10u;
+        }
+    }
+    while (n > 0 && pos < cap - 1) {
+        dst[pos++] = rev[--n];
+    }
+    if (pos < cap) dst[pos] = '\0';
+    return pos;
+}
+
 static void draw_crash_dialog(unsigned char* v) {
     int dw = 380, dh = 144;
     int dx = (screen_w - dw) / 2;
@@ -727,23 +754,34 @@ static void draw_crash_dialog(unsigned char* v) {
     font_draw_text(v, dx + 54, dy + 14, "Sorry, an application crashed.", 0);
 
     char line1[64];
-    snprintf(line1, sizeof(line1), "App: %s (PID %u)", crash_app_name, crash_pid);
+    line1[0] = '\0';
+    size_t p1 = crash_append_str(line1, sizeof(line1), 0, "App: ");
+    p1 = crash_append_str(line1, sizeof(line1), p1, crash_app_name);
+    p1 = crash_append_str(line1, sizeof(line1), p1, " (PID ");
+    p1 = crash_append_u32(line1, sizeof(line1), p1, crash_pid);
+    (void)crash_append_str(line1, sizeof(line1), p1, ")");
     font_draw_text(v, dx + 54, dy + 34, line1, 0);
 
     char line2[64];
-    snprintf(line2, sizeof(line2), "Fault: %s", crash_exc_name);
+    line2[0] = '\0';
+    size_t p2 = crash_append_str(line2, sizeof(line2), 0, "Fault: ");
+    (void)crash_append_str(line2, sizeof(line2), p2, crash_exc_name);
     font_draw_text(v, dx + 54, dy + 52, line2, 4);
 
     char rip_hex[20];
     format_hex64(crash_rip, rip_hex);
     char line3[64];
-    snprintf(line3, sizeof(line3), "RIP: %s", rip_hex);
+    line3[0] = '\0';
+    size_t p3 = crash_append_str(line3, sizeof(line3), 0, "RIP: ");
+    (void)crash_append_str(line3, sizeof(line3), p3, rip_hex);
     font_draw_text(v, dx + 54, dy + 70, line3, 8);
 
     char cr2_hex[20];
     format_hex64(crash_cr2, cr2_hex);
     char line4[64];
-    snprintf(line4, sizeof(line4), "CR2: %s", cr2_hex);
+    line4[0] = '\0';
+    size_t p4 = crash_append_str(line4, sizeof(line4), 0, "CR2: ");
+    (void)crash_append_str(line4, sizeof(line4), p4, cr2_hex);
     font_draw_text(v, dx + 54, dy + 88, line4, 8);
 
     int obx = dx + dw - 96, oby = dy + dh - 32;
