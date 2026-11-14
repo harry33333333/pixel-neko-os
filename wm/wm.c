@@ -2046,7 +2046,6 @@ static void wm_pxe_destroy_slot(int slot) {
 
     memset(dw, 0, sizeof(*dw));
     if (g_pxe_capture_win == win_id) g_pxe_capture_win = -1;
-    if (active_win == win_id) active_win = top_visible_win_id();
     g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);

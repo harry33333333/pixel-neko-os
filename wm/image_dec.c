@@ -847,7 +847,7 @@ static int kjpg_huff_decode(kjpg_br_t* br, const kjpg_huff_t* h) {
 static int kjpg_extend(int v, int s) {
     if (s == 0) return 0;
     int vt = 1 << (s - 1);
-    if (v < vt) return v + ((-1) << s) + 1;
+    if (v < vt) return v + (-(1 << s)) + 1;
     return v;
 }
 
