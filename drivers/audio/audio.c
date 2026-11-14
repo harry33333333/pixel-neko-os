@@ -557,9 +557,9 @@ int audio_play_file(const char* filepath) {
     }
 
     if (g_active_driver) {
-        g_active_driver->start_dma();
         int volume = audio_requested_volume();
         g_active_driver->set_volume(volume, volume);
+        g_active_driver->start_dma();
     }
     g_audio_state = AUDIO_STATE_PLAYING;
 

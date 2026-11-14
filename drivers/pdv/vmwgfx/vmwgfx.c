@@ -62,7 +62,9 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_REG_CURSOR_X                        25
 #define SVGA_REG_CURSOR_Y                        26
 #define SVGA_REG_CURSOR_ON                       27
+#define SVGA_REG_MEM_REGS                        30
 #define SVGA_REG_GMR_MAX_IDS                     43
+#define SVGA_REG_TRACES                          45
 #define SVGA_REG_GMRS_MAX_PAGES                  46
 #define SVGA_REG_MEMORY_SIZE                     47
 #define SVGA_REG_MAX_PRIMARY_MEM                 50
@@ -74,6 +76,10 @@ static const pdv_kernel_api_t* g_kapi;
 #define GUEST_OS_OTHER                           0x5010U
 #define SVGA_PALETTE_BASE                        1024
 
+#define SVGA_REG_ENABLE_DISABLE 0U
+#define SVGA_REG_ENABLE_ENABLE  (1U << 0)
+#define SVGA_REG_ENABLE_HIDE    (1U << 1)
+
 #define SVGA_MAX_MODES          32
 #define SVGA_MAX_VRAM_CAP_BYTES 0xFFF00000ULL
 
@@ -83,6 +89,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_FIFO_STOP          3
 #define SVGA_FIFO_CAPABILITIES  4
 #define SVGA_FIFO_FLAGS         5
+#define SVGA_FIFO_BUSY          290
 
 #define SVGA_FIFO_CAP_GMR2            (1U << 8)
 #define SVGA_FIFO_CAP_SCREEN_OBJECT_2 (1U << 9)
@@ -98,6 +105,31 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_CMD_BLIT_GMRFB_TO_SCREEN   37
 #define SVGA_CMD_DEFINE_GMR2            41
 #define SVGA_CMD_REMAP_GMR2             42
+
+#define SVGA_3D_CMD_SET_OTABLE_BASE         1091U
+#define SVGA_3D_CMD_DESTROY_GB_MOB          1094U
+#define SVGA_3D_CMD_DEFINE_GB_SURFACE       1097U
+#define SVGA_3D_CMD_DESTROY_GB_SURFACE      1098U
+#define SVGA_3D_CMD_BIND_GB_SURFACE         1099U
+#define SVGA_3D_CMD_UPDATE_GB_IMAGE         1101U
+#define SVGA_3D_CMD_SET_OTABLE_BASE64       1115U
+#define SVGA_3D_CMD_DEFINE_GB_SCREENTARGET  1124U
+#define SVGA_3D_CMD_DESTROY_GB_SCREENTARGET 1125U
+#define SVGA_3D_CMD_BIND_GB_SCREENTARGET    1126U
+#define SVGA_3D_CMD_UPDATE_GB_SCREENTARGET  1127U
+#define SVGA_3D_CMD_DEFINE_GB_MOB64         1135U
+
+#define SVGA_OTABLE_COUNT           5U
+#define SVGA_OTABLE_PAGE_SIZE       4096U
+#define SVGA3D_MOBFMT_PT64_0        4U
+#define SVGA3D_MOBFMT_PT64_1        5U
+#define SVGA3D_MOBFMT_PT64_2        6U
+#define SVGA3D_MOBFMT_INVALID       0xFFFFFFFFU
+#define SVGA3D_SURFACE_SCREENTARGET (1U << 16)
+#define SVGA3D_X8R8G8B8             1U
+#define SVGA3D_R5G6B5               3U
+#define SVGA_STFLAG_PRIMARY         (1U << 0)
+#define SVGA3D_INVALID_ID           0xFFFFFFFFU
 
 #define SVGA_SCREEN_MUST_BE_SET (1U << 0)
 #define SVGA_SCREEN_IS_PRIMARY  (1U << 1)
@@ -118,6 +150,7 @@ static int g_active;
 static int g_fifo_ready;
 static int g_cursor_ready;
 static int g_screen_obj_active;
+static int g_stdu_active;
 static int g_reg_mmio;
 static unsigned int g_io_index;
 static unsigned int g_io_data;
@@ -125,6 +158,8 @@ static volatile unsigned char* g_reg_mmio_base;
 static uint64_t g_fb_phys;
 static volatile unsigned char* g_fb_virt;
 static pdv_dma_buffer_t g_gmr_dma;
+static pdv_dma_buffer_t g_otable_dma;
+static pdv_dma_buffer_t g_mob_pt_dma;
 static uint64_t g_fifo_phys;
 static unsigned int g_fifo_size;
 static unsigned int g_fifo_min;
@@ -235,6 +270,12 @@ static int svga_fifo_emit(const unsigned int* words, unsigned int count) {
             mmio_barrier();
             svga_fifo_write(SVGA_FIFO_NEXT_CMD, cursor);
             mmio_barrier();
+            if ((g_capabilities & SVGA_CAP_EXTENDED_FIFO) &&
+                g_fifo_min >= (SVGA_FIFO_BUSY + 1U) * 4U &&
+                svga_fifo_read(SVGA_FIFO_BUSY) == 0U) {
+                svga_fifo_write(SVGA_FIFO_BUSY, 1U);
+                svga_write_reg(SVGA_REG_SYNC, 1U);
+            }
             return 1;
         }
 
@@ -277,14 +318,27 @@ static int svga_init_fifo(void) {
     }
 
     g_fifo_min = SVGA_FIFO_MIN_BYTES;
+    if (g_capabilities & SVGA_CAP_EXTENDED_FIFO) {
+        unsigned int mem_regs = svga_read_reg(SVGA_REG_MEM_REGS);
+        if (mem_regs != 0xFFFFFFFFU && mem_regs > 0U && mem_regs * 4U > g_fifo_min &&
+            mem_regs * 4U + 8192U < map_bytes) {
+            g_fifo_min = mem_regs * 4U;
+        }
+    }
     if (g_fifo_min + 8192U >= map_bytes) g_fifo_min = 0;
     g_fifo_max = map_bytes;
 
+    for (unsigned int i = 0; i < g_fifo_min / 4U; i++) {
+        svga_fifo_write(i, 0U);
+    }
     svga_fifo_write(SVGA_FIFO_MIN, g_fifo_min);
     svga_fifo_write(SVGA_FIFO_MAX, g_fifo_max);
     svga_fifo_write(SVGA_FIFO_NEXT_CMD, g_fifo_min);
     svga_fifo_write(SVGA_FIFO_STOP, g_fifo_min);
     svga_fifo_write(SVGA_FIFO_FLAGS, 0);
+    if (g_fifo_min >= (SVGA_FIFO_BUSY + 1U) * 4U) {
+        svga_fifo_write(SVGA_FIFO_BUSY, 0U);
+    }
     mmio_barrier();
     g_fifo_ready = 1;
     return 1;
@@ -322,6 +376,12 @@ static unsigned int svga_read_opt_reg(unsigned int reg) {
     return (val == 0xFFFFFFFFU) ? 0U : val;
 }
 
+static int svga_has_stdu(void) {
+    return ((g_capabilities & SVGA_CAP_GBOBJECTS) != 0U) &&
+           ((g_capabilities & SVGA_CAP_3D) != 0U) &&
+           (g_fifo_phys != 0);
+}
+
 static int svga_has_screen_object2(void) {
     return ((g_capabilities & SVGA_CAP_SCREEN_OBJECT_2) != 0U) &&
            ((g_capabilities & SVGA_CAP_GMR2) != 0U) &&
@@ -330,13 +390,13 @@ static int svga_has_screen_object2(void) {
 
 static uint64_t svga_effective_fb_limit(void) {
     uint64_t limit = 0;
-    if (svga_has_screen_object2()) {
+    if (svga_has_stdu() || svga_has_screen_object2()) {
         if (g_vram_size > 0) limit = (uint64_t)g_vram_size;
         if (g_max_primary_mem >= 4ULL * 1024ULL * 1024ULL &&
             (limit == 0 || g_max_primary_mem < limit)) {
             limit = g_max_primary_mem;
         }
-        if (g_gmrs_max_pages > 0) {
+        if (!svga_has_stdu() && g_gmrs_max_pages > 0) {
             uint64_t gmr_bytes = (uint64_t)g_gmrs_max_pages * 4096ULL;
             if (gmr_bytes >= 4ULL * 1024ULL * 1024ULL &&
                 (limit == 0 || gmr_bytes < limit)) {
@@ -445,6 +505,7 @@ static int vmware_svga_probe_hw(void) {
     g_fifo_ready = 0;
     g_cursor_ready = 0;
     g_screen_obj_active = 0;
+    g_stdu_active = 0;
     g_pci = 0;
     g_fifo = 0;
     g_capabilities2 = 0;
@@ -578,7 +639,7 @@ static int vmware_svga_probe_hw(void) {
     g_raw_max_height = svga_read_reg(SVGA_REG_MAX_HEIGHT);
     g_max_width = g_raw_max_width;
     g_max_height = g_raw_max_height;
-    if (svga_has_screen_object2()) {
+    if (svga_has_stdu() || svga_has_screen_object2()) {
         if (g_screen_max_width > g_max_width && g_screen_max_width <= 16384U) {
             g_max_width = g_screen_max_width;
         }
@@ -695,6 +756,326 @@ static void svga_teardown_screen_object(void) {
     g_screen_obj_active = 0;
 }
 
+static void svga_zero_dma(const pdv_dma_buffer_t* dma, size_t bytes) {
+    if (!dma || !pdv_dma_is_valid(dma) || !dma->virt || bytes == 0U) return;
+    volatile uint64_t* q = (volatile uint64_t*)dma->virt;
+    size_t qcnt = bytes / 8U;
+    for (size_t i = 0U; i < qcnt; i++) {
+        q[i] = 0ULL;
+    }
+    volatile unsigned char* b = (volatile unsigned char*)dma->virt;
+    for (size_t i = qcnt * 8U; i < bytes; i++) {
+        b[i] = 0U;
+    }
+}
+
+static void svga_teardown_stdu(void) {
+    if (g_stdu_active && g_fifo_ready) {
+        unsigned int unbind_st[6];
+        unbind_st[0] = SVGA_3D_CMD_BIND_GB_SCREENTARGET;
+        unbind_st[1] = 16U;
+        unbind_st[2] = 0U;
+        unbind_st[3] = SVGA3D_INVALID_ID;
+        unbind_st[4] = 0U;
+        unbind_st[5] = 0U;
+        (void)svga_fifo_emit(unbind_st, 6U);
+
+        unsigned int destroy_st[3];
+        destroy_st[0] = SVGA_3D_CMD_DESTROY_GB_SCREENTARGET;
+        destroy_st[1] = 4U;
+        destroy_st[2] = 0U;
+        (void)svga_fifo_emit(destroy_st, 3U);
+
+        unsigned int destroy_surf[3];
+        destroy_surf[0] = SVGA_3D_CMD_DESTROY_GB_SURFACE;
+        destroy_surf[1] = 4U;
+        destroy_surf[2] = 0U;
+        (void)svga_fifo_emit(destroy_surf, 3U);
+
+        unsigned int destroy_mob[3];
+        destroy_mob[0] = SVGA_3D_CMD_DESTROY_GB_MOB;
+        destroy_mob[1] = 4U;
+        destroy_mob[2] = SVGA_SCREEN_OBJ_GMR_ID;
+        (void)svga_fifo_emit(destroy_mob, 3U);
+
+        for (unsigned int t = 0U; t < SVGA_OTABLE_COUNT; t++) {
+            unsigned int clear_ot[7];
+            clear_ot[0] = SVGA_3D_CMD_SET_OTABLE_BASE;
+            clear_ot[1] = 20U;
+            clear_ot[2] = t;
+            clear_ot[3] = 0U;
+            clear_ot[4] = 0U;
+            clear_ot[5] = 0U;
+            clear_ot[6] = SVGA3D_MOBFMT_INVALID;
+            (void)svga_fifo_emit(clear_ot, 7U);
+        }
+
+        g_active = 1;
+        vmware_svga_sync();
+        g_active = 0;
+    }
+    if (pdv_dma_is_valid(&g_mob_pt_dma)) {
+        g_kapi->dma_free(&g_mob_pt_dma);
+    }
+    if (pdv_dma_is_valid(&g_otable_dma)) {
+        g_kapi->dma_free(&g_otable_dma);
+    }
+    g_stdu_active = 0;
+}
+
+static int svga_set_mode_stdu(int width, int height, int bpp,
+                              const int* try_hw, int try_cnt) {
+    if (!svga_has_stdu() || try_cnt <= 0) return 0;
+
+    int cand_bpp = 0;
+    for (int i = 0; i < try_cnt; i++) {
+        if (try_hw[i] == 32 || try_hw[i] == 16) {
+            cand_bpp = try_hw[i];
+            break;
+        }
+    }
+    if (cand_bpp == 0) cand_bpp = 32;
+
+    unsigned int pitch = (unsigned int)width * svga_bytes_per_pixel(cand_bpp);
+    size_t fb_bytes = (size_t)pitch * (size_t)(unsigned int)height;
+    unsigned int num_pages = (unsigned int)((fb_bytes + 4095U) / 4096U);
+    if (num_pages == 0U) return 0;
+
+    unsigned int pt_pages = 0U;
+    unsigned int pt_depth = SVGA3D_MOBFMT_PT64_0;
+    unsigned int num_l1 = 0U;
+    if (num_pages > 1U) {
+        if (num_pages <= 512U) {
+            pt_pages = 1U;
+            pt_depth = SVGA3D_MOBFMT_PT64_1;
+        } else {
+            num_l1 = (num_pages + 511U) / 512U;
+            if (num_l1 > 512U) return 0;
+            pt_pages = num_l1 + 1U;
+            pt_depth = SVGA3D_MOBFMT_PT64_2;
+        }
+    }
+
+    pdv_dma_buffer_t new_dma = {0};
+    if (g_kapi->dma_alloc((size_t)num_pages * 4096U, PDV_DMA_BIT_MASK(64),
+                          PDV_PAGE_SIZE, &new_dma) != 0 ||
+        !pdv_dma_is_valid(&new_dma)) {
+        return 0;
+    }
+
+    pdv_dma_buffer_t otable_dma = {0};
+    size_t otable_bytes = (size_t)SVGA_OTABLE_COUNT * SVGA_OTABLE_PAGE_SIZE;
+    if (g_kapi->dma_alloc(otable_bytes, PDV_DMA_BIT_MASK(64),
+                          PDV_PAGE_SIZE, &otable_dma) != 0 ||
+        !pdv_dma_is_valid(&otable_dma)) {
+        g_kapi->dma_free(&new_dma);
+        return 0;
+    }
+
+    pdv_dma_buffer_t pt_dma = {0};
+    if (pt_pages > 0U) {
+        if (g_kapi->dma_alloc((size_t)pt_pages * 4096U, PDV_DMA_BIT_MASK(64),
+                              PDV_PAGE_SIZE, &pt_dma) != 0 ||
+            !pdv_dma_is_valid(&pt_dma)) {
+            g_kapi->dma_free(&otable_dma);
+            g_kapi->dma_free(&new_dma);
+            return 0;
+        }
+        svga_zero_dma(&pt_dma, (size_t)pt_pages * 4096U);
+    }
+
+    svga_zero_dma(&new_dma, (size_t)num_pages * 4096U);
+    svga_zero_dma(&otable_dma, otable_bytes);
+
+    uint64_t fb_ppn_base = (uint64_t)(new_dma.phys >> 12);
+    uint64_t pt_root_ppn = fb_ppn_base;
+    if (pt_pages > 0U) {
+        volatile uint64_t* pt_entries = (volatile uint64_t*)pt_dma.virt;
+        for (unsigned int p = 0U; p < num_pages; p++) {
+            pt_entries[p] = fb_ppn_base + (uint64_t)p;
+        }
+        uint64_t pt_ppn_base = (uint64_t)(pt_dma.phys >> 12);
+        if (pt_depth == SVGA3D_MOBFMT_PT64_1) {
+            pt_root_ppn = pt_ppn_base;
+        } else {
+            size_t l0_off = (size_t)num_l1 * 512U;
+            for (unsigned int k = 0U; k < num_l1; k++) {
+                pt_entries[l0_off + k] = pt_ppn_base + (uint64_t)k;
+            }
+            pt_root_ppn = pt_ppn_base + (uint64_t)num_l1;
+        }
+        g_kapi->dma_sync_for_device(&pt_dma);
+    }
+    g_kapi->dma_sync_for_device(&otable_dma);
+
+    /* Switch legacy SVGA scanout off cleanly before bringing up STDU + OTables. */
+    unsigned int safe_w = (g_raw_max_width >= 640U && g_raw_max_width < 800U) ? g_raw_max_width : 640U;
+    unsigned int safe_h = (g_raw_max_height >= 480U && g_raw_max_height < 600U) ? g_raw_max_height : 480U;
+    svga_write_reg(SVGA_REG_CONFIG_DONE, 0U);
+    svga_write_reg(SVGA_REG_ENABLE, 0U);
+    svga_write_reg(SVGA_REG_WIDTH, safe_w);
+    svga_write_reg(SVGA_REG_HEIGHT, safe_h);
+    svga_write_reg(SVGA_REG_DEPTH, 24U);
+    svga_write_reg(SVGA_REG_BPP, 32U);
+    svga_write_reg(SVGA_REG_TRACES, 0U);
+    svga_write_reg(SVGA_REG_ENABLE, SVGA_REG_ENABLE_ENABLE | SVGA_REG_ENABLE_HIDE);
+
+    if (!svga_read_reg(SVGA_REG_ENABLE) || !svga_init_fifo()) {
+        svga_write_reg(SVGA_REG_ENABLE, 0U);
+        if (pdv_dma_is_valid(&pt_dma)) g_kapi->dma_free(&pt_dma);
+        g_kapi->dma_free(&otable_dma);
+        g_kapi->dma_free(&new_dma);
+        return 0;
+    }
+
+    svga_write_reg(SVGA_REG_CONFIG_DONE, 1U);
+    g_active = 1;
+
+    int ok = 1;
+    uint64_t ot_ppn_base = (uint64_t)(otable_dma.phys >> 12);
+    for (unsigned int t = 0U; ok && t < SVGA_OTABLE_COUNT; t++) {
+        uint64_t ot_ppn = ot_ppn_base + (uint64_t)t;
+        unsigned int set_ot[8];
+        set_ot[0] = SVGA_3D_CMD_SET_OTABLE_BASE64;
+        set_ot[1] = 24U;
+        set_ot[2] = t;
+        set_ot[3] = (unsigned int)(ot_ppn & 0xFFFFFFFFULL);
+        set_ot[4] = (unsigned int)(ot_ppn >> 32);
+        set_ot[5] = SVGA_OTABLE_PAGE_SIZE;
+        set_ot[6] = 0U;
+        set_ot[7] = SVGA3D_MOBFMT_PT64_0;
+        ok = svga_fifo_emit(set_ot, 8U);
+    }
+
+    if (ok) {
+        unsigned int def_mob[7];
+        def_mob[0] = SVGA_3D_CMD_DEFINE_GB_MOB64;
+        def_mob[1] = 20U;
+        def_mob[2] = SVGA_SCREEN_OBJ_GMR_ID;
+        def_mob[3] = pt_depth;
+        def_mob[4] = (unsigned int)(pt_root_ppn & 0xFFFFFFFFULL);
+        def_mob[5] = (unsigned int)(pt_root_ppn >> 32);
+        def_mob[6] = num_pages * 4096U;
+        ok = svga_fifo_emit(def_mob, 7U);
+    }
+
+    if (ok) {
+        unsigned int fmt = (cand_bpp == 16) ? SVGA3D_R5G6B5 : SVGA3D_X8R8G8B8;
+        unsigned int def_surf[11];
+        def_surf[0]  = SVGA_3D_CMD_DEFINE_GB_SURFACE;
+        def_surf[1]  = 36U;
+        def_surf[2]  = 0U; /* sid */
+        def_surf[3]  = SVGA3D_SURFACE_SCREENTARGET;
+        def_surf[4]  = fmt;
+        def_surf[5]  = 1U; /* numMipLevels */
+        def_surf[6]  = 0U; /* multisampleCount */
+        def_surf[7]  = 0U; /* autogenFilter */
+        def_surf[8]  = (unsigned int)width;
+        def_surf[9]  = (unsigned int)height;
+        def_surf[10] = 1U; /* depth */
+        ok = svga_fifo_emit(def_surf, 11U);
+    }
+
+    if (ok) {
+        unsigned int bind_surf[4];
+        bind_surf[0] = SVGA_3D_CMD_BIND_GB_SURFACE;
+        bind_surf[1] = 8U;
+        bind_surf[2] = 0U; /* sid */
+        bind_surf[3] = SVGA_SCREEN_OBJ_GMR_ID;
+        ok = svga_fifo_emit(bind_surf, 4U);
+    }
+
+    if (ok) {
+        unsigned int def_st[9];
+        def_st[0] = SVGA_3D_CMD_DEFINE_GB_SCREENTARGET;
+        def_st[1] = 28U;
+        def_st[2] = 0U; /* stid */
+        def_st[3] = (unsigned int)width;
+        def_st[4] = (unsigned int)height;
+        def_st[5] = 0U; /* xRoot */
+        def_st[6] = 0U; /* yRoot */
+        def_st[7] = SVGA_STFLAG_PRIMARY;
+        def_st[8] = 0U; /* dpi */
+        ok = svga_fifo_emit(def_st, 9U);
+    }
+
+    if (ok) {
+        unsigned int bind_st[6];
+        bind_st[0] = SVGA_3D_CMD_BIND_GB_SCREENTARGET;
+        bind_st[1] = 16U;
+        bind_st[2] = 0U; /* stid */
+        bind_st[3] = 0U; /* sid */
+        bind_st[4] = 0U; /* face */
+        bind_st[5] = 0U; /* mipmap */
+        ok = svga_fifo_emit(bind_st, 6U);
+    }
+
+    if (ok) {
+        g_kapi->dma_sync_for_device(&new_dma);
+        unsigned int upd[18];
+        upd[0]  = SVGA_3D_CMD_UPDATE_GB_IMAGE;
+        upd[1]  = 36U;
+        upd[2]  = 0U;
+        upd[3]  = 0U;
+        upd[4]  = 0U;
+        upd[5]  = 0U;
+        upd[6]  = 0U;
+        upd[7]  = 0U;
+        upd[8]  = (unsigned int)width;
+        upd[9]  = (unsigned int)height;
+        upd[10] = 1U;
+
+        upd[11] = SVGA_3D_CMD_UPDATE_GB_SCREENTARGET;
+        upd[12] = 20U;
+        upd[13] = 0U;
+        upd[14] = 0U;
+        upd[15] = 0U;
+        upd[16] = (unsigned int)width;
+        upd[17] = (unsigned int)height;
+        ok = svga_fifo_emit(upd, 18U);
+        vmware_svga_sync();
+    }
+
+    if (!ok || !g_fifo_ready) {
+        g_stdu_active = 1;
+        svga_teardown_stdu();
+        g_active = 0;
+        svga_write_reg(SVGA_REG_CONFIG_DONE, 0U);
+        svga_write_reg(SVGA_REG_ENABLE, 0U);
+        if (pdv_dma_is_valid(&pt_dma)) g_kapi->dma_free(&pt_dma);
+        g_kapi->dma_free(&otable_dma);
+        g_kapi->dma_free(&new_dma);
+        return 0;
+    }
+
+    if (pdv_dma_is_valid(&g_mob_pt_dma)) g_kapi->dma_free(&g_mob_pt_dma);
+    if (pdv_dma_is_valid(&g_otable_dma)) g_kapi->dma_free(&g_otable_dma);
+    if (pdv_dma_is_valid(&g_gmr_dma)) g_kapi->dma_free(&g_gmr_dma);
+
+    g_gmr_dma = new_dma;
+    g_otable_dma = otable_dma;
+    g_mob_pt_dma = pt_dma;
+    g_stdu_active = 1;
+    g_screen_obj_active = 0;
+    g_fb_phys = new_dma.phys;
+    g_fb_virt = (volatile unsigned char*)new_dma.virt;
+    g_width = width;
+    g_height = height;
+    g_bpp = cand_bpp;
+    g_pitch = (int)pitch;
+    g_active = 1;
+
+    svga_apply_surface(width, height, cand_bpp, pitch,
+                       new_dma.phys, (volatile unsigned char*)new_dma.virt, 0);
+    svga_write_reg(SVGA_REG_CURSOR_ON, SVGA_CURSOR_HIDE);
+    g_status = "3D-capable profile: STDU + GBObjects active";
+
+    klog_info("[SVGA] mode %dx%dx%d (STDU %dbpp) pitch=%u mob=0x%llx",
+              width, height, bpp, cand_bpp, pitch,
+              (unsigned long long)new_dma.phys);
+    return 1;
+}
+
 static int svga_set_mode_screen_object(int width, int height, int bpp,
                                        const int* try_hw, int try_cnt) {
     if (!svga_has_screen_object2() || try_cnt <= 0) return 0;
@@ -730,13 +1111,15 @@ static int svga_set_mode_screen_object(int width, int height, int bpp,
     /* Reset mode registers to a small valid size so SVGA_REG_ENABLE = 1 holds. */
     unsigned int safe_w = (g_raw_max_width >= 640U && g_raw_max_width < 800U) ? g_raw_max_width : 640U;
     unsigned int safe_h = (g_raw_max_height >= 480U && g_raw_max_height < 600U) ? g_raw_max_height : 480U;
+    svga_zero_dma(&new_dma, (size_t)num_pages * 4096U);
     svga_write_reg(SVGA_REG_CONFIG_DONE, 0);
     svga_write_reg(SVGA_REG_ENABLE, 0);
     svga_write_reg(SVGA_REG_WIDTH, safe_w);
     svga_write_reg(SVGA_REG_HEIGHT, safe_h);
     svga_write_reg(SVGA_REG_DEPTH, 24U);
     svga_write_reg(SVGA_REG_BPP, 32U);
-    svga_write_reg(SVGA_REG_ENABLE, 1U);
+    svga_write_reg(SVGA_REG_TRACES, 0U);
+    svga_write_reg(SVGA_REG_ENABLE, SVGA_REG_ENABLE_ENABLE | SVGA_REG_ENABLE_HIDE);
 
     if (!svga_read_reg(SVGA_REG_ENABLE) || !svga_init_fifo()) {
         svga_write_reg(SVGA_REG_ENABLE, 0);
@@ -911,6 +1294,9 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
     unsigned int old_height = svga_read_reg(SVGA_REG_HEIGHT);
     unsigned int old_bpp = svga_read_reg(SVGA_REG_BPP);
 
+    if (g_stdu_active) {
+        svga_teardown_stdu();
+    }
     if (g_screen_obj_active) {
         svga_teardown_screen_object();
     }
@@ -940,11 +1326,11 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
         (g_raw_max_width == 0U || (unsigned int)width <= g_raw_max_width) &&
         (g_raw_max_height == 0U || (unsigned int)height <= g_raw_max_height);
 
-    if (!svga_has_screen_object2() || legacy_dims_ok) {
+    if ((!svga_has_stdu() && !svga_has_screen_object2()) || legacy_dims_ok) {
         for (int t = 0; t < try_cnt; t++) {
             int cand_bpp = try_hw[t];
             uint64_t min_need = pixels * (uint64_t)svga_bytes_per_pixel(cand_bpp);
-            if (svga_has_screen_object2() && g_raw_vram_size > 0 &&
+            if ((svga_has_stdu() || svga_has_screen_object2()) && g_raw_vram_size > 0 &&
                 min_need > (uint64_t)g_raw_vram_size) {
                 continue;
             }
@@ -987,6 +1373,10 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
     }
 
     if (hw_bpp == 0) {
+        if (svga_has_stdu() &&
+            svga_set_mode_stdu(width, height, bpp, try_hw, try_cnt)) {
+            return 1;
+        }
         if (svga_has_screen_object2() &&
             svga_set_mode_screen_object(width, height, bpp, try_hw, try_cnt)) {
             return 1;
@@ -1019,9 +1409,16 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
         return 0;
     }
 
+    if (pdv_dma_is_valid(&g_mob_pt_dma)) {
+        g_kapi->dma_free(&g_mob_pt_dma);
+    }
+    if (pdv_dma_is_valid(&g_otable_dma)) {
+        g_kapi->dma_free(&g_otable_dma);
+    }
     if (pdv_dma_is_valid(&g_gmr_dma)) {
         g_kapi->dma_free(&g_gmr_dma);
     }
+    g_stdu_active = 0;
     g_screen_obj_active = 0;
 
     if (hw_bpp == 8) {
@@ -1038,6 +1435,7 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
 
     svga_apply_surface(width, height, hw_bpp, pitch, fb_phys, fb_virt, 1);
 
+    svga_write_reg(SVGA_REG_TRACES, 1U);
     svga_init_fifo();
     svga_write_reg(SVGA_REG_CONFIG_DONE, 1);
     svga_write_reg(SVGA_REG_CURSOR_ON, SVGA_CURSOR_HIDE);
@@ -1158,6 +1556,37 @@ static void vmware_svga_present_rect(int x, int y, int width, int height) {
         return;
     }
 
+    if (g_stdu_active) {
+        g_kapi->dma_sync_for_device(&g_gmr_dma);
+        unsigned int command[18];
+        command[0]  = SVGA_3D_CMD_UPDATE_GB_IMAGE;
+        command[1]  = 36U;
+        command[2]  = 0U;
+        command[3]  = 0U;
+        command[4]  = 0U;
+        command[5]  = (unsigned int)x;
+        command[6]  = (unsigned int)y;
+        command[7]  = 0U;
+        command[8]  = (unsigned int)width;
+        command[9]  = (unsigned int)height;
+        command[10] = 1U;
+
+        command[11] = SVGA_3D_CMD_UPDATE_GB_SCREENTARGET;
+        command[12] = 20U;
+        command[13] = 0U;
+        command[14] = (unsigned int)x;
+        command[15] = (unsigned int)y;
+        command[16] = (unsigned int)width;
+        command[17] = (unsigned int)height;
+        if (svga_fifo_emit(command, 18U)) {
+            vmware_svga_sync();
+        } else {
+            g_fifo_ready = 0;
+            g_status = "FIFO full (STDU update stalled)";
+        }
+        return;
+    }
+
     if (g_screen_obj_active) {
         g_kapi->dma_sync_for_device(&g_gmr_dma);
         unsigned int command[8];
@@ -1251,7 +1680,7 @@ static void vmware_svga_fill_rect(int x, int y, int width, int height,
     if (!g_active || !svga_normalize_rect(&x, &y, &width, &height)) return;
 
     int accelerated = 0;
-    if (!g_screen_obj_active && g_fifo_ready && (g_capabilities & SVGA_CAP_RECT_FILL)) {
+    if (!g_screen_obj_active && !g_stdu_active && g_fifo_ready && (g_capabilities & SVGA_CAP_RECT_FILL)) {
         unsigned int command[6];
         command[0] = SVGA_CMD_RECT_FILL;
         command[1] = color;
@@ -1283,7 +1712,7 @@ static void vmware_svga_screen_blt(int sx, int sy, int dx, int dy,
     if (width <= 0 || height <= 0) return;
 
     int accelerated = 0;
-    if (!g_screen_obj_active && g_fifo_ready && (g_capabilities & SVGA_CAP_RECT_COPY)) {
+    if (!g_screen_obj_active && !g_stdu_active && g_fifo_ready && (g_capabilities & SVGA_CAP_RECT_COPY)) {
         unsigned int command[7];
         command[0] = SVGA_CMD_RECT_COPY;
         command[1] = (unsigned int)sx;

@@ -99,7 +99,12 @@ static const pdv_kernel_api_t* g_kapi = 0;
     (CT_SRC_DISABLE | CT_SRC_DAC1_DISABLE | CT_SRC_DAC2_DISABLE | CT_SRC_ADC_DISABLE)
 #define CT_SRC_CODEC_ACCESS_STATE 0x00010000U
 #define CT_SRC_CODEC_STATE_MASK   0x00870000U
-#define CT_WAIT_LOOPS             0x8000
+#define CT_WAIT_LOOPS             0x0400
+#define CT_CODEC_WAIT_LOOPS       64
+#define CT_SRC_TRUNCATION_OFFSET  0x00U
+#define CT_SRC_ACCUM_FRAC_OFFSET  0x02U
+#define CT_SRC_DAC2_VOL_LEFT_REG  0x7EU
+#define CT_SRC_DAC2_VOL_RIGHT_REG 0x7FU
 
 static int g_ct_present = 0;
 static unsigned short g_ct_io_base = 0;
@@ -117,6 +122,10 @@ static int g_ct_hw_reg_moving = 0;
 static unsigned char g_ct_revision = 0;
 static int g_ct_is_ev1938 = 0;
 static unsigned int g_ct_ctrl_base = 0;
+static int g_ct_sample_rate = 44100;
+static int g_ct_bytes_per_sample = 4;
+static int g_ct_last_master_vol = -1;
+static int g_ct_last_pcm_vol = -1;
 
 static inline unsigned int ct_read32(unsigned int reg) {
     if (!g_ct_io_base) return 0;
@@ -177,7 +186,7 @@ static unsigned int ct_src_wait_idle(void) {
         if (!(r & CT_SRC_RAM_BUSY)) return r;
         ct_io_delay();
     }
-    return 0;
+    return ct_read32(CT_REG_SRC_CONTROL) & CT_SRC_STATE_MASK;
 }
 
 static unsigned short ct_src_read_word(unsigned short reg) {
@@ -202,15 +211,15 @@ static void ct_src_write_word(unsigned short reg, unsigned short data) {
 }
 
 static unsigned int ct_codec_access_begin(void) {
-    unsigned int saved = ct_src_wait_idle();
-    ct_write32(CT_REG_SRC_CONTROL,
-               (saved & CT_SRC_STATE_MASK) | CT_SRC_CODEC_ACCESS_STATE);
+    unsigned int saved = ct_src_wait_idle() & CT_SRC_STATE_MASK;
+    ct_write32(CT_REG_SRC_CONTROL, saved | CT_SRC_CODEC_ACCESS_STATE);
 
-    for (int t = 0; t < CT_WAIT_LOOPS; t++) {
+    /* Bound AC-link state sync polling so emulated ES1371 (VMware/QEMU) does not stall. */
+    for (int t = 0; t < CT_CODEC_WAIT_LOOPS; t++) {
         if ((ct_read32(CT_REG_SRC_CONTROL) & CT_SRC_CODEC_STATE_MASK) == 0) break;
         ct_io_delay();
     }
-    for (int t = 0; t < CT_WAIT_LOOPS; t++) {
+    for (int t = 0; t < CT_CODEC_WAIT_LOOPS; t++) {
         if ((ct_read32(CT_REG_SRC_CONTROL) & CT_SRC_CODEC_STATE_MASK) ==
             CT_SRC_CODEC_ACCESS_STATE) break;
         ct_io_delay();
@@ -220,7 +229,7 @@ static unsigned int ct_codec_access_begin(void) {
 
 static void ct_codec_access_end(unsigned int saved) {
     ct_src_wait_idle();
-    ct_write32(CT_REG_SRC_CONTROL, saved);
+    ct_write32(CT_REG_SRC_CONTROL, saved & CT_SRC_STATE_MASK);
 }
 
 static void ct_ac97_write(unsigned char reg, unsigned short val) {
@@ -306,14 +315,24 @@ static void ct_src_set_rate(unsigned short base, int rate) {
     r = (ct_src_wait_idle() & CT_SRC_STATE_MASK) | disable;
     ct_write32(CT_REG_SRC_CONTROL, r);
 
+    if (base == CT_SRC_DAC2_BASE) {
+        ct_src_write_word((unsigned short)(base + CT_SRC_TRUNCATION_OFFSET),
+                          (unsigned short)(16U << 4));
+    }
     integer_field = ct_src_read_word((unsigned short)(base + CT_SRC_INTEGER_FREQUENCY));
     ct_src_write_word((unsigned short)(base + CT_SRC_INTEGER_FREQUENCY),
                       (unsigned short)((integer_field & 0x00FFU) |
                                       ((freq >> 5) & 0xFC00U)));
+    ct_src_write_word((unsigned short)(base + CT_SRC_ACCUM_FRAC_OFFSET), 0U);
     ct_src_write_word((unsigned short)(base + CT_SRC_FRACTIONAL_FREQUENCY),
                       (unsigned short)(freq & 0x7FFFU));
 
-    r = ct_src_wait_idle() & CT_SRC_STATE_MASK & ~disable;
+    if (base == CT_SRC_DAC2_BASE) {
+        ct_src_write_word(CT_SRC_DAC2_VOL_LEFT_REG, 0x1000U);
+        ct_src_write_word(CT_SRC_DAC2_VOL_RIGHT_REG, 0x1000U);
+    }
+
+    r = ct_src_wait_idle() & CT_SRC_STATE_MASK & ~(disable | CT_SRC_DISABLE);
     ct_write32(CT_REG_SRC_CONTROL, r);
 }
 
@@ -541,6 +560,11 @@ static const char* ct4810_get_name(void) {
 static void ct4810_set_format(int rate, int bits, int stereo) {
     if (!g_ct_present || !g_ct_io_base) return;
 
+    if (rate < 3000) rate = 3000;
+    if (rate > 48000) rate = 48000;
+    g_ct_sample_rate = rate;
+    g_ct_bytes_per_sample = ((bits == 16) ? 2 : 1) * (stereo ? 2 : 1);
+
     unsigned int mode = 0;
     if (bits == 16) mode |= 0x02U;
     if (stereo) mode |= 0x01U;
@@ -561,21 +585,32 @@ static void ct4810_start_dma(void) {
 
     pdv_dma_flush(g_kapi, &g_ct_dma);
 
+    /* Ensure DAC2_ENABLE performs a clean 0 -> 1 edge after DMA registers are armed. */
+    /* Never set bit 7 (ES_BREQ): it enables internal test mode and halts DMA. */
+    unsigned int control = ct_read32(CT_REG_CONTROL);
+    control &= ~(CT_CONTROL_DAC2_ENABLE | CT_CONTROL_P2_BYPASS | CT_CONTROL_BUS_MASTER_REQ);
+    control |= g_ct_ctrl_base;
+    ct_write32(CT_REG_CONTROL, control);
+
+    unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
+    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_INTERRUPT |
+               CT_SERIAL_P2_DAC_SLOT_ENABLE);
+    sctrl |= CT_SERIAL_P2_PAUSE;
+    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+
     ct_write32(CT_REG_MEMORY_PAGE, CT_PAGE_DAC);
     ct_write32(CT_REG_DAC2_FRAME, g_ct_dma_phys);
     ct_write32(CT_REG_DAC2_SIZE, (CT_DMA_BUFFER_BYTES / 4) - 1);
     ct_write32(CT_REG_DAC2_COUNT, (CT_DMA_HALF_BYTES / 4) - 1);
+    (void)ct_read32(CT_REG_DAC2_FRAME);
 
-    unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_PAUSE | CT_SERIAL_P2_INTERRUPT |
-               CT_SERIAL_P2_DAC_SLOT_ENABLE);
-    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
-
-    /* Never set bit 7 (ES_BREQ): it enables internal test mode and halts DMA. */
-    unsigned int control = ct_read32(CT_REG_CONTROL);
-    control &= ~(CT_CONTROL_P2_BYPASS | CT_CONTROL_BUS_MASTER_REQ);
-    control |= g_ct_ctrl_base | CT_CONTROL_DAC2_ENABLE;
+    control |= CT_CONTROL_DAC2_ENABLE;
     ct_write32(CT_REG_CONTROL, control);
+    (void)ct_read32(CT_REG_CONTROL);
+
+    /* Transition P2_PAUSE 1 -> 0 while DAC2_ENABLE=1 so VMware ES1371 starts fetching. */
+    sctrl &= ~CT_SERIAL_P2_PAUSE;
+    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
 
     g_ct_dma_running = 1;
     g_ct_last_half_playing = 0;
@@ -634,6 +669,10 @@ static void ct4810_set_volume(int master_vol, int pcm_vol) {
     if (pcm_vol < 0) pcm_vol = 0;
     if (pcm_vol > 100) pcm_vol = 100;
 
+    if (master_vol == g_ct_last_master_vol && pcm_vol == g_ct_last_pcm_vol) {
+        return;
+    }
+
     unsigned char m_att = (unsigned char)((100 - master_vol) * 31 / 100);
     unsigned char p_att = (unsigned char)((100 - pcm_vol) * 31 / 100);
     unsigned short m_val =
@@ -641,9 +680,15 @@ static void ct4810_set_volume(int master_vol, int pcm_vol) {
     unsigned short p_val =
         (pcm_vol == 0) ? 0x8000U : (unsigned short)((p_att << 8) | p_att);
 
-    ct_ac97_write(CT_AC97_MASTER_VOLUME, m_val);
-    ct_ac97_write(CT_AC97_HEADPHONE_VOLUME, m_val);
-    ct_ac97_write(CT_AC97_PCM_OUT_VOLUME, p_val);
+    if (master_vol != g_ct_last_master_vol) {
+        ct_ac97_write(CT_AC97_MASTER_VOLUME, m_val);
+        ct_ac97_write(CT_AC97_HEADPHONE_VOLUME, m_val);
+        g_ct_last_master_vol = master_vol;
+    }
+    if (pcm_vol != g_ct_last_pcm_vol) {
+        ct_ac97_write(CT_AC97_PCM_OUT_VOLUME, p_val);
+        g_ct_last_pcm_vol = pcm_vol;
+    }
 }
 
 static unsigned int ct4810_get_dma_frame_pos(void) {
@@ -713,9 +758,17 @@ static int ct4810_poll_half_needed(void) {
         return -1;
     }
 
+    int bytes_per_sec = g_ct_sample_rate * g_ct_bytes_per_sample;
+    if (bytes_per_sec <= 0) bytes_per_sec = 176400;
+    int half_ticks = (CT_DMA_HALF_BYTES * 100 + bytes_per_sec / 2) / bytes_per_sec;
+    if (half_ticks < 2) half_ticks = 2;
+
     if (g_ct_last_toggle_tick == 0) g_ct_last_toggle_tick = global_tick;
-    if ((global_tick - g_ct_last_toggle_tick) >= 19) {
-        g_ct_last_toggle_tick = global_tick;
+    if ((global_tick - g_ct_last_toggle_tick) >= half_ticks) {
+        g_ct_last_toggle_tick += half_ticks;
+        if ((global_tick - g_ct_last_toggle_tick) > half_ticks * 4) {
+            g_ct_last_toggle_tick = global_tick;
+        }
         int needed = g_ct_last_half_playing;
         g_ct_last_half_playing = 1 - g_ct_last_half_playing;
         g_ct_half_filled[needed] = 0;
