@@ -34,8 +34,9 @@ static const pdv_kernel_api_t* g_kapi = 0;
 #define CT_REG_DAC2_SIZE        0x3C
 
 #define CT_CONTROL_P2_BYPASS         (1U << 30)
+#define CT_CONTROL_GPIO_OUT(val)     (((unsigned int)(val) & 0x0FU) << 16)
 #define CT_CONTROL_AC97_SYNC_RESET   (1U << 14)
-#define CT_CONTROL_BUS_MASTER_REQ    (1U << 7)
+#define CT_CONTROL_BUS_MASTER_REQ    (1U << 7) /* ES_BREQ: internal memory test mode (must keep 0) */
 #define CT_CONTROL_DAC1_ENABLE       (1U << 6)
 #define CT_CONTROL_DAC2_ENABLE       (1U << 5)
 #define CT_CONTROL_ADC_ENABLE        (1U << 4)
@@ -79,7 +80,13 @@ static const pdv_kernel_api_t* g_kapi = 0;
 #define CT_AC97_RESET                0x00
 #define CT_AC97_MASTER_VOLUME        0x02
 #define CT_AC97_HEADPHONE_VOLUME     0x04
+#define CT_AC97_MASTER_MONO_VOLUME   0x06
 #define CT_AC97_PCM_OUT_VOLUME       0x18
+#define CT_AC97_GENERAL_PURPOSE      0x20
+#define CT_AC97_POWERDOWN            0x26
+#define CT_AC97_EXT_AUDIO_ID         0x28
+#define CT_AC97_EXT_AUDIO_CTRL       0x2A
+#define CT_AC97_PCM_FRONT_DAC_RATE   0x2C
 #define CT_AC97_VENDOR_ID1           0x7C
 #define CT_AC97_VENDOR_ID2           0x7E
 
@@ -109,6 +116,7 @@ static unsigned int g_ct_last_seen_frame = 0xFFFFFFFFU;
 static int g_ct_hw_reg_moving = 0;
 static unsigned char g_ct_revision = 0;
 static int g_ct_is_ev1938 = 0;
+static unsigned int g_ct_ctrl_base = 0;
 
 static inline unsigned int ct_read32(unsigned int reg) {
     if (!g_ct_io_base) return 0;
@@ -180,23 +188,10 @@ static unsigned short ct_src_read_word(unsigned short reg) {
     if (!g_ct_io_base) return 0;
 
     saved_state = ct_src_wait_idle();
-    control = (saved_state & CT_SRC_STATE_MASK) |
-              CT_SRC_RAM_ADDRESS(reg) | CT_SRC_CODEC_ACCESS_STATE;
+    control = (saved_state & CT_SRC_STATE_MASK) | CT_SRC_RAM_ADDRESS(reg);
     ct_write32(CT_REG_SRC_CONTROL, control);
 
     sampled_state = ct_src_wait_idle();
-    if ((sampled_state & CT_SRC_CODEC_STATE_MASK) !=
-        CT_SRC_CODEC_ACCESS_STATE) {
-        for (int t = 0; t < CT_WAIT_LOOPS; t++) {
-            sampled_state = ct_read32(CT_REG_SRC_CONTROL);
-            if ((sampled_state & CT_SRC_CODEC_STATE_MASK) ==
-                CT_SRC_CODEC_ACCESS_STATE) break;
-            ct_io_delay();
-        }
-    }
-
-    control = (saved_state & CT_SRC_STATE_MASK) | CT_SRC_RAM_ADDRESS(reg);
-    ct_write32(CT_REG_SRC_CONTROL, control);
     return (unsigned short)(sampled_state & 0xFFFFU);
 }
 
@@ -241,6 +236,10 @@ static void ct_ac97_write(unsigned char reg, unsigned short val) {
             saved = ct_codec_access_begin();
             ct_write32(CT_REG_CODEC_PORT, command);
             ct_codec_access_end(saved);
+            for (int w = 0; w < CT_WAIT_LOOPS; w++) {
+                if (!(ct_read32(CT_REG_CODEC_PORT) & CT_CODEC_WRITE_BUSY)) break;
+                ct_io_delay();
+            }
             return;
         }
         ct_io_delay();
@@ -382,6 +381,7 @@ static int ct4810_init(void) {
     g_ct_dma_running = 0;
     g_ct_revision = 0;
     g_ct_is_ev1938 = 0;
+    g_ct_ctrl_base = 0;
 
     int count = g_kapi->pci_get_device_count();
     for (int index = 0; index < count; index++) {
@@ -412,6 +412,7 @@ static int ct4810_init(void) {
 
         g_ct_revision = pci->revision;
         g_ct_is_ev1938 = (device == CT_DEV_EV1938);
+        g_ct_ctrl_base = g_ct_is_ev1938 ? CT_CONTROL_GPIO_OUT(1U) : 0U;
 
         if (device == CT_DEV_CT5880) {
             g_ct_chip_name = "Creative CT4810 (CT5880) PCI";
@@ -442,7 +443,7 @@ static int ct4810_init(void) {
     g_ct_half_filled[0] = 0;
     g_ct_half_filled[1] = 0;
 
-    ct_write32(CT_REG_CONTROL, 0);
+    ct_write32(CT_REG_CONTROL, g_ct_ctrl_base);
     ct_write32(CT_REG_SERIAL_CONTROL, 0);
     ct_write32(CT_REG_LEGACY_CONTROL, 0);
 
@@ -454,10 +455,10 @@ static int ct4810_init(void) {
         g_kapi->sleep_ms(20);
     }
 
-    ct_write32(CT_REG_CONTROL, CT_CONTROL_AC97_SYNC_RESET);
+    ct_write32(CT_REG_CONTROL, g_ct_ctrl_base | CT_CONTROL_AC97_SYNC_RESET);
     (void)ct_read32(CT_REG_CONTROL);
     g_kapi->sleep_ms(2);
-    ct_write32(CT_REG_CONTROL, 0);
+    ct_write32(CT_REG_CONTROL, g_ct_ctrl_base);
 
     (void)ct_src_wait_idle();
     ct_write32(CT_REG_SRC_CONTROL, CT_SRC_DISABLE);
@@ -475,15 +476,47 @@ static int ct4810_init(void) {
     g_kapi->sleep_ms(50);
     unsigned short id1 = ct_ac97_read(CT_AC97_VENDOR_ID1);
     unsigned short id2 = ct_ac97_read(CT_AC97_VENDOR_ID2);
+    if ((id1 == 0x0000U || id1 == 0xFFFFU) && !(status & CT_STATUS_AC97_RESET)) {
+        status |= CT_STATUS_AC97_RESET;
+        ct_write32(CT_REG_STATUS, status);
+        g_kapi->sleep_ms(20);
+        ct_write32(CT_REG_CONTROL, g_ct_ctrl_base | CT_CONTROL_AC97_SYNC_RESET);
+        (void)ct_read32(CT_REG_CONTROL);
+        g_kapi->sleep_ms(2);
+        ct_write32(CT_REG_CONTROL, g_ct_ctrl_base);
+        ct_ac97_write(CT_AC97_RESET, 0x0000);
+        g_kapi->sleep_ms(50);
+        id1 = ct_ac97_read(CT_AC97_VENDOR_ID1);
+        id2 = ct_ac97_read(CT_AC97_VENDOR_ID2);
+    }
     if (id1 || id2) ct_set_codec_name(id1, id2);
+
+    ct_ac97_write(CT_AC97_POWERDOWN, 0x0000);
+    unsigned short pwr = 0;
+    int pwr_polls = (id1 != 0x0000U && id1 != 0xFFFFU) ? 20 : 3;
+    for (int i = 0; i < pwr_polls; i++) {
+        pwr = ct_ac97_read(CT_AC97_POWERDOWN);
+        if ((pwr & 0x000FU) == 0x000FU) break;
+        g_kapi->sleep_ms(5);
+    }
 
     ct_ac97_write(CT_AC97_MASTER_VOLUME, 0x0000);
     ct_ac97_write(CT_AC97_HEADPHONE_VOLUME, 0x0000);
+    ct_ac97_write(CT_AC97_MASTER_MONO_VOLUME, 0x0000);
     ct_ac97_write(CT_AC97_PCM_OUT_VOLUME, 0x0000);
+    ct_ac97_write(CT_AC97_GENERAL_PURPOSE, 0x0000);
     ct_ac97_write(0x0A, 0x8000);
     ct_ac97_write(0x0E, 0x8008);
     ct_ac97_write(0x10, 0x8808);
     ct_ac97_write(0x12, 0x8808);
+
+    /* Ensure the AC-link DAC rate stays at 48 kHz (ES1371 SRC fixed output rate). */
+    unsigned short ext_id = ct_ac97_read(CT_AC97_EXT_AUDIO_ID);
+    if (ext_id != 0xFFFFU && (ext_id & 0x0001U)) {
+        unsigned short ext_ctrl = ct_ac97_read(CT_AC97_EXT_AUDIO_CTRL);
+        ct_ac97_write(CT_AC97_EXT_AUDIO_CTRL, (unsigned short)(ext_ctrl | 0x0001U));
+        ct_ac97_write(CT_AC97_PCM_FRONT_DAC_RATE, 48000U);
+    }
 
     ct4810_set_format(44100, 16, 1);
 
@@ -492,8 +525,8 @@ static int ct4810_init(void) {
     ct_write32(CT_REG_DAC2_SIZE, (CT_DMA_BUFFER_BYTES / 4) - 1);
     ct_write32(CT_REG_DAC2_COUNT, (CT_DMA_HALF_BYTES / 4) - 1);
 
-    klog_info("[CT48] active %s io=0x%x dma=0x%x",
-              g_ct_chip_name, g_ct_io_base, g_ct_dma_phys);
+    klog_info("[CT48] active %s io=0x%x dma=0x%x codec=%04x:%04x pwr=0x%x",
+              g_ct_chip_name, g_ct_io_base, g_ct_dma_phys, id1, id2, pwr);
     return 0;
 }
 
@@ -513,9 +546,10 @@ static void ct4810_set_format(int rate, int bits, int stereo) {
     if (stereo) mode |= 0x01U;
 
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_PAUSE | CT_SERIAL_P2_DAC_SLOT_ENABLE |
-               CT_SERIAL_P2_END_MASK | CT_SERIAL_P2_START_MASK | CT_SERIAL_P2_MODE_MASK);
-    sctrl |= CT_SERIAL_P2_INTERRUPT | CT_SERIAL_P2_MODE(mode) |
+    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_PAUSE | CT_SERIAL_P2_INTERRUPT |
+               CT_SERIAL_P2_DAC_SLOT_ENABLE | CT_SERIAL_P2_END_MASK |
+               CT_SERIAL_P2_START_MASK | CT_SERIAL_P2_MODE_MASK);
+    sctrl |= CT_SERIAL_P2_MODE(mode) |
              CT_SERIAL_P2_END_INC(mode & 0x02U ? 2U : 1U) | CT_SERIAL_P2_START_INC(0);
     ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
 
@@ -525,18 +559,22 @@ static void ct4810_set_format(int rate, int bits, int stereo) {
 static void ct4810_start_dma(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_buf) return;
 
+    pdv_dma_flush(g_kapi, &g_ct_dma);
+
     ct_write32(CT_REG_MEMORY_PAGE, CT_PAGE_DAC);
     ct_write32(CT_REG_DAC2_FRAME, g_ct_dma_phys);
     ct_write32(CT_REG_DAC2_SIZE, (CT_DMA_BUFFER_BYTES / 4) - 1);
     ct_write32(CT_REG_DAC2_COUNT, (CT_DMA_HALF_BYTES / 4) - 1);
 
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_PAUSE);
+    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_PAUSE | CT_SERIAL_P2_INTERRUPT |
+               CT_SERIAL_P2_DAC_SLOT_ENABLE);
     ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
 
+    /* Never set bit 7 (ES_BREQ): it enables internal test mode and halts DMA. */
     unsigned int control = ct_read32(CT_REG_CONTROL);
-    control &= ~CT_CONTROL_P2_BYPASS;
-    control |= CT_CONTROL_BUS_MASTER_REQ | CT_CONTROL_DAC2_ENABLE;
+    control &= ~(CT_CONTROL_P2_BYPASS | CT_CONTROL_BUS_MASTER_REQ);
+    control |= g_ct_ctrl_base | CT_CONTROL_DAC2_ENABLE;
     ct_write32(CT_REG_CONTROL, control);
 
     g_ct_dma_running = 1;
@@ -551,10 +589,11 @@ static void ct4810_stop_dma(void) {
 
     unsigned int control = ct_read32(CT_REG_CONTROL);
     control &= ~(CT_CONTROL_BUS_MASTER_REQ | CT_CONTROL_DAC2_ENABLE);
+    control |= g_ct_ctrl_base;
     ct_write32(CT_REG_CONTROL, control);
 
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    ct_write32(CT_REG_SERIAL_CONTROL, sctrl | CT_SERIAL_P2_PAUSE);
+    ct_write32(CT_REG_SERIAL_CONTROL, (sctrl & ~CT_SERIAL_P2_INTERRUPT) | CT_SERIAL_P2_PAUSE);
 
     g_ct_dma_running = 0;
     g_ct_last_half_playing = -1;

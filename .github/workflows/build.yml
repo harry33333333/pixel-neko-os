@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A225a"
+          VERSION="26A225b"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -107,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes Immediate Window Close Repaint, 4GB+ FAT32/exFAT Streaming Copy & File Operations, Image Viewer JPG/JPEG + 8K (8192x8192) + Unlimited Size Support, Task Manager Ring-0/Self-Kill (removing the legacy Task Monitor demo), and Full Shutdown Beeper Output on `beta` as `v26A225a`.
+          This revision fixes ES1371/CT4810/CT5880 silent playback (clearing test-mode BREQ bit 7, disabling unhandled IRQ mode, completing AC'97 power-up/VRA 48 kHz setup, and EV1938 GPIO amplifier gating) and VMware SVGA 3D VRAM detection / high-resolution ScreenObject2 + GMR2 support, and merges `beta` into `main` as `v26A225b`.
         prerelease: true
         make_latest: false
         files: |
