@@ -108,6 +108,7 @@ jobs:
           - **Commit**: `${{ github.sha }}`
 
           This revision fixes the post-installation Limine local boot panic (`PANIC: config: Malformed macro usage`) caused by FAT LFN deletion leaving orphaned `0x41` LFN slots ahead of overwritten `limine.conf`, adds orphan-LFN scrubbing in `fs/fat.c`, and preserves existing partition labels during formatting and installation as `v26A225c`.
+        draft: false
         prerelease: true
         make_latest: false
         files: |
