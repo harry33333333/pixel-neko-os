@@ -7,6 +7,9 @@
 #define FAT_MAX_HANDLES 64
 #define FAT_MAX_FILE_SIZE 0xFFFFFFFFULL
 
+int fat_create_ext(const char* name, int is_dir);
+void fat_sync_fsinfo(fat_fs_t* vol);
+
 fat_fs_t g_volumes[MAX_VOLUMES];
 static file_handle_t g_handles[FAT_MAX_HANDLES];
 
@@ -1460,42 +1463,6 @@ int fat_create_ext(const char* name, int is_dir) {
 
 int fat_create(const char* name) { return fat_create_ext(name, 0); }
 int fat_create_dir(const char* name) { return fat_create_ext(name, 1); }
-
-struct update_cb_data {
-    const char* target_name;
-    const char* fat_name;
-    const char* fat_ext;
-    unsigned int size;
-    unsigned int first_cluster;
-    int found;
-};
-
-static int update_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsigned int sector, unsigned int offset, void* ud) {
-    (void)vol; (void)sector; (void)offset;
-    if (entry->name[0] == 0x00) return 1;
-    if (entry->name[0] == 0xE5 || (entry->attr & 0x08)) return 0;
-    
-    struct update_cb_data* data = (struct update_cb_data*)ud;
-    int matched = 0;
-    if (lfn_name && lfn_name[0] && data->target_name) {
-        int tlen = str_len(data->target_name);
-        if (str_len(lfn_name) == tlen && str_casecmp(lfn_name, data->target_name, tlen) == 0) {
-            matched = 1;
-        }
-    }
-    if (!matched && str_casecmp((const char*)entry->name, data->fat_name, 8) == 0 &&
-        str_casecmp((const char*)&entry->name[8], data->fat_ext, 3) == 0) {
-        matched = 1;
-    }
-
-    if (matched) {
-        entry->file_size = data->size;
-        set_first_cluster(vol, entry, data->first_cluster);
-        data->found = 1;
-        return 2; 
-    }
-    return 0;
-}
 
 static void (*g_fat_write_progress_cb)(unsigned int written, unsigned int total) = 0;
 
