@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A222a"
+          VERSION="26A225a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -99,7 +99,6 @@ jobs:
           - Native SDK (`sdk/pxe_app.mk`, `sdk/crt/`, `sdk/libpxe/`, `sdk/include/pxe/`) with example apps packaged under `DEMO/`:
             - `APPS\taskmgr.pxe` (System Task Manager, Ring 0, global `Ctrl+Shift+Esc` & menu bar)
             - `DEMO\hello.pxe` (Ring 3 GUI demo + crash recovery test)
-            - `DEMO\mini_taskmon.pxe` (Ring 0 privileged process & memory monitor)
           - Provisioned `APPS\` and `DEMO\` directories in Live CD and offline installer payload (`iso_root/payload/`).
 
           ### Release Assets
@@ -108,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision publishes PDV Rescan Deduplication, Flicker-Free NekoPlayer + Stutter/Pause-Freeze HDA/Audio Fixes, Integrated Task Manager (`Ctrl+Shift+Esc`), VMware SVGA VRAM/MEMORY_SIZE Fix (16-32 MB `1080p@32bpp`), and Audio `*.pdv` Spec on `beta` as `v26A222a`.
+          This revision publishes Immediate Window Close Repaint, 4GB+ FAT32/exFAT Streaming Copy & File Operations, Image Viewer JPG/JPEG + 8K (8192x8192) + Unlimited Size Support, Task Manager Ring-0/Self-Kill (removing the legacy Task Monitor demo), and Full Shutdown Beeper Output on `beta` as `v26A225a`.
         prerelease: true
         make_latest: false
         files: |

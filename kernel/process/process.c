@@ -12,7 +12,7 @@
 #include "wm.h"
 
 #define USER_HEAP_DEFAULT_BASE  0x0000000010000000ULL
-#define USER_HEAP_DEFAULT_LIMIT 0x0000000050000000ULL
+#define USER_HEAP_DEFAULT_LIMIT 0x0000000200000000ULL
 
 static process_t* g_process_list = NULL;
 static process_t* g_current_process = NULL;
@@ -591,14 +591,20 @@ void process_exit_current(int status) {
 
 int process_kill(uint32_t pid, int exit_code) {
     process_t* target = process_find_by_pid(pid);
-    if (!target || target->pid == 0 || target->is_system_daemon) {
+    if (!target || target->pid == 0) {
         return -1;
     }
     if (target == g_current_process) {
+        if (target->is_system_daemon) return -1;
         process_exit_current(exit_code);
+        scheduler_yield_kernel();
         return 0;
     }
     if (target->state == PROCESS_ZOMBIE) {
+        return -1;
+    }
+    bool was_compositor = (target->main_thread && target->main_thread->is_compositor);
+    if (target->is_system_daemon && !was_compositor) {
         return -1;
     }
 
@@ -612,6 +618,17 @@ int process_kill(uint32_t pid, int exit_code) {
         target->main_thread->wake_tick = 0;
         target->main_thread->wait_queue_id = 0;
         target->main_thread->wait_win_id = -1;
+    }
+
+    if (was_compositor) {
+        target->is_system_daemon = false;
+        process_t* new_comp = process_create_compositor();
+        if (new_comp) {
+            wm_request_desktop_redraw();
+            log_printf("[PROC] Compositor PID %u terminated and restarted as PID %u.\n",
+                       target->pid, new_comp->pid);
+            return 0;
+        }
     }
 
     log_printf("[PROC] PID %u (%s) terminated via process_kill (code %d).\n",

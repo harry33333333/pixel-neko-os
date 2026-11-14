@@ -53,7 +53,8 @@ void scheduler_add_thread(thread_t* thread) {
     if (thread->is_idle && !g_idle_thread) {
         g_idle_thread = thread;
     }
-    if (thread->is_compositor && !g_compositor_thread) {
+    if (thread->is_compositor &&
+        (!g_compositor_thread || g_compositor_thread->state == THREAD_ZOMBIE)) {
         g_compositor_thread = thread;
     }
 
@@ -224,7 +225,7 @@ void scheduler_reap_zombies(void) {
         thread_t* t = *tp;
         process_t* p = t->process;
         bool can_reap = false;
-        if (t != g_current_thread && !t->is_idle && !t->is_compositor &&
+        if (t != g_current_thread && !t->is_idle && t != g_compositor_thread &&
             t->state == THREAD_ZOMBIE && p && p->state == PROCESS_ZOMBIE) {
             if (!p->parent || p->waited ||
                 p->parent->state == PROCESS_ZOMBIE ||

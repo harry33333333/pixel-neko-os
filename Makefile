@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 222
+PIXEL_NEKO_BUILD_NUMBER ?= 225
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -142,7 +142,7 @@ PDV_TARGETS = $(patsubst %,$(PDV_OUT_DIR)/%.pdv,$(PDV_DRIVERS))
 
 # Native PXE SDK & Example Executables (*.pxe in DEMO\)
 PXE_OUT_DIR = build/pxe_examples
-PXE_EXAMPLES = $(PXE_OUT_DIR)/hello.pxe $(PXE_OUT_DIR)/mini_taskmon.pxe
+PXE_EXAMPLES = $(PXE_OUT_DIR)/hello.pxe
 PXE_SDK_STAMP = build/pxe_sdk.stamp
 PXE_SDK_DEPS = sdk/pxe_app.mk \
                include/neko_abi.h \
@@ -187,14 +187,6 @@ $(PXE_OUT_DIR)/hello.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
                           sdk/examples/hello_gui/Makefile
 	$(MAKE) -C sdk/examples/hello_gui \
 		OBJ_DIR="$(abspath $(PXE_OUT_DIR)/obj_hello)" \
-		OUT_DIR="$(abspath $(PXE_OUT_DIR))"
-
-$(PXE_OUT_DIR)/mini_taskmon.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
-                                 sdk/examples/mini_taskmon/mini_taskmon.c \
-                                 sdk/examples/mini_taskmon/mini_taskmon.pxi \
-                                 sdk/examples/mini_taskmon/Makefile
-	$(MAKE) -C sdk/examples/mini_taskmon \
-		OBJ_DIR="$(abspath $(PXE_OUT_DIR)/obj_mini_taskmon)" \
 		OUT_DIR="$(abspath $(PXE_OUT_DIR))"
 
 define BUILD_BUILTIN_APP

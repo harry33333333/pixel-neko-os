@@ -509,6 +509,27 @@ int pxe_kern_fs_open(process_t* proc, const char* path) {
     return fd;
 }
 
+int pxe_kern_fs_create(process_t* proc, const char* path) {
+    if (!proc || !path || !path[0]) return -1;
+    int fd = -1;
+    for (int i = 0; i < PROCESS_MAX_STREAMS; i++) {
+        if (!proc->streams[i]) {
+            fd = i;
+            break;
+        }
+    }
+    if (fd < 0) return -1;
+
+    vfs_stream_t* stream = (vfs_stream_t*)kmalloc(sizeof(vfs_stream_t));
+    if (!stream) return -1;
+    if (vfs_stream_create(path, stream) != 0) {
+        kfree(stream);
+        return -1;
+    }
+    proc->streams[fd] = stream;
+    return fd;
+}
+
 int pxe_kern_fs_read(process_t* proc, int fd, void* buf, size_t count) {
     if (!proc || !buf || fd < 0 || fd >= PROCESS_MAX_STREAMS) return -1;
     vfs_stream_t* stream = (vfs_stream_t*)proc->streams[fd];
@@ -516,6 +537,16 @@ int pxe_kern_fs_read(process_t* proc, int fd, void* buf, size_t count) {
     if (count == 0) return 0;
     if (count > 0x40000000U) count = 0x40000000U;
     return vfs_stream_read(stream, buf, (unsigned int)count);
+}
+
+int pxe_kern_fs_write(process_t* proc, int fd, const void* buf, size_t count) {
+    if (!proc || fd < 0 || fd >= PROCESS_MAX_STREAMS) return -1;
+    vfs_stream_t* stream = (vfs_stream_t*)proc->streams[fd];
+    if (!stream || !stream->is_open || !stream->is_write) return -1;
+    if (count == 0) return 0;
+    if (!buf) return -1;
+    if (count > 0x40000000U) count = 0x40000000U;
+    return vfs_stream_write(stream, buf, (unsigned int)count);
 }
 
 int pxe_kern_fs_seek(process_t* proc, int fd, uint64_t offset) {
@@ -850,8 +881,16 @@ static int r0_api_fs_open(const char* path) {
     return pxe_kern_fs_open(process_current(), path);
 }
 
+static int r0_api_fs_create(const char* path) {
+    return pxe_kern_fs_create(process_current(), path);
+}
+
 static int r0_api_fs_read(int fd, void* buf, size_t count) {
     return pxe_kern_fs_read(process_current(), fd, buf, count);
+}
+
+static int r0_api_fs_write(int fd, const void* buf, size_t count) {
+    return pxe_kern_fs_write(process_current(), fd, buf, count);
 }
 
 static int r0_api_fs_seek(int fd, uint64_t offset) {
@@ -1138,7 +1177,9 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .power_control        = r0_api_power_control,
     .sync_filesystems     = r0_api_sync_filesystems,
     .init_uninit_disk     = r0_api_init_uninit_disk,
-    .get_display_caps     = pxe_kern_get_display_caps
+    .get_display_caps     = pxe_kern_get_display_caps,
+    .fs_create            = r0_api_fs_create,
+    .fs_write             = r0_api_fs_write
 };
 
 /* =========================================================================

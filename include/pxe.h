@@ -28,7 +28,9 @@ int  pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const cha
 int  pxe_kern_clipboard_op(int is_set, char* buf, size_t max_len);
 
 int  pxe_kern_fs_open(process_t* proc, const char* path);
+int  pxe_kern_fs_create(process_t* proc, const char* path);
 int  pxe_kern_fs_read(process_t* proc, int fd, void* buf, size_t count);
+int  pxe_kern_fs_write(process_t* proc, int fd, const void* buf, size_t count);
 int  pxe_kern_fs_seek(process_t* proc, int fd, uint64_t offset);
 int  pxe_kern_fs_close(process_t* proc, int fd);
 int  pxe_kern_fs_stat(const char* path, pxe_dirent_t* out);

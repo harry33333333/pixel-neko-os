@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A222a"
+    BUILD_ID="26A225a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -129,7 +129,6 @@ Built-in PXE applications in APPS/:
 
 Example PXE applications in DEMO/:
 - hello.pxe (Ring 3 GUI sandboxed demo with menu & crash test)
-- mini_taskmon.pxe (Ring 0 privileged process/memory monitor)
 
 Embedded in kernel.elf:
 - Core kernel, USB stack, boot storage and filesystems

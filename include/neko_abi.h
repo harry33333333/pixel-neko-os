@@ -42,7 +42,7 @@
 #define NEKO_SYSCALL_BEEP          38
 #define NEKO_SYSCALL_WIN_GET_SURF  39
 
-/* PXE VFS Syscalls (40..51) */
+/* PXE VFS Syscalls (40..54) */
 #define NEKO_SYSCALL_FS_OPEN       40
 #define NEKO_SYSCALL_FS_READ       41
 #define NEKO_SYSCALL_FS_SEEK       42
@@ -56,6 +56,8 @@
 #define NEKO_SYSCALL_FS_RENAME     50
 #define NEKO_SYSCALL_FS_GET_DRIVES 51
 #define NEKO_SYSCALL_FS_EJECT      52
+#define NEKO_SYSCALL_FS_CREATE     53
+#define NEKO_SYSCALL_FS_WRITE      54
 
 /* PXE Audio Syscall (60) */
 #define NEKO_SYSCALL_AUDIO_CMD     60

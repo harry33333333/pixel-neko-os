@@ -198,6 +198,42 @@ static int64_t syscall_fs_read(process_t* process, trap_frame_t* frame) {
     return (int64_t)total;
 }
 
+static int64_t syscall_fs_write(process_t* process, trap_frame_t* frame) {
+    int fd = (int)frame->rdi;
+    uint64_t user_src = frame->rsi;
+    size_t count = (size_t)frame->rdx;
+    if (count == 0) return 0;
+    if (count > 8U * 1024U * 1024U) count = 8U * 1024U * 1024U;
+    if (!user_src || !process_user_range_ok(process, user_src, count, false)) {
+        return -NEKO_EFAULT;
+    }
+
+    size_t chunk_cap = (count > 65536U) ? 65536U : count;
+    uint8_t* kbuf = (uint8_t*)kmalloc(chunk_cap);
+    if (!kbuf) return -NEKO_ENOMEM;
+
+    size_t total = 0;
+    while (total < count) {
+        size_t want = count - total;
+        if (want > chunk_cap) want = chunk_cap;
+        if (!process_copy_from_user(process, kbuf, user_src + total, want)) {
+            kfree(kbuf);
+            return total > 0 ? (int64_t)total : -NEKO_EFAULT;
+        }
+        int n = pxe_kern_fs_write(process, fd, kbuf, want);
+        if (n < 0) {
+            kfree(kbuf);
+            return total > 0 ? (int64_t)total : n;
+        }
+        if (n == 0) break;
+        total += (size_t)n;
+        if ((size_t)n < want) break;
+    }
+
+    kfree(kbuf);
+    return (int64_t)total;
+}
+
 static int64_t syscall_audio_cmd(process_t* process, trap_frame_t* frame) {
     int cmd = (int)frame->rdi;
     int arg = (int)frame->rsi;
@@ -530,7 +566,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_OPEN: {
-            char kpath[128];
+            char kpath[256];
             if (!copy_user_string(process, frame->rdi, kpath, sizeof(kpath))) {
                 result = -NEKO_EFAULT;
                 break;
@@ -539,8 +575,22 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
             break;
         }
 
+        case NEKO_SYSCALL_FS_CREATE: {
+            char kpath[256];
+            if (!copy_user_string(process, frame->rdi, kpath, sizeof(kpath))) {
+                result = -NEKO_EFAULT;
+                break;
+            }
+            result = pxe_kern_fs_create(process, kpath);
+            break;
+        }
+
         case NEKO_SYSCALL_FS_READ:
             result = syscall_fs_read(process, frame);
+            break;
+
+        case NEKO_SYSCALL_FS_WRITE:
+            result = syscall_fs_write(process, frame);
             break;
 
         case NEKO_SYSCALL_FS_SEEK:
@@ -553,7 +603,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 
         case NEKO_SYSCALL_FS_STAT: {
             if (!frame->rsi) { result = -NEKO_EINVAL; break; }
-            char kpath[128];
+            char kpath[256];
             pxe_dirent_t ent;
             if (!copy_user_string(process, frame->rdi, kpath, sizeof(kpath))) {
                 result = -NEKO_EFAULT;
@@ -568,7 +618,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_READ_FILE: {
-            char kpath[128];
+            char kpath[256];
             uint64_t ubuf = frame->rsi;
             size_t max_size = (size_t)frame->rdx;
             if (!ubuf || max_size == 0) { result = -NEKO_EINVAL; break; }
@@ -603,7 +653,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_WRITE_FILE: {
-            char kpath[128];
+            char kpath[256];
             uint64_t ubuf = frame->rsi;
             size_t sz = (size_t)frame->rdx;
             if (sz > 8U * 1024U * 1024U) { result = -NEKO_EINVAL; break; }
@@ -633,7 +683,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_LISTDIR: {
-            char kpath[128];
+            char kpath[256];
             uint64_t uout = frame->rsi;
             int max_entries = (int)frame->rdx;
             if (!uout || max_entries <= 0) { result = -NEKO_EINVAL; break; }
@@ -660,7 +710,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_MKDIR: {
-            char kpath[128];
+            char kpath[256];
             if (!copy_user_string(process, frame->rdi, kpath, sizeof(kpath))) {
                 result = -NEKO_EFAULT;
                 break;
@@ -670,7 +720,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_UNLINK: {
-            char kpath[128];
+            char kpath[256];
             if (!copy_user_string(process, frame->rdi, kpath, sizeof(kpath))) {
                 result = -NEKO_EFAULT;
                 break;
@@ -680,7 +730,7 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FS_RENAME: {
-            char kold[128], knew[128];
+            char kold[256], knew[256];
             if (!copy_user_string(process, frame->rdi, kold, sizeof(kold)) ||
                 !copy_user_string(process, frame->rsi, knew, sizeof(knew))) {
                 result = -NEKO_EFAULT;

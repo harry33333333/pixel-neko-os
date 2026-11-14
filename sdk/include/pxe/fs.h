@@ -4,7 +4,9 @@
 #include "abi.h"
 
 int pxe_open(const char* path);
+int pxe_create(const char* path);
 int pxe_read(int fd, void* buf, size_t count);
+int pxe_write(int fd, const void* buf, size_t count);
 int pxe_seek(int fd, uint64_t offset);
 int pxe_close(int fd);
 

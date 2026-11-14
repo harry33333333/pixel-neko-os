@@ -123,6 +123,7 @@ typedef struct {
 
 static wm_dyn_win_t g_dyn_wins[WM_DYN_MAX];
 static volatile int g_pxe_present_dirty = 0;
+static volatile int g_pxe_layout_dirty = 0;
 
 #define WM_DIRTY_RECT_CAP 32
 typedef struct {
@@ -1286,6 +1287,12 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
+    if (g_pxe_layout_dirty) {
+        g_pxe_layout_dirty = 0;
+        redraw = 1;
+        need_mr = 1;
+    }
+
     if (g_pxe_present_dirty && !wm_is_dragging()) {
         g_pxe_present_dirty = 0;
         if (redraw || !v || power_confirm || crash_dialog_active ||
@@ -2039,6 +2046,9 @@ static void wm_pxe_destroy_slot(int slot) {
 
     memset(dw, 0, sizeof(*dw));
     if (g_pxe_capture_win == win_id) g_pxe_capture_win = -1;
+    if (active_win == win_id) active_win = top_visible_win_id();
+    g_pxe_layout_dirty = 1;
+    g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
 
     process_t* owner = process_find_by_pid(owner_pid);
@@ -2213,6 +2223,7 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
 
     wm_dyn_push_simple(dw, PXE_EV_REDRAW);
     wm_notify_banner(dw->title);
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     return dw->win_id;
 }
@@ -2241,6 +2252,7 @@ int wm_pxe_win_set_title(uint32_t owner_pid, int win_id, const char* title) {
     if (!dw->used || dw->owner_pid != owner_pid) return -1;
     strncpy(dw->title, title, sizeof(dw->title) - 1);
     dw->title[sizeof(dw->title) - 1] = '\0';
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     return 0;
 }
@@ -2260,6 +2272,7 @@ int wm_pxe_win_set_menu(uint32_t owner_pid, int win_id, const pxe_menu_bar_t* me
         }
         dw->has_menu = true;
     }
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     return 0;
 }
@@ -2381,7 +2394,10 @@ int wm_pxe_focus_pid(uint32_t pid, const char* activate_arg) {
             focused = 1;
         }
     }
-    if (focused) g_pxe_present_dirty = 1;
+    if (focused) {
+        g_pxe_layout_dirty = 1;
+        g_pxe_present_dirty = 1;
+    }
     return focused ? 0 : -1;
 }
 
@@ -2395,6 +2411,7 @@ void wm_notify_banner(const char* msg) {
     }
     opened_msg[i] = '\0';
     opened_msg_timer = 120;
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
 }
@@ -2410,6 +2427,7 @@ void wm_notify_app_crash(uint32_t pid, const char* app_name, const char* exc_nam
     crash_cr2 = cr2;
     crash_ok_pressed = 0;
     crash_dialog_active = 1;
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
     speaker_beep();
@@ -2430,6 +2448,7 @@ void wm_request_ring0_launch(const char* path, const char* arg1) {
     r0_cancel_pressed = 0;
     r0_run_pressed = 0;
     r0_confirm_active = 1;
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
     speaker_beep();
@@ -2437,6 +2456,7 @@ void wm_request_ring0_launch(const char* path, const char* arg1) {
 
 void wm_request_desktop_redraw(void) {
     uint64_t flags = wm_irq_save();
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     redraw = 1;
     wm_irq_restore(flags);
@@ -2447,6 +2467,7 @@ void wm_notify_media_changed(void) {
     for (int i = 0; i < 10; i++) {
         g_desk_icon_loaded[i] = 0;
     }
+    g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     redraw = 1;
     wm_irq_restore(flags);

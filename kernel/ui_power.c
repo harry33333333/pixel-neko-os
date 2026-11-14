@@ -26,8 +26,8 @@ void sys_reboot(void) {
 void sys_shutdown(void) {
     log_printf("[POWER] Preparing ACPI S5 shutdown...\n");
     audio_stop();
-    speaker_shutdown_chord();
     fat_flush_all();
+    speaker_shutdown_chord();
 
     acpi_shutdown();
 

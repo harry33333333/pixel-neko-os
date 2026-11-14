@@ -354,7 +354,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
         pxe_draw_text(surf, dx + 8, dy + 3, "Set Wallpaper", PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 10, dy + 26, "BMP / PNG path:", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 10, dy + 26, "BMP / PNG / JPG:", PXE_COL_BLACK);
         pxe_draw_bevel_box(surf, dx + 10, dy + 38, dw - 20, 20, 1, PXE_COL_WHITE);
         int max_c = (dw - 28) / 6;
         int start = (cp->wp_len > max_c) ? (cp->wp_len - max_c) : 0;

@@ -616,6 +616,11 @@ int vfs_mkdir(const char* path) {
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_create_dir(path) == 0 ? VFS_OK : VFS_ERR_IO;
     }
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        return exfat_mkdir(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
+                   ? VFS_OK
+                   : VFS_ERR_IO;
+    }
     return VFS_ERR_UNSUPPORTED;
 }
 
@@ -627,6 +632,11 @@ int vfs_unlink(const char* path) {
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_delete(path) == 0 ? VFS_OK : VFS_ERR_IO;
     }
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        return exfat_unlink(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
+                   ? VFS_OK
+                   : VFS_ERR_IO;
+    }
     return VFS_ERR_UNSUPPORTED;
 }
 
@@ -637,6 +647,12 @@ int vfs_rename(const char* old_path, const char* new_path) {
     if (drive->is_readonly) return VFS_ERR_READONLY;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_rename(old_path, new_path) == 0 ? VFS_OK : VFS_ERR_IO;
+    }
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        return exfat_rename(&g_exfat_filesystems[drive->letter - 'A'],
+                            old_path, new_path) == 0
+                   ? VFS_OK
+                   : VFS_ERR_IO;
     }
     return VFS_ERR_UNSUPPORTED;
 }
@@ -656,6 +672,15 @@ int vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb,
             if (free_kb) *free_kb = free;
             if (is_known) *is_known = 1;
         }
+    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        uint64_t total = 0;
+        uint64_t free = 0;
+        if (exfat_get_volume_space(&g_exfat_filesystems[drive->letter - 'A'],
+                                   &total, &free) == 0) {
+            if (total_kb) *total_kb = total;
+            if (free_kb) *free_kb = free;
+            if (is_known) *is_known = 1;
+        }
     }
     return 0;
 }
@@ -667,40 +692,66 @@ int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     vfs_dirent_t entry;
     if (vfs_find_file(path, &entry) != 0 || entry.is_dir) return -1;
     stream->size = entry.size;
-    stream->is_open = 1;
     vfs_drive_t* drive = vfs_get_drive(path[0]);
-    if (!drive) return -1;
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+    if (!drive || !drive->mounted) return -1;
+    stream->fs_kind = g_filesystem_kind[drive->letter - 'A'];
+    stream->is_write = 0;
+    if (stream->fs_kind == VFS_FS_FAT) {
         stream->fat_handle = fat_open(path);
         if (!stream->fat_handle) return -1;
-    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_ISO) {
+    } else if (stream->fs_kind == VFS_FS_EXFAT) {
+        stream->exfat_handle =
+            exfat_open(&g_exfat_filesystems[drive->letter - 'A'], path);
+        if (!stream->exfat_handle) return -1;
+    } else if (stream->fs_kind == VFS_FS_ISO) {
         stream->is_cdrom = 1;
         stream->cdrom_extent_lba = entry.first_cluster;
+    } else {
+        return -1;
     }
+    stream->is_open = 1;
+    stream->cached_sec_lba = UINT32_MAX;
+    stream->has_cached_sec = 0;
+    return 0;
+}
+
+int vfs_stream_create(const char* path, vfs_stream_t* stream) {
+    if (!path || !stream) return -1;
+    memset(stream, 0, sizeof(*stream));
+    copy_text(stream->path, sizeof(stream->path), path);
+    vfs_drive_t* drive = vfs_get_drive(path[0]);
+    if (!drive || !drive->mounted || drive->is_readonly) return -1;
+    stream->fs_kind = g_filesystem_kind[drive->letter - 'A'];
+    stream->is_write = 1;
+    if (stream->fs_kind == VFS_FS_FAT) {
+        stream->fat_handle = fat_open_write(path);
+        if (!stream->fat_handle) return -1;
+    } else if (stream->fs_kind == VFS_FS_EXFAT) {
+        stream->exfat_handle =
+            exfat_open_write(&g_exfat_filesystems[drive->letter - 'A'], path);
+        if (!stream->exfat_handle) return -1;
+    } else {
+        return -1;
+    }
+    stream->is_open = 1;
     stream->cached_sec_lba = UINT32_MAX;
     stream->has_cached_sec = 0;
     return 0;
 }
 
 int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
-    if (!stream || !stream->is_open || !buffer) return -1;
+    if (!stream || !stream->is_open || stream->is_write || !buffer) return -1;
     if (stream->current_offset >= stream->size) return 0;
     uint64_t remaining = stream->size - stream->current_offset;
     if (size > remaining) size = (unsigned int)remaining;
     vfs_drive_t* drive = vfs_get_drive(stream->path[0]);
     if (!drive) return -1;
     int result = -1;
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+    if (stream->fs_kind == VFS_FS_FAT && stream->fat_handle) {
         result = fat_read((file_handle_t*)stream->fat_handle, buffer, size);
-    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
-        exfat_file_info_t info;
-        if (exfat_find(&g_exfat_filesystems[drive->letter - 'A'],
-                       stream->path, &info) == 0) {
-            result = exfat_read_file(
-                &g_exfat_filesystems[drive->letter - 'A'], &info,
-                stream->current_offset, buffer, size);
-        }
-    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_ISO) {
+    } else if (stream->fs_kind == VFS_FS_EXFAT && stream->exfat_handle) {
+        result = exfat_read((exfat_handle_t*)stream->exfat_handle, buffer, size);
+    } else if (stream->fs_kind == VFS_FS_ISO) {
         iso_fs_t* iso = iso_for_drive(drive);
         iso_file_info_t info;
         if (iso && iso_find_file(iso, path_without_drive(stream->path),
@@ -709,24 +760,59 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
                                    buffer, size);
         }
     }
-    if (result > 0) stream->current_offset += result;
+    if (result > 0) stream->current_offset += (uint64_t)result;
+    return result;
+}
+
+int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
+                     unsigned int size) {
+    if (!stream || !stream->is_open || !stream->is_write ||
+        (!buffer && size > 0)) {
+        return -1;
+    }
+    if (size == 0) return 0;
+    int result = -1;
+    if (stream->fs_kind == VFS_FS_FAT && stream->fat_handle) {
+        result = fat_write((file_handle_t*)stream->fat_handle, buffer, size);
+    } else if (stream->fs_kind == VFS_FS_EXFAT && stream->exfat_handle) {
+        result =
+            exfat_write((exfat_handle_t*)stream->exfat_handle, buffer, size);
+    }
+    if (result > 0) {
+        stream->current_offset += (uint64_t)result;
+        if (stream->current_offset > stream->size) {
+            stream->size = stream->current_offset;
+        }
+    }
     return result;
 }
 
 int vfs_stream_seek(vfs_stream_t* stream, uint64_t offset) {
-    if (!stream || !stream->is_open) return -1;
+    if (!stream || !stream->is_open || stream->is_write) return -1;
     if (offset > stream->size) offset = stream->size;
-    stream->current_offset = offset;
     if (stream->fat_handle) {
-        fat_seek((file_handle_t*)stream->fat_handle, (unsigned int)offset);
+        if (fat_seek((file_handle_t*)stream->fat_handle, offset) != 0) {
+            return -1;
+        }
+    } else if (stream->exfat_handle) {
+        if (exfat_seek((exfat_handle_t*)stream->exfat_handle, offset) != 0) {
+            return -1;
+        }
     }
+    stream->current_offset = offset;
     return 0;
 }
 
 void vfs_stream_close(vfs_stream_t* stream) {
     if (!stream) return;
-    if (stream->fat_handle) fat_close((file_handle_t*)stream->fat_handle);
-    stream->fat_handle = NULL;
+    if (stream->fat_handle) {
+        fat_close((file_handle_t*)stream->fat_handle);
+        stream->fat_handle = NULL;
+    }
+    if (stream->exfat_handle) {
+        exfat_close((exfat_handle_t*)stream->exfat_handle);
+        stream->exfat_handle = NULL;
+    }
     stream->is_open = 0;
 }
 

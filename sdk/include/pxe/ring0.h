@@ -182,6 +182,8 @@ typedef struct pxe_ring0_api {
     int      (*sync_filesystems)(void);
     int      (*init_uninit_disk)(void);
     int      (*get_display_caps)(pxe_display_caps_t* out);
+    int      (*fs_create)(const char* path);
+    int      (*fs_write)(int fd, const void* buf, size_t count);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */

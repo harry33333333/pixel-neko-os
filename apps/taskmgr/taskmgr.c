@@ -65,10 +65,9 @@ static const char* sort_label(int sort_mode) {
 }
 
 static int is_proc_killable(const taskmgr_state_t* st, const pxe_r0_proc_info_t* p) {
+    (void)st;
     if (!p) return 0;
-    if (p->pid == 0) return 0;
-    if (p->pid == (uint32_t)st->self_pid) return 0;
-    if (strcmp(p->name, "kwm_compositor") == 0) return 0;
+    if (p->pid == 0) return 0; /* System Idle Process cannot be terminated */
     if (p->state == PXE_PROC_ZOMBIE) return 0;
     return 1;
 }
@@ -435,6 +434,17 @@ static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
         return;
     }
     uint32_t target_pid = sel->pid;
+    if (target_pid == (uint32_t)st->self_pid) {
+        int wid = st->win_id;
+        uint8_t* bp = st->back_pixels;
+        st->back_pixels = NULL;
+        pxe_win_destroy(wid);
+        if (bp) free(bp);
+        free(st);
+        pxe_r0_kill_process(target_pid, 0);
+        pxe_exit(0);
+        return;
+    }
     if (pxe_r0_kill_process(target_pid, -1) == 0) {
         snprintf(st->status_msg, sizeof(st->status_msg), "Ended PID %u", (unsigned)target_pid);
         refresh_data(st, surf);

@@ -368,8 +368,16 @@ int pxe_open(const char* path) {
     return (int)_pxe_syscall1(NEKO_SYSCALL_FS_OPEN, (long)path);
 }
 
+int pxe_create(const char* path) {
+    return (int)_pxe_syscall1(NEKO_SYSCALL_FS_CREATE, (long)path);
+}
+
 int pxe_read(int fd, void* buf, size_t count) {
     return (int)_pxe_syscall3(NEKO_SYSCALL_FS_READ, (long)fd, (long)buf, (long)count);
+}
+
+int pxe_write(int fd, const void* buf, size_t count) {
+    return (int)_pxe_syscall3(NEKO_SYSCALL_FS_WRITE, (long)fd, (long)buf, (long)count);
 }
 
 int pxe_seek(int fd, uint64_t offset) {
@@ -398,40 +406,64 @@ int pxe_copy_file(const char* src_path, const char* dst_path,
     pxe_dirent_t st;
     if (pxe_stat(src_path, &st) != 0 || st.is_dir) return -1;
 
-    if (st.size == 0) {
-        int wr = pxe_write_file(dst_path, "", 0);
-        if (wr >= 0 && progress_cb) progress_cb(0, 0);
-        return (wr >= 0) ? 0 : -1;
+    int src_fd = pxe_open(src_path);
+    if (src_fd < 0) return -1;
+
+    int dst_fd = pxe_create(dst_path);
+    if (dst_fd < 0) {
+        pxe_close(src_fd);
+        return -1;
     }
 
-    int fd = pxe_open(src_path);
-    if (fd < 0) return -1;
+    if (st.size == 0) {
+        pxe_close(dst_fd);
+        pxe_close(src_fd);
+        if (progress_cb) progress_cb(0, 0);
+        return 0;
+    }
 
-    uint8_t* buf = (uint8_t*)malloc((size_t)st.size);
+    const size_t chunk_sz = 65536u;
+    uint8_t* buf = (uint8_t*)malloc(chunk_sz);
     if (!buf) {
-        pxe_close(fd);
+        pxe_close(dst_fd);
+        pxe_close(src_fd);
+        pxe_unlink(dst_path);
         return -1;
     }
 
     uint64_t copied = 0;
+    int ok = 1;
     while (copied < st.size) {
-        size_t chunk = (size_t)(st.size - copied);
-        if (chunk > 32768u) chunk = 32768u;
-        int n = pxe_read(fd, buf + copied, chunk);
-        if (n <= 0) break;
+        uint64_t rem = st.size - copied;
+        size_t want = (rem > (uint64_t)chunk_sz) ? chunk_sz : (size_t)rem;
+        int n = pxe_read(src_fd, buf, want);
+        if (n <= 0) {
+            ok = 0;
+            break;
+        }
+        int off = 0;
+        while (off < n) {
+            int w = pxe_write(dst_fd, buf + off, (size_t)(n - off));
+            if (w <= 0) {
+                ok = 0;
+                break;
+            }
+            off += w;
+        }
+        if (!ok) break;
         copied += (uint64_t)n;
         if (progress_cb) progress_cb(copied, st.size);
     }
-    pxe_close(fd);
 
-    if (copied != st.size) {
-        free(buf);
+    free(buf);
+    pxe_close(dst_fd);
+    pxe_close(src_fd);
+
+    if (!ok || copied != st.size) {
+        pxe_unlink(dst_path);
         return -1;
     }
-
-    int wr = pxe_write_file(dst_path, buf, (size_t)st.size);
-    free(buf);
-    return (wr >= 0) ? 0 : -1;
+    return 0;
 }
 
 int pxe_listdir(const char* path, pxe_dirent_t* out_entries, int max_entries) {

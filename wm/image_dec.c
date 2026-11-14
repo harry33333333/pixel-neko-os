@@ -667,10 +667,879 @@ static int decode_png(const unsigned char* data, unsigned int size, image_t* out
 }
 
 // -------------------------------------------------------------
+// JPEG Decoder Implementation (SOF0 / SOF1 / SOF2, Integer Only)
+// -------------------------------------------------------------
+static const unsigned char k_kjpg_zz[64] = {
+     0,  1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63
+};
+
+typedef struct {
+    int            valid;
+    int32_t        maxcode[17];
+    int32_t        valoffset[17];
+    unsigned char  vals[256];
+    uint16_t       lut[256];
+} kjpg_huff_t;
+
+typedef struct {
+    unsigned char  id;
+    unsigned char  h;
+    unsigned char  v;
+    unsigned char  qsel;
+    int            bw;
+    int            bh;
+    int16_t*       coeffs;
+    unsigned int   coeff_pages;
+} kjpg_comp_t;
+
+typedef struct {
+    const unsigned char* src;
+    size_t               pos;
+    size_t               end;
+    uint64_t             bitbuf;
+    int                  bitcnt;
+    unsigned char        marker;
+} kjpg_br_t;
+
+typedef struct {
+    uint16_t      qtab[4][64];
+    int           qvalid[4];
+    kjpg_huff_t   dc_huff[4];
+    kjpg_huff_t   ac_huff[4];
+    kjpg_comp_t   comp[4];
+    int           width;
+    int           height;
+    int           ncomp;
+    int           max_h;
+    int           max_v;
+    int           mcu_cols;
+    int           mcu_rows;
+    int           progressive;
+    int           dri;
+    int           has_jfif;
+    int           has_adobe;
+    unsigned char adobe_xform;
+    unsigned char mcu_px[4][16][64];
+} kjpg_ctx_t;
+
+static uint16_t kjpg_be16(const unsigned char* p) {
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+
+static int kjpg_eq_tag(const unsigned char* p, const char* tag, int n) {
+    for (int i = 0; i < n; i++) {
+        if (p[i] != (unsigned char)tag[i]) return 0;
+    }
+    return 1;
+}
+
+static unsigned char kjpg_clamp8(int v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (unsigned char)v;
+}
+
+static int kjpg_build_huff(kjpg_huff_t* h, const unsigned char bits[16],
+                           const unsigned char* vals, int nvals) {
+    img_memset(h, 0, sizeof(*h));
+    if (nvals > 256) return -1;
+    img_memcpy(h->vals, vals, (unsigned int)nvals);
+    int code = 0;
+    int vi = 0;
+    for (int len = 1; len <= 16; len++) {
+        int cnt = bits[len - 1];
+        if (cnt == 0) {
+            h->maxcode[len] = -1;
+        } else {
+            if (vi + cnt > nvals) return -1;
+            h->valoffset[len] = vi - code;
+            for (int k = 0; k < cnt; k++) {
+                unsigned char sym = vals[vi++];
+                if (len <= 8) {
+                    int shift = 8 - len;
+                    int base = code << shift;
+                    int span = 1 << shift;
+                    for (int m = 0; m < span; m++) {
+                        if (base + m < 256) {
+                            h->lut[base + m] = (uint16_t)(0x8000u | ((uint16_t)len << 8) | sym);
+                        }
+                    }
+                }
+                code++;
+            }
+            h->maxcode[len] = code - 1;
+        }
+        code <<= 1;
+    }
+    h->valid = 1;
+    return 0;
+}
+
+static void kjpg_fill_bits(kjpg_br_t* br) {
+    while (br->bitcnt <= 32) {
+        if (br->marker || br->pos >= br->end) break;
+        unsigned char b = br->src[br->pos++];
+        if (b == 0xFFu) {
+            while (br->pos < br->end && br->src[br->pos] == 0xFFu) br->pos++;
+            if (br->pos >= br->end) {
+                br->marker = 0xD9u;
+                break;
+            }
+            unsigned char b2 = br->src[br->pos++];
+            if (b2 != 0x00u) {
+                br->marker = b2;
+                break;
+            }
+        }
+        br->bitbuf = (br->bitbuf << 8) | (uint64_t)b;
+        br->bitcnt += 8;
+    }
+}
+
+static int kjpg_get_bit(kjpg_br_t* br) {
+    if (br->bitcnt == 0) {
+        kjpg_fill_bits(br);
+        if (br->bitcnt == 0) return -1;
+    }
+    br->bitcnt--;
+    return (int)((br->bitbuf >> br->bitcnt) & 1ULL);
+}
+
+static int kjpg_get_bits(kjpg_br_t* br, int n) {
+    if (n == 0) return 0;
+    if (br->bitcnt < n) kjpg_fill_bits(br);
+    if (br->bitcnt < n) return -1;
+    br->bitcnt -= n;
+    return (int)((br->bitbuf >> br->bitcnt) & ((1ULL << n) - 1ULL));
+}
+
+static int kjpg_huff_decode(kjpg_br_t* br, const kjpg_huff_t* h) {
+    if (br->bitcnt < 16) kjpg_fill_bits(br);
+    if (br->bitcnt >= 8) {
+        unsigned char idx8 = (unsigned char)(br->bitbuf >> (br->bitcnt - 8));
+        uint16_t e = h->lut[idx8];
+        if (e & 0x8000u) {
+            br->bitcnt -= (int)((e >> 8) & 0x0Fu);
+            return (int)(e & 0xFFu);
+        }
+    }
+    int code = 0;
+    for (int len = 1; len <= 16; len++) {
+        int b = kjpg_get_bit(br);
+        if (b < 0) return -1;
+        code = (code << 1) | b;
+        if (code <= h->maxcode[len]) {
+            int idx = code + h->valoffset[len];
+            if (idx < 0 || idx >= 256) return -1;
+            return (int)h->vals[idx];
+        }
+    }
+    return -1;
+}
+
+static int kjpg_extend(int v, int s) {
+    if (s == 0) return 0;
+    int vt = 1 << (s - 1);
+    if (v < vt) return v + ((-1) << s) + 1;
+    return v;
+}
+
+static void kjpg_idct_8x8(const int32_t coeff[64], unsigned char out[64]) {
+    int64_t ws[64];
+    for (int y = 0; y < 8; y++) {
+        const int32_t* b = coeff + y * 8;
+        int64_t e0 = 1448LL * ((int64_t)b[0] + (int64_t)b[4]);
+        int64_t e1 = 1448LL * ((int64_t)b[0] - (int64_t)b[4]);
+        int64_t e2 = 1892LL * (int64_t)b[2] + 784LL * (int64_t)b[6];
+        int64_t e3 = 784LL * (int64_t)b[2] - 1892LL * (int64_t)b[6];
+        int64_t o0 = 2009LL * b[1] + 1703LL * b[3] + 1138LL * b[5] + 400LL * b[7];
+        int64_t o1 = 1703LL * b[1] - 400LL * b[3] - 2009LL * b[5] - 1138LL * b[7];
+        int64_t o2 = 1138LL * b[1] - 2009LL * b[3] + 400LL * b[5] + 1703LL * b[7];
+        int64_t o3 = 400LL * b[1] - 1138LL * b[3] + 1703LL * b[5] - 2009LL * b[7];
+        int64_t es[4] = { e0 + e2, e1 + e3, e1 - e3, e0 - e2 };
+        int64_t os[4] = { o0, o1, o2, o3 };
+        for (int x = 0; x < 4; x++) {
+            ws[y * 8 + x]     = (es[x] + os[x] + 128LL) >> 8;
+            ws[y * 8 + 7 - x] = (es[x] - os[x] + 128LL) >> 8;
+        }
+    }
+    for (int x = 0; x < 8; x++) {
+        int64_t b0 = ws[0 * 8 + x], b1 = ws[1 * 8 + x];
+        int64_t b2 = ws[2 * 8 + x], b3 = ws[3 * 8 + x];
+        int64_t b4 = ws[4 * 8 + x], b5 = ws[5 * 8 + x];
+        int64_t b6 = ws[6 * 8 + x], b7 = ws[7 * 8 + x];
+        int64_t e0 = 1448LL * (b0 + b4);
+        int64_t e1 = 1448LL * (b0 - b4);
+        int64_t e2 = 1892LL * b2 + 784LL * b6;
+        int64_t e3 = 784LL * b2 - 1892LL * b6;
+        int64_t o0 = 2009LL * b1 + 1703LL * b3 + 1138LL * b5 + 400LL * b7;
+        int64_t o1 = 1703LL * b1 - 400LL * b3 - 2009LL * b5 - 1138LL * b7;
+        int64_t o2 = 1138LL * b1 - 2009LL * b3 + 400LL * b5 + 1703LL * b7;
+        int64_t o3 = 400LL * b1 - 1138LL * b3 + 1703LL * b5 - 2009LL * b7;
+        int64_t es[4] = { e0 + e2, e1 + e3, e1 - e3, e0 - e2 };
+        int64_t os[4] = { o0, o1, o2, o3 };
+        for (int y = 0; y < 4; y++) {
+            int p0 = (int)((es[y] + os[y] + 32768LL) >> 16) + 128;
+            int p1 = (int)((es[y] - os[y] + 32768LL) >> 16) + 128;
+            out[y * 8 + x]       = kjpg_clamp8(p0);
+            out[(7 - y) * 8 + x] = kjpg_clamp8(p1);
+        }
+    }
+}
+
+static void kjpg_check_restart(kjpg_br_t* br, int dri, int* mcus_left,
+                               int dc_pred[4], int* eobrun) {
+    if (dri <= 0) return;
+    if (--(*mcus_left) > 0) return;
+    br->bitcnt = 0;
+    if (br->marker >= 0xD0u && br->marker <= 0xD7u) {
+        br->marker = 0;
+    } else if (br->marker == 0) {
+        while (br->pos < br->end) {
+            if (br->src[br->pos] == 0xFFu && br->pos + 1 < br->end) {
+                unsigned char nb = br->src[br->pos + 1];
+                if (nb >= 0xD0u && nb <= 0xD7u) {
+                    br->pos += 2;
+                    break;
+                } else if (nb != 0x00u && nb != 0xFFu) {
+                    break;
+                }
+            }
+            br->pos++;
+        }
+    }
+    dc_pred[0] = dc_pred[1] = dc_pred[2] = dc_pred[3] = 0;
+    *eobrun = 0;
+    *mcus_left = dri;
+}
+
+static int kjpg_decode_block_direct(kjpg_br_t* br, const kjpg_huff_t* dc_h,
+                                    const kjpg_huff_t* ac_h, const uint16_t qt[64],
+                                    int* dc_pred, int32_t out32[64]) {
+    img_memset(out32, 0, sizeof(int32_t) * 64u);
+    int s = kjpg_huff_decode(br, dc_h);
+    if (s < 0 || s > 15) return -1;
+    int v = (s > 0) ? kjpg_get_bits(br, s) : 0;
+    if (v < 0) return -1;
+    *dc_pred += kjpg_extend(v, s);
+    out32[0] = (int32_t)(*dc_pred) * (int32_t)qt[0];
+
+    int k = 1;
+    while (k < 64) {
+        int rs = kjpg_huff_decode(br, ac_h);
+        if (rs < 0) return -1;
+        int r = rs >> 4;
+        int sz = rs & 0x0F;
+        if (sz == 0) {
+            if (r == 15) k += 16;
+            else break;
+        } else {
+            k += r;
+            if (k >= 64) return -1;
+            int ac = kjpg_get_bits(br, sz);
+            if (ac < 0) return -1;
+            out32[k_kjpg_zz[k]] = (int32_t)kjpg_extend(ac, sz) * (int32_t)qt[k];
+            k++;
+        }
+    }
+    return 0;
+}
+
+static int kjpg_decode_scan_block(kjpg_ctx_t* j, kjpg_br_t* br, int16_t* blk,
+                                  int td, int ta, int* dc_pred, int* eobrun,
+                                  int prog, int ss, int se, int ah, int al) {
+    if (!prog) {
+        int s = kjpg_huff_decode(br, &j->dc_huff[td]);
+        if (s < 0 || s > 15) return -1;
+        int v = (s > 0) ? kjpg_get_bits(br, s) : 0;
+        if (v < 0) return -1;
+        *dc_pred += kjpg_extend(v, s);
+        blk[0] = (int16_t)(*dc_pred);
+        int k = 1;
+        while (k < 64) {
+            int rs = kjpg_huff_decode(br, &j->ac_huff[ta]);
+            if (rs < 0) return -1;
+            int r = rs >> 4;
+            int sz = rs & 0x0F;
+            if (sz == 0) {
+                if (r == 15) k += 16;
+                else break;
+            } else {
+                k += r;
+                if (k >= 64) return -1;
+                int ac = kjpg_get_bits(br, sz);
+                if (ac < 0) return -1;
+                blk[k] = (int16_t)kjpg_extend(ac, sz);
+                k++;
+            }
+        }
+        return 0;
+    }
+
+    if (ss == 0 && se == 0) {
+        if (ah == 0) {
+            int s = kjpg_huff_decode(br, &j->dc_huff[td]);
+            if (s < 0 || s > 15) return -1;
+            int v = (s > 0) ? kjpg_get_bits(br, s) : 0;
+            if (v < 0) return -1;
+            *dc_pred += kjpg_extend(v, s);
+            blk[0] = (int16_t)(*dc_pred << al);
+        } else {
+            int bit = kjpg_get_bit(br);
+            if (bit < 0) return -1;
+            if (bit) blk[0] = (int16_t)(blk[0] | (1 << al));
+        }
+        return 0;
+    }
+
+    if (ah == 0) {
+        if (*eobrun > 0) {
+            (*eobrun)--;
+            return 0;
+        }
+        int k = ss;
+        while (k <= se) {
+            int rs = kjpg_huff_decode(br, &j->ac_huff[ta]);
+            if (rs < 0) return -1;
+            int r = rs >> 4;
+            int sz = rs & 0x0F;
+            if (sz == 0) {
+                if (r == 15) {
+                    k += 16;
+                } else {
+                    int ext = (r > 0) ? kjpg_get_bits(br, r) : 0;
+                    if (ext < 0) return -1;
+                    *eobrun = (1 << r) + ext - 1;
+                    break;
+                }
+            } else {
+                k += r;
+                if (k > se) return -1;
+                int ac = kjpg_get_bits(br, sz);
+                if (ac < 0) return -1;
+                blk[k] = (int16_t)(kjpg_extend(ac, sz) << al);
+                k++;
+            }
+        }
+        return 0;
+    }
+
+    int p1 = 1 << al;
+    int m1 = -p1;
+    int k = ss;
+    if (*eobrun == 0) {
+        while (k <= se) {
+            int rs = kjpg_huff_decode(br, &j->ac_huff[ta]);
+            if (rs < 0) return -1;
+            int r = rs >> 4;
+            int sz = rs & 0x0F;
+            int val = 0;
+            if (sz == 0) {
+                if (r < 15) {
+                    int ext = (r > 0) ? kjpg_get_bits(br, r) : 0;
+                    if (ext < 0) return -1;
+                    *eobrun = (1 << r) + ext;
+                    break;
+                }
+            } else {
+                if (sz != 1) return -1;
+                int sbit = kjpg_get_bit(br);
+                if (sbit < 0) return -1;
+                val = sbit ? p1 : m1;
+            }
+            while (k <= se) {
+                if (blk[k] != 0) {
+                    int rbit = kjpg_get_bit(br);
+                    if (rbit < 0) return -1;
+                    int mag = (blk[k] < 0) ? -blk[k] : blk[k];
+                    if (rbit && (mag & p1) == 0) {
+                        blk[k] = (int16_t)(blk[k] >= 0 ? blk[k] + p1 : blk[k] + m1);
+                    }
+                } else {
+                    if (r == 0) break;
+                    r--;
+                }
+                k++;
+            }
+            if (sz != 0 && k <= se) blk[k] = (int16_t)val;
+            k++;
+        }
+    }
+    if (*eobrun > 0) {
+        while (k <= se) {
+            if (blk[k] != 0) {
+                int rbit = kjpg_get_bit(br);
+                if (rbit < 0) return -1;
+                int mag = (blk[k] < 0) ? -blk[k] : blk[k];
+                if (rbit && (mag & p1) == 0) {
+                    blk[k] = (int16_t)(blk[k] >= 0 ? blk[k] + p1 : blk[k] + m1);
+                }
+            }
+            k++;
+        }
+        (*eobrun)--;
+    }
+    return 0;
+}
+
+static void kjpg_write_mcu(const kjpg_ctx_t* j, unsigned int* pix, int mx, int my) {
+    int mcu_w = j->max_h * 8;
+    int mcu_h = j->max_v * 8;
+    int x0 = mx * mcu_w;
+    int y0 = my * mcu_h;
+    int x1 = x0 + mcu_w; if (x1 > j->width)  x1 = j->width;
+    int y1 = y0 + mcu_h; if (y1 > j->height) y1 = j->height;
+
+    int is_rgb = (j->ncomp == 3) &&
+                 ((j->has_adobe && j->adobe_xform == 0) ||
+                  (!j->has_jfif && j->comp[0].id == 'R' &&
+                   j->comp[1].id == 'G' && j->comp[2].id == 'B'));
+
+    for (int y = y0; y < y1; y++) {
+        int ly = y - y0;
+        unsigned int* dst = pix + (size_t)y * (size_t)j->width;
+        for (int x = x0; x < x1; x++) {
+            int lx = x - x0;
+            unsigned char s[4] = { 0, 128, 128, 255 };
+            for (int c = 0; c < j->ncomp; c++) {
+                int cx = (lx * j->comp[c].h) / j->max_h;
+                int cy = (ly * j->comp[c].v) / j->max_v;
+                int blk_idx = (cy >> 3) * j->comp[c].h + (cx >> 3);
+                s[c] = j->mcu_px[c][blk_idx][(cy & 7) * 8 + (cx & 7)];
+            }
+            if (j->ncomp == 1) {
+                unsigned char v = s[0];
+                dst[x] = 0xFF000000u | ((unsigned int)v << 16) | ((unsigned int)v << 8) | v;
+            } else if (j->ncomp == 3) {
+                if (is_rgb) {
+                    dst[x] = 0xFF000000u | ((unsigned int)s[0] << 16) |
+                             ((unsigned int)s[1] << 8) | s[2];
+                } else {
+                    int yv = (int)s[0];
+                    int cb = (int)s[1] - 128;
+                    int cr = (int)s[2] - 128;
+                    unsigned char r = kjpg_clamp8(yv + ((91881 * cr + 32768) >> 16));
+                    unsigned char g = kjpg_clamp8(yv - ((22554 * cb + 46802 * cr + 32768) >> 16));
+                    unsigned char b = kjpg_clamp8(yv + ((116130 * cb + 32768) >> 16));
+                    dst[x] = 0xFF000000u | ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
+                }
+            } else {
+                int c0 = s[0], c1 = s[1], c2 = s[2], k = s[3];
+                if (j->has_adobe && j->adobe_xform == 2) {
+                    int yv = c0, cb = c1 - 128, cr = c2 - 128;
+                    c0 = kjpg_clamp8(yv + ((91881 * cr + 32768) >> 16));
+                    c1 = kjpg_clamp8(yv - ((22554 * cb + 46802 * cr + 32768) >> 16));
+                    c2 = kjpg_clamp8(yv + ((116130 * cb + 32768) >> 16));
+                }
+                unsigned char r = (unsigned char)((c0 * k) / 255);
+                unsigned char g = (unsigned char)((c1 * k) / 255);
+                unsigned char b = (unsigned char)((c2 * k) / 255);
+                dst[x] = 0xFF000000u | ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
+            }
+        }
+    }
+}
+
+static int decode_jpg(const unsigned char* data, unsigned int size, image_t* out_img,
+                      char* err_msg, int err_msg_len) {
+    if (size < 4 || data[0] != 0xFFu || data[1] != 0xD8u) {
+        my_str_copy(err_msg, "Not a valid JPEG image", err_msg_len);
+        return -1;
+    }
+
+    unsigned int ctx_pages = (unsigned int)((sizeof(kjpg_ctx_t) + 4095u) / 4096u);
+    kjpg_ctx_t* j = (kjpg_ctx_t*)pmm_alloc_pages(ctx_pages);
+    if (!j) {
+        my_str_copy(err_msg, "Out of Memory for JPEG context", err_msg_len);
+        return -2;
+    }
+    img_memset(j, 0, ctx_pages * 4096u);
+
+    unsigned int* pix = 0;
+    unsigned int out_pages = 0;
+    int rendered_direct = 0;
+    size_t pos = 2;
+    unsigned char next_m = 0;
+    int rc = 0;
+
+    while (1) {
+        unsigned char m = 0;
+        if (next_m) {
+            m = next_m;
+            next_m = 0;
+        } else {
+            while (pos < (size_t)size && data[pos] != 0xFFu) pos++;
+            while (pos < (size_t)size && data[pos] == 0xFFu) pos++;
+            if (pos >= (size_t)size) break;
+            m = data[pos++];
+            if (m == 0x00u || (m >= 0xD0u && m <= 0xD7u) || m == 0xD8u || m == 0x01u) continue;
+        }
+
+        if (m == 0xD9u) break;
+        if (pos + 2 > (size_t)size) break;
+        uint16_t seg_len = kjpg_be16(data + pos);
+        if (seg_len < 2 || pos + seg_len > (size_t)size) {
+            my_str_copy(err_msg, "Corrupt JPEG segment", err_msg_len);
+            rc = -1;
+            break;
+        }
+        const unsigned char* seg = data + pos + 2;
+        size_t slen = (size_t)(seg_len - 2u);
+        pos += seg_len;
+
+        if (m == 0xDBu) {
+            size_t i = 0;
+            while (i < slen) {
+                unsigned char pqtq = seg[i++];
+                int pq = pqtq >> 4;
+                int tq = pqtq & 0x0F;
+                if (tq >= 4 || (pq != 0 && pq != 1)) { rc = -1; break; }
+                size_t need = pq ? 128u : 64u;
+                if (i + need > slen) { rc = -1; break; }
+                for (int k = 0; k < 64; k++) {
+                    j->qtab[tq][k] = pq ? kjpg_be16(seg + i + k * 2) : (uint16_t)seg[i + k];
+                }
+                i += need;
+                j->qvalid[tq] = 1;
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Invalid JPEG DQT", err_msg_len); break; }
+        } else if (m == 0xC0u || m == 0xC1u || m == 0xC2u) {
+            if (slen < 6 || seg[0] != 8) {
+                my_str_copy(err_msg, "Unsupported JPEG frame format", err_msg_len);
+                rc = -1;
+                break;
+            }
+            j->progressive = (m == 0xC2u);
+            j->height = (int)kjpg_be16(seg + 1);
+            j->width  = (int)kjpg_be16(seg + 3);
+            j->ncomp  = (int)seg[5];
+            if (j->width <= 0 || j->height <= 0 || j->width > 8192 || j->height > 8192 ||
+                (j->ncomp != 1 && j->ncomp != 3 && j->ncomp != 4) ||
+                slen < (size_t)(6 + 3 * j->ncomp)) {
+                my_str_copy(err_msg, "JPEG dimensions/components unsupported", err_msg_len);
+                rc = -1;
+                break;
+            }
+            j->max_h = 1;
+            j->max_v = 1;
+            for (int c = 0; c < j->ncomp; c++) {
+                j->comp[c].id   = seg[6 + 3 * c];
+                unsigned char hv = seg[7 + 3 * c];
+                j->comp[c].h    = (unsigned char)(hv >> 4);
+                j->comp[c].v    = (unsigned char)(hv & 0x0F);
+                j->comp[c].qsel = (unsigned char)(seg[8 + 3 * c] & 0x03);
+                if (j->comp[c].h < 1 || j->comp[c].h > 4 ||
+                    j->comp[c].v < 1 || j->comp[c].v > 4) {
+                    rc = -1;
+                    break;
+                }
+                if (j->comp[c].h > j->max_h) j->max_h = j->comp[c].h;
+                if (j->comp[c].v > j->max_v) j->max_v = j->comp[c].v;
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Invalid JPEG sampling", err_msg_len); break; }
+            int mcu_w = j->max_h * 8;
+            int mcu_h = j->max_v * 8;
+            j->mcu_cols = (j->width  + mcu_w - 1) / mcu_w;
+            j->mcu_rows = (j->height + mcu_h - 1) / mcu_h;
+            for (int c = 0; c < j->ncomp; c++) {
+                j->comp[c].bw = j->mcu_cols * j->comp[c].h;
+                j->comp[c].bh = j->mcu_rows * j->comp[c].v;
+                if (j->progressive) {
+                    size_t bytes = (size_t)j->comp[c].bw * (size_t)j->comp[c].bh * 64u * sizeof(int16_t);
+                    unsigned int pg = (unsigned int)((bytes + 4095u) / 4096u);
+                    if (pg > pmm_get_free_pages()) { rc = -2; break; }
+                    j->comp[c].coeffs = (int16_t*)pmm_alloc_pages(pg);
+                    if (!j->comp[c].coeffs) { rc = -2; break; }
+                    j->comp[c].coeff_pages = pg;
+                    img_memset(j->comp[c].coeffs, 0, pg * 4096u);
+                }
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Out of Memory decoding JPEG", err_msg_len); break; }
+        } else if (m == 0xC4u) {
+            size_t i = 0;
+            while (i < slen) {
+                if (i + 17 > slen) { rc = -1; break; }
+                unsigned char tcth = seg[i++];
+                int tc = tcth >> 4;
+                int th = tcth & 0x0F;
+                if (tc > 1 || th >= 4) { rc = -1; break; }
+                const unsigned char* bits = seg + i;
+                i += 16;
+                int nvals = 0;
+                for (int b = 0; b < 16; b++) nvals += bits[b];
+                if (i + (size_t)nvals > slen) { rc = -1; break; }
+                kjpg_huff_t* tbl = tc ? &j->ac_huff[th] : &j->dc_huff[th];
+                if (kjpg_build_huff(tbl, bits, seg + i, nvals) != 0) { rc = -1; break; }
+                i += (size_t)nvals;
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Invalid JPEG DHT", err_msg_len); break; }
+        } else if (m == 0xDDu) {
+            if (slen >= 2) j->dri = (int)kjpg_be16(seg);
+        } else if (m == 0xE0u && slen >= 5 && kjpg_eq_tag(seg, "JFIF", 4)) {
+            j->has_jfif = 1;
+        } else if (m == 0xEEu && slen >= 12 && kjpg_eq_tag(seg, "Adobe", 5)) {
+            j->has_adobe = 1;
+            j->adobe_xform = seg[11];
+        } else if (m == 0xDAu) {
+            if (j->width <= 0 || j->ncomp <= 0 || slen < 1) {
+                my_str_copy(err_msg, "JPEG SOS before SOF", err_msg_len);
+                rc = -1;
+                break;
+            }
+            int ns = (int)seg[0];
+            if (ns < 1 || ns > j->ncomp || slen < (size_t)(4 + 2 * ns)) {
+                my_str_copy(err_msg, "Invalid JPEG SOS", err_msg_len);
+                rc = -1;
+                break;
+            }
+            int scan_c[4], scan_td[4], scan_ta[4];
+            for (int k = 0; k < ns; k++) {
+                unsigned char cs = seg[1 + 2 * k];
+                unsigned char tdta = seg[2 + 2 * k];
+                scan_td[k] = (int)(tdta >> 4);
+                scan_ta[k] = (int)(tdta & 0x0F);
+                int found = -1;
+                for (int c = 0; c < j->ncomp; c++) {
+                    if (j->comp[c].id == cs) { found = c; break; }
+                }
+                if (found < 0 || scan_td[k] >= 4 || scan_ta[k] >= 4) { rc = -1; break; }
+                scan_c[k] = found;
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Invalid JPEG SOS comp", err_msg_len); break; }
+
+            int ss = (int)seg[1 + 2 * ns];
+            int se = (int)seg[2 + 2 * ns];
+            unsigned char ahal = seg[3 + 2 * ns];
+            int ah = (int)(ahal >> 4);
+            int al = (int)(ahal & 0x0F);
+            if (ss > se || se >= 64) { rc = -1; break; }
+            for (int k = 0; k < ns; k++) {
+                if ((ss == 0 && ah == 0 && !j->dc_huff[scan_td[k]].valid) ||
+                    (se > 0 && !j->ac_huff[scan_ta[k]].valid) ||
+                    !j->qvalid[j->comp[scan_c[k]].qsel]) {
+                    rc = -1;
+                    break;
+                }
+            }
+            if (rc != 0) { my_str_copy(err_msg, "Missing JPEG table", err_msg_len); break; }
+
+            kjpg_br_t br;
+            img_memset(&br, 0, sizeof(br));
+            br.src = data;
+            br.pos = pos;
+            br.end = (size_t)size;
+            int dc_pred[4] = { 0, 0, 0, 0 };
+            int eobrun = 0;
+            int mcus_left = j->dri;
+
+            if (!j->progressive && ns == j->ncomp && !rendered_direct) {
+                if (!pix) {
+                    uint64_t npix = (uint64_t)j->width * (uint64_t)j->height * 4ull;
+                    out_pages = (unsigned int)((npix + 4095ull) / 4096ull);
+                    if (out_pages > pmm_get_free_pages()) {
+                        my_str_copy(err_msg, "Out of Memory for image", err_msg_len);
+                        rc = -2;
+                        break;
+                    }
+                    pix = (unsigned int*)pmm_alloc_pages(out_pages);
+                    if (!pix) {
+                        my_str_copy(err_msg, "Out of Memory for image", err_msg_len);
+                        rc = -2;
+                        break;
+                    }
+                }
+                size_t total_mcus = (size_t)j->mcu_cols * (size_t)j->mcu_rows;
+                size_t mcu_idx = 0;
+                for (int my = 0; my < j->mcu_rows && rc == 0; my++) {
+                    for (int mx = 0; mx < j->mcu_cols && rc == 0; mx++, mcu_idx++) {
+                        for (int k = 0; k < ns && rc == 0; k++) {
+                            int ci = scan_c[k];
+                            kjpg_comp_t* c = &j->comp[ci];
+                            for (int v = 0; v < c->v && rc == 0; v++) {
+                                for (int u = 0; u < c->h && rc == 0; u++) {
+                                    int32_t blk32[64];
+                                    if (kjpg_decode_block_direct(&br, &j->dc_huff[scan_td[k]],
+                                                                 &j->ac_huff[scan_ta[k]],
+                                                                 j->qtab[c->qsel],
+                                                                 &dc_pred[k], blk32) != 0) {
+                                        my_str_copy(err_msg, "JPEG decode error", err_msg_len);
+                                        rc = -1;
+                                        break;
+                                    }
+                                    kjpg_idct_8x8(blk32, j->mcu_px[ci][v * c->h + u]);
+                                }
+                            }
+                        }
+                        if (rc == 0) {
+                            kjpg_write_mcu(j, pix, mx, my);
+                            if (mcu_idx + 1 < total_mcus) {
+                                kjpg_check_restart(&br, j->dri, &mcus_left, dc_pred, &eobrun);
+                            }
+                        }
+                    }
+                }
+                rendered_direct = 1;
+            } else {
+                for (int c = 0; c < j->ncomp; c++) {
+                    if (!j->comp[c].coeffs) {
+                        size_t bytes = (size_t)j->comp[c].bw * (size_t)j->comp[c].bh * 64u * sizeof(int16_t);
+                        unsigned int pg = (unsigned int)((bytes + 4095u) / 4096u);
+                        if (pg > pmm_get_free_pages()) { rc = -2; break; }
+                        j->comp[c].coeffs = (int16_t*)pmm_alloc_pages(pg);
+                        if (!j->comp[c].coeffs) { rc = -2; break; }
+                        j->comp[c].coeff_pages = pg;
+                        img_memset(j->comp[c].coeffs, 0, pg * 4096u);
+                    }
+                }
+                if (rc != 0) { my_str_copy(err_msg, "Out of Memory decoding JPEG", err_msg_len); break; }
+
+                if (ns == 1) {
+                    int ci = scan_c[0];
+                    kjpg_comp_t* c = &j->comp[ci];
+                    int comp_w = (j->width  * c->h + j->max_h - 1) / j->max_h;
+                    int comp_h = (j->height * c->v + j->max_v - 1) / j->max_v;
+                    int bx_n = (comp_w + 7) / 8;
+                    int by_n = (comp_h + 7) / 8;
+                    if (bx_n > c->bw) bx_n = c->bw;
+                    if (by_n > c->bh) by_n = c->bh;
+                    size_t total_mcus = (size_t)bx_n * (size_t)by_n;
+                    size_t mcu_idx = 0;
+                    for (int by = 0; by < by_n && rc == 0; by++) {
+                        for (int bx = 0; bx < bx_n && rc == 0; bx++, mcu_idx++) {
+                            int16_t* blk = c->coeffs + ((size_t)by * (size_t)c->bw + (size_t)bx) * 64u;
+                            if (kjpg_decode_scan_block(j, &br, blk, scan_td[0], scan_ta[0],
+                                                       &dc_pred[0], &eobrun,
+                                                       j->progressive, ss, se, ah, al) != 0) {
+                                my_str_copy(err_msg, "JPEG scan error", err_msg_len);
+                                rc = -1;
+                                break;
+                            }
+                            if (mcu_idx + 1 < total_mcus) {
+                                kjpg_check_restart(&br, j->dri, &mcus_left, dc_pred, &eobrun);
+                            }
+                        }
+                    }
+                } else {
+                    size_t total_mcus = (size_t)j->mcu_cols * (size_t)j->mcu_rows;
+                    size_t mcu_idx = 0;
+                    for (int my = 0; my < j->mcu_rows && rc == 0; my++) {
+                        for (int mx = 0; mx < j->mcu_cols && rc == 0; mx++, mcu_idx++) {
+                            for (int k = 0; k < ns && rc == 0; k++) {
+                                int ci = scan_c[k];
+                                kjpg_comp_t* c = &j->comp[ci];
+                                for (int v = 0; v < c->v && rc == 0; v++) {
+                                    for (int u = 0; u < c->h && rc == 0; u++) {
+                                        size_t bx = (size_t)(mx * c->h + u);
+                                        size_t by = (size_t)(my * c->v + v);
+                                        int16_t* blk = c->coeffs + (by * (size_t)c->bw + bx) * 64u;
+                                        if (kjpg_decode_scan_block(j, &br, blk, scan_td[k], scan_ta[k],
+                                                                   &dc_pred[k], &eobrun,
+                                                                   j->progressive, ss, se, ah, al) != 0) {
+                                            my_str_copy(err_msg, "JPEG scan error", err_msg_len);
+                                            rc = -1;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (rc == 0 && mcu_idx + 1 < total_mcus) {
+                                kjpg_check_restart(&br, j->dri, &mcus_left, dc_pred, &eobrun);
+                            }
+                        }
+                    }
+                }
+            }
+            if (rc != 0) break;
+            pos = br.pos;
+            next_m = br.marker;
+            if (!j->progressive && ns == j->ncomp) break;
+        }
+    }
+
+    if (rc == 0 && (j->width <= 0 || j->height <= 0 || j->ncomp <= 0)) {
+        my_str_copy(err_msg, "Missing JPEG frame", err_msg_len);
+        rc = -1;
+    }
+
+    if (rc == 0 && !rendered_direct) {
+        for (int c = 0; c < j->ncomp; c++) {
+            if (!j->comp[c].coeffs || !j->qvalid[j->comp[c].qsel]) {
+                my_str_copy(err_msg, "Incomplete JPEG scan", err_msg_len);
+                rc = -1;
+                break;
+            }
+        }
+        if (rc == 0) {
+            uint64_t npix = (uint64_t)j->width * (uint64_t)j->height * 4ull;
+            out_pages = (unsigned int)((npix + 4095ull) / 4096ull);
+            if (out_pages > pmm_get_free_pages()) {
+                my_str_copy(err_msg, "Out of Memory for image", err_msg_len);
+                rc = -2;
+            } else {
+                pix = (unsigned int*)pmm_alloc_pages(out_pages);
+                if (!pix) {
+                    my_str_copy(err_msg, "Out of Memory for image", err_msg_len);
+                    rc = -2;
+                }
+            }
+        }
+        if (rc == 0) {
+            for (int my = 0; my < j->mcu_rows; my++) {
+                for (int mx = 0; mx < j->mcu_cols; mx++) {
+                    for (int c = 0; c < j->ncomp; c++) {
+                        kjpg_comp_t* cp = &j->comp[c];
+                        const uint16_t* qt = j->qtab[cp->qsel];
+                        for (int v = 0; v < cp->v; v++) {
+                            for (int u = 0; u < cp->h; u++) {
+                                size_t bx = (size_t)(mx * cp->h + u);
+                                size_t by = (size_t)(my * cp->v + v);
+                                const int16_t* zz = cp->coeffs + (by * (size_t)cp->bw + bx) * 64u;
+                                int32_t blk32[64];
+                                for (int i = 0; i < 64; i++) {
+                                    blk32[k_kjpg_zz[i]] = (int32_t)zz[i] * (int32_t)qt[i];
+                                }
+                                kjpg_idct_8x8(blk32, j->mcu_px[c][v * cp->h + u]);
+                            }
+                        }
+                    }
+                    kjpg_write_mcu(j, pix, mx, my);
+                }
+            }
+        }
+    }
+
+    for (int c = 0; c < 4; c++) {
+        if (j->comp[c].coeffs && j->comp[c].coeff_pages > 0) {
+            pmm_free_pages(j->comp[c].coeffs, j->comp[c].coeff_pages);
+        }
+    }
+
+    if (rc == 0 && pix) {
+        out_img->width = j->width;
+        out_img->height = j->height;
+        out_img->pixels = pix;
+        out_img->page_count = out_pages;
+        pmm_free_pages(j, ctx_pages);
+        return 0;
+    }
+
+    if (pix && out_pages > 0) pmm_free_pages(pix, out_pages);
+    pmm_free_pages(j, ctx_pages);
+    return (rc == -2) ? -2 : -1;
+}
+
+// -------------------------------------------------------------
 // Universal Image Loader API
 // -------------------------------------------------------------
 int image_load_from_memory(const unsigned char* data, unsigned int size, image_t* out_img, char* err_msg, int err_msg_len) {
-    if (!data || size < 8 || !out_img) {
+    if (!data || size < 4 || !out_img) {
         my_str_copy(err_msg, "Invalid buffer", err_msg_len);
         return -1;
     }
@@ -679,11 +1548,13 @@ int image_load_from_memory(const unsigned char* data, unsigned int size, image_t
 
     if (data[0] == 'B' && data[1] == 'M') {
         return decode_bmp(data, size, out_img, err_msg, err_msg_len);
-    } else if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+    } else if (size >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
         return decode_png(data, size, out_img, err_msg, err_msg_len);
+    } else if (data[0] == 0xFFu && data[1] == 0xD8u) {
+        return decode_jpg(data, size, out_img, err_msg, err_msg_len);
     }
 
-    my_str_copy(err_msg, "Unsupported format (Only BMP and PNG supported)", err_msg_len);
+    my_str_copy(err_msg, "Unsupported format (BMP, PNG, and JPG supported)", err_msg_len);
     return -1;
 }
 

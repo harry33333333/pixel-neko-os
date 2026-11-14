@@ -94,10 +94,15 @@ static void fmt_bytes(uint64_t bytes, char* out, size_t cap) {
         snprintf(out, cap, "%u B", (unsigned)bytes);
     } else if (bytes < 1024ull * 1024ull) {
         snprintf(out, cap, "%u KB", (unsigned)(bytes / 1024ull));
-    } else {
+    } else if (bytes < 1024ull * 1024ull * 1024ull) {
         snprintf(out, cap, "%u.%u MB",
                  (unsigned)(bytes / (1024ull * 1024ull)),
                  (unsigned)(((bytes % (1024ull * 1024ull)) * 10ull) / (1024ull * 1024ull)));
+    } else {
+        uint64_t gb_div = 1024ull * 1024ull * 1024ull;
+        snprintf(out, cap, "%llu.%02llu GB",
+                 (unsigned long long)(bytes / gb_div),
+                 (unsigned long long)(((bytes % gb_div) * 100ull) / gb_div));
     }
 }
 
@@ -307,7 +312,8 @@ static void open_entry(fm_t* fm, int idx) {
         strcasecmp(ext, ".pxi") == 0 || strcasecmp(ext, ".c") == 0 ||
         strcasecmp(ext, ".h") == 0) {
         helper = "notepad.pxe";
-    } else if (strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".png") == 0) {
+    } else if (strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".png") == 0 ||
+               strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0) {
         helper = "viewer.pxe";
     } else if (strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0 ||
                strcasecmp(ext, ".flac") == 0) {
@@ -340,9 +346,27 @@ static void action_copy(fm_t* fm, int idx) {
     fm->has_clip = 1;
 }
 
+static void action_properties(fm_t* fm, int idx) {
+    if (fm->current_path[0] == '\0' || idx < 0 || idx >= fm->entry_count) return;
+    const fm_entry_t* e = &fm->entries[idx];
+    if (e->is_parent) return;
+    if (e->is_dir) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Folder: %.28s", e->name);
+        show_msg(fm, "Properties", msg, 0);
+        return;
+    }
+    char hsz[24], msg[96];
+    fmt_bytes(e->size, hsz, sizeof(hsz));
+    snprintf(msg, sizeof(msg), "%.16s | %s (%llu B)",
+             e->name, hsz, (unsigned long long)e->size);
+    show_msg(fm, "File Properties", msg, 0);
+}
+
 static void copy_progress_cb(uint64_t copied, uint64_t total) {
     if (!g_prog_surf || g_prog_win_id < 0) return;
-    if (copied < total && copied - g_prog_last_bytes < 32768ull && copied > 0) return;
+    uint64_t step = (total > 4ull * 1024ull * 1024ull) ? 524288ull : 32768ull;
+    if (copied < total && copied - g_prog_last_bytes < step && copied > 0) return;
     g_prog_last_bytes = copied;
 
     const pxe_win_surface_t* s = g_prog_surf;
@@ -362,9 +386,10 @@ static void copy_progress_cb(uint64_t copied, uint64_t total) {
     int fill = (pct * (bar_w - 4)) / 100;
     if (fill > 0) pxe_fill_rect(s, dx + 12, dy + 44, fill, 12, PXE_COL_BLUE);
 
-    char msg[32];
-    snprintf(msg, sizeof(msg), "%d%% (%u / %u KB)", pct,
-             (unsigned)(copied / 1024ull), (unsigned)(total / 1024ull));
+    char cbuf[20], tbuf[20], msg[64];
+    fmt_bytes(copied, cbuf, sizeof(cbuf));
+    fmt_bytes(total, tbuf, sizeof(tbuf));
+    snprintf(msg, sizeof(msg), "%d%% (%s / %s)", pct, cbuf, tbuf);
     pxe_draw_text_small(s, dx + 12, dy + 62, msg, PXE_COL_DARK_GRAY);
     pxe_win_present(g_prog_win_id);
 }
@@ -397,7 +422,7 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     g_prog_surf = NULL;
 
     if (rc != 0) {
-        show_msg(fm, "Paste Failed", "Copy error (disk full / >8MB / invalid path).", 1);
+        show_msg(fm, "Paste Failed", "Copy error (disk full / >4GB FAT32 limit).", 1);
         return;
     }
     load_directory(fm);
@@ -638,11 +663,11 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     if (fm->ctx_kind != CTX_NONE) {
         pxe_draw_bevel_box(surf, fm->ctx_x, fm->ctx_y, fm->ctx_w, fm->ctx_h, 0, PXE_COL_LIGHT_GRAY);
         if (fm->ctx_kind == CTX_ITEM) {
-            const char* items[6] = {
-                "Open", "Copy", "Paste", "Rename...", "Delete", "New Folder..."
+            const char* items[7] = {
+                "Open", "Copy", "Paste", "Rename...", "Delete", "New Folder...", "Properties..."
             };
-            int en[6] = { 1, 1, fm->has_clip, 1, 1, 1 };
-            for (int i = 0; i < 6; i++) {
+            int en[7] = { 1, 1, fm->has_clip, 1, 1, 1, 1 };
+            for (int i = 0; i < 7; i++) {
                 pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 5 + i * 18,
                                     items[i], en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
             }
@@ -878,6 +903,7 @@ int main(int argc, char** argv) {
                             else if (item == 3) action_begin_rename(fm, tgt);
                             else if (item == 4) action_begin_delete(fm, tgt);
                             else if (item == 5) action_begin_mkdir(fm);
+                            else if (item == 6) action_properties(fm, tgt);
                         } else if (kind == CTX_BG) {
                             if (item == 0) action_paste(fm, &surf);
                             else if (item == 1) action_begin_mkdir(fm);
@@ -946,7 +972,7 @@ int main(int argc, char** argv) {
                                 clamp_ctx_menu(fm, &surf, mx, my, 2);
                             } else if (!fm->entries[idx].is_parent) {
                                 fm->ctx_kind = CTX_ITEM;
-                                clamp_ctx_menu(fm, &surf, mx, my, 6);
+                                clamp_ctx_menu(fm, &surf, mx, my, 7);
                             } else if (fm->current_path[0] != '\0') {
                                 fm->ctx_kind = CTX_BG;
                                 clamp_ctx_menu(fm, &surf, mx, my, 4);

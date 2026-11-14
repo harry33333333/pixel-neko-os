@@ -75,16 +75,21 @@ typedef struct {
     uint64_t       size;
     uint64_t       current_offset;
     int            is_open;
+    int            is_write;
+    int            fs_kind;
     int            is_cdrom;
     uint64_t       cdrom_extent_lba;
     void*          fat_handle;
+    void*          exfat_handle;
     unsigned int   cached_sec_lba;
     int            has_cached_sec;
     unsigned char  sec_cache[2048];
 } vfs_stream_t;
 
 int  vfs_stream_open(const char* path, vfs_stream_t* stream);
+int  vfs_stream_create(const char* path, vfs_stream_t* stream);
 int  vfs_stream_read(vfs_stream_t* stream, void* buf, unsigned int size);
+int  vfs_stream_write(vfs_stream_t* stream, const void* buf, unsigned int size);
 int  vfs_stream_seek(vfs_stream_t* stream, uint64_t offset);
 void vfs_stream_close(vfs_stream_t* stream);
 
