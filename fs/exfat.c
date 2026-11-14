@@ -1143,7 +1143,7 @@ int exfat_read_file(exfat_fs_t* fs, const exfat_file_info_t* info,
     tmp.valid_size = info->valid_size;
     tmp.first_cluster = info->first_cluster;
     tmp.current_cluster = (uint32_t)info->first_cluster;
-    tmp.no_fat_chain = info.no_fat_chain;
+    tmp.no_fat_chain = info->no_fat_chain;
     tmp.is_open = true;
     if (exfat_seek(&tmp, offset) != 0) return -1;
     return exfat_read(&tmp, buffer, size);
