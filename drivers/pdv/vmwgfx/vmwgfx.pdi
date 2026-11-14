@@ -1,0 +1,13 @@
+[driver]
+name        = vmwgfx
+provider    = Pixel Neko OS
+class       = DISPLAY
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x15ad, dev=0x0405
+pci = ven=0x15ad, dev=0x0406
+pci = ven=0x15ad, dev=0x0710

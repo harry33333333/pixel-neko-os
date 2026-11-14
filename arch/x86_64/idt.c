@@ -5,6 +5,9 @@
 #include "string.h"
 #include "syscall.h"
 #include "scheduler.h"
+#include "percpu.h"
+#include "process.h"
+#include "wm.h"
 
 // External assembly ISR declarations (0..31)
 extern void isr0(void);
@@ -57,6 +60,7 @@ extern void irq12(void);
 extern void irq13(void);
 extern void irq14(void);
 extern void irq15(void);
+extern void isr_kernel_yield(void);
 extern void isr_spurious(void);
 
 // 256-entry 64-bit IDT
@@ -127,12 +131,49 @@ void irq_uninstall_handler(int irq) {
 }
 
 // C-level exception dispatcher called from common_isr_stub
-void c_exception_handler(trap_frame_t* frame) {
+trap_frame_t* c_exception_handler(trap_frame_t* frame) {
     const char* name = "Unknown Exception";
     if (frame && frame->int_no < 32) {
         name = exception_names[frame->int_no];
     }
+
+    if (frame && (frame->cs & 3) == 3 &&
+        frame->int_no != 8 && frame->int_no != 18) {
+        per_cpu_set_gs_domain(false);
+        uint64_t cr2 = 0;
+        if (frame->int_no == 14) {
+            __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        }
+        process_t* proc = process_current();
+        uint32_t pid = proc ? proc->pid : 0;
+        char app_name[32];
+        memset(app_name, 0, sizeof(app_name));
+        if (proc && proc->name[0]) {
+            strncpy(app_name, proc->name, sizeof(app_name) - 1);
+        } else {
+            strcpy(app_name, "user");
+        }
+        log_printf("[TRAP ] Ring 3 fault in PID %u (%s): %s (#%llu err=0x%llx RIP=0x%016llx RSP=0x%016llx CR2=0x%016llx)\n",
+                   pid, app_name, name,
+                   (unsigned long long)frame->int_no,
+                   (unsigned long long)frame->err_code,
+                   (unsigned long long)frame->rip,
+                   (unsigned long long)frame->rsp,
+                   (unsigned long long)cr2);
+        process_exit_current(-128 - (int)frame->int_no);
+        wm_notify_app_crash(pid, app_name, name, frame->rip, cr2);
+        return scheduler_reschedule_from_syscall(frame);
+    }
+
     panic_show_exception(frame, name);
+    return frame;
+}
+
+// C-level cooperative kernel yield/sleep/exit dispatcher (int 0x81, DPL 0)
+trap_frame_t* c_kernel_yield_handler(trap_frame_t* frame) {
+    if (!frame) return frame;
+    per_cpu_set_gs_domain(false);
+    return scheduler_reschedule_from_syscall(frame);
 }
 
 // C-level IRQ dispatcher called from common_irq_stub
@@ -209,6 +250,9 @@ void idt_init(void) {
     idt_set_gate(45, (uint64_t)irq13, GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(46, (uint64_t)irq14, GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(47, (uint64_t)irq15, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+
+    // Kernel thread cooperative reschedule gate (DPL 0 only)
+    idt_set_gate(0x81, (uint64_t)isr_kernel_yield, GDT_KERNEL_CODE_SEL, 0x8E, 0);
 
     g_idt_ptr.limit = sizeof(g_idt) - 1;
     g_idt_ptr.base = (uint64_t)&g_idt;

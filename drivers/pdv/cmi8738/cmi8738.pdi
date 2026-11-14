@@ -1,0 +1,13 @@
+[driver]
+name        = cmi8738
+provider    = Pixel Neko OS
+class       = AUDIO
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x13f6, dev=0x0111
+pci = ven=0x13f6, dev=0x0100
+pci = ven=0x13f6, dev=0x0101

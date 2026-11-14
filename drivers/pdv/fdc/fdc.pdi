@@ -1,0 +1,11 @@
+[driver]
+name        = fdc
+provider    = Pixel Neko OS
+class       = STORAGE
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = true
+
+[match]
+isa = port=0x03f0, irq=6, dma=2

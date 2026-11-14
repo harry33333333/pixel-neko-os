@@ -1,0 +1,23 @@
+[driver]
+name        = mach64
+provider    = Pixel Neko OS
+class       = DISPLAY
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = ven=0x1002, dev=0x4754
+pci = ven=0x1002, dev=0x4755
+pci = ven=0x1002, dev=0x4756
+pci = ven=0x1002, dev=0x4757
+pci = ven=0x1002, dev=0x4759
+pci = ven=0x1002, dev=0x475a
+pci = ven=0x1002, dev=0x4742
+pci = ven=0x1002, dev=0x4744
+pci = ven=0x1002, dev=0x4749
+pci = ven=0x1002, dev=0x474d
+pci = ven=0x1002, dev=0x4752
+pci = ven=0x1002, dev=0x5654
+pci = ven=0x1002, dev=0x5655

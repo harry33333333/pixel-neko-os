@@ -78,9 +78,23 @@ bool boot_framebuffer_init(struct limine_framebuffer* fb) {
 }
 
 uint32_t boot_framebuffer_make_color(uint8_t r, uint8_t g, uint8_t b) {
-    uint32_t r_part = ((uint32_t)(r >> (8 - g_main_surface.red_mask_size))) << g_main_surface.red_mask_shift;
-    uint32_t g_part = ((uint32_t)(g >> (8 - g_main_surface.green_mask_size))) << g_main_surface.green_mask_shift;
-    uint32_t b_part = ((uint32_t)(b >> (8 - g_main_surface.blue_mask_size))) << g_main_surface.blue_mask_shift;
+    if (g_main_surface.bpp <= 8) {
+        if (r == 0 && g == 0 && b == 0) return 0;
+        if (r == 255 && g == 255 && b == 255) return 15;
+        uint32_t r6 = ((uint32_t)r * 5U + 127U) / 255U;
+        uint32_t g6 = ((uint32_t)g * 5U + 127U) / 255U;
+        uint32_t b6 = ((uint32_t)b * 5U + 127U) / 255U;
+        return 32U + r6 + g6 * 6U + b6 * 36U;
+    }
+    uint32_t r_shift = (g_main_surface.red_mask_size > 0 && g_main_surface.red_mask_size <= 8)
+                       ? (8U - g_main_surface.red_mask_size) : 0U;
+    uint32_t g_shift = (g_main_surface.green_mask_size > 0 && g_main_surface.green_mask_size <= 8)
+                       ? (8U - g_main_surface.green_mask_size) : 0U;
+    uint32_t b_shift = (g_main_surface.blue_mask_size > 0 && g_main_surface.blue_mask_size <= 8)
+                       ? (8U - g_main_surface.blue_mask_size) : 0U;
+    uint32_t r_part = ((uint32_t)(r >> r_shift)) << g_main_surface.red_mask_shift;
+    uint32_t g_part = ((uint32_t)(g >> g_shift)) << g_main_surface.green_mask_shift;
+    uint32_t b_part = ((uint32_t)(b >> b_shift)) << g_main_surface.blue_mask_shift;
     return r_part | g_part | b_part;
 }
 
@@ -99,6 +113,8 @@ void boot_framebuffer_putpixel(uint32_t x, uint32_t y, uint32_t color) {
         row[offset + 2] = (uint8_t)((color >> 16) & 0xFF);
     } else if (g_main_surface.bpp == 16) {
         ((uint16_t*)row)[x] = (uint16_t)color;
+    } else if (g_main_surface.bpp == 8) {
+        row[x] = (uint8_t)color;
     }
 }
 

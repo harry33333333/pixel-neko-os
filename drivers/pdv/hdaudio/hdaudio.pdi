@@ -1,0 +1,12 @@
+[driver]
+name        = hdaudio
+provider    = Pixel Neko OS
+class       = AUDIO
+version     = 1.0.0
+ddk_version = 0x0100
+start       = BOOT
+safe_mode   = false
+
+[match]
+pci = class=0x04, subclass=0x03
+pci = ven=0x15ad, dev=0x1977

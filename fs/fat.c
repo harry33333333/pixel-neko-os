@@ -4,9 +4,24 @@
 #include "string.h"
 
 #define SECTOR_SIZE 512
+#define FAT_MAX_HANDLES 64
+#define FAT_MAX_FILE_SIZE 0xFFFFFFFFULL
+
+int fat_create_ext(const char* name, int is_dir);
+void fat_sync_fsinfo(fat_fs_t* vol);
 
 fat_fs_t g_volumes[MAX_VOLUMES];
-static file_handle_t g_handle;
+static file_handle_t g_handles[FAT_MAX_HANDLES];
+
+static file_handle_t* fat_alloc_handle(void) {
+    for (int i = 0; i < FAT_MAX_HANDLES; i++) {
+        if (!g_handles[i].is_open) {
+            memset(&g_handles[i], 0, sizeof(g_handles[i]));
+            return &g_handles[i];
+        }
+    }
+    return 0;
+}
 
 static int str_casecmp(const char* a, const char* b, int n) {
     for (int i = 0; i < n; i++) {
@@ -161,6 +176,7 @@ int mount_fat(fat_fs_t* vol, blkdev_t* dev, unsigned int lba, unsigned char* boo
     vol->cached_fat_sector = 0xFFFFFFFF;
     vol->free_clusters = 0;
     vol->is_free_calculated = 0;
+    vol->alloc_hint = 2;
     return 0;
 }
 
@@ -454,11 +470,12 @@ static int traverse_dir(fat_fs_t* vol, unsigned int start_cluster, dir_callback_
 struct find_cb_data {
     const char* target_name;
     file_info_t* info;
+    unsigned int sector;
+    unsigned int offset;
     int found;
 };
 
 static int find_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsigned int sector, unsigned int offset, void* ud) {
-    (void)vol; (void)sector; (void)offset;
     if (entry->name[0] == 0x00) return 1;
     if (entry->name[0] == 0xE5 || (entry->attr & 0x08)) return 0;
     
@@ -503,22 +520,38 @@ static int find_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsi
         data->info->attr = entry->attr;
         data->info->size = entry->file_size;
         data->info->first_cluster = get_first_cluster(vol, entry);
+        data->sector = sector;
+        data->offset = offset;
         data->found = 1;
         return 1;
     }
     return 0;
 }
 
-static int fat_find_in_dir(fat_fs_t* vol, unsigned int dir_cluster, const char* comp, file_info_t* info) {
-    struct find_cb_data data = { comp, info, 0 };
+static int fat_find_in_dir_loc(fat_fs_t* vol, unsigned int dir_cluster, const char* comp,
+                               file_info_t* info, unsigned int* out_sec, unsigned int* out_off) {
+    struct find_cb_data data = { comp, info, 0, 0, 0 };
     if (traverse_dir(vol, dir_cluster, find_cb, &data) != 0) return -1;
-    return data.found ? 0 : -1;
+    if (!data.found) return -1;
+    if (out_sec) *out_sec = data.sector;
+    if (out_off) *out_off = data.offset;
+    return 0;
 }
 
-int fat_find(const char* name, file_info_t* info) {
+static int fat_find_in_dir(fat_fs_t* vol, unsigned int dir_cluster, const char* comp, file_info_t* info) {
+    return fat_find_in_dir_loc(vol, dir_cluster, comp, info, 0, 0);
+}
+
+static int fat_find_loc(const char* name, file_info_t* info, int* out_vol_idx,
+                        unsigned int* out_sec, unsigned int* out_off) {
     const char* path = name;
     fat_fs_t* vol = get_vol(&path);
     if (!vol) return -1;
+    if (out_vol_idx) {
+        int vi = (int)(vol - g_volumes);
+        if (vi < 0 || vi >= MAX_VOLUMES) vi = 0;
+        *out_vol_idx = vi;
+    }
 
     if (!*path) {
         if (info) {
@@ -528,17 +561,26 @@ int fat_find(const char* name, file_info_t* info) {
             info->size = 0;
             info->first_cluster = 0;
         }
+        if (out_sec) *out_sec = 0;
+        if (out_off) *out_off = 0;
         return 0;
     }
     unsigned int cluster = 0;
     char comp[128];
+    unsigned int last_sec = 0, last_off = 0;
     while (*path) {
         path = split_path(path, comp);
         if (comp[0] == 0) break;
-        if (fat_find_in_dir(vol, cluster, comp, info) != 0) return -1;
+        if (fat_find_in_dir_loc(vol, cluster, comp, info, &last_sec, &last_off) != 0) return -1;
         cluster = info->first_cluster;
     }
+    if (out_sec) *out_sec = last_sec;
+    if (out_off) *out_off = last_off;
     return 0;
+}
+
+int fat_find(const char* name, file_info_t* info) {
+    return fat_find_loc(name, info, 0, 0, 0);
 }
 
 // ---------------------------------------------------------
@@ -593,57 +635,185 @@ int fat_list_root(void (*callback)(const file_info_t*)) {
 
 file_handle_t* fat_open(const char* name) {
     file_info_t info;
-    const char* path_for_vol = name;
-    fat_fs_t* vol = get_vol(&path_for_vol);
-    int vol_idx = vol ? (int)(vol - g_volumes) : 0;
-    if (vol_idx < 0 || vol_idx >= MAX_VOLUMES) vol_idx = 0;
-
-    if (fat_find(name, &info) != 0) return 0;
+    int vol_idx = 0;
+    if (fat_find_loc(name, &info, &vol_idx, 0, 0) != 0) return 0;
     if (info.attr & 0x10) return 0;
-    str_copy(g_handle.name, info.name, sizeof(g_handle.name));
-    g_handle.size = info.size;
-    g_handle.first_cluster = info.first_cluster;
-    g_handle.current_cluster = info.first_cluster;
-    g_handle.current_offset = 0;
-    g_handle.cluster_offset = 0;
-    g_handle.volume_idx = (unsigned char)vol_idx;
-    g_handle.is_open = 1;
-    return &g_handle;
+    file_handle_t* h = fat_alloc_handle();
+    if (!h) return 0;
+    str_copy(h->name, info.name, sizeof(h->name));
+    h->size = (uint64_t)info.size;
+    h->first_cluster = info.first_cluster;
+    h->current_cluster = info.first_cluster;
+    h->last_cluster = info.first_cluster;
+    h->current_offset = 0;
+    h->cluster_offset = 0;
+    h->volume_idx = (unsigned char)vol_idx;
+    h->write_mode = 0;
+    h->is_open = 1;
+    return h;
+}
+
+file_handle_t* fat_open_write(const char* name) {
+    if (!name) return 0;
+    file_info_t info;
+    int vol_idx = 0;
+    unsigned int dir_sec = 0, dir_off = 0;
+    if (fat_find_loc(name, &info, &vol_idx, &dir_sec, &dir_off) == 0) {
+        if (info.attr & 0x10) return 0;
+        if (fat_delete(name) != 0) return 0;
+    }
+    if (fat_create_ext(name, 0) != 0) return 0;
+    if (fat_find_loc(name, &info, &vol_idx, &dir_sec, &dir_off) != 0) return 0;
+
+    file_handle_t* h = fat_alloc_handle();
+    if (!h) return 0;
+    str_copy(h->name, info.name, sizeof(h->name));
+    h->size = 0;
+    h->first_cluster = 0;
+    h->current_cluster = 0;
+    h->last_cluster = 0;
+    h->current_offset = 0;
+    h->cluster_offset = 0;
+    h->dir_sector = dir_sec;
+    h->dir_offset = dir_off;
+    h->volume_idx = (unsigned char)vol_idx;
+    h->write_mode = 1;
+    h->is_open = 1;
+    return h;
 }
 
 int fat_read(file_handle_t* handle, unsigned char* buf, unsigned int size) {
-    if (!handle || !handle->is_open) return -1;
+    if (!handle || !handle->is_open || !buf) return -1;
     int v_idx = handle->volume_idx;
     if (v_idx < 0 || v_idx >= MAX_VOLUMES || g_volumes[v_idx].type == 0) v_idx = 0;
     fat_fs_t* vol = &g_volumes[v_idx];
-    
-    unsigned int bytes_read = 0, remaining = size;
-    if (handle->current_offset >= handle->size) return 0;
-    if (handle->current_offset + size > handle->size) remaining = handle->size - handle->current_offset;
 
+    if (handle->current_offset >= handle->size) return 0;
+    uint64_t avail = handle->size - handle->current_offset;
+    unsigned int remaining = ((uint64_t)size < avail) ? size : (unsigned int)avail;
+    if (remaining == 0) return 0;
+    if (handle->current_cluster < 2) return 0;
+
+    unsigned int bytes_read = 0;
+    unsigned int bytes_per_cluster = vol->sectors_per_cluster * 512;
+    if (bytes_per_cluster == 0) bytes_per_cluster = 512;
     unsigned char sector_buf[512];
+
     while (remaining > 0) {
-        if (handle->cluster_offset >= vol->sectors_per_cluster * 512) {
+        if (handle->cluster_offset >= bytes_per_cluster) {
             unsigned int next = fat_read_entry(vol, handle->current_cluster);
-            if (next >= 0x0FFFFFF8 || next == 0) break;
+            if (next >= 0x0FFFFFF8 || next < 2) break;
             handle->current_cluster = next;
             handle->cluster_offset = 0;
         }
-        unsigned int sector = cluster_to_sector(vol, handle->current_cluster) + handle->cluster_offset / 512;
+
+        unsigned int sec_in_cluster = handle->cluster_offset / 512;
         unsigned int offset_in_sector = handle->cluster_offset % 512;
+        if (offset_in_sector == 0 && remaining >= 512) {
+            unsigned int secs_left = vol->sectors_per_cluster - sec_in_cluster;
+            unsigned int want_secs = remaining / 512;
+            if (want_secs > secs_left) want_secs = secs_left;
+            if (want_secs > 64) want_secs = 64;
+            uint64_t lba = vol->partition_lba +
+                           (uint64_t)cluster_to_sector(vol, handle->current_cluster) +
+                           (uint64_t)sec_in_cluster;
+            if (block_read(vol->dev, lba, want_secs, buf + bytes_read) != 0) break;
+            unsigned int chunk = want_secs * 512;
+            bytes_read += chunk;
+            remaining -= chunk;
+            handle->current_offset += chunk;
+            handle->cluster_offset += chunk;
+            continue;
+        }
+
+        unsigned int sector = cluster_to_sector(vol, handle->current_cluster) + sec_in_cluster;
         if (vol_read_sec(vol, sector, sector_buf) != 0) break;
         unsigned int to_read = 512 - offset_in_sector;
         if (to_read > remaining) to_read = remaining;
-        for (unsigned int i = 0; i < to_read; i++) buf[bytes_read + i] = sector_buf[offset_in_sector + i];
+        memcpy(buf + bytes_read, sector_buf + offset_in_sector, to_read);
         bytes_read += to_read;
         remaining -= to_read;
         handle->current_offset += to_read;
         handle->cluster_offset += to_read;
     }
-    return bytes_read;
+    return (int)bytes_read;
 }
 
-int fat_seek(file_handle_t* handle, unsigned int offset) {
+static unsigned int allocate_cluster(fat_fs_t* vol);
+
+int fat_write(file_handle_t* handle, const unsigned char* buf, unsigned int size) {
+    if (!handle || !handle->is_open || !handle->write_mode) return -1;
+    if (size == 0) return 0;
+    if (!buf) return -1;
+    if (handle->current_offset > FAT_MAX_FILE_SIZE ||
+        (uint64_t)size > FAT_MAX_FILE_SIZE - handle->current_offset) {
+        return -1;
+    }
+
+    int v_idx = handle->volume_idx;
+    if (v_idx < 0 || v_idx >= MAX_VOLUMES || g_volumes[v_idx].type == 0) return -1;
+    fat_fs_t* vol = &g_volumes[v_idx];
+    unsigned int bytes_per_cluster = vol->sectors_per_cluster * 512;
+    if (bytes_per_cluster == 0) bytes_per_cluster = 512;
+
+    unsigned int written = 0;
+    unsigned char sector_buf[512];
+
+    while (written < size) {
+        if (handle->first_cluster == 0 || handle->cluster_offset >= bytes_per_cluster) {
+            unsigned int new_c = allocate_cluster(vol);
+            if (new_c == 0) return -1;
+            if (handle->first_cluster == 0) {
+                handle->first_cluster = new_c;
+            } else {
+                fat_write_entry(vol, handle->last_cluster, new_c);
+            }
+            handle->last_cluster = new_c;
+            handle->current_cluster = new_c;
+            handle->cluster_offset = 0;
+        }
+
+        unsigned int sec_in_cluster = handle->cluster_offset / 512;
+        unsigned int offset_in_sector = handle->cluster_offset % 512;
+        unsigned int rem = size - written;
+
+        if (offset_in_sector == 0 && rem >= 512) {
+            unsigned int secs_left = vol->sectors_per_cluster - sec_in_cluster;
+            unsigned int want_secs = rem / 512;
+            if (want_secs > secs_left) want_secs = secs_left;
+            if (want_secs > 64) want_secs = 64;
+            uint64_t lba = vol->partition_lba +
+                           (uint64_t)cluster_to_sector(vol, handle->current_cluster) +
+                           (uint64_t)sec_in_cluster;
+            if (block_write(vol->dev, lba, want_secs, buf + written) != 0) return -1;
+            unsigned int chunk = want_secs * 512;
+            written += chunk;
+            handle->current_offset += chunk;
+            handle->cluster_offset += chunk;
+            if (handle->current_offset > handle->size) handle->size = handle->current_offset;
+            continue;
+        }
+
+        unsigned int sector = cluster_to_sector(vol, handle->current_cluster) + sec_in_cluster;
+        unsigned int to_write = 512 - offset_in_sector;
+        if (to_write > rem) to_write = rem;
+        if (offset_in_sector != 0 || handle->current_offset + to_write < handle->size) {
+            if (vol_read_sec(vol, sector, sector_buf) != 0) memset(sector_buf, 0, 512);
+        } else {
+            memset(sector_buf, 0, 512);
+        }
+        memcpy(sector_buf + offset_in_sector, buf + written, to_write);
+        if (vol_write_sec(vol, sector, sector_buf) != 0) return -1;
+        written += to_write;
+        handle->current_offset += to_write;
+        handle->cluster_offset += to_write;
+        if (handle->current_offset > handle->size) handle->size = handle->current_offset;
+    }
+
+    return (int)written;
+}
+
+int fat_seek(file_handle_t* handle, uint64_t offset) {
     if (!handle || !handle->is_open) return -1;
     if (offset > handle->size) offset = handle->size;
     int v_idx = handle->volume_idx;
@@ -652,21 +822,45 @@ int fat_seek(file_handle_t* handle, unsigned int offset) {
     unsigned int bytes_per_cluster = vol->sectors_per_cluster * 512;
     if (bytes_per_cluster == 0) bytes_per_cluster = 512;
 
-    unsigned int target_cluster_idx = offset / bytes_per_cluster;
+    uint64_t cur_cluster_idx = handle->current_offset / bytes_per_cluster;
+    uint64_t target_cluster_idx = offset / bytes_per_cluster;
     unsigned int cur_cluster = handle->first_cluster;
-    for (unsigned int i = 0; i < target_cluster_idx; i++) {
+    uint64_t steps = target_cluster_idx;
+    if (offset >= handle->current_offset && handle->current_cluster >= 2 &&
+        target_cluster_idx >= cur_cluster_idx) {
+        cur_cluster = handle->current_cluster;
+        steps = target_cluster_idx - cur_cluster_idx;
+    }
+    for (uint64_t i = 0; i < steps; i++) {
         unsigned int next = fat_read_entry(vol, cur_cluster);
-        if (next >= 0x0FFFFFF8 || next == 0) break;
+        if (next >= 0x0FFFFFF8 || next < 2) break;
         cur_cluster = next;
     }
     handle->current_cluster = cur_cluster;
-    handle->cluster_offset = offset % bytes_per_cluster;
+    handle->cluster_offset = (unsigned int)(offset % bytes_per_cluster);
     handle->current_offset = offset;
     return 0;
 }
 
 void fat_close(file_handle_t* handle) {
-    if (handle) handle->is_open = 0;
+    if (!handle) return;
+    if (handle->is_open && handle->write_mode && handle->dir_sector != 0) {
+        int v_idx = handle->volume_idx;
+        if (v_idx >= 0 && v_idx < MAX_VOLUMES && g_volumes[v_idx].type != 0) {
+            fat_fs_t* vol = &g_volumes[v_idx];
+            unsigned char sec_buf[512];
+            if (vol_read_sec(vol, handle->dir_sector, sec_buf) == 0) {
+                dir_entry_t* de = (dir_entry_t*)(sec_buf + handle->dir_offset);
+                set_first_cluster(vol, de, handle->first_cluster);
+                de->file_size = (unsigned int)(handle->size <= FAT_MAX_FILE_SIZE
+                                                   ? handle->size : FAT_MAX_FILE_SIZE);
+                vol_write_sec(vol, handle->dir_sector, sec_buf);
+            }
+            fat_sync_fsinfo(vol);
+        }
+    }
+    handle->is_open = 0;
+    handle->write_mode = 0;
 }
 
 static void free_chain(fat_fs_t* vol, unsigned int cluster) {
@@ -674,6 +868,9 @@ static void free_chain(fat_fs_t* vol, unsigned int cluster) {
         unsigned int next = fat_read_entry(vol, cluster);
         fat_write_entry(vol, cluster, 0);
         if (vol->is_free_calculated) vol->free_clusters++;
+        if (vol->alloc_hint == 0 || cluster < vol->alloc_hint) {
+            vol->alloc_hint = cluster;
+        }
         cluster = next;
     }
 }
@@ -849,10 +1046,16 @@ void fat_sync_fsinfo(fat_fs_t* vol) {
 
 static unsigned int allocate_cluster(fat_fs_t* vol) {
     ensure_free_calculated(vol);
-    for (unsigned int i = 2; i < vol->total_clusters + 2; i++) {
+    if (vol->total_clusters == 0) return 0;
+    unsigned int start = vol->alloc_hint;
+    if (start < 2 || start >= vol->total_clusters + 2) start = 2;
+    for (unsigned int n = 0; n < vol->total_clusters; n++) {
+        unsigned int i = start + n;
+        if (i >= vol->total_clusters + 2) i -= vol->total_clusters;
         if (fat_read_entry(vol, i) == 0) {
             fat_write_entry(vol, i, 0x0FFFFFFF);
             if (vol->free_clusters > 0) vol->free_clusters--;
+            vol->alloc_hint = (i + 1 < vol->total_clusters + 2) ? (i + 1) : 2;
             return i;
         }
     }
@@ -1261,42 +1464,6 @@ int fat_create_ext(const char* name, int is_dir) {
 int fat_create(const char* name) { return fat_create_ext(name, 0); }
 int fat_create_dir(const char* name) { return fat_create_ext(name, 1); }
 
-struct update_cb_data {
-    const char* target_name;
-    const char* fat_name;
-    const char* fat_ext;
-    unsigned int size;
-    unsigned int first_cluster;
-    int found;
-};
-
-static int update_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsigned int sector, unsigned int offset, void* ud) {
-    (void)vol; (void)sector; (void)offset;
-    if (entry->name[0] == 0x00) return 1;
-    if (entry->name[0] == 0xE5 || (entry->attr & 0x08)) return 0;
-    
-    struct update_cb_data* data = (struct update_cb_data*)ud;
-    int matched = 0;
-    if (lfn_name && lfn_name[0] && data->target_name) {
-        int tlen = str_len(data->target_name);
-        if (str_len(lfn_name) == tlen && str_casecmp(lfn_name, data->target_name, tlen) == 0) {
-            matched = 1;
-        }
-    }
-    if (!matched && str_casecmp((const char*)entry->name, data->fat_name, 8) == 0 &&
-        str_casecmp((const char*)&entry->name[8], data->fat_ext, 3) == 0) {
-        matched = 1;
-    }
-
-    if (matched) {
-        entry->file_size = data->size;
-        set_first_cluster(vol, entry, data->first_cluster);
-        data->found = 1;
-        return 2; 
-    }
-    return 0;
-}
-
 static void (*g_fat_write_progress_cb)(unsigned int written, unsigned int total) = 0;
 
 void fat_set_write_progress_cb(void (*cb)(unsigned int written, unsigned int total)) {
@@ -1304,66 +1471,25 @@ void fat_set_write_progress_cb(void (*cb)(unsigned int written, unsigned int tot
 }
 
 int fat_write_file(const char* name, const unsigned char* buf, unsigned int size) {
-    file_info_t info;
-    if (fat_find(name, &info) == 0) {
-        const char* path = name;
-        fat_fs_t* vol = get_vol(&path);
-        free_chain(vol, info.first_cluster);
-    } else {
-        if (fat_create(name) != 0) return -1;
-    }
-    
-    const char* path = name;
-    fat_fs_t* vol = get_vol(&path);
-    unsigned int cluster = 0;
-    char comp[128];
-    while (*path) {
-        const char* next_path = split_path(path, comp);
-        if (*next_path == 0) break;
-        if (fat_find_in_dir(vol, cluster, comp, &info) != 0) return -1;
-        cluster = info.first_cluster;
-        path = next_path;
-    }
-    
-    unsigned int first_cluster = 0;
-    if (size > 0) {
-        unsigned int current_cluster = 0;
-        unsigned int remaining = size;
-        unsigned int offset = 0;
-        unsigned int last_cb_offset = 0;
-        unsigned char sector_buf[512];
-        
-        while (remaining > 0) {
-            unsigned int new_cluster = allocate_cluster(vol);
-            if (new_cluster == 0) return -1; 
-            if (first_cluster == 0) first_cluster = new_cluster;
-            
-            if (current_cluster != 0) {
-                fat_write_entry(vol, current_cluster, new_cluster);
-            }
-            current_cluster = new_cluster;
-            
-            for (unsigned int i = 0; i < vol->sectors_per_cluster && remaining > 0; i++) {
-                unsigned int to_write = remaining > 512 ? 512 : remaining;
-                for (unsigned int j = 0; j < 512; j++) {
-                    sector_buf[j] = (j < to_write) ? buf[offset + j] : 0;
-                }
-                vol_write_sec(vol, cluster_to_sector(vol, new_cluster) + i, sector_buf);
-                remaining -= to_write;
-                offset += to_write;
-                if (g_fat_write_progress_cb && (offset - last_cb_offset >= 65536 || remaining == 0)) {
-                    last_cb_offset = offset;
-                    g_fat_write_progress_cb(offset, size);
-                }
-            }
+    file_handle_t* h = fat_open_write(name);
+    if (!h) return -1;
+
+    unsigned int offset = 0;
+    while (offset < size) {
+        unsigned int chunk = size - offset;
+        if (chunk > 65536u) chunk = 65536u;
+        int w = fat_write(h, buf + offset, chunk);
+        if (w <= 0) {
+            fat_close(h);
+            return -1;
+        }
+        offset += (unsigned int)w;
+        if (g_fat_write_progress_cb) {
+            g_fat_write_progress_cb(offset, size);
         }
     }
-    
-    unsigned char fat_name[8], fat_ext[3];
-    str_to_fat_name(comp, fat_name, fat_ext);
-    struct update_cb_data data = { comp, (const char*)fat_name, (const char*)fat_ext, size, first_cluster, 0 };
-    traverse_dir(vol, cluster, update_cb, &data);
-    
+
+    fat_close(h);
     return 0;
 }
 

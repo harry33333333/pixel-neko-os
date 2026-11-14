@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A181f"
+    BUILD_ID="26A225b"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -31,8 +31,8 @@ fi
 
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
-mkdir -p iso_root/boot/limine iso_root/EFI/BOOT
-mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT
+mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE iso_root/APPS iso_root/DEMO
+mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE iso_root/payload/APPS iso_root/payload/DEMO
 mkdir -p iso_root/payload/system
 
 # Copy kernel
@@ -43,6 +43,40 @@ fi
 cp bin/kernel.elf iso_root/boot/
 cp boot/limine.conf iso_root/boot/limine.conf
 cp boot/limine.conf iso_root/boot/limine/
+
+# Copy native loadable PDV drivers for Live CD and offline installer payload
+shopt -s nullglob
+PDV_FILES=(build/pdevice/*.pdv)
+shopt -u nullglob
+if [ "${#PDV_FILES[@]}" -eq 0 ]; then
+    echo "Error: No PDV drivers found in build/pdevice/! Run make first."
+    exit 1
+fi
+cp "${PDV_FILES[@]}" iso_root/PDEVICE/
+cp "${PDV_FILES[@]}" iso_root/payload/PDEVICE/
+
+# Copy native loadable PXE example executables for Live CD and offline installer payload
+shopt -s nullglob
+PXE_FILES=(build/pxe_examples/*.pxe)
+shopt -u nullglob
+if [ "${#PXE_FILES[@]}" -eq 0 ]; then
+    echo "Error: No PXE example binaries found in build/pxe_examples/! Run make first."
+    exit 1
+fi
+cp "${PXE_FILES[@]}" iso_root/DEMO/
+cp "${PXE_FILES[@]}" iso_root/payload/DEMO/
+
+# Copy modular built-in system applications (*.pxe in APPS\) for Live CD and offline installer payload
+REQUIRED_APPS=(about clock calc puzzle notepad cpanel player viewer files sysinfo taskmgr install)
+for app_name in "${REQUIRED_APPS[@]}"; do
+    app_pxe="build/apps/${app_name}.pxe"
+    if [ ! -f "${app_pxe}" ]; then
+        echo "Error: Required built-in PXE app missing: ${app_pxe}! Run make first." >&2
+        exit 1
+    fi
+    cp "${app_pxe}" iso_root/APPS/
+    cp "${app_pxe}" iso_root/payload/APPS/
+done
 
 # Copy Limine BIOS & UEFI CD boot images
 cp boot/limine/limine-bios.sys iso_root/boot/limine/
@@ -60,9 +94,7 @@ if [ -n "${TEST_KIND}" ]; then
     fi
 fi
 
-# Build the offline install payload. The desktop, nine applications, fonts,
-# bitmap assets and splash animation are statically linked into kernel.elf;
-# the manifest makes that payload contract explicit for the installer.
+# Build the offline install payload.
 cp bin/kernel.elf iso_root/payload/boot/kernel.elf
 cp boot/limine.conf iso_root/payload/limine.conf
 cp boot/limine.conf iso_root/payload/boot/limine.conf
@@ -77,17 +109,30 @@ cat > iso_root/payload/system/PAYLOAD.TXT <<EOF
 Pixel Neko OS ${BUILD_ID} complete offline payload
 
 Static system executable: boot/kernel.elf
+Loadable hardware drivers: PDEVICE/*.pdv
+Native example PXE executables: DEMO/*.pxe
+System PXE applications: APPS/*.pxe (about, clock, calc, puzzle, notepad, cpanel, player, viewer, files, sysinfo, taskmgr, install)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
 Legacy compatibility configuration: boot/limine/limine.conf
 Installed-system configuration: system/limine-installed.conf
 
+Loadable PDV drivers in PDEVICE/:
+- Display: vmwgfx.pdv, mach64.pdv, nvg7x.pdv
+- Audio: hdaudio.pdv, ac97.pdv, ct4810.pdv, cmi8738.pdv
+- Storage: fdc.pdv
+
+Built-in PXE applications in APPS/:
+- Ring 3: about.pxe, clock.pxe, calc.pxe, puzzle.pxe, notepad.pxe, cpanel.pxe, player.pxe, viewer.pxe, files.pxe
+- Ring 0: sysinfo.pxe, taskmgr.pxe, install.pxe
+
+Example PXE applications in DEMO/:
+- hello.pxe (Ring 3 GUI sandboxed demo with menu & crash test)
+
 Embedded in kernel.elf:
-- Classic window manager and desktop
-- Nine built-in applications: FileManager, Editor, Calc, CPanel,
-  AudioPlayer, ImageViewer, SysInfo, Puzzle and Installer
-- Font, wallpaper bitmap assets and splash animation resources
+- Core kernel, USB stack, boot storage and filesystems
+- Classic window manager shell and PXE/PDV dynamic loaders
 
 The installer recursively releases this tree to the selected existing
 partition, then deploys Limine UEFI and BIOS boot files. The partition table

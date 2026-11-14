@@ -8,6 +8,9 @@
 #include "log.h"
 #include "string.h"
 
+extern int screen_w;
+extern int screen_h;
+
 #define PS2_DATA_PORT    0x60
 #define PS2_STATUS_PORT  0x64
 #define PS2_COMMAND_PORT 0x64
@@ -151,12 +154,12 @@ void mouse_handle_byte(uint8_t byte) {
     g_mouse_y += dy;
     if (g_mouse_x < 0) g_mouse_x = 0;
     if (g_mouse_y < 0) g_mouse_y = 0;
-    if (g_mouse_x >= (int)g_main_surface.width) {
-        g_mouse_x = (int)g_main_surface.width - 1;
-    }
-    if (g_mouse_y >= (int)g_main_surface.height) {
-        g_mouse_y = (int)g_main_surface.height - 1;
-    }
+    int max_w = (screen_w > 0) ? screen_w : (int)g_main_surface.width;
+    int max_h = (screen_h > 0) ? screen_h : (int)g_main_surface.height;
+    if (max_w < 1) max_w = 1;
+    if (max_h < 1) max_h = 1;
+    if (g_mouse_x >= max_w) g_mouse_x = max_w - 1;
+    if (g_mouse_y >= max_h) g_mouse_y = max_h - 1;
 
     input_emit_mouse_move(dx, dy, g_buttons, 0);
     if (old_buttons != g_buttons) {

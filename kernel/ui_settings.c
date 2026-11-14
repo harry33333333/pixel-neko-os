@@ -34,10 +34,14 @@ extern volatile struct limine_kernel_file_request kernel_file_request;
 extern int screen_w;
 extern int screen_h;
 extern int screen_bpp;
-extern int g_desktop_pattern;
+int g_desktop_pattern = 0;
 
 static settings_boot_mode_t g_boot_mode = SETTINGS_BOOT_LIVE;
 static char g_system_drive = 0;
+
+char settings_get_system_drive(void) {
+    return g_system_drive;
+}
 static char g_config_path[2][40];
 static int g_active_slot = -1;
 static uint32_t g_sequence = 0;
@@ -189,14 +193,9 @@ static bool read_slot(int slot, pse_config_t* config) {
 }
 
 static bool pse_resolution_known(int width, int height, int bpp) {
-    static const int widths[] = {320, 640, 800, 1024, 1280};
-    static const int heights[] = {200, 480, 600, 768, 1024};
-    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return false;
-    for (unsigned int index = 0;
-         index < sizeof(widths) / sizeof(widths[0]); index++) {
-        if (width == widths[index] && height == heights[index]) return true;
-    }
-    return false;
+    if (width < GFX_MIN_WIDTH || height < GFX_MIN_HEIGHT) return false;
+    if (width > 16384 || height > 16384) return false;
+    return (bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32);
 }
 
 static void apply_resolution(const pse_config_t* config) {

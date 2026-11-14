@@ -296,34 +296,11 @@ static void run_vfs_init(void) {
     vfs_init();
 }
 
-void splash_run(void)
+static void splash_draw_welcome_backdrop(unsigned char* v,
+                                         int* out_win_x, int* out_win_y,
+                                         int* out_win_w, int* out_win_h,
+                                         int* out_parade_y)
 {
-    unsigned char* v = backbuffer;
-    int skip = 0;
-
-    splash_drain_input();
-
-    // ------------------------------------------------------------------------
-    // Part 1: Happy Neko (Classic Mac SE + smiling cat + vintage boot chord)
-    // ------------------------------------------------------------------------
-    draw_retro_dither_bg(v);
-    draw_happy_neko(v, screen_w / 2, screen_h / 2 - 15);
-    copy_fullscreen_to_lfb(v);
-
-    // Play retro vintage boot chord
-    speaker_boot_chord();
-
-    // Hold Happy Neko for ~700ms (ignore skip for first 250ms to prevent accidental triggers)
-    for (int t = 0; t < 70; t++) {
-        timer_update();
-        if (t > 25 && splash_poll_skip()) { skip = 1; break; }
-        sleep_ms(10);
-    }
-    splash_drain_input();
-
-    // ------------------------------------------------------------------------
-    // Part 2: Welcome to Pixel Neko (Mac OS 9 + Win 3.1 hybrid splash)
-    // ------------------------------------------------------------------------
     int win_w = 440;
     int win_h = 230;
     if (win_w > screen_w - 20) win_w = screen_w - 20;
@@ -387,6 +364,44 @@ void splash_run(void)
     int parade_y = screen_h - 30;
     font_draw_text(v, 16, parade_y - 12, "Extensions Loaded:", 8);
 
+    *out_win_x = win_x;
+    *out_win_y = win_y;
+    *out_win_w = win_w;
+    *out_win_h = win_h;
+    *out_parade_y = parade_y;
+}
+
+void splash_run(void)
+{
+    unsigned char* v = backbuffer;
+    int skip = 0;
+
+    splash_drain_input();
+
+    // ------------------------------------------------------------------------
+    // Part 1: Happy Neko (Classic Mac SE + smiling cat + vintage boot chord)
+    // ------------------------------------------------------------------------
+    draw_retro_dither_bg(v);
+    draw_happy_neko(v, screen_w / 2, screen_h / 2 - 15);
+    copy_fullscreen_to_lfb(v);
+
+    // Play retro vintage boot chord
+    speaker_boot_chord();
+
+    // Hold Happy Neko for ~700ms (ignore skip for first 250ms to prevent accidental triggers)
+    for (int t = 0; t < 70; t++) {
+        timer_update();
+        if (t > 25 && splash_poll_skip()) { skip = 1; break; }
+        sleep_ms(10);
+    }
+    splash_drain_input();
+
+    // ------------------------------------------------------------------------
+    // Part 2: Welcome to Pixel Neko (Mac OS 9 + Win 3.1 hybrid splash)
+    // ------------------------------------------------------------------------
+    int win_x = 0, win_y = 0, win_w = 0, win_h = 0, parade_y = 0;
+    splash_draw_welcome_backdrop(v, &win_x, &win_y, &win_w, &win_h, &parade_y);
+
     copy_fullscreen_to_lfb(v);
 
     // Boot Steps Table - tuned to ~3.0s total with ~340-380ms per step
@@ -415,9 +430,28 @@ void splash_run(void)
             if (splash_poll_skip()) skip = 1;
         }
 
+        int prev_w = screen_w;
+        int prev_h = screen_h;
+        int prev_bpp = screen_bpp;
+
         // Run step execution
         if (steps[step].exec != NULL) {
             steps[step].exec();
+        }
+
+        v = backbuffer;
+        if (screen_w != prev_w || screen_h != prev_h || screen_bpp != prev_bpp) {
+            splash_draw_welcome_backdrop(v, &win_x, &win_y, &win_w, &win_h, &parade_y);
+            bar_x = win_x + 20;
+            bar_y = win_y + 170;
+            bar_w = win_w - 40;
+            for (int p = 0; p < parade_icons_shown; p++) {
+                int px = 16 + p * 24;
+                if (px + 20 < screen_w) {
+                    draw_extension_icon(v, px, parade_y, steps[p].icon_id);
+                }
+            }
+            copy_fullscreen_to_lfb(v);
         }
 
         // Add extension icon to parade at bottom

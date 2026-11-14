@@ -28,6 +28,8 @@
 #include "storage.h"
 #include "part.h"
 #include "vfs.h"
+#include "pdv.h"
+#include "pxe.h"
 #include "p5_test.h"
 #include "splash.h"
 #include "ui_compat.h"
@@ -772,6 +774,12 @@ void kmain(void) {
                blkdev_count(), g_partition_count);
     settings_init();
 
+    boot_progress_notify("Pixel Neko OS :: [18b/23] Loading Hardware Drivers (PDEVICE)...");
+    (void)pdv_autoload_boot_drivers(cmdline_contains("safe_mode=1"),
+                                    cmdline_contains("nopdv=1"));
+    vfs_mount_initial_floppies();
+    boot_screen_tick();
+
     if (g_main_surface.framebuffer_virt) {
         g_xp_boot_active = false;
         ui_compat_init();
@@ -800,11 +808,17 @@ void kmain(void) {
     boot_progress_notify("Pixel Neko OS :: [21/23] Initializing IPC Subsystem...");
     ipc_init();
 
-    // 22. P3.1: Create Idle and two independent Ring 3 ELF processes
+    // 22. P3.1 + P2 PXE: Initialize PXE subsystem, Idle, Compositor, and User ELFs
     boot_progress_notify("Pixel Neko OS :: [22/23] Spawning User ELF Processes...");
+    pxe_subsystem_init();
     if (!process_create_idle()) {
         boot_progress_notify("FATAL: Failed to create Idle thread!");
         log_printf("[P3 FATAL] Failed to create Idle thread.\n");
+        for (;;) __asm__ volatile ("pause");
+    }
+    if (!process_create_compositor()) {
+        boot_progress_notify("FATAL: Failed to create Compositor thread!");
+        log_printf("[P3 FATAL] Failed to create Compositor thread.\n");
         for (;;) __asm__ volatile ("pause");
     }
 

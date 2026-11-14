@@ -58,6 +58,7 @@ typedef struct {
 
     unsigned int   free_clusters;
     int            is_free_calculated;
+    unsigned int   alloc_hint;
 } fat_fs_t;
 
 typedef struct {
@@ -69,12 +70,16 @@ typedef struct {
 
 typedef struct {
     char           name[128];
-    unsigned int   size;
+    uint64_t       size;
     unsigned int   first_cluster;
     unsigned int   current_cluster;
-    unsigned int   current_offset;
+    unsigned int   last_cluster;
+    uint64_t       current_offset;
     unsigned int   cluster_offset;
+    unsigned int   dir_sector;
+    unsigned int   dir_offset;
     unsigned char  volume_idx;
+    unsigned char  write_mode;
     unsigned char  is_open;
 } file_handle_t;
 
@@ -83,8 +88,10 @@ int fat_list_root(void (*callback)(const file_info_t*));
 int fat_list_dir(const char* path, void (*callback)(const file_info_t*));
 int fat_find(const char* name, file_info_t* info);
 file_handle_t* fat_open(const char* name);
+file_handle_t* fat_open_write(const char* name);
 int fat_read(file_handle_t* handle, unsigned char* buf, unsigned int size);
-int fat_seek(file_handle_t* handle, unsigned int offset);
+int fat_write(file_handle_t* handle, const unsigned char* buf, unsigned int size);
+int fat_seek(file_handle_t* handle, uint64_t offset);
 void fat_close(file_handle_t* handle);
 int fat_delete(const char* name);
 int fat_rename(const char* old_name, const char* new_name);

@@ -59,6 +59,56 @@ pagetable_t vmm_create_address_space(void) {
     return pml4;
 }
 
+void vmm_destroy_address_space(pagetable_t pml4) {
+    if (!pml4 || pml4 == g_kernel_pml4) return;
+
+    /* Walk user lower-half entries [0..255]. Shared surfaces reside in
+     * [0x0000600000000000 .. 0x0000700000000000) and are owned by IPC/WM. */
+    for (uint64_t i4 = 0; i4 < 256; i4++) {
+        uint64_t pml4e = pml4[i4];
+        if (!(pml4e & PTE_PRESENT)) continue;
+        phys_addr_t pdpt_phys = pml4e & PTE_ADDR_MASK;
+        pagetable_t pdpt = (pagetable_t)phys_to_virt(pdpt_phys);
+        if (pdpt) {
+            for (uint64_t i3 = 0; i3 < 512; i3++) {
+                uint64_t pdpte = pdpt[i3];
+                if (!(pdpte & PTE_PRESENT) || (pdpte & PTE_LARGE_PAGE)) continue;
+                phys_addr_t pd_phys = pdpte & PTE_ADDR_MASK;
+                pagetable_t pd = (pagetable_t)phys_to_virt(pd_phys);
+                if (pd) {
+                    for (uint64_t i2 = 0; i2 < 512; i2++) {
+                        uint64_t pde = pd[i2];
+                        if (!(pde & PTE_PRESENT) || (pde & PTE_LARGE_PAGE)) continue;
+                        phys_addr_t pt_phys = pde & PTE_ADDR_MASK;
+                        pagetable_t pt = (pagetable_t)phys_to_virt(pt_phys);
+                        if (pt) {
+                            for (uint64_t i1 = 0; i1 < 512; i1++) {
+                                uint64_t pte = pt[i1];
+                                if (!(pte & PTE_PRESENT)) continue;
+                                uint64_t vaddr = (i4 << 39) | (i3 << 30) |
+                                                 (i2 << 21) | (i1 << 12);
+                                if (vaddr < 0x0000600000000000ULL ||
+                                    vaddr >= 0x0000700000000000ULL) {
+                                    pmm_free_page(pte & PTE_ADDR_MASK);
+                                }
+                            }
+                        }
+                        pmm_free_page(pt_phys);
+                    }
+                }
+                pmm_free_page(pd_phys);
+            }
+        }
+        pmm_free_page(pdpt_phys);
+        pml4[i4] = 0;
+    }
+
+    phys_addr_t pml4_phys = 0;
+    if (virt_to_phys_checked(pml4, &pml4_phys)) {
+        pmm_free_page(pml4_phys);
+    }
+}
+
 bool vmm_virt_to_phys(pagetable_t pml4, virt_addr_t virt, phys_addr_t* phys) {
     if (!pml4 || !phys) return false;
 

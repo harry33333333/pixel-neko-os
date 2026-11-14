@@ -50,6 +50,7 @@ typedef struct {
 extern vfs_drive_t g_vfs_drives[26];
 
 void vfs_init(void);
+void vfs_mount_initial_floppies(void);
 int  vfs_remount(char letter);
 vfs_drive_t* vfs_get_drive(char letter);
 int  vfs_mount_partition(partition_entry_t* part, char letter);
@@ -57,6 +58,9 @@ int  vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*));
 int  vfs_find_file(const char* path, vfs_dirent_t* out_entry);
 int  vfs_read_file(const char* path, unsigned char* buf, unsigned int max_size);
 int  vfs_write_file(const char* path, const unsigned char* buf, unsigned int size);
+int  vfs_mkdir(const char* path);
+int  vfs_unlink(const char* path);
+int  vfs_rename(const char* old_path, const char* new_path);
 const char* vfs_get_fs_name(part_fs_type_t type);
 int  vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb, int* is_known);
 bool vfs_poll_media(void);
@@ -71,16 +75,21 @@ typedef struct {
     uint64_t       size;
     uint64_t       current_offset;
     int            is_open;
+    int            is_write;
+    int            fs_kind;
     int            is_cdrom;
     uint64_t       cdrom_extent_lba;
     void*          fat_handle;
+    void*          exfat_handle;
     unsigned int   cached_sec_lba;
     int            has_cached_sec;
     unsigned char  sec_cache[2048];
 } vfs_stream_t;
 
 int  vfs_stream_open(const char* path, vfs_stream_t* stream);
+int  vfs_stream_create(const char* path, vfs_stream_t* stream);
 int  vfs_stream_read(vfs_stream_t* stream, void* buf, unsigned int size);
+int  vfs_stream_write(vfs_stream_t* stream, const void* buf, unsigned int size);
 int  vfs_stream_seek(vfs_stream_t* stream, uint64_t offset);
 void vfs_stream_close(vfs_stream_t* stream);
 

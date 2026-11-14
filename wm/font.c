@@ -235,27 +235,13 @@ unsigned char font_8x16[128][16] = {
 
 void font_draw_char(unsigned char* vga, int x, int y, char c, unsigned char fg)
 {
-    extern int screen_w;
-    if (screen_w <= 320) {
-        unsigned char* glyph = font_small[(unsigned char)c];
-        for (int row = 0; row < 7; row++) {
-            unsigned char line = glyph[row];
-            for (int col = 0; col < 5; col++) {
-                if (line & (0x80 >> col)) {
-                    int px = x + col, py = y + row;
-                    PUT_PIXEL(vga, px, py, fg);
-                }
-            }
-        }
-    } else {
-        unsigned char* glyph = font_8x16[(unsigned char)c];
-        for (int row = 0; row < 16; row++) {
-            unsigned char line = glyph[row];
-            for (int col = 0; col < 8; col++) {
-                if (line & (0x80 >> col)) {
-                    int px = x + col, py = y + row;
-                    PUT_PIXEL(vga, px, py, fg);
-                }
+    unsigned char* glyph = font_8x16[(unsigned char)c];
+    for (int row = 0; row < 16; row++) {
+        unsigned char line = glyph[row];
+        for (int col = 0; col < 8; col++) {
+            if (line & (0x80 >> col)) {
+                int px = x + col, py = y + row;
+                PUT_PIXEL(vga, px, py, fg);
             }
         }
     }
@@ -263,11 +249,9 @@ void font_draw_char(unsigned char* vga, int x, int y, char c, unsigned char fg)
 
 void font_draw_text(unsigned char* vga, int x, int y, const char* text, unsigned char fg)
 {
-    extern int screen_w;
-    int advance = (screen_w <= 320) ? 6 : 8;
     while (*text) {
         font_draw_char(vga, x, y, *text, fg);
-        x += advance;
+        x += 8;
         text++;
     }
 }

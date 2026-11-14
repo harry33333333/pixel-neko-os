@@ -3,14 +3,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "audio.h"
-#include "ac97.h"
-#include "cmi8738.h"
-#include "ct4810.h"
 #include "driver.h"
 #include "flac_dec.h"
-#include "hdaudio.h"
 #include "log.h"
 #include "mp3_dec.h"
+#include "pdv.h"
 #include "wav_dec.h"
 #include "string.h"
 
@@ -25,135 +22,60 @@
 #define AUDIO_DMA_BUFFER_BYTES  65536
 #define AUDIO_CACHE_TARGET_BYTES (AUDIO_DMA_HALF_BYTES * 4U)
 
-typedef struct {
-    const char* (*get_name)(void);
-    int (*is_present)(void);
-    void (*set_format)(int rate, int bits, int stereo);
-    void (*start_dma)(void);
-    void (*stop_dma)(void);
-    void (*pause_dma)(int pause);
-    void (*set_volume)(int master, int pcm);
-    int (*poll_half_needed)(void);
-    void (*write_half)(int half, const void* data, unsigned int bytes);
-    void (*silence_half)(int half);
-    unsigned int (*get_dma_frame_pos)(void);
-    const void* (*get_dma_buffer)(void);
-} audio_driver_ops_t;
+#define MAX_PDV_AUDIO_DRIVERS 8
 
-static const audio_driver_ops_t g_cmi8738_ops = {
-    .get_name = cmi8738_get_name,
-    .is_present = cmi8738_is_present,
-    .set_format = cmi8738_set_format,
-    .start_dma = cmi8738_start_dma,
-    .stop_dma = cmi8738_stop_dma,
-    .pause_dma = cmi8738_pause_dma,
-    .set_volume = cmi8738_set_volume,
-    .poll_half_needed = cmi8738_poll_half_needed,
-    .write_half = cmi8738_write_half,
-    .silence_half = cmi8738_silence_half,
-    .get_dma_frame_pos = cmi8738_get_dma_frame_pos,
-    .get_dma_buffer = cmi8738_get_dma_buffer,
-};
+static pdv_audio_driver_t  g_pdv_audio_drivers[MAX_PDV_AUDIO_DRIVERS];
+static driver_descriptor_t g_pdv_audio_descs[MAX_PDV_AUDIO_DRIVERS];
+static int g_pdv_audio_count = 0;
 
-static const audio_driver_ops_t g_hdaudio_ops = {
-    .get_name = hdaudio_get_name,
-    .is_present = hdaudio_is_present,
-    .set_format = hdaudio_set_format,
-    .start_dma = hdaudio_start_dma,
-    .stop_dma = hdaudio_stop_dma,
-    .pause_dma = hdaudio_pause_dma,
-    .set_volume = hdaudio_set_volume,
-    .poll_half_needed = hdaudio_poll_half_needed,
-    .write_half = hdaudio_write_half,
-    .silence_half = hdaudio_silence_half,
-    .get_dma_frame_pos = hdaudio_get_dma_frame_pos,
-    .get_dma_buffer = hdaudio_get_dma_buffer,
-};
-
-static const audio_driver_ops_t g_ac97_ops = {
-    .get_name = ac97_get_name,
-    .is_present = ac97_is_present,
-    .set_format = ac97_set_format,
-    .start_dma = ac97_start_dma,
-    .stop_dma = ac97_stop_dma,
-    .pause_dma = ac97_pause_dma,
-    .set_volume = ac97_set_volume,
-    .poll_half_needed = ac97_poll_half_needed,
-    .write_half = ac97_write_half,
-    .silence_half = ac97_silence_half,
-    .get_dma_frame_pos = ac97_get_dma_frame_pos,
-    .get_dma_buffer = ac97_get_dma_buffer,
-};
-
-static const audio_driver_ops_t g_ct4810_ops = {
-    .get_name = ct4810_get_name,
-    .is_present = ct4810_is_present,
-    .set_format = ct4810_set_format,
-    .start_dma = ct4810_start_dma,
-    .stop_dma = ct4810_stop_dma,
-    .pause_dma = ct4810_pause_dma,
-    .set_volume = ct4810_set_volume,
-    .poll_half_needed = ct4810_poll_half_needed,
-    .write_half = ct4810_write_half,
-    .silence_half = ct4810_silence_half,
-    .get_dma_frame_pos = ct4810_get_dma_frame_pos,
-    .get_dma_buffer = ct4810_get_dma_buffer,
-};
-
-static int probe_ct4810_driver(void) {
-    return ct4810_init() == 0 && ct4810_is_present();
-}
-
-static int probe_cmi8738_driver(void) {
-    return cmi8738_init() == 0 && cmi8738_is_present();
-}
-
-static int probe_ac97_driver(void) {
-    return ac97_init() == 0 && ac97_is_present();
-}
-
-static int probe_hdaudio_driver(void) {
-    return hdaudio_init() == 0 && hdaudio_is_present();
-}
-
-static const driver_descriptor_t g_hdaudio_driver = {
-    "Intel/VIA High Definition Audio",
-    DRIVER_CATEGORY_AUDIO,
-    120,
-    probe_hdaudio_driver,
-    0,
-    0
-};
-
-static const driver_descriptor_t g_ac97_driver = {
-    "Intel/AMD AC'97 Audio",
-    DRIVER_CATEGORY_AUDIO,
-    110,
-    probe_ac97_driver,
-    0,
-    0
-};
-
-static const driver_descriptor_t g_ct4810_driver = {
-    "Ensoniq AudioPCI / CT4810",
-    DRIVER_CATEGORY_AUDIO,
-    100,
-    probe_ct4810_driver,
-    0,
-    0
-};
-
-static const driver_descriptor_t g_cmi8738_driver = {
-    "C-Media CMI8738",
-    DRIVER_CATEGORY_AUDIO,
-    90,
-    probe_cmi8738_driver,
-    0,
-    0
-};
-
-static const audio_driver_ops_t* g_active_driver = 0;
+static const pdv_audio_driver_t* g_active_driver = 0;
 static int g_audio_initialized = 0;
+static char g_last_probe_status[96] = "No Audio Device";
+
+static int audio_names_equal(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+int audio_register_pdv_driver(const pdv_audio_driver_t* drv) {
+    if (!drv || !drv->name || !drv->probe) return -1;
+
+    int slot = -1;
+    for (int i = 0; i < g_pdv_audio_count; i++) {
+        if (audio_names_equal(g_pdv_audio_drivers[i].name, drv->name)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_pdv_audio_count >= MAX_PDV_AUDIO_DRIVERS) return -1;
+        slot = g_pdv_audio_count++;
+    }
+    g_pdv_audio_drivers[slot] = *drv;
+    g_pdv_audio_descs[slot].name     = g_pdv_audio_drivers[slot].name;
+    g_pdv_audio_descs[slot].category = DRIVER_CATEGORY_AUDIO;
+    g_pdv_audio_descs[slot].priority = g_pdv_audio_drivers[slot].priority;
+    g_pdv_audio_descs[slot].probe    = g_pdv_audio_drivers[slot].probe;
+    g_pdv_audio_descs[slot].start    = 0;
+    g_pdv_audio_descs[slot].stop     = 0;
+
+    return driver_register(&g_pdv_audio_descs[slot]);
+}
+
+void audio_set_probe_status(const char* status) {
+    if (!status) return;
+    size_t i = 0;
+    while (status[i] && i + 1 < sizeof(g_last_probe_status)) {
+        g_last_probe_status[i] = status[i];
+        i++;
+    }
+    g_last_probe_status[i] = '\0';
+}
 
 static audio_state_t g_audio_state = AUDIO_STATE_STOPPED;
 static audio_info_t g_audio_info;
@@ -251,23 +173,14 @@ void audio_init(void) {
     g_vu_r = 0;
 
     g_active_driver = 0;
-    driver_register(&g_hdaudio_driver);
-    driver_register(&g_ac97_driver);
-    driver_register(&g_ct4810_driver);
-    driver_register(&g_cmi8738_driver);
     driver_probe_category(DRIVER_CATEGORY_AUDIO);
 
-    if (driver_is_active(DRIVER_CATEGORY_AUDIO,
-                         "Intel/VIA High Definition Audio")) {
-        g_active_driver = &g_hdaudio_ops;
-    } else if (driver_is_active(DRIVER_CATEGORY_AUDIO,
-                                "Intel/AMD AC'97 Audio")) {
-        g_active_driver = &g_ac97_ops;
-    } else if (driver_is_active(DRIVER_CATEGORY_AUDIO,
-                                "Ensoniq AudioPCI / CT4810")) {
-        g_active_driver = &g_ct4810_ops;
-    } else if (driver_is_active(DRIVER_CATEGORY_AUDIO, "C-Media CMI8738")) {
-        g_active_driver = &g_cmi8738_ops;
+    for (int i = 0; i < g_pdv_audio_count; i++) {
+        if (driver_is_active(DRIVER_CATEGORY_AUDIO,
+                             g_pdv_audio_drivers[i].name)) {
+            g_active_driver = &g_pdv_audio_drivers[i];
+            break;
+        }
     }
 
     if (g_active_driver) {
@@ -291,7 +204,7 @@ const char* audio_get_hardware_name(void) {
 const char* audio_get_probe_status(void) {
     if (!g_audio_initialized) audio_init();
     if (g_active_driver) return g_active_driver->get_name();
-    return hdaudio_get_status();
+    return g_last_probe_status;
 }
 
 void audio_flush_queue(void) {
@@ -655,11 +568,11 @@ int audio_play_file(const char* filepath) {
 
 void audio_pause(void) {
     if (g_audio_state == AUDIO_STATE_PLAYING) {
-        if (g_active_driver) {
-            g_active_driver->set_volume(0, 0);
-            g_active_driver->pause_dma(1);
-        }
         g_audio_state = AUDIO_STATE_PAUSED;
+        if (g_active_driver) {
+            g_active_driver->pause_dma(1);
+            g_active_driver->set_volume(0, 0);
+        }
         for (int i = 0; i < 10; i++) g_spectrum_bands[i] = 0;
         g_vu_l = 0;
         g_vu_r = 0;
@@ -809,8 +722,15 @@ void audio_poll(void) {
     if (g_audio_state != AUDIO_STATE_PLAYING) return;
     if (!audio_has_hardware() || !g_active_driver) return;
 
+    enable_fpu();
+
     int dec_count = 0;
-    int max_dec = (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) ? 48 : 12;
+    int max_dec = 0;
+    if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2U)) {
+        max_dec = 8;
+    } else if (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) {
+        max_dec = 4;
+    }
     static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
            dec_count < max_dec) {
@@ -841,6 +761,30 @@ void audio_poll(void) {
 
     int half_needed = g_active_driver->poll_half_needed();
     if (half_needed >= 0) {
+        for (int fill_try = 0;
+             fill_try < 8 && !g_eof_reached && g_queue_bytes < AUDIO_DMA_HALF_BYTES;
+             fill_try++) {
+            int samples_read = 0;
+            if (g_active_dec == DEC_WAV) {
+                samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
+            } else if (g_active_dec == DEC_FLAC) {
+                samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
+            } else if (g_active_dec == DEC_MP3) {
+                samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+            }
+            if (samples_read > 0) {
+                audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
+                                   g_audio_info.sample_rate,
+                                   g_audio_info.channels,
+                                   g_audio_info.bit_depth,
+                                   g_audio_info.is_float);
+            } else if (samples_read < 0) {
+                g_eof_reached = 1;
+                break;
+            } else {
+                break;
+            }
+        }
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
         if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
             unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
@@ -878,6 +822,7 @@ void audio_poll(void) {
         } else {
             g_active_driver->silence_half(half_needed);
             if (g_eof_reached) {
+                g_active_driver->silence_half(1 - half_needed);
                 audio_stop();
                 return;
             }

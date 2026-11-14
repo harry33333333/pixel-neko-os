@@ -1,28 +1,36 @@
 #include "speaker.h"
 #include "port.h"
+#include "timer.h"
 #include <stdint.h>
 
-static void delay_us(uint32_t us) {
-    for (uint32_t i = 0; i < us; i++) {
-        __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
+static void delay_ms(uint32_t ms) {
+    if (ms > 0) {
+        sleep_ms((int)ms);
     }
 }
 
-static void delay_ms(uint32_t ms) {
-    for (uint32_t i = 0; i < ms; i++) {
-        delay_us(1000);
+static void speaker_silence(unsigned int rest_ms) {
+    outb(0x61, inb(0x61) & 0xFC);
+    if (rest_ms > 0) {
+        delay_ms(rest_ms);
     }
 }
 
 void speaker_init(void) {
+    /* Ensure PIT/TSC calibration runs before PIT Ch2 is used for tones */
+    sleep_ms(0);
     // Ensure speaker gate and data are turned off
     outb(0x61, inb(0x61) & 0xFC);
 }
 
 void speaker_play(unsigned int freq, unsigned int duration_ms) {
-    if (freq < 20 || freq > 20000) return;
+    if (freq < 20 || freq > 20000 || duration_ms == 0) return;
 
-    unsigned int div = 1193182 / freq;
+    /* Ensure TSC calibration is warm so sleep_ms does not reprogram Ch2 mid-note */
+    sleep_ms(0);
+
+    unsigned int div = 1193182U / freq;
+    if (div == 0) div = 1;
     outb(0x43, 0xB6); // Channel 2, lobyte/hibyte, Mode 3, binary
     outb(0x42, (unsigned char)(div & 0xFF));
     outb(0x42, (unsigned char)((div >> 8) & 0xFF));
@@ -39,26 +47,39 @@ void speaker_play(unsigned int freq, unsigned int duration_ms) {
 }
 
 void speaker_boot_chord(void) {
-    speaker_play(523, 60);  // C5
-    speaker_play(659, 60);  // E5
-    speaker_play(784, 60);  // G5
-    speaker_play(1046, 120);// C6
+    speaker_play(523, 75);  // C5
+    speaker_silence(20);
+    speaker_play(659, 75);  // E5
+    speaker_silence(20);
+    speaker_play(784, 75);  // G5
+    speaker_silence(20);
+    speaker_play(1046, 150);// C6
+    speaker_silence(20);
 }
 
 void speaker_beep(void) {
-    speaker_play(880, 50);  // A5 standard beep
+    speaker_play(880, 60);  // A5 standard beep
 }
 
 void speaker_shutdown_chord(void) {
-    speaker_play(1046, 70); // C6
-    speaker_play(784, 70);  // G5
-    speaker_play(659, 70);  // E5
-    speaker_play(523, 150); // C5
+    /* Full descending PC-speaker shutdown sequence with crisp articulation & settle pause */
+    speaker_play(1046, 110); // C6
+    speaker_silence(35);
+    speaker_play(784, 110);  // G5
+    speaker_silence(35);
+    speaker_play(659, 110);  // E5
+    speaker_silence(35);
+    speaker_play(523, 240);  // C5
+    speaker_silence(90);     // Allow VM/hardware audio backend to drain before power-off
 }
 
 void speaker_reboot_chord(void) {
-    speaker_play(659, 60);  // E5
-    speaker_play(784, 60);  // G5
-    speaker_play(1046, 80); // C6
-    speaker_play(1318, 140);// E6
+    speaker_play(659, 75);  // E5
+    speaker_silence(25);
+    speaker_play(784, 75);  // G5
+    speaker_silence(25);
+    speaker_play(1046, 95); // C6
+    speaker_silence(25);
+    speaker_play(1318, 160);// E6
+    speaker_silence(60);
 }
