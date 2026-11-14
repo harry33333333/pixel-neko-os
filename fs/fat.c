@@ -9,6 +9,7 @@
 
 int fat_create_ext(const char* name, int is_dir);
 void fat_sync_fsinfo(fat_fs_t* vol);
+static int plain_short_name(const char* name);
 
 fat_fs_t g_volumes[MAX_VOLUMES];
 static file_handle_t g_handles[FAT_MAX_HANDLES];
@@ -315,147 +316,302 @@ static unsigned char calc_lfn_checksum(const unsigned char* short_name_11) {
 
 typedef int (*dir_callback_t)(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsigned int sector, unsigned int offset, void* user_data);
 
-static int traverse_dir(fat_fs_t* vol, unsigned int start_cluster, dir_callback_t cb, void* user_data) {
-    unsigned char buf[512];
+struct lfn_slot {
+    unsigned int sector;
+    int offset;
+};
+
+typedef struct {
     char lfn_buf[256];
-    int lfn_valid = 0;
-    unsigned char lfn_chksum = 0;
-    int lfn_last_seq = 0;
-    for (int k = 0; k < 256; k++) lfn_buf[k] = 0;
-    
-    if (start_cluster == 0 && (vol->type == 12 || vol->type == 16)) {
-        unsigned int root_start = vol->reserved_sectors + vol->num_fats * vol->sectors_per_fat;
-        for (unsigned int i = 0; i < vol->root_dir_sectors; i++) {
-            if (vol_read_sec(vol, root_start + i, buf) != 0) return -1;
+    int lfn_valid;
+    unsigned char lfn_chksum;
+    int lfn_last_seq;
+    struct lfn_slot lfn_slots[20];
+    int lfn_slot_count;
+} dir_scan_state_t;
+
+static void reset_lfn_scan_state(dir_scan_state_t* st) {
+    st->lfn_valid = 0;
+    st->lfn_chksum = 0;
+    st->lfn_last_seq = 0;
+    st->lfn_slot_count = 0;
+    st->lfn_buf[0] = 0;
+}
+
+static int wipe_slot_list(fat_fs_t* vol, const struct lfn_slot* slots, int count,
+                          unsigned int already_sec, unsigned char* already_buf,
+                          int* already_dirty) {
+    unsigned int cur_sec = 0;
+    unsigned char other_buf[512];
+    int other_dirty = 0;
+
+    for (int i = 0; i < count; i++) {
+        unsigned int sec = slots[i].sector;
+        int off = slots[i].offset;
+        if (off < 0 || off + 32 > 512) continue;
+        if (already_buf && sec == already_sec) {
+            memset(&already_buf[off], 0, 32);
+            already_buf[off] = 0xE5;
+            if (already_dirty) *already_dirty = 1;
+            continue;
+        }
+        if (!other_dirty || sec != cur_sec) {
+            if (other_dirty) {
+                if (vol_write_sec(vol, cur_sec, other_buf) != 0) return -1;
+                other_dirty = 0;
+            }
+            if (vol_read_sec(vol, sec, other_buf) != 0) return -1;
+            cur_sec = sec;
+        }
+        memset(&other_buf[off], 0, 32);
+        other_buf[off] = 0xE5;
+        other_dirty = 1;
+    }
+
+    if (other_dirty) {
+        if (vol_write_sec(vol, cur_sec, other_buf) != 0) return -1;
+    }
+    return 0;
+}
+
+static void decode_lfn_slot_chars(const fat_lfn_entry_t* lfn, int seq, char* lfn_buf) {
+    int base_char = (seq - 1) * 13;
+    unsigned short ucs[13];
+    for (int k = 0; k < 5; k++) ucs[k] = lfn->name1[k];
+    for (int k = 0; k < 6; k++) ucs[5 + k] = lfn->name2[k];
+    for (int k = 0; k < 2; k++) ucs[11 + k] = lfn->name3[k];
+
+    for (int k = 0; k < 13; k++) {
+        unsigned short c = ucs[k];
+        int pos = base_char + k;
+        if (pos < 255) {
+            if (c == 0x0000 || c == 0xFFFF) {
+                lfn_buf[pos] = 0;
+            } else if (c < 0x80) {
+                lfn_buf[pos] = (char)c;
+            } else {
+                lfn_buf[pos] = (char)(c & 0xFF);
+            }
+        }
+    }
+}
+
+/* Returns 0 to continue, 1 to stop cleanly, -1 on I/O error. */
+static int traverse_dir_sector(fat_fs_t* vol, unsigned int sec,
+                               dir_scan_state_t* st, dir_callback_t cb,
+                               void* user_data) {
+    unsigned char buf[512];
+    if (vol_read_sec(vol, sec, buf) != 0) return -1;
+
+    for (int j = 0; j < 16; j++) {
+        dir_entry_t* entry = (dir_entry_t*)&buf[j * 32];
+        if (entry->name[0] == 0x00 || entry->name[0] == 0xE5) {
+            reset_lfn_scan_state(st);
+            int ret = cb(vol, entry, 0, sec, j * 32, user_data);
+            if (ret == 1) return 1;
+            if (ret == 2) {
+                if (vol_write_sec(vol, sec, buf) != 0) return -1;
+                return 1;
+            }
+            continue;
+        }
+
+        if (entry->attr == 0x0F) {
+            fat_lfn_entry_t* lfn = (fat_lfn_entry_t*)entry;
+            int seq = lfn->order & 0x1F;
+            if (seq >= 1 && seq <= 20) {
+                if (lfn->order & 0x40) {
+                    st->lfn_valid = 1;
+                    st->lfn_chksum = lfn->checksum;
+                    st->lfn_last_seq = seq;
+                    st->lfn_slot_count = 0;
+                    for (int k = 0; k < 256; k++) st->lfn_buf[k] = 0;
+                }
+                if (st->lfn_valid && lfn->checksum == st->lfn_chksum && seq <= st->lfn_last_seq) {
+                    st->lfn_last_seq = seq;
+                    if (st->lfn_slot_count < 20) {
+                        st->lfn_slots[st->lfn_slot_count].sector = sec;
+                        st->lfn_slots[st->lfn_slot_count].offset = j * 32;
+                        st->lfn_slot_count++;
+                    }
+                    decode_lfn_slot_chars(lfn, seq, st->lfn_buf);
+                } else {
+                    reset_lfn_scan_state(st);
+                }
+            } else {
+                reset_lfn_scan_state(st);
+            }
+            continue;
+        }
+
+        const char* lfn_to_pass = 0;
+        if (st->lfn_valid && st->lfn_buf[0] != 0 && !(entry->attr & 0x08)) {
+            if (calc_lfn_checksum(entry->name) == st->lfn_chksum) {
+                lfn_to_pass = st->lfn_buf;
+            }
+        }
+
+        int ret = cb(vol, entry, lfn_to_pass, sec, j * 32, user_data);
+        if (ret == 3) {
+            int cur_dirty = 1;
+            if (lfn_to_pass && st->lfn_slot_count > 0) {
+                if (wipe_slot_list(vol, st->lfn_slots, st->lfn_slot_count,
+                                   sec, buf, &cur_dirty) != 0) {
+                    return -1;
+                }
+            }
+            if (cur_dirty && vol_write_sec(vol, sec, buf) != 0) return -1;
+            reset_lfn_scan_state(st);
+            return 1;
+        }
+        reset_lfn_scan_state(st);
+
+        if (ret == 1) return 1;
+        if (ret == 2) {
+            if (vol_write_sec(vol, sec, buf) != 0) return -1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Remove orphaned or corrupted LFN slots left by older directory writers. */
+static void scrub_orphan_lfns(fat_fs_t* vol, unsigned int start_cluster) {
+    struct lfn_slot pending[64];
+    int pending_count = 0;
+    int chain_valid = 0;
+    int expected_seq = 0;
+    unsigned char expected_chksum = 0;
+
+    int fixed_root = (start_cluster == 0 && (vol->type == 12 || vol->type == 16));
+    unsigned int current = start_cluster;
+    if (!fixed_root && current == 0 && vol->type == 32) current = vol->root_cluster;
+    unsigned int end_cluster_mark = (vol->type == 12) ? 0x0FF8 : ((vol->type == 16) ? 0xFFF8 : 0x0FFFFFF8);
+
+    unsigned int root_start = vol->reserved_sectors + vol->num_fats * vol->sectors_per_fat;
+    unsigned int sector_count = fixed_root ? vol->root_dir_sectors : vol->sectors_per_cluster;
+
+    while (fixed_root || (current >= 2 && current < end_cluster_mark)) {
+        unsigned int base_sector = fixed_root ? root_start : cluster_to_sector(vol, current);
+        for (unsigned int i = 0; i < sector_count; i++) {
+            unsigned char buf[512];
+            unsigned int sec = base_sector + i;
+            if (vol_read_sec(vol, sec, buf) != 0) return;
+            int dirty = 0;
+            int end_of_dir = 0;
+
             for (int j = 0; j < 16; j++) {
                 dir_entry_t* entry = (dir_entry_t*)&buf[j * 32];
-                if (entry->name[0] == 0x00 || entry->name[0] == 0xE5) {
-                    lfn_valid = 0;
-                    lfn_buf[0] = 0;
+                if (entry->name[0] == 0x00) {
+                    if (pending_count > 0) {
+                        wipe_slot_list(vol, pending, pending_count, sec, buf, &dirty);
+                        pending_count = 0;
+                    }
+                    chain_valid = 0;
+                    end_of_dir = 1;
+                    break;
+                }
+                if (entry->name[0] == 0xE5) {
+                    if (pending_count > 0) {
+                        wipe_slot_list(vol, pending, pending_count, sec, buf, &dirty);
+                        pending_count = 0;
+                    }
+                    chain_valid = 0;
+                    if (entry->attr == 0x0F) {
+                        memset(entry, 0, 32);
+                        entry->name[0] = 0xE5;
+                        dirty = 1;
+                    }
+                    continue;
                 }
                 if (entry->attr == 0x0F) {
                     fat_lfn_entry_t* lfn = (fat_lfn_entry_t*)entry;
                     int seq = lfn->order & 0x1F;
-                    if (seq >= 1 && seq <= 20) {
-                        if (lfn->order & 0x40) {
-                            lfn_valid = 1;
-                            lfn_chksum = lfn->checksum;
-                            lfn_last_seq = seq;
-                            for (int k = 0; k < 256; k++) lfn_buf[k] = 0;
-                        }
-                        if (lfn_valid && lfn->checksum == lfn_chksum && seq <= lfn_last_seq) {
-                            lfn_last_seq = seq;
-                            int base_char = (seq - 1) * 13;
-                            unsigned short ucs[13];
-                            for (int k = 0; k < 5; k++) ucs[k] = lfn->name1[k];
-                            for (int k = 0; k < 6; k++) ucs[5 + k] = lfn->name2[k];
-                            for (int k = 0; k < 2; k++) ucs[11 + k] = lfn->name3[k];
-
-                            for (int k = 0; k < 13; k++) {
-                                unsigned short c = ucs[k];
-                                int pos = base_char + k;
-                                if (pos < 255) {
-                                    if (c == 0x0000 || c == 0xFFFF) {
-                                        lfn_buf[pos] = 0;
-                                    } else if (c < 0x80) {
-                                        lfn_buf[pos] = (char)c;
-                                    } else {
-                                        lfn_buf[pos] = (char)(c & 0xFF);
-                                    }
-                                }
-                            }
-                        } else {
-                            lfn_valid = 0;
-                        }
+                    if ((lfn->order & 0x40) && pending_count > 0) {
+                        wipe_slot_list(vol, pending, pending_count, sec, buf, &dirty);
+                        pending_count = 0;
+                        chain_valid = 0;
+                    }
+                    if (pending_count == 0 && (lfn->order & 0x40) && seq >= 1 && seq <= 20) {
+                        chain_valid = 1;
+                        expected_seq = seq;
+                        expected_chksum = lfn->checksum;
+                    } else if (!(chain_valid && !(lfn->order & 0x40) &&
+                                 seq == expected_seq - 1 && seq >= 1 &&
+                                 lfn->checksum == expected_chksum)) {
+                        chain_valid = 0;
+                    } else {
+                        expected_seq = seq;
+                    }
+                    if (pending_count < 64) {
+                        pending[pending_count].sector = sec;
+                        pending[pending_count].offset = j * 32;
+                        pending_count++;
+                    } else {
+                        wipe_slot_list(vol, pending, pending_count, sec, buf, &dirty);
+                        pending_count = 0;
+                        memset(entry, 0, 32);
+                        entry->name[0] = 0xE5;
+                        dirty = 1;
+                        chain_valid = 0;
                     }
                     continue;
                 }
 
-                const char* lfn_to_pass = 0;
-                if (lfn_valid && lfn_buf[0] != 0) {
-                    if (calc_lfn_checksum(entry->name) == lfn_chksum) {
-                        lfn_to_pass = lfn_buf;
+                if (pending_count > 0) {
+                    int attached = !(entry->attr & 0x08) && chain_valid &&
+                                   expected_seq == 1 &&
+                                   calc_lfn_checksum(entry->name) == expected_chksum;
+                    if (!attached) {
+                        wipe_slot_list(vol, pending, pending_count, sec, buf, &dirty);
                     }
+                    pending_count = 0;
+                    chain_valid = 0;
                 }
-
-                int ret = cb(vol, entry, lfn_to_pass, root_start + i, j * 32, user_data);
-                lfn_valid = 0;
-                lfn_buf[0] = 0;
-
-                if (ret == 1) return 0;
-                if (ret == 2) { vol_write_sec(vol, root_start + i, buf); return 0; }
             }
+
+            if (dirty) {
+                if (vol_write_sec(vol, sec, buf) != 0) return;
+            }
+            if (end_of_dir) return;
+        }
+        if (fixed_root) break;
+        unsigned int next = fat_read_entry(vol, current);
+        if (next >= end_cluster_mark || next == 0) break;
+        current = next;
+    }
+
+    if (pending_count > 0) {
+        wipe_slot_list(vol, pending, pending_count, 0, 0, 0);
+    }
+}
+
+static int traverse_dir(fat_fs_t* vol, unsigned int start_cluster, dir_callback_t cb, void* user_data) {
+    dir_scan_state_t st;
+    reset_lfn_scan_state(&st);
+    for (int k = 0; k < 256; k++) st.lfn_buf[k] = 0;
+
+    if (start_cluster == 0 && (vol->type == 12 || vol->type == 16)) {
+        unsigned int root_start = vol->reserved_sectors + vol->num_fats * vol->sectors_per_fat;
+        for (unsigned int i = 0; i < vol->root_dir_sectors; i++) {
+            int r = traverse_dir_sector(vol, root_start + i, &st, cb, user_data);
+            if (r < 0) return -1;
+            if (r > 0) return 0;
         }
         return 0;
     }
-    
+
     unsigned int current = start_cluster;
     if (current == 0 && vol->type == 32) current = vol->root_cluster;
 
     unsigned int end_cluster_mark = (vol->type == 12) ? 0x0FF8 : ((vol->type == 16) ? 0xFFF8 : 0x0FFFFFF8);
-    
+
     while (current >= 2 && current < end_cluster_mark) {
         unsigned int start_sector = cluster_to_sector(vol, current);
         for (unsigned int i = 0; i < vol->sectors_per_cluster; i++) {
-            if (vol_read_sec(vol, start_sector + i, buf) != 0) return -1;
-            for (int j = 0; j < 16; j++) {
-                dir_entry_t* entry = (dir_entry_t*)&buf[j * 32];
-                if (entry->name[0] == 0x00 || entry->name[0] == 0xE5) {
-                    lfn_valid = 0;
-                    lfn_buf[0] = 0;
-                }
-                if (entry->attr == 0x0F) {
-                    fat_lfn_entry_t* lfn = (fat_lfn_entry_t*)entry;
-                    int seq = lfn->order & 0x1F;
-                    if (seq >= 1 && seq <= 20) {
-                        if (lfn->order & 0x40) {
-                            lfn_valid = 1;
-                            lfn_chksum = lfn->checksum;
-                            lfn_last_seq = seq;
-                            for (int k = 0; k < 256; k++) lfn_buf[k] = 0;
-                        }
-                        if (lfn_valid && lfn->checksum == lfn_chksum && seq <= lfn_last_seq) {
-                            lfn_last_seq = seq;
-                            int base_char = (seq - 1) * 13;
-                            unsigned short ucs[13];
-                            for (int k = 0; k < 5; k++) ucs[k] = lfn->name1[k];
-                            for (int k = 0; k < 6; k++) ucs[5 + k] = lfn->name2[k];
-                            for (int k = 0; k < 2; k++) ucs[11 + k] = lfn->name3[k];
-
-                            for (int k = 0; k < 13; k++) {
-                                unsigned short c = ucs[k];
-                                int pos = base_char + k;
-                                if (pos < 255) {
-                                    if (c == 0x0000 || c == 0xFFFF) {
-                                        lfn_buf[pos] = 0;
-                                    } else if (c < 0x80) {
-                                        lfn_buf[pos] = (char)c;
-                                    } else {
-                                        lfn_buf[pos] = (char)(c & 0xFF);
-                                    }
-                                }
-                            }
-                        } else {
-                            lfn_valid = 0;
-                        }
-                    }
-                    continue;
-                }
-
-                const char* lfn_to_pass = 0;
-                if (lfn_valid && lfn_buf[0] != 0) {
-                    if (calc_lfn_checksum(entry->name) == lfn_chksum) {
-                        lfn_to_pass = lfn_buf;
-                    }
-                }
-
-                int ret = cb(vol, entry, lfn_to_pass, start_sector + i, j * 32, user_data);
-                lfn_valid = 0;
-                lfn_buf[0] = 0;
-
-                if (ret == 1) return 0;
-                if (ret == 2) { vol_write_sec(vol, start_sector + i, buf); return 0; }
-            }
+            int r = traverse_dir_sector(vol, start_sector + i, &st, cb, user_data);
+            if (r < 0) return -1;
+            if (r > 0) return 0;
         }
         unsigned int next = fat_read_entry(vol, current);
         if (next >= end_cluster_mark || next == 0) break;
@@ -501,8 +657,8 @@ static int find_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsi
         }
     }
 
-    // 3. Match against 8.3 raw name
-    if (!matched) {
+    // 3. Match against 8.3 raw name (only for plain 8.3 targets so e.g. file.conf never matches file.con)
+    if (!matched && plain_short_name(data->target_name)) {
         unsigned char fat_name[8], fat_ext[3];
         str_to_fat_name(data->target_name, fat_name, fat_ext);
         if (str_casecmp((const char*)entry->name, (const char*)fat_name, 8) == 0 &&
@@ -892,13 +1048,21 @@ static int del_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
     
     struct del_cb_data* data = (struct del_cb_data*)ud;
     int matched = 0;
+    int tlen = data->target_name ? str_len(data->target_name) : 0;
     if (lfn_name && lfn_name[0] && data->target_name) {
-        int tlen = str_len(data->target_name);
         if (str_len(lfn_name) == tlen && str_casecmp(lfn_name, data->target_name, tlen) == 0) {
             matched = 1;
         }
     }
-    if (!matched && str_casecmp((const char*)entry->name, data->fat_name, 8) == 0 &&
+    if (!matched && data->target_name) {
+        char short_str[16];
+        fat_name_to_str(entry->name, short_str);
+        if (str_len(short_str) == tlen && str_casecmp(short_str, data->target_name, tlen) == 0) {
+            matched = 1;
+        }
+    }
+    if (!matched && data->target_name && plain_short_name(data->target_name) &&
+        str_casecmp((const char*)entry->name, data->fat_name, 8) == 0 &&
         str_casecmp((const char*)&entry->name[8], data->fat_ext, 3) == 0) {
         matched = 1;
     }
@@ -911,7 +1075,7 @@ static int del_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
         }
         
         data->found = 1;
-        return 2; 
+        return 3;
     }
     return 0;
 }
@@ -938,7 +1102,11 @@ int fat_delete(const char* name) {
     str_to_fat_name(comp, fat_name, fat_ext);
     struct del_cb_data data = { comp, (const char*)fat_name, (const char*)fat_ext, 0 };
     if (traverse_dir(vol, cluster, del_cb, &data) != 0) return -1;
-    return data.found ? 0 : -1;
+    if (data.found) {
+        scrub_orphan_lfns(vol, cluster);
+        return 0;
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------
@@ -1175,13 +1343,9 @@ static int extend_directory(fat_fs_t* vol, unsigned int dir_cluster,
     return 0;
 }
 
-struct lfn_slot {
-    unsigned int sector;
-    int offset;
-};
-
 static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
                                const char* long_name, int is_dir) {
+    scrub_orphan_lfns(vol, dir_cluster);
     unsigned char short_name[8], short_ext[3];
     make_short_alias(vol, dir_cluster, long_name, short_name, short_ext);
     int name_length = str_len((char*)long_name);

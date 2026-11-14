@@ -61,9 +61,7 @@ typedef struct {
     int part_scroll;
 
     int  fs_choice; /* 3=FAT32, 2=FAT16, 0=Skip Format */
-    char label[12];
-    int  label_len;
-    int  label_focus;
+    char preserved_label[32];
 
     int  state;
     int  progress;
@@ -255,9 +253,21 @@ static void calc_nt6_layout(const pxe_win_surface_t* surf, nt6_layout_t* l) {
     l->lbl_h    = 24;
 }
 
+static void format_preserved_label(const pxe_r0_part_info_t* p, char* out, size_t out_sz) {
+    if (!p || !p->label[0] || strcasecmp(p->label, "NO NAME") == 0) {
+        snprintf(out, out_sz, "%s", "Unlabeled (Preserved)");
+    } else {
+        snprintf(out, out_sz, "%s", p->label);
+    }
+}
+
 static void sync_fs_choice_to_selection(installer_t* inst) {
-    if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) return;
+    if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) {
+        snprintf(inst->preserved_label, sizeof(inst->preserved_label), "%s", "Unlabeled (Preserved)");
+        return;
+    }
     const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
+    format_preserved_label(p, inst->preserved_label, sizeof(inst->preserved_label));
     if (inst->skip_format) {
         if (part_supports_skip_fmt(p)) {
             inst->fs_choice = 0;
@@ -638,7 +648,7 @@ static void render_step_format(const pxe_win_surface_t* surf, const installer_t*
     int en_skip = part_supports_skip_fmt(p);
 
     pxe_draw_text(surf, l->body_x, l->body_y,
-                  "Select Destination Filesystem & Label", RGB_COL(0x0C4A6E));
+                  "Select Destination Filesystem", RGB_COL(0x0C4A6E));
     pxe_draw_text_small(surf, l->body_x, l->body_y + 22,
                         "Choose whether to format the selected partition or keep existing data.",
                         RGB_COL(0x475569));
@@ -661,16 +671,12 @@ static void render_step_format(const pxe_win_surface_t* surf, const installer_t*
                              : "Requires an existing formatted FAT16 or FAT32 partition.",
                      (inst->skip_format || inst->fs_choice == 0), en_skip);
 
-    pxe_draw_text_small(surf, l->body_x, l->lbl_y + 8, "Volume Label:", RGB_COL(0x0F172A));
-    pxe_fill_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xFFFFFF));
-    pxe_draw_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h,
-                  inst->label_focus ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
-    pxe_draw_text(surf, l->lbl_x + 8, l->lbl_y + 4, inst->label, RGB_COL(0x0F172A));
-    if (inst->label_focus) {
-        pxe_draw_vline(surf, l->lbl_x + 8 + inst->label_len * 8, l->lbl_y + 4, 16, RGB_COL(0x0B5ED7));
-    }
+    pxe_draw_text_small(surf, l->body_x, l->lbl_y + 8, "Partition Label:", RGB_COL(0x0F172A));
+    pxe_fill_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xF1F5F9));
+    pxe_draw_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xCBD5E1));
+    pxe_draw_text_small(surf, l->lbl_x + 8, l->lbl_y + 8, inst->preserved_label, RGB_COL(0x334155));
     pxe_draw_text_small(surf, l->lbl_x + l->lbl_w + 12, l->lbl_y + 8,
-                        "(Click box to edit, up to 11 chars)", RGB_COL(0x64748B));
+                        "(Existing label preserved, not modified)", RGB_COL(0x64748B));
 }
 
 static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t* inst,
@@ -697,7 +703,7 @@ static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t
                                    : (inst->fs_choice == PART_FS_FAT32 ? "Format as FAT32"
                                                                        : "Format as FAT16");
         snprintf(r3, sizeof(r3), "%s", fs_action);
-        snprintf(r4, sizeof(r4), "%s", inst->label[0] ? inst->label : "PIXELNEKO");
+        snprintf(r4, sizeof(r4), "%s", inst->preserved_label);
         snprintf(r5, sizeof(r5), "Limine BIOS Stage 1/2 + Local Offline Boot Config");
 
         int y0 = by + 58;
@@ -708,7 +714,7 @@ static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t
         pxe_draw_text_small(surf, bx + 16, y0 + 56,  "Filesystem Mode:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 56, r3,
                             inst->fs_choice == 0 ? RGB_COL(0x166534) : RGB_COL(0xB91C1C));
-        pxe_draw_text_small(surf, bx + 16, y0 + 84,  "Volume Label:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 84,  "Partition Label:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 84, r4, RGB_COL(0x0F172A));
         pxe_draw_text_small(surf, bx + 16, y0 + 112, "Bootloader:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 112, r5, RGB_COL(0x0F172A));
@@ -1158,6 +1164,51 @@ static int install_limine_bios_sectors(installer_t* inst, int disk_id) {
     return 0;
 }
 
+static int read_exact_bytes(int fd, uint8_t* buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        int r = pxe_read(fd, buf + got, n - got);
+        if (r <= 0) return -1;
+        got += (size_t)r;
+    }
+    return 0;
+}
+
+static int verify_file_bytes_equal(const char* src, const char* dst) {
+    pxe_dirent_t s1, s2;
+    if (pxe_stat(src, &s1) != 0 || pxe_stat(dst, &s2) != 0) return -1;
+    if (s1.is_dir || s2.is_dir || s1.size == 0 || s1.size != s2.size) return -1;
+    int f1 = pxe_open(src);
+    int f2 = pxe_open(dst);
+    if (f1 < 0 || f2 < 0) {
+        if (f1 >= 0) pxe_close(f1);
+        if (f2 >= 0) pxe_close(f2);
+        return -1;
+    }
+    uint8_t b1[256], b2[256];
+    uint64_t rem = s1.size;
+    int rc = 0;
+    while (rem > 0) {
+        size_t chunk = (rem > sizeof(b1)) ? sizeof(b1) : (size_t)rem;
+        if (read_exact_bytes(f1, b1, chunk) != 0 ||
+            read_exact_bytes(f2, b2, chunk) != 0 ||
+            memcmp(b1, b2, chunk) != 0) {
+            rc = -1;
+            break;
+        }
+        rem -= chunk;
+    }
+    if (rc == 0) {
+        uint8_t extra;
+        if (pxe_read(f1, &extra, 1) > 0 || pxe_read(f2, &extra, 1) > 0) {
+            rc = -1;
+        }
+    }
+    pxe_close(f1);
+    pxe_close(f2);
+    return rc;
+}
+
 static int run_installation(installer_t* inst) {
     if (inst->sel_part < 0 || inst->sel_part >= inst->part_count) return -1;
     pxe_r0_part_info_t target = inst->parts[inst->sel_part];
@@ -1167,7 +1218,6 @@ static int run_installation(installer_t* inst) {
 
     /* Step 1: Format or Skip Format + Resolve target drive letter */
     char target_letter = 0;
-    const char* vol_label = inst->label[0] ? inst->label : "PIXELNEKO";
 
     if (inst->fs_choice == 0) {
         if (target.fs_type != PART_FS_FAT16 && target.fs_type != PART_FS_FAT32) {
@@ -1181,12 +1231,11 @@ static int run_installation(installer_t* inst) {
                   inst->fs_choice == PART_FS_FAT32 ? "Creating FAT32 filesystem"
                                                    : "Creating FAT16 filesystem");
         char fmsg[80];
-        snprintf(fmsg, sizeof(fmsg), "Formatting P%d (%s, label=%s)...",
+        snprintf(fmsg, sizeof(fmsg), "Formatting P%d (%s, preserving label)...",
                  target.part_index,
-                 inst->fs_choice == PART_FS_FAT32 ? "FAT32" : "FAT16",
-                 vol_label);
+                 inst->fs_choice == PART_FS_FAT32 ? "FAT32" : "FAT16");
         add_log(inst, fmsg);
-        if (pxe_r0_format_partition(target.part_index, inst->fs_choice, vol_label) != 0) {
+        if (pxe_r0_format_partition(target.part_index, inst->fs_choice, NULL) != 0) {
             add_log(inst, "Format partition failed!");
             return -2;
         }
@@ -1291,6 +1340,13 @@ static int run_installation(installer_t* inst) {
     int pxe_copied = 0;
     int pdv_copied = 0;
     for (int i = 0; i < file_count; i++) {
+        /* Skip Live-ISO limine.conf copies; Step 4 deploys limine-installed.conf directly. */
+        if (strcasecmp(files[i].rel, "limine.conf") == 0 ||
+            strcasecmp(files[i].rel, "boot\\limine.conf") == 0 ||
+            strcasecmp(files[i].rel, "boot\\limine\\limine.conf") == 0) {
+            continue;
+        }
+
         char src_file[256], dst_file[256];
         snprintf(src_file, sizeof(src_file), "%c:\\payload\\%s", src_letter, files[i].rel);
         snprintf(dst_file, sizeof(dst_file), "%c:\\%s", target_letter, files[i].rel);
@@ -1342,14 +1398,28 @@ static int run_installation(installer_t* inst) {
     if (pxe_stat(cfg_src, &cst) != 0) {
         snprintf(cfg_src, sizeof(cfg_src), "%c:\\system\\limine-installed.conf", target_letter);
     }
+
+    const char* stale_cfgs[] = {
+        "limine.cfg", "limine\\limine.conf", "limine\\limine.cfg",
+        "boot\\limine.cfg", "boot\\limine\\limine.cfg",
+        "EFI\\BOOT\\limine.conf", "EFI\\BOOT\\limine.cfg"
+    };
+    for (size_t i = 0; i < sizeof(stale_cfgs) / sizeof(stale_cfgs[0]); i++) {
+        char spath[64];
+        snprintf(spath, sizeof(spath), "%c:\\%s", target_letter, stale_cfgs[i]);
+        (void)pxe_unlink(spath);
+    }
+
     const char* cfg_targets[3] = {
         "boot\\limine.conf", "boot\\limine\\limine.conf", "limine.conf"
     };
     for (int i = 0; i < 3; i++) {
         char cdst[64];
         snprintf(cdst, sizeof(cdst), "%c:\\%s", target_letter, cfg_targets[i]);
-        if (pxe_copy_file(cfg_src, cdst, NULL) != 0) {
-            add_log(inst, "Failed to deploy limine.conf!");
+        (void)pxe_unlink(cdst);
+        if (pxe_copy_file(cfg_src, cdst, NULL) != 0 ||
+            verify_file_bytes_equal(cfg_src, cdst) != 0) {
+            add_log(inst, "Failed to deploy/verify limine.conf!");
             return -14;
         }
     }
@@ -1432,10 +1502,6 @@ static void handle_installer_click(installer_t* inst, int mx, int my, int* runni
     nt6_layout_t l;
     calc_nt6_layout(&inst->surf, &l);
 
-    if (inst->step != STEP_FORMAT) {
-        inst->label_focus = 0;
-    }
-
     switch (inst->step) {
         case STEP_WELCOME:
             if (!inst->install_mode &&
@@ -1516,7 +1582,6 @@ static void handle_installer_click(installer_t* inst, int mx, int my, int* runni
                 (inst->sel_part >= 0 && inst->sel_part < inst->part_count)
                     ? &inst->parts[inst->sel_part] : NULL;
             if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y0, l.fcard_w, l.fcard_h)) {
-                inst->label_focus = 0;
                 if (part_supports_fat32(p)) {
                     inst->skip_format = 0;
                     inst->fs_choice = PART_FS_FAT32;
@@ -1524,7 +1589,6 @@ static void handle_installer_click(installer_t* inst, int mx, int my, int* runni
                 return;
             }
             if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y1, l.fcard_w, l.fcard_h)) {
-                inst->label_focus = 0;
                 if (part_supports_fat16(p)) {
                     inst->skip_format = 0;
                     inst->fs_choice = PART_FS_FAT16;
@@ -1532,18 +1596,12 @@ static void handle_installer_click(installer_t* inst, int mx, int my, int* runni
                 return;
             }
             if (pxe_point_in_rect(mx, my, l.fcard_x, l.fcard_y2, l.fcard_w, l.fcard_h)) {
-                inst->label_focus = 0;
                 if (part_supports_skip_fmt(p)) {
                     inst->skip_format = 1;
                     inst->fs_choice = 0;
                 }
                 return;
             }
-            if (pxe_point_in_rect(mx, my, l.lbl_x, l.lbl_y, l.lbl_w, l.lbl_h)) {
-                inst->label_focus = 1;
-                return;
-            }
-            inst->label_focus = 0;
             if (pxe_point_in_rect(mx, my, l.back_x, l.back_y, l.back_w, l.back_h)) {
                 inst->step = (inst->sel_part >= 0 && inst->existing_on_disk[inst->sel_part])
                                  ? STEP_REINSTALL_WARN : STEP_SELECT;
@@ -1608,12 +1666,11 @@ int main(int argc, char** argv) {
     installer_t* inst = (installer_t*)calloc(1, sizeof(installer_t));
     if (!inst) return 1;
 
-    strcpy(inst->label, "PIXELNEKO");
-    inst->label_len = (int)strlen(inst->label);
     inst->fs_choice = PART_FS_FAT32;
     inst->sel_part = -1;
     inst->state = STATE_IDLE;
     inst->step = STEP_WELCOME;
+    strcpy(inst->preserved_label, "Unlabeled (Preserved)");
     strcpy(inst->stage, "Select a target partition and proceed step by step.");
 
     refresh_partitions(inst);
@@ -1681,26 +1738,6 @@ int main(int argc, char** argv) {
                     break;
                 }
                 case PXE_EV_KEY_DOWN:
-                    if (inst->state == STATE_INSTALLING) break;
-                    if (inst->step == STEP_FORMAT && inst->label_focus) {
-                        if (ev.key == PXE_KEY_BACKSPACE) {
-                            if (inst->label_len > 0) inst->label[--inst->label_len] = '\0';
-                            dirty = 1;
-                        } else if (ev.key == PXE_KEY_ENTER || ev.key == PXE_KEY_ESC) {
-                            inst->label_focus = 0;
-                            dirty = 1;
-                        } else if (inst->label_len < 11) {
-                            char ch = (char)ev.key;
-                            if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
-                            if ((ch >= 'A' && ch <= 'Z') ||
-                                (ch >= '0' && ch <= '9') ||
-                                ch == '_' || ch == '-') {
-                                inst->label[inst->label_len++] = ch;
-                                inst->label[inst->label_len] = '\0';
-                                dirty = 1;
-                            }
-                        }
-                    }
                     break;
                 default:
                     break;
