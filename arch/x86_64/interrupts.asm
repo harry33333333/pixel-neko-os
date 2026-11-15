@@ -85,6 +85,14 @@ IRQ 12, 44  ; PS/2 Mouse
 IRQ 13, 45  ; FPU Coprocessor
 IRQ 14, 46  ; Primary ATA
 IRQ 15, 47  ; Secondary ATA
+IRQ 16, 48  ; IOAPIC GSI 16 / PCI INTx
+IRQ 17, 49  ; IOAPIC GSI 17 / PCI INTx
+IRQ 18, 50  ; IOAPIC GSI 18 / PCI INTx
+IRQ 19, 51  ; IOAPIC GSI 19 / PCI INTx
+IRQ 20, 52  ; IOAPIC GSI 20 / PCI INTx
+IRQ 21, 53  ; IOAPIC GSI 21 / PCI INTx
+IRQ 22, 54  ; IOAPIC GSI 22 / PCI INTx
+IRQ 23, 55  ; IOAPIC GSI 23 / PCI INTx
 
 ; Common Exception Handler Stub
 common_isr_stub:

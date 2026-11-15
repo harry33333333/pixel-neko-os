@@ -1,4 +1,5 @@
 #include "pdv.h"
+#include "acpi.h"
 #include "audio.h"
 #include "blkdev.h"
 #include "boot_framebuffer.h"
@@ -255,7 +256,7 @@ static int ddi_register_driver_descriptor(const pdv_driver_descriptor_t* desc) {
 static int ddi_pci_register_irq(const pdv_pci_device_t* dev,
                                 void (*handler)(void* ctx),
                                 void* ctx) {
-    if (!dev || !handler || dev->irq_line >= 16) return -1;
+    if (!dev || !handler) return -1;
 
     uint32_t cmd_sts = pci_config_read(dev->bus, dev->slot, dev->function, 0x04);
     uint16_t cmd = (uint16_t)(cmd_sts & 0xFFFFu);
@@ -265,6 +266,18 @@ static int ddi_pci_register_irq(const pdv_pci_device_t* dev,
                          (uint32_t)(cmd & ~(1u << 10)));
     }
 
+    uint16_t gsi_flags = 0x000Au;
+    int gsi = (dev->irq_pin >= 1 && dev->irq_pin <= 4)
+        ? acpi_resolve_pci_irq_gsi(dev->bus, dev->slot, dev->irq_pin, &gsi_flags)
+        : -1;
+    if (gsi >= 0 && gsi < 24) {
+        log_printf("[PDV ] PCI %02x:%02x.%u INT%c (line=%u) -> ACPI _PRT GSI %d (flags=0x%02x)\n",
+                   dev->bus, dev->slot, dev->function,
+                   'A' + (dev->irq_pin - 1), dev->irq_line, gsi, gsi_flags);
+        return irq_register_pci_gsi((uint8_t)gsi, gsi_flags, handler, ctx);
+    }
+
+    if (dev->irq_line >= 16) return -1;
     return irq_register_pci_handler(dev->irq_line, handler, ctx);
 }
 

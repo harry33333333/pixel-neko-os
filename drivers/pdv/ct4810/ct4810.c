@@ -578,9 +578,10 @@ static int ct4810_init(void) {
         ? (g_kapi->pci_config_read(g_ct_pci_dev->bus, g_ct_pci_dev->slot,
                                    g_ct_pci_dev->function, 0x04) & 0xFFFFU)
         : 0U;
-    klog_info("[CT48] active %s io=0x%x cmd=0x%04x irq=%u(%s) dma=0x%x src=0x%x codec=%04x:%04x pwr=0x%x",
+    klog_info("[CT48] active %s io=0x%x cmd=0x%04x irq=%u pin=%u(%s) dma=0x%x src=0x%x codec=%04x:%04x pwr=0x%x",
               g_ct_chip_name, g_ct_io_base, final_cmd,
               g_ct_pci_dev ? (unsigned int)g_ct_pci_dev->irq_line : 0U,
+              g_ct_pci_dev ? (unsigned int)g_ct_pci_dev->irq_pin : 0U,
               irq_rc == 0 ? "ok" : "poll",
               g_ct_dma_phys, ct_read32(CT_REG_SRC_CONTROL), id1, id2, pwr);
     return 0;
@@ -755,14 +756,9 @@ static void ct4810_irq_handler(void* ctx) {
         if (frame != g_ct_last_seen_frame) {
             int current_playing_half = (frame < CT_DMA_HALF_FRAMES) ? 0 : 1;
             g_ct_last_seen_frame = frame;
-            g_ct_hw_reg_moving = 1;
-            if (current_playing_half != g_ct_last_half_playing) {
-                g_ct_last_half_playing = current_playing_half;
-                next_fill_half = 1 - current_playing_half;
-            } else {
-                g_ct_last_half_playing = 1 - current_playing_half;
-                next_fill_half = current_playing_half;
-            }
+            if (frame > 0) g_ct_hw_reg_moving = 1;
+            g_ct_last_half_playing = current_playing_half;
+            next_fill_half = 1 - current_playing_half;
         } else {
             next_fill_half = (g_ct_last_half_playing >= 0) ? g_ct_last_half_playing : 0;
             g_ct_last_half_playing = 1 - next_fill_half;
@@ -855,7 +851,6 @@ static void ct4810_silence_half(int half_idx) {
 static int ct4810_poll_half_needed(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_running) return -1;
     if (g_ct_irq_seen) return -1;
-    if (g_ct_irq_registered && (global_tick - g_ct_last_toggle_tick) < 100) return -1;
 
     unsigned int frame = ct4810_get_dma_frame_pos();
     if (g_ct_last_seen_frame == 0xFFFFFFFFU) {

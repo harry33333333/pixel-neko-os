@@ -82,6 +82,18 @@ void apic_enable_pci_irq(uint8_t irq_line) {
                irq_line, gsi, 32u + irq_line, flags);
 }
 
+void apic_enable_pci_gsi(uint8_t gsi, uint16_t flags) {
+    if (gsi >= 24u) return;
+    if (flags == 0) {
+        /* PCI INTx lines are level-triggered (bit 3) and active-low (bit 1). */
+        flags = 0x000Au;
+    }
+
+    ioapic_set_entry(gsi, (uint8_t)(32u + gsi), 0, flags, false);
+    log_printf("[APIC] Enabled PCI GSI %u -> Vector %u (flags=0x%02x)\n",
+               gsi, 32u + gsi, flags);
+}
+
 static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
 }
@@ -232,5 +244,6 @@ void apic_init(void) {
     ioapic_set_entry(mouse_gsi, 44, 0, mouse_flags, false);
     log_printf("[APIC] Routed IRQ 12 (Mouse) to GSI %u, Vector 44\n", mouse_gsi);
 
+    acpi_set_apic_mode();
     log_printf("[APIC] Modern Interrupt Subsystem (LAPIC/IOAPIC) initialized successfully.\n");
 }

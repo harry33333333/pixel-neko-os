@@ -50,5 +50,6 @@ void idt_set_gate(uint8_t num, uint64_t handler, uint16_t sel, uint8_t flags, ui
 void irq_install_handler(int irq, irq_handler_t handler);
 void irq_uninstall_handler(int irq);
 int  irq_register_pci_handler(uint8_t irq, pci_irq_handler_t handler, void* ctx);
+int  irq_register_pci_gsi(uint8_t gsi, uint16_t flags, pci_irq_handler_t handler, void* ctx);
 
 #endif /* _IDT_H */

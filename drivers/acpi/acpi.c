@@ -7,9 +7,13 @@
 #include "log.h"
 #include "port.h"
 #include "string.h"
+#include "pci.h"
 
+#include <uacpi/namespace.h>
+#include <uacpi/resources.h>
 #include <uacpi/sleep.h>
 #include <uacpi/uacpi.h>
+#include <uacpi/utilities.h>
 
 extern volatile struct limine_rsdp_request rsdp_request;
 
@@ -731,6 +735,212 @@ void acpi_set_uacpi_enabled(bool enabled) {
 
 bool acpi_uacpi_available(void) {
     return g_uacpi_namespace_ready;
+}
+
+void acpi_set_apic_mode(void) {
+    if (!g_uacpi_enabled || !g_uacpi_namespace_ready) return;
+    uacpi_status status = uacpi_set_interrupt_model(UACPI_INTERRUPT_MODEL_IOAPIC);
+    log_printf("[uACPI] Set interrupt model IOAPIC (_PIC=1): %s\n",
+               uacpi_status_to_string(status));
+}
+
+typedef struct {
+    uacpi_namespace_node* root;
+    uacpi_u8 bus;
+} acpi_pci_root_ctx_t;
+
+typedef struct {
+    uacpi_u64 exact_adr;
+    uacpi_u64 wild_adr;
+    uacpi_namespace_node* match;
+} acpi_pci_child_ctx_t;
+
+typedef struct {
+    uacpi_u32 index;
+    int gsi;
+    uacpi_u16 flags;
+} acpi_prt_link_ctx_t;
+
+typedef struct {
+    uint8_t slot;
+    uint8_t func;
+} acpi_pci_hop_t;
+
+static uacpi_iteration_decision acpi_find_pci_root_cb(void* user,
+                                                      uacpi_namespace_node* node,
+                                                      uacpi_u32 depth) {
+    (void)depth;
+    acpi_pci_root_ctx_t* ctx = (acpi_pci_root_ctx_t*)user;
+    uacpi_u64 bbn = 0;
+    (void)uacpi_eval_simple_integer(node, "_BBN", &bbn);
+    if ((uacpi_u8)bbn == ctx->bus) {
+        ctx->root = node;
+        return UACPI_ITERATION_DECISION_BREAK;
+    }
+    if (!ctx->root) ctx->root = node;
+    return UACPI_ITERATION_DECISION_CONTINUE;
+}
+
+static uacpi_iteration_decision acpi_find_pci_child_cb(void* user,
+                                                       uacpi_namespace_node* node,
+                                                       uacpi_u32 depth) {
+    (void)depth;
+    acpi_pci_child_ctx_t* ctx = (acpi_pci_child_ctx_t*)user;
+    uacpi_u64 adr = 0;
+    if (uacpi_eval_adr(node, &adr) != UACPI_STATUS_OK) {
+        return UACPI_ITERATION_DECISION_CONTINUE;
+    }
+    if (adr == ctx->exact_adr) {
+        ctx->match = node;
+        return UACPI_ITERATION_DECISION_BREAK;
+    }
+    if (!ctx->match && adr == ctx->wild_adr) {
+        ctx->match = node;
+    }
+    return UACPI_ITERATION_DECISION_CONTINUE;
+}
+
+static uacpi_iteration_decision acpi_extract_link_irq_cb(void* user,
+                                                         uacpi_resource* res) {
+    acpi_prt_link_ctx_t* ctx = (acpi_prt_link_ctx_t*)user;
+    if (res->type == UACPI_RESOURCE_TYPE_IRQ && res->irq.num_irqs > 0) {
+        uacpi_u32 idx = (ctx->index < res->irq.num_irqs) ? ctx->index : 0;
+        ctx->gsi = (int)res->irq.irqs[idx];
+        ctx->flags = 0;
+        if (res->irq.polarity == UACPI_POLARITY_ACTIVE_LOW) ctx->flags |= 0x0002u;
+        if (res->irq.triggering == UACPI_TRIGGERING_LEVEL) ctx->flags |= 0x0008u;
+        return UACPI_ITERATION_DECISION_BREAK;
+    }
+    if (res->type == UACPI_RESOURCE_TYPE_EXTENDED_IRQ &&
+        res->extended_irq.num_irqs > 0) {
+        uacpi_u32 idx = (ctx->index < res->extended_irq.num_irqs) ? ctx->index : 0;
+        ctx->gsi = (int)res->extended_irq.irqs[idx];
+        ctx->flags = 0;
+        if (res->extended_irq.polarity == UACPI_POLARITY_ACTIVE_LOW) ctx->flags |= 0x0002u;
+        if (res->extended_irq.triggering == UACPI_TRIGGERING_LEVEL) ctx->flags |= 0x0008u;
+        return UACPI_ITERATION_DECISION_BREAK;
+    }
+    return UACPI_ITERATION_DECISION_CONTINUE;
+}
+
+static int acpi_eval_prt_entry(uacpi_namespace_node* node, uint8_t slot,
+                               uint8_t pin_zero_based, uint16_t* out_flags) {
+    uacpi_pci_routing_table* prt = NULL;
+    if (uacpi_get_pci_routing_table(node, &prt) != UACPI_STATUS_OK || !prt) {
+        return -1;
+    }
+
+    int result_gsi = -1;
+    uint16_t result_flags = 0x000Au;
+    for (uacpi_size i = 0; i < prt->num_entries; i++) {
+        const uacpi_pci_routing_table_entry* e = &prt->entries[i];
+        uint16_t entry_slot = (uint16_t)((e->address >> 16) & 0xFFFFu);
+        if (entry_slot != (uint16_t)slot || e->pin != pin_zero_based) continue;
+
+        if (!e->source) {
+            result_gsi = (int)e->index;
+            result_flags = 0x000Au;
+            break;
+        }
+
+        uacpi_resources* res = NULL;
+        if (uacpi_get_current_resources(e->source, &res) == UACPI_STATUS_OK && res) {
+            acpi_prt_link_ctx_t lctx = { .index = e->index, .gsi = -1, .flags = 0x000Au };
+            (void)uacpi_for_each_resource(res, acpi_extract_link_irq_cb, &lctx);
+            uacpi_free_resources(res);
+            if (lctx.gsi >= 0) {
+                result_gsi = lctx.gsi;
+                result_flags = lctx.flags ? lctx.flags : 0x000Au;
+                break;
+            }
+        }
+    }
+
+    uacpi_free_pci_routing_table(prt);
+    if (result_gsi >= 0 && out_flags) *out_flags = result_flags;
+    return result_gsi;
+}
+
+int acpi_resolve_pci_irq_gsi(uint8_t bus, uint8_t slot, uint8_t pin, uint16_t* out_flags) {
+    if (!g_uacpi_enabled || !g_uacpi_namespace_ready || pin < 1 || pin > 4) return -1;
+
+    static const uacpi_char* const pci_root_hids[] = {
+        "PNP0A03", "PNP0A08", UACPI_NULL
+    };
+    acpi_pci_root_ctx_t root_ctx = { .root = NULL, .bus = 0 };
+    (void)uacpi_find_devices_at(uacpi_namespace_root(), pci_root_hids,
+                                acpi_find_pci_root_cb, &root_ctx);
+    if (!root_ctx.root) return -1;
+
+    acpi_pci_hop_t hops[16];
+    int hop_count = 0;
+    uint8_t cur_bus = bus;
+    int pci_count = pci_get_device_count();
+
+    while (cur_bus != 0 && hop_count < 16) {
+        const pci_device_t* best_bridge = NULL;
+        uint8_t best_span = 255;
+        for (int i = 0; i < pci_count; i++) {
+            const pci_device_t* d = pci_get_device(i);
+            if (!d || d->class_code != 0x06 || d->subclass != 0x04) continue;
+            uint32_t breg = pci_config_read(d->bus, d->slot, d->function, 0x18);
+            uint8_t sec = (uint8_t)((breg >> 8) & 0xFFu);
+            uint8_t sub = (uint8_t)((breg >> 16) & 0xFFu);
+            if (cur_bus >= sec && cur_bus <= sub) {
+                uint8_t span = (uint8_t)(sub - sec);
+                if (sec == cur_bus) {
+                    best_bridge = d;
+                    break;
+                }
+                if (!best_bridge || span < best_span) {
+                    best_bridge = d;
+                    best_span = span;
+                }
+            }
+        }
+        if (!best_bridge || best_bridge->bus == cur_bus) break;
+        hops[hop_count].slot = best_bridge->slot;
+        hops[hop_count].func = best_bridge->function;
+        hop_count++;
+        cur_bus = best_bridge->bus;
+    }
+
+    uacpi_namespace_node* nodes[17];
+    nodes[0] = root_ctx.root;
+    for (int i = 0; i < hop_count; i++) {
+        uacpi_namespace_node* parent = nodes[i];
+        uacpi_namespace_node* child = NULL;
+        if (parent) {
+            const acpi_pci_hop_t* hop = &hops[hop_count - 1 - i];
+            acpi_pci_child_ctx_t cctx = {
+                .exact_adr = ((uacpi_u64)hop->slot << 16) | hop->func,
+                .wild_adr = ((uacpi_u64)hop->slot << 16) | 0xFFFFu,
+                .match = NULL
+            };
+            (void)uacpi_namespace_for_each_child(parent, acpi_find_pci_child_cb,
+                                                 NULL, UACPI_OBJECT_DEVICE_BIT,
+                                                 1, &cctx);
+            child = cctx.match;
+        }
+        nodes[i + 1] = child;
+    }
+
+    uint8_t cur_slot = slot;
+    uint8_t cur_pin = pin;
+    for (int level = hop_count; level >= 0; level--) {
+        if (nodes[level]) {
+            int gsi = acpi_eval_prt_entry(nodes[level], cur_slot,
+                                          (uint8_t)(cur_pin - 1u), out_flags);
+            if (gsi >= 0) return gsi;
+        }
+        if (level > 0) {
+            const acpi_pci_hop_t* hop = &hops[hop_count - level];
+            cur_pin = (uint8_t)(((cur_pin - 1u + cur_slot) % 4u) + 1u);
+            cur_slot = hop->slot;
+        }
+    }
+
+    return -1;
 }
 
 static bool run_gas_register_self_test(void) {

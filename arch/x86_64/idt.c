@@ -60,6 +60,14 @@ extern void irq12(void);
 extern void irq13(void);
 extern void irq14(void);
 extern void irq15(void);
+extern void irq16(void);
+extern void irq17(void);
+extern void irq18(void);
+extern void irq19(void);
+extern void irq20(void);
+extern void irq21(void);
+extern void irq22(void);
+extern void irq23(void);
 extern void isr_kernel_yield(void);
 extern void isr_spurious(void);
 
@@ -71,16 +79,18 @@ static idt_ptr_t g_idt_ptr;
 static irq_handler_t g_irq_handlers[16] = {0};
 
 #define PCI_IRQ_MAX_SLOTS 4
+#define PCI_IRQ_NUM_LINES 24
 typedef struct {
     pci_irq_handler_t handler;
     void*             ctx;
 } pci_irq_slot_t;
 
-static pci_irq_slot_t g_pci_irq_slots[16][PCI_IRQ_MAX_SLOTS];
+static pci_irq_slot_t g_pci_irq_slots[PCI_IRQ_NUM_LINES][PCI_IRQ_MAX_SLOTS];
 
 // Forward declaration of LAPIC EOI & IOAPIC PCI enable
 extern void lapic_eoi(void);
 extern void apic_enable_pci_irq(uint8_t irq_line);
+extern void apic_enable_pci_gsi(uint8_t gsi, uint16_t flags);
 
 static const char* exception_names[32] = {
     "#DE: Divide-by-Zero Error",
@@ -139,27 +149,37 @@ void irq_uninstall_handler(int irq) {
     }
 }
 
-int irq_register_pci_handler(uint8_t irq, pci_irq_handler_t handler, void* ctx) {
-    if (irq >= 16 || !handler) return -1;
+static int irq_register_pci_slot(uint8_t slot, pci_irq_handler_t handler, void* ctx) {
+    if (slot >= PCI_IRQ_NUM_LINES || !handler) return -1;
 
     for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
-        if (g_pci_irq_slots[irq][i].handler == handler &&
-            g_pci_irq_slots[irq][i].ctx == ctx) {
-            apic_enable_pci_irq(irq);
+        if (g_pci_irq_slots[slot][i].handler == handler &&
+            g_pci_irq_slots[slot][i].ctx == ctx) {
             return 0;
         }
     }
 
     for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
-        if (!g_pci_irq_slots[irq][i].handler) {
-            g_pci_irq_slots[irq][i].handler = handler;
-            g_pci_irq_slots[irq][i].ctx = ctx;
-            apic_enable_pci_irq(irq);
+        if (!g_pci_irq_slots[slot][i].handler) {
+            g_pci_irq_slots[slot][i].handler = handler;
+            g_pci_irq_slots[slot][i].ctx = ctx;
             return 0;
         }
     }
 
     return -1;
+}
+
+int irq_register_pci_handler(uint8_t irq, pci_irq_handler_t handler, void* ctx) {
+    if (irq >= 16 || irq_register_pci_slot(irq, handler, ctx) != 0) return -1;
+    apic_enable_pci_irq(irq);
+    return 0;
+}
+
+int irq_register_pci_gsi(uint8_t gsi, uint16_t flags, pci_irq_handler_t handler, void* ctx) {
+    if (gsi >= PCI_IRQ_NUM_LINES || irq_register_pci_slot(gsi, handler, ctx) != 0) return -1;
+    apic_enable_pci_gsi(gsi, flags);
+    return 0;
 }
 
 // C-level exception dispatcher called from common_isr_stub
@@ -213,10 +233,10 @@ trap_frame_t* c_irq_handler(trap_frame_t* frame) {
     if (!frame) return frame;
     int irq = (int)frame->int_no - 32;
 
-    if (irq >= 0 && irq < 16) {
-        if (g_irq_handlers[irq]) {
-            g_irq_handlers[irq](frame);
-        }
+    if (irq >= 0 && irq < 16 && g_irq_handlers[irq]) {
+        g_irq_handlers[irq](frame);
+    }
+    if (irq >= 0 && irq < PCI_IRQ_NUM_LINES) {
         for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
             if (g_pci_irq_slots[irq][i].handler) {
                 g_pci_irq_slots[irq][i].handler(g_pci_irq_slots[irq][i].ctx);
@@ -289,6 +309,14 @@ void idt_init(void) {
     idt_set_gate(45, (uint64_t)irq13, GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(46, (uint64_t)irq14, GDT_KERNEL_CODE_SEL, 0x8E, 0);
     idt_set_gate(47, (uint64_t)irq15, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(48, (uint64_t)irq16, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(49, (uint64_t)irq17, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(50, (uint64_t)irq18, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(51, (uint64_t)irq19, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(52, (uint64_t)irq20, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(53, (uint64_t)irq21, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(54, (uint64_t)irq22, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(55, (uint64_t)irq23, GDT_KERNEL_CODE_SEL, 0x8E, 0);
 
     // Kernel thread cooperative reschedule gate (DPL 0 only)
     idt_set_gate(0x81, (uint64_t)isr_kernel_yield, GDT_KERNEL_CODE_SEL, 0x8E, 0);

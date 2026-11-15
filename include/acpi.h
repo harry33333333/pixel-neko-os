@@ -100,6 +100,8 @@ bool acpi_has_pic(void);
 uint32_t acpi_get_core_count(void);
 void acpi_set_uacpi_enabled(bool enabled);
 bool acpi_uacpi_available(void);
+void acpi_set_apic_mode(void);
+int acpi_resolve_pci_irq_gsi(uint8_t bus, uint8_t slot, uint8_t pin, uint16_t* out_flags);
 bool acpi_run_gas_self_test(void);
 void acpi_shutdown(void);
 void acpi_reboot(void);
