@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A225g"
+          VERSION="26A225h"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -107,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision stops audio playback automatically when NekoPlayer closes or the owning process exits/terminates, restores the draggable scrollbar slider on the Control Panel resolution dropdown, publishes PDV/PXE developer guides (`docs/driver_develop.md`, `docs/executable_develop.md`) alongside an updated `README.md`, and bumps the release version to `v26A225g`.
+          This revision explicitly enforces PCI Bus Master (Command bit 2) in ct4810 probe, fixes ES1371 DAC2 memory page / SRC frequency step (`(sample_rate << 16) / 3000`) / playback start & IRQ 9 interrupt ack/re-arm with `[CT48]` register debug logging, eliminates a `start_dma` audio state race, and bumps the release version to `v26A225h`.
         draft: false
         prerelease: true
         make_latest: false

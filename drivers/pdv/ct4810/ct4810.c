@@ -51,7 +51,8 @@ static const pdv_kernel_api_t* g_kapi = 0;
 #define CT_SERIAL_P2_END_MASK        (0x07U << 19)
 #define CT_SERIAL_P2_START_INC(slot) (((slot) & 0x07) << 16)
 #define CT_SERIAL_P2_START_MASK      (0x07U << 16)
-#define CT_SERIAL_P2_LOOPBACK        (1U << 14)
+#define CT_SERIAL_P2_LOOP_SEL        (1U << 14)
+#define CT_SERIAL_P2_LOOPBACK        CT_SERIAL_P2_LOOP_SEL
 #define CT_SERIAL_P2_PAUSE           (1U << 12)
 #define CT_SERIAL_P2_INTERRUPT       (1U << 9)
 #define CT_SERIAL_P2_DAC_SLOT_ENABLE (1U << 6)
@@ -121,6 +122,7 @@ static pdv_dma_buffer_t g_ct_dma;
 static volatile int g_ct_dma_running = 0;
 static volatile int g_ct_irq_registered = 0;
 static volatile int g_ct_irq_seen = 0;
+static volatile unsigned int g_ct_irq_log_count = 0;
 static volatile int g_ct_last_half_playing = -1;
 static volatile int g_ct_half_filled[2] = {0, 0};
 static volatile int g_ct_last_toggle_tick = 0;
@@ -316,10 +318,11 @@ static void ct_src_set_rate(unsigned short base, int rate) {
 
     if (rate < 3000) rate = 3000;
     if (rate > 48000) rate = 48000;
-    freq = (((unsigned int)rate << 15) + 1500U) / 3000U;
+    freq = ((unsigned int)rate << 16) / 3000U;
 
     disable = ct_src_channel_disable_bit(base);
     r = (ct_src_wait_idle() & CT_SRC_STATE_MASK) | disable;
+    r &= ~CT_SRC_DISABLE;
     ct_write32(CT_REG_SRC_CONTROL, r);
 
     if (base == CT_SRC_DAC2_BASE) {
@@ -329,10 +332,10 @@ static void ct_src_set_rate(unsigned short base, int rate) {
     integer_field = ct_src_read_word((unsigned short)(base + CT_SRC_INTEGER_FREQUENCY));
     ct_src_write_word((unsigned short)(base + CT_SRC_INTEGER_FREQUENCY),
                       (unsigned short)((integer_field & 0x00FFU) |
-                                      ((freq >> 5) & 0xFC00U)));
+                                      ((freq >> 6) & 0xFC00U)));
     ct_src_write_word((unsigned short)(base + CT_SRC_ACCUM_FRAC_OFFSET), 0U);
     ct_src_write_word((unsigned short)(base + CT_SRC_FRACTIONAL_FREQUENCY),
-                      (unsigned short)(freq & 0x7FFFU));
+                      (unsigned short)((freq >> 1) & 0x7FFFU));
 
     if (base == CT_SRC_DAC2_BASE) {
         ct_src_write_word(CT_SRC_DAC2_VOL_LEFT_REG, 0x1000U);
@@ -409,6 +412,7 @@ static int ct4810_init(void) {
     g_ct_dma_running = 0;
     g_ct_irq_registered = 0;
     g_ct_irq_seen = 0;
+    g_ct_irq_log_count = 0;
     g_ct_revision = 0;
     g_ct_is_ev1938 = 0;
     g_ct_ctrl_base = 0;
@@ -432,6 +436,14 @@ static int ct4810_init(void) {
         g_kapi->pci_enable_io(pci);
         g_kapi->pci_enable_memory(pci);
         g_kapi->pci_enable_bus_master(pci);
+
+        uint16_t pci_cmd = (uint16_t)(g_kapi->pci_config_read(
+            pci->bus, pci->slot, pci->function, 0x04) & 0xFFFFU);
+        if ((pci_cmd & 0x0007U) != 0x0007U || (pci_cmd & 0x0400U) != 0U) {
+            pci_cmd = (uint16_t)((pci_cmd | 0x0007U) & ~0x0400U);
+            g_kapi->pci_config_write(pci->bus, pci->slot, pci->function,
+                                     0x04, (uint32_t)pci_cmd);
+        }
 
         unsigned int latency = g_kapi->pci_config_read(pci->bus, pci->slot,
                                                        pci->function, 0x0C);
@@ -562,11 +574,15 @@ static int ct4810_init(void) {
     }
     g_ct_irq_registered = (irq_rc == 0) ? 1 : 0;
 
-    klog_info("[CT48] active %s io=0x%x irq=%u(%s) dma=0x%x codec=%04x:%04x pwr=0x%x",
-              g_ct_chip_name, g_ct_io_base,
+    unsigned int final_cmd = g_ct_pci_dev
+        ? (g_kapi->pci_config_read(g_ct_pci_dev->bus, g_ct_pci_dev->slot,
+                                   g_ct_pci_dev->function, 0x04) & 0xFFFFU)
+        : 0U;
+    klog_info("[CT48] active %s io=0x%x cmd=0x%04x irq=%u(%s) dma=0x%x src=0x%x codec=%04x:%04x pwr=0x%x",
+              g_ct_chip_name, g_ct_io_base, final_cmd,
               g_ct_pci_dev ? (unsigned int)g_ct_pci_dev->irq_line : 0U,
               irq_rc == 0 ? "ok" : "poll",
-              g_ct_dma_phys, id1, id2, pwr);
+              g_ct_dma_phys, ct_read32(CT_REG_SRC_CONTROL), id1, id2, pwr);
     return 0;
 }
 
@@ -613,8 +629,14 @@ static void ct4810_start_dma(void) {
     control |= g_ct_ctrl_base;
     ct_write32(CT_REG_CONTROL, control);
 
+    unsigned int src_ctrl = ct_src_wait_idle() & CT_SRC_STATE_MASK;
+    if (src_ctrl & (CT_SRC_DISABLE | CT_SRC_DAC2_DISABLE)) {
+        src_ctrl &= ~(CT_SRC_DISABLE | CT_SRC_DAC2_DISABLE);
+        ct_write32(CT_REG_SRC_CONTROL, src_ctrl);
+    }
+
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
-    sctrl &= ~(CT_SERIAL_P2_LOOPBACK | CT_SERIAL_P2_INTERRUPT |
+    sctrl &= ~(CT_SERIAL_P2_LOOP_SEL | CT_SERIAL_P2_INTERRUPT |
                CT_SERIAL_P2_DAC_SLOT_ENABLE);
     sctrl |= CT_SERIAL_P2_PAUSE;
     ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
@@ -631,9 +653,10 @@ static void ct4810_start_dma(void) {
     g_ct_last_seen_frame = 0xFFFFFFFFU;
     g_ct_hw_reg_moving = 0;
     g_ct_irq_seen = 0;
+    g_ct_irq_log_count = 0;
 
-    /* Explicitly clear ES_P2_PAUSE and enable ES_P2_INT_EN before asserting ES_DAC2_EN. */
-    sctrl &= ~CT_SERIAL_P2_PAUSE;
+    /* Explicitly clear ES_P2_LOOP_SEL and ES_P2_PAUSE, and enable ES_P2_INT_EN before asserting ES_DAC2_EN. */
+    sctrl &= ~(CT_SERIAL_P2_LOOP_SEL | CT_SERIAL_P2_PAUSE);
     sctrl |= CT_SERIAL_P2_INTERRUPT;
     ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
     (void)ct_read32(CT_REG_SERIAL_CONTROL);
@@ -641,6 +664,14 @@ static void ct4810_start_dma(void) {
     control |= CT_CONTROL_DAC2_ENABLE;
     ct_write32(CT_REG_CONTROL, control);
     (void)ct_read32(CT_REG_CONTROL);
+
+    klog_info("[CT48] start: CTRL=0x%08x SERIAL=0x%08x STATUS=0x%08x SCOUNT=0x%08x SRC=0x%08x rate=%d",
+              ct_read32(CT_REG_CONTROL),
+              ct_read32(CT_REG_SERIAL_CONTROL),
+              ct_read32(CT_REG_STATUS),
+              ct_read32(CT_REG_DAC2_COUNT),
+              ct_read32(CT_REG_SRC_CONTROL),
+              g_ct_sample_rate);
 }
 
 static void ct4810_stop_dma(void) {
@@ -698,6 +729,16 @@ static void ct4810_irq_handler(void* ctx) {
 
     unsigned int status = ct_read32(CT_REG_STATUS);
     if (!(status & CT_STATUS_INTR) || !(status & CT_STATUS_DAC2)) return;
+
+    g_ct_irq_log_count++;
+    if (g_ct_irq_log_count <= 5U) {
+        klog_info("[CT48] irq#%u: CTRL=0x%08x SERIAL=0x%08x STATUS=0x%08x SCOUNT=0x%08x",
+                  (unsigned int)g_ct_irq_log_count,
+                  ct_read32(CT_REG_CONTROL),
+                  ct_read32(CT_REG_SERIAL_CONTROL),
+                  status,
+                  ct_read32(CT_REG_DAC2_COUNT));
+    }
 
     /* Clear ES_P2_INT_EN first to acknowledge the ES1371 DAC2 interrupt. */
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
