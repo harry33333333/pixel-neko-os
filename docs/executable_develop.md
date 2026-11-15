@@ -1,0 +1,217 @@
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A225g`）
+
+在当前 `main` 主干（基准版本 **`v26A225g`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+
+---
+
+## 一、 架构概述与双环模型
+
+### 1.1 文件格式与存储布局
+
+- **`*.pxe` 容器（`PXE\x01`）**：由 [sdk/tools/mkpxe.py](../sdk/tools/mkpxe.py) 将声明式清单（`*.pxi`）与位置无关 ELF64 可执行体（`PIE`）打包而成，结构定义见 [sdk/include/pxe/format.h](../sdk/include/pxe/format.h)：
+  - **128 字节 `pxe_header_t`**：魔数 `0x01455850u`（`"PXE\x01"`）、`abi_version = 0x0100u`、`arch = 0x8664u`（x86_64）、`exec_ring`（`3` 或 `0`）、`subsystem`、`flags`、`stack_size`、`heap_init_size`、`def_win_w/h`、`min_win_w/h`、全文件 IEEE 802.3 CRC32 校验、`app_name` 与 `app_version`。
+  - **384 字节 `pxe_resource_t`**：内嵌 `16x16` 8-bit 索引色图标（`255` 为透明）、窗口标题 `title`、作者 `author`、文件扩展名关联 `ext_assoc`（如 `"txt,log,md"`）。
+  - **4096 字节对齐的 ELF64 PIE 载荷**：单文件大小上限 `8 MB`（`PXE_MAX_FILE_BYTES`）。
+- **磁盘部署路径**：
+  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`puzzle`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`taskmgr`、`install`）
+  - 示例程序：`\DEMO\*.pxe`（`hello.pxe`、`mini_taskmon.pxe`）
+  - 用户双击文件管理（`files.pxe`）中任意 `.pxe`（或关联扩展名的文件）即可由内核动态加载运行。
+
+### 1.2 Ring 3 与 Ring 0 执行对比
+
+| 特性 | Ring 3 用户态（`PXE_RING = 3`，默认） | Ring 0 特权态（`PXE_RING = 0`） |
+| :--- | :--- | :--- |
+| **适用场景** | 普通 GUI 应用、工具、媒体播放器、设置客户端 | 系统信息、磁盘分区/安装器、任务管理器（如 `sysinfo`、`taskmgr`、`install`、`mini_taskmon`） |
+| **编译参数** | `-fPIE -msse2` | `-fPIE -mgeneral-regs-only`（禁用 SSE/FPU） |
+| **入口与运行库** | `crt0_r3.asm` (`_start`) + `runtime_r3.c` | `crt0_r0.asm` (`_start_r0`) + `runtime_r0.c` |
+| **地址空间** | 独立进程页表（W^X 隔离）、`SYSCALL`/`SYSRET` 系统调用 | 高半区动态 PIE 槽位（`0xFFFFFFFFC0000000`~`0xFFFFFFFFEFFFFFFF`，`16 MB` 槽宽），通过 `g_pxe_ring0_api`（`PXE_R0_API_VERSION = 0x0101u`）直接调用内核函数 |
+| **安全与故障隔离** | 发生 `#PF`/`#GP` 异常仅终止当前应用并弹出 System Bomb 隔离窗，不影响系统稳定性 | 启动非内置路径需经桌面特权确认框；拥有硬件/进程底层能力 |
+
+> 注意：`SHM` 共享窗口画布槽步长在 `v26A220a` 中已扩展为 **`NEKO_SHM_STRIDE = 0x04000000ULL`（64 MB）**，足以支持 `4K+` 超高分辨率真彩色可调大小窗口表面映射。
+
+---
+
+## 二、 清单文件规范（`*.pxi`）
+
+`.pxi` 采用 INI 语法，由 [sdk/tools/mkpxe.py](../sdk/tools/mkpxe.py) 解析：
+
+```ini
+[app]
+name           = myapp
+title          = "My PXE App"
+author         = "Pixel Neko Developer"
+version        = "1.0.0"
+ring           = 3              ; 3 = Ring 3 用户态, 0 = Ring 0 特权态
+subsystem      = GUI            ; GUI 或 BACKGROUND
+flags          = SINGLE_INST | RESIZABLE
+stack_size     = 64K            ; 支持 K / KB / M / MB 后缀
+heap_init_size = 128K
+def_w          = 360
+def_h          = 240
+min_w          = 260
+min_h          = 180
+; ext_assoc    = "txt,md"       ; 可选：关联双击打开的文件扩展名
+
+[icon]
+row00 = ................
+row01 = ..000000000000..
+row02 = .09999999999990.
+...
+row15 = ................
+```
+
+### 可选 `[app]` 标志（`flags`，支持 `|`、`,`、`+` 组合）
+
+- `NONE`：无特殊标志
+- `SINGLE_INST`（`PXE_FLAG_SINGLE_INST`）：单实例模式，重复启动时聚焦已运行窗口而非新开进程
+- `RESIZABLE`（`PXE_FLAG_RESIZABLE`）：允许窗口右下角拖拽调整大小，内核会自动分配充足的窗口画布并发送 `PXE_EV_RESIZE` 事件
+- `NO_CLOSE`（`PXE_FLAG_NO_CLOSE`）：隐藏标题栏关闭/折叠按钮
+- `SYS_SETTINGS`（`PXE_FLAG_SYS_SETTINGS`）：授予 Ring 3 程序写系统显示/桌面配置的权限（如 `pxe_display_apply_mode()`、`pxe_display_set_mode()`；只读查询 `pxe_display_get_caps()` 不受此标志限制）
+
+### `[icon]` 字符调色板
+
+若省略 `[icon]`，打包器会自动填充默认 R3/R0 图标；若提供则必须完整编写 `row00` 到 `row15`（每行 16 个字符）：
+- `.`、`_`、`-`：透明像素（索引 `255`）
+- `0`~`9`、`a`~`f`（十六进制）：标准 16 色调色板索引（例如 `0`=黑，`7`=浅灰，`8`=深灰，`9`=蓝，`c`=红，`e`=黄，`f`=白）
+
+---
+
+## 三、 PXE SDK 核心头文件与 API 参考
+
+头文件统一位于 [sdk/include/pxe/](../sdk/include/pxe/)，应用代码只需 `#include <pxe/sys.h>` 等对应头。
+
+### 3.1 系统与动态显示能力（`<pxe/sys.h>`, `<pxe/abi.h>`）
+
+- **进程、时间与启动参数**：
+  - 入口函数支持标准 `int main(int argc, char** argv)`（`crt0_r3.asm` / `crt0_r0.asm` 传入 `argc`/`argv`，双击关联文档启动时 `argv[1]` 为目标路径；`SINGLE_INST` 重复唤醒通过 `PXE_EV_ACTIVATE` 事件的 `ev.text` 传递）
+  - `void pxe_exit(int status)`、`int pxe_getpid(void)`、`void pxe_yield(void)`、`void pxe_sleep_ms(uint32_t ms)`、`uint64_t pxe_get_ticks(void)`、`void pxe_debug_log(const char* msg)`
+  - `int pxe_spawn(const char* path, int argc, const char* const* argv)`、`int pxe_waitpid(int pid, int* out_status)`
+  - `int pxe_get_rtc_time(pxe_rtc_time_t* out)`、`int pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out)`
+- **显示能力探测与分辨率/色深控制（`v26A220a` 新增）**：
+  - **`int pxe_display_get_caps(pxe_display_caps_t* out)`**：从当前激活的显卡驱动动态读取显示能力，核心字段如下：
+    - `flags`：`PXE_DISP_FLAG_DRIVER_ACTIVE`（存在有效显卡驱动）、`PXE_DISP_FLAG_HW_2D`（硬件 2D 加速激活）、`PXE_DISP_FLAG_UNLIMITED_RES`（驱动已开启无人工上限模式）
+    - `min_w` / `min_h`：固定从 `640x480` 起步（彻底移除 `320x200`）
+    - `max_w` / `max_h`：当前显卡及系统内存允许的最大分辨率（回退无驱动模式时为 `1024x768`）
+    - `current_w` / `current_h` / `current_bpp`：当前屏幕实际分辨率与色深
+    - `vram_bytes`：显卡驱动精确探测到的显存字节数（如 ATI 2MB/4MB 或 VMware 实际分配显存）
+    - `bpp_mask`：全局支持的色深掩码（`PXE_DISP_BPP_8` | `16` | `24` | `32`；无有效驱动回退时仅有 `8 | 16`）
+    - `mode_count` 与 `modes[0..PXE_DISP_MAX_MODES-1]`：每个条目 `pxe_display_mode_t` 包含 `{ width, height, bpp_mask, preferred }`
+    - `driver_name[48]`、`driver_status[48]`、`fallback_reason[64]`
+  - `int pxe_display_set_mode(int width, int height, int bpp)` / `int pxe_display_apply_mode(int width, int height, int bpp)`：动态设置（并可选持久化保存）分辨率与色深（需要 `.pxi` 携带 `SYS_SETTINGS` 标志或以 Ring 0 运行）。
+
+### 3.2 窗口合成与图形界面（`<pxe/gui.h>`, `<pxe/gfx.h>`）
+
+- **窗口生命周期**：
+  - `int pxe_win_create(const pxe_win_desc_t* desc, pxe_win_surface_t* out_surface)`
+  - `int pxe_win_destroy(int win_id)`
+  - `int pxe_win_set_title(int win_id, const char* title)`
+  - `int pxe_win_set_menu(int win_id, const pxe_menu_bar_t* menu_bar)`
+  - `int pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface)`（收到 `PXE_EV_RESIZE` 后**务必调用**以刷新 `width`/`height`/`stride`）
+  - `int pxe_win_present(int win_id)` / `int pxe_win_present_rect(int win_id, int x, int y, int w, int h)`
+  - `int pxe_win_poll_event(int win_id, pxe_event_t* out_ev)` / `int pxe_win_wait_event(int win_id, pxe_event_t* out_ev)`
+  - `int pxe_clipboard_get(char* buf, size_t max_len)` / `int pxe_clipboard_set(const char* text)`、`void pxe_notify_banner(const char* message)`、`void pxe_beep(void)`
+- **基础与控件绘图（同时兼容 `PXE_CANVAS_PAL8` 与 `PXE_CANVAS_RGB32`）**：
+  - 像素与几何：`pxe_palette_to_rgb32`、`pxe_put_pixel`、`pxe_put_rgb32`、`pxe_fill_rect`、`pxe_draw_rect`、`pxe_draw_hline`、`pxe_draw_vline`
+  - 字体与经典 UI 控件：`pxe_draw_char`、`pxe_draw_text`、`pxe_draw_text_small`、`pxe_draw_bevel_box`、`pxe_draw_button`、`pxe_draw_scrollbar`、`pxe_point_in_rect`
+
+### 3.3 内存、字符串、文件系统与音频
+
+- **动态内存与字符串（`<pxe/mem.h>`, `<pxe/str.h>`）**：`pxe_sbrk`、`malloc`、`calloc`、`realloc`、`free`、`memcpy`、`memmove`、`memset`、`memcmp`、`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strcasecmp`/`strchr`/`strrchr`/`snprintf`/`vsnprintf`。
+- **虚拟文件系统（`<pxe/fs.h>`）**：使用 Windows 风格盘符路径（如 `"C:\\TEST.TXT"`）：
+  - `pxe_open`、`pxe_read`、`pxe_seek`、`pxe_close`、`pxe_stat`、`pxe_read_file`、`pxe_write_file`、`pxe_copy_file`、`pxe_listdir`、`pxe_mkdir`、`pxe_unlink`、`pxe_rename`、`pxe_get_drives`、`pxe_eject_drive`。
+- **音频控制与流式输入（`<pxe/audio.h>`）**：
+  - `pxe_audio_play_file`、`pxe_audio_pause`、`pxe_audio_resume`、`pxe_audio_stop`、`pxe_audio_seek`、`pxe_audio_set_volume`、`pxe_audio_toggle_mute`、`pxe_audio_get_status`、`pxe_audio_feed_pcm`。
+
+### 3.4 Ring 0 专属硬件与系统接口（`<pxe/ring0.h>`，仅 `PXE_RING = 0`）
+
+- 进程管理：`pxe_r0_enum_processes`、`pxe_r0_kill_process`、`pxe_r0_focus_process_window`、`pxe_r0_get_memory_summary`
+- 硬件与驱动管理：`pxe_r0_enum_pci_devices`、`pxe_r0_enum_usb_devices`、`pxe_r0_enum_pdv_drivers`、`pxe_r0_load_pdv_file`、`pxe_r0_rescan_pdevice_dir`
+- 存储与电源控制：`pxe_r0_enum_disks_and_parts`、`pxe_r0_format_partition`、`pxe_r0_raw_disk_rw`、`pxe_r0_vfs_remount_all`、`pxe_r0_sync_filesystems`、`pxe_r0_init_uninit_disk`、`pxe_r0_power_control`
+
+---
+
+## 四、 开发示例：创建并集成一个 GUI 应用
+
+### 4.1 最小 GUI 应用（带动态显示信息与调整大小支持）
+
+```c
+#include <pxe/sys.h>
+#include <pxe/gui.h>
+#include <pxe/gfx.h>
+#include <pxe/str.h>
+
+static void render(const pxe_win_surface_t* surf, const pxe_display_caps_t* caps) {
+    char line[96];
+    pxe_fill_rect(surf, 0, 0, surf->width, surf->height, PXE_COL_LIGHT_GRAY);
+    pxe_draw_bevel_box(surf, 8, 8, surf->width - 16, surf->height - 16, 1, PXE_COL_WHITE);
+
+    snprintf(line, sizeof(line), "Driver: %s", caps->driver_name[0] ? caps->driver_name : "Fallback");
+    pxe_draw_text(surf, 16, 18, line, PXE_COL_BLACK);
+
+    snprintf(line, sizeof(line), "Cur: %ux%ux%u  Max: %ux%u  Modes: %u",
+             caps->current_w, caps->current_h, caps->current_bpp,
+             caps->max_w, caps->max_h, caps->mode_count);
+    pxe_draw_text(surf, 16, 38, line, PXE_COL_BLUE);
+
+    snprintf(line, sizeof(line), "VRAM: %u KB  Status: %s",
+             (unsigned int)(caps->vram_bytes / 1024U),
+             (caps->flags & PXE_DISP_FLAG_DRIVER_ACTIVE) ? "Active Driver" : "Fallback (8/16b <=1024x768)");
+    pxe_draw_text(surf, 16, 58, line, PXE_COL_BLACK);
+}
+
+int main(void) {
+    pxe_win_desc_t desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.title = "Display Caps Demo";
+    desc.w = 380;
+    desc.h = 160;
+    desc.min_w = 280;
+    desc.min_h = 120;
+    desc.flags = PXE_WIN_RESIZABLE;
+    desc.format = PXE_CANVAS_PAL8; /* 可选 PXE_CANVAS_PAL8 或 PXE_CANVAS_RGB32 */
+
+    pxe_win_surface_t surf;
+    int win = pxe_win_create(&desc, &surf);
+    if (win < 0) return 1;
+
+    pxe_display_caps_t caps;
+    pxe_display_get_caps(&caps);
+
+    render(&surf, &caps);
+    pxe_win_present(win);
+
+    pxe_event_t ev;
+    while (pxe_win_wait_event(win, &ev) >= 0) {
+        if (ev.type == PXE_EV_CLOSE) break;
+        if (ev.type == PXE_EV_RESIZE) {
+            pxe_win_get_surface(win, &surf);
+            pxe_display_get_caps(&caps);
+            render(&surf, &caps);
+            pxe_win_present(win);
+        } else if (ev.type == PXE_EV_REDRAW) {
+            render(&surf, &caps);
+            pxe_win_present(win);
+        }
+    }
+    pxe_win_destroy(win);
+    return 0;
+}
+```
+
+### 4.2 构建 `Makefile`
+
+```makefile
+APP_NAME := myapp
+APP_SRCS := myapp.c
+APP_PXI  := myapp.pxi
+PXE_RING := 3
+SDK_DIR  := ../../sdk
+include $(SDK_DIR)/pxe_app.mk
+```
+
+- 独立开发目录运行 `make`（首次构建可先确保 `sdk_libs` 已编译）即生成 `build/myapp.pxe`。
+- 如需编译为系统内置应用并进入 ISO 镜像的 `APPS\` 目录：
+  1. 将源码与 `Makefile`、`.pxi` 放在 `pixel-neko-os/apps/myapp/`；
+  2. 在 [Makefile](../Makefile) 的 `APPS_PXE_NAMES` 中追加 `myapp`；
+  3. 在 [scripts/make_iso.sh](../scripts/make_iso.sh) 的 `REQUIRED_APPS` 中追加 `myapp`；
+  4. 参考完整内置示例：[apps/cpanel/cpanel.c](../apps/cpanel/cpanel.c)（Ring 3 + `SYS_SETTINGS` 动态分辨率切换）、[apps/sysinfo/sysinfo.c](../apps/sysinfo/sysinfo.c)（Ring 0 系统诊断）、[apps/taskmgr/taskmgr.c](../apps/taskmgr/taskmgr.c)（Ring 0 任务管理器）、[sdk/examples/hello_gui/hello.c](../sdk/examples/hello_gui/hello.c)、[sdk/examples/mini_taskmon/mini_taskmon.c](../sdk/examples/mini_taskmon/mini_taskmon.c)。

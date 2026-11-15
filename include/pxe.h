@@ -45,6 +45,7 @@ int  pxe_kern_fs_eject(char letter);
 
 int  pxe_kern_audio_get_status(pxe_audio_status_t* out);
 int  pxe_kern_audio_cmd(int cmd, int arg, const char* path, void* io_buf);
+void pxe_audio_on_process_exit(uint32_t pid);
 
 #endif /* _KERNEL_PXE_H */
 

@@ -771,6 +771,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    pxe_audio_stop();
     pxe_win_destroy(win_id);
     if (pl->back_pixels) free(pl->back_pixels);
     if (pl->bg_cache) free(pl->bg_cache);

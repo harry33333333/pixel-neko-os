@@ -10,6 +10,7 @@
 #include "syscall.h"
 #include "vfs.h"
 #include "wm.h"
+#include "pxe.h"
 
 #define USER_HEAP_DEFAULT_BASE  0x0000000010000000ULL
 #define USER_HEAP_DEFAULT_LIMIT 0x0000000200000000ULL
@@ -556,6 +557,7 @@ void process_cleanup_runtime_resources(process_t* process) {
     }
 
     wm_pxe_destroy_all_for_pid(process->pid);
+    pxe_audio_on_process_exit(process->pid);
 
     r0_alloc_node_t* cur = process->r0_allocs;
     while (cur) {

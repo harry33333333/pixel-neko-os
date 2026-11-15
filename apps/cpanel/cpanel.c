@@ -30,6 +30,9 @@ typedef struct {
     int bpp_open;
     int drag_mouse;
     int drag_vol;
+    int drag_res_sb;
+    int res_sb_drag_y;
+    int res_sb_drag_off;
 
     int revert_sec;
     int last_rtc_sec;
@@ -317,12 +320,8 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
             pxe_draw_text_small(surf, dx + 6, iy + 5, item_lbl, fg);
         }
         if (has_sb) {
-            int sbx = dx + dw - 18;
-            pxe_draw_vline(surf, sbx, dy + 1, dh - 2, PXE_COL_DARK_GRAY);
-            pxe_draw_bevel_box(surf, sbx + 1, dy + 1, 16, 18, 0, PXE_COL_LIGHT_GRAY);
-            pxe_draw_text_small(surf, sbx + 6, dy + 5, "^", PXE_COL_BLACK);
-            pxe_draw_bevel_box(surf, sbx + 1, dy + dh - 19, 16, 18, 0, PXE_COL_LIGHT_GRAY);
-            pxe_draw_text_small(surf, sbx + 6, dy + dh - 15, "v", PXE_COL_BLACK);
+            pxe_draw_scrollbar(surf, dx + dw - 17, dy + 1, 16, dh - 2,
+                               cp->res_scroll, vis, cp->caps.mode_count);
         }
     } else if (cp->bpp_open) {
         int dx = 126, dy = 104, dw = 204, dh = 4 * 18 + 2;
@@ -461,6 +460,26 @@ int main(int argc, char** argv) {
                         pxe_audio_set_volume(vol);
                         dirty = 1;
                     }
+                } else if (cp.drag_res_sb && cp.res_open && cp.caps.mode_count > CPANEL_DROPDOWN_VIS) {
+                    int vis = CPANEL_DROPDOWN_VIS;
+                    int dh = vis * 18 + 2;
+                    int track_h = (dh - 2) - 28;
+                    int thumb_h = (track_h * vis) / cp.caps.mode_count;
+                    if (thumb_h < 12) thumb_h = 12;
+                    if (thumb_h > track_h) thumb_h = track_h;
+                    int avail = track_h - thumb_h;
+                    int max_sc = cp.caps.mode_count - vis;
+                    if (avail > 0 && max_sc > 0) {
+                        int dy_drag = ev.y - cp.res_sb_drag_y;
+                        int half = (dy_drag >= 0) ? (avail / 2) : -(avail / 2);
+                        int next_off = cp.res_sb_drag_off + (dy_drag * max_sc + half) / avail;
+                        if (next_off < 0) next_off = 0;
+                        if (next_off > max_sc) next_off = max_sc;
+                        if (next_off != cp.res_scroll) {
+                            cp.res_scroll = next_off;
+                            dirty = 1;
+                        }
+                    }
                 }
             } else if (ev.type == PXE_EV_MOUSE_UP) {
                 if (cp.drag_mouse) {
@@ -468,6 +487,7 @@ int main(int argc, char** argv) {
                     pxe_settings_save();
                 }
                 cp.drag_vol = 0;
+                cp.drag_res_sb = 0;
             } else if (ev.type == PXE_EV_KEY_DOWN && cp.wp_modal) {
                 if (ev.key == PXE_KEY_ESC) {
                     cp.wp_modal = 0;
@@ -497,6 +517,7 @@ int main(int argc, char** argv) {
             } else if (ev.type == PXE_EV_KEY_DOWN && cp.res_open) {
                 if (ev.key == PXE_KEY_ESC || ev.key == PXE_KEY_ENTER) {
                     cp.res_open = 0;
+                    cp.drag_res_sb = 0;
                     dirty = 1;
                 } else if (ev.key == PXE_KEY_UP && cp.sel_res > 0) {
                     cp.sel_res--;
@@ -557,15 +578,39 @@ int main(int argc, char** argv) {
                     int has_sb = (cp.caps.mode_count > CPANEL_DROPDOWN_VIS);
                     int dx = 126, dy = 78, dw = 204, dh = vis * 18 + 2;
                     int list_w = has_sb ? (dw - 18) : (dw - 2);
-                    int sbx = dx + dw - 18;
-                    if (has_sb && pxe_point_in_rect(mx, my, sbx, dy + 1, 18, 18)) {
-                        if (cp.res_scroll > 0) cp.res_scroll--;
-                        dirty = 1;
-                        continue;
-                    }
-                    if (has_sb && pxe_point_in_rect(mx, my, sbx, dy + dh - 19, 18, 18)) {
+                    int sbx = dx + dw - 17;
+                    int sby = dy + 1;
+                    int sbw = 16;
+                    int sbh = dh - 2;
+                    if (has_sb && pxe_point_in_rect(mx, my, sbx - 1, sby, sbw + 1, sbh)) {
                         int max_sc = cp.caps.mode_count - CPANEL_DROPDOWN_VIS;
-                        if (cp.res_scroll < max_sc) cp.res_scroll++;
+                        if (max_sc < 1) max_sc = 1;
+                        int btn_h = 14;
+                        int track_y = sby + btn_h;
+                        int track_bot = sby + sbh - btn_h;
+                        int track_h = track_bot - track_y;
+                        if (my < track_y) {
+                            if (cp.res_scroll > 0) cp.res_scroll--;
+                        } else if (my >= track_bot) {
+                            if (cp.res_scroll < max_sc) cp.res_scroll++;
+                        } else {
+                            int thumb_h = (track_h * vis) / cp.caps.mode_count;
+                            if (thumb_h < 12) thumb_h = 12;
+                            if (thumb_h > track_h) thumb_h = track_h;
+                            int avail = track_h - thumb_h;
+                            int thumb_y = track_y + ((avail > 0) ? (cp.res_scroll * avail) / max_sc : 0);
+                            if (my >= thumb_y && my < thumb_y + thumb_h) {
+                                cp.drag_res_sb = 1;
+                                cp.res_sb_drag_y = my;
+                                cp.res_sb_drag_off = cp.res_scroll;
+                            } else if (my < thumb_y) {
+                                cp.res_scroll -= (vis > 1) ? (vis - 1) : 1;
+                                if (cp.res_scroll < 0) cp.res_scroll = 0;
+                            } else {
+                                cp.res_scroll += (vis > 1) ? (vis - 1) : 1;
+                                if (cp.res_scroll > max_sc) cp.res_scroll = max_sc;
+                            }
+                        }
                         dirty = 1;
                         continue;
                     }
@@ -585,6 +630,7 @@ int main(int argc, char** argv) {
                         }
                     }
                     cp.res_open = 0;
+                    cp.drag_res_sb = 0;
                     dirty = 1;
                     continue;
                 }

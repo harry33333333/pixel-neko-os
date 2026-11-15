@@ -688,11 +688,25 @@ int pxe_kern_audio_get_status(pxe_audio_status_t* out) {
     return 0;
 }
 
+static uint32_t g_audio_owner_pid = 0;
+
+void pxe_audio_on_process_exit(uint32_t pid) {
+    if (pid != 0 && g_audio_owner_pid == pid) {
+        g_audio_owner_pid = 0;
+        audio_stop();
+    }
+}
+
 int pxe_kern_audio_cmd(int cmd, int arg, const char* path, void* io_buf) {
     switch (cmd) {
-        case PXE_AUD_PLAY_FILE:
+        case PXE_AUD_PLAY_FILE: {
             if (!path || !path[0]) return -1;
-            return audio_play_file(path);
+            int rc = audio_play_file(path);
+            if (rc >= 0) {
+                g_audio_owner_pid = process_current_pid();
+            }
+            return rc;
+        }
         case PXE_AUD_PAUSE:
             audio_pause();
             return 0;
@@ -700,6 +714,7 @@ int pxe_kern_audio_cmd(int cmd, int arg, const char* path, void* io_buf) {
             audio_resume();
             return 0;
         case PXE_AUD_STOP:
+            g_audio_owner_pid = 0;
             audio_stop();
             return 0;
         case PXE_AUD_SEEK:
@@ -716,9 +731,13 @@ int pxe_kern_audio_cmd(int cmd, int arg, const char* path, void* io_buf) {
         case PXE_AUD_FEED_PCM: {
             const pxe_pcm_chunk_t* ch = (const pxe_pcm_chunk_t*)io_buf;
             if (!ch || !ch->samples || ch->sample_count == 0) return -1;
-            return audio_feed_raw_pcm(ch->samples, ch->sample_count,
-                                      ch->src_rate, ch->src_channels,
-                                      ch->src_bits, ch->src_float);
+            int rc = audio_feed_raw_pcm(ch->samples, ch->sample_count,
+                                        ch->src_rate, ch->src_channels,
+                                        ch->src_bits, ch->src_float);
+            if (rc >= 0) {
+                g_audio_owner_pid = process_current_pid();
+            }
+            return rc;
         }
         default:
             return -1;

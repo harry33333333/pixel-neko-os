@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A225f"
+          VERSION="26A225g"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -107,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision fixes Ensoniq AudioPCI (ES1371 / CT4810) DAC2 playback startup (`ES_P2_PAUSE=0`, `ES_P2_INT_EN=1`, `ES_DAC2_EN=1` after DMA setup) and adds shared PCI IRQ 9 IOAPIC routing plus DAC2 half-buffer interrupt ack/refill/re-arm continuation as `v26A225f`.
+          This revision stops audio playback automatically when NekoPlayer closes or the owning process exits/terminates, restores the draggable scrollbar slider on the Control Panel resolution dropdown, publishes PDV/PXE developer guides (`docs/driver_develop.md`, `docs/executable_develop.md`) alongside an updated `README.md`, and bumps the release version to `v26A225g`.
         draft: false
         prerelease: true
         make_latest: false
