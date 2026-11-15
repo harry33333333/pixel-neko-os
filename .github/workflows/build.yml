@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A225d"
+          VERSION="26A225e"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -107,7 +107,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision implements VMware SVGA 3D Guest-Backed STDU (OTables, MOB page tables, GB surfaces/screen targets, SVGA_REG_TRACES=0, and FIFO BUSY wakeup) to fix black screens at resolutions above 1152x864 under 3D profiles, and fixes ES1371/CT4810 initial DMA playback silence and AC'97 codec poll stalls as `v26A225d`.
+          This revision fixes VMware SVGA 3D Guest-Backed STDU display blanking (`SVGA_REG_ENABLE_HIDE`, FIFO header preservation, 6 OTables for DX-capable profiles, surface scanout flags) and relaxes 2D BAR1 mode thresholds above `raw_vram` / `raw_max` with hardware readback validation as `v26A225e`.
         draft: false
         prerelease: true
         make_latest: false

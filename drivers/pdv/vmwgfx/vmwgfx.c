@@ -27,6 +27,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_CAP_GMR2              0x00400000U
 #define SVGA_CAP_SCREEN_OBJECT_2   0x00800000U
 #define SVGA_CAP_GBOBJECTS         0x08000000U
+#define SVGA_CAP_DX                0x10000000U
 #define SVGA_CAP_CAP2_REGISTER     0x80000000U
 
 #define SVGA_CAP2_GB_MEMSIZE_2     0x00000008U
@@ -119,13 +120,15 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_3D_CMD_UPDATE_GB_SCREENTARGET  1127U
 #define SVGA_3D_CMD_DEFINE_GB_MOB64         1135U
 
-#define SVGA_OTABLE_COUNT           5U
-#define SVGA_OTABLE_PAGE_SIZE       4096U
-#define SVGA3D_MOBFMT_PT64_0        4U
-#define SVGA3D_MOBFMT_PT64_1        5U
-#define SVGA3D_MOBFMT_PT64_2        6U
-#define SVGA3D_MOBFMT_INVALID       0xFFFFFFFFU
-#define SVGA3D_SURFACE_SCREENTARGET (1U << 16)
+#define SVGA_OTABLE_PRE_DX_COUNT         5U
+#define SVGA_OTABLE_DX_COUNT             6U
+#define SVGA_OTABLE_PAGE_SIZE            4096U
+#define SVGA3D_MOBFMT_PT64_0             4U
+#define SVGA3D_MOBFMT_PT64_1             5U
+#define SVGA3D_MOBFMT_PT64_2             6U
+#define SVGA3D_MOBFMT_INVALID            0xFFFFFFFFU
+#define SVGA3D_SURFACE_HINT_RENDERTARGET (1U << 6)
+#define SVGA3D_SURFACE_SCREENTARGET      (1U << 16)
 #define SVGA3D_X8R8G8B8             1U
 #define SVGA3D_R5G6B5               3U
 #define SVGA_STFLAG_PRIMARY         (1U << 0)
@@ -328,9 +331,7 @@ static int svga_init_fifo(void) {
     if (g_fifo_min + 8192U >= map_bytes) g_fifo_min = 0;
     g_fifo_max = map_bytes;
 
-    for (unsigned int i = 0; i < g_fifo_min / 4U; i++) {
-        svga_fifo_write(i, 0U);
-    }
+    /* Preserve device-populated FIFO capability/HW-version slots below g_fifo_min. */
     svga_fifo_write(SVGA_FIFO_MIN, g_fifo_min);
     svga_fifo_write(SVGA_FIFO_MAX, g_fifo_max);
     svga_fifo_write(SVGA_FIFO_NEXT_CMD, g_fifo_min);
@@ -388,6 +389,11 @@ static int svga_has_screen_object2(void) {
            (g_fifo_phys != 0);
 }
 
+static unsigned int svga_otable_count(void) {
+    return (g_capabilities & SVGA_CAP_DX) ? SVGA_OTABLE_DX_COUNT
+                                          : SVGA_OTABLE_PRE_DX_COUNT;
+}
+
 static uint64_t svga_effective_fb_limit(void) {
     uint64_t limit = 0;
     if (svga_has_stdu() || svga_has_screen_object2()) {
@@ -406,6 +412,9 @@ static uint64_t svga_effective_fb_limit(void) {
         return limit;
     }
     if (g_vram_size > 0) limit = (uint64_t)g_vram_size;
+    if (g_bar1_size > (uint64_t)g_raw_vram_size && limit < g_bar1_size) {
+        limit = g_bar1_size;
+    }
     if (g_bar1_size > 0 && (limit == 0 || g_bar1_size < limit)) {
         limit = g_bar1_size;
     }
@@ -622,10 +631,10 @@ static int vmware_svga_probe_hw(void) {
         if (g_bar1_size > usable) usable = g_bar1_size;
         if (usable > SVGA_MAX_VRAM_CAP_BYTES) usable = SVGA_MAX_VRAM_CAP_BYTES;
         g_vram_size = (unsigned int)usable;
-    } else if (g_memory_size > g_raw_vram_size && g_bar1_size > (uint64_t)g_raw_vram_size) {
-        uint64_t usable = (uint64_t)g_memory_size;
-        if (g_bar1_size > 0 && g_bar1_size < usable) {
-            usable = g_bar1_size;
+    } else if (g_bar1_size > (uint64_t)g_raw_vram_size) {
+        uint64_t usable = g_bar1_size;
+        if (g_memory_size > g_raw_vram_size && (uint64_t)g_memory_size < usable) {
+            usable = (uint64_t)g_memory_size;
         }
         if (usable > SVGA_MAX_VRAM_CAP_BYTES) usable = SVGA_MAX_VRAM_CAP_BYTES;
         g_vram_size = (unsigned int)usable;
@@ -798,7 +807,8 @@ static void svga_teardown_stdu(void) {
         destroy_mob[2] = SVGA_SCREEN_OBJ_GMR_ID;
         (void)svga_fifo_emit(destroy_mob, 3U);
 
-        for (unsigned int t = 0U; t < SVGA_OTABLE_COUNT; t++) {
+        unsigned int ot_cnt = svga_otable_count();
+        for (unsigned int t = 0U; t < ot_cnt; t++) {
             unsigned int clear_ot[7];
             clear_ot[0] = SVGA_3D_CMD_SET_OTABLE_BASE;
             clear_ot[1] = 20U;
@@ -863,8 +873,9 @@ static int svga_set_mode_stdu(int width, int height, int bpp,
         return 0;
     }
 
+    unsigned int ot_cnt = svga_otable_count();
     pdv_dma_buffer_t otable_dma = {0};
-    size_t otable_bytes = (size_t)SVGA_OTABLE_COUNT * SVGA_OTABLE_PAGE_SIZE;
+    size_t otable_bytes = (size_t)ot_cnt * SVGA_OTABLE_PAGE_SIZE;
     if (g_kapi->dma_alloc(otable_bytes, PDV_DMA_BIT_MASK(64),
                           PDV_PAGE_SIZE, &otable_dma) != 0 ||
         !pdv_dma_is_valid(&otable_dma)) {
@@ -929,11 +940,22 @@ static int svga_set_mode_stdu(int width, int height, int bpp,
     }
 
     svga_write_reg(SVGA_REG_CONFIG_DONE, 1U);
+    unsigned int fifo_min = svga_fifo_read(SVGA_FIFO_MIN);
+    unsigned int fifo_max = svga_fifo_read(SVGA_FIFO_MAX);
+    unsigned int fifo_caps = svga_fifo_read(SVGA_FIFO_CAPABILITIES);
+    if (fifo_min >= fifo_max) {
+        svga_write_reg(SVGA_REG_CONFIG_DONE, 0U);
+        svga_write_reg(SVGA_REG_ENABLE, 0U);
+        if (pdv_dma_is_valid(&pt_dma)) g_kapi->dma_free(&pt_dma);
+        g_kapi->dma_free(&otable_dma);
+        g_kapi->dma_free(&new_dma);
+        return 0;
+    }
     g_active = 1;
 
     int ok = 1;
     uint64_t ot_ppn_base = (uint64_t)(otable_dma.phys >> 12);
-    for (unsigned int t = 0U; ok && t < SVGA_OTABLE_COUNT; t++) {
+    for (unsigned int t = 0U; ok && t < ot_cnt; t++) {
         uint64_t ot_ppn = ot_ppn_base + (uint64_t)t;
         unsigned int set_ot[8];
         set_ot[0] = SVGA_3D_CMD_SET_OTABLE_BASE64;
@@ -965,7 +987,7 @@ static int svga_set_mode_stdu(int width, int height, int bpp,
         def_surf[0]  = SVGA_3D_CMD_DEFINE_GB_SURFACE;
         def_surf[1]  = 36U;
         def_surf[2]  = 0U; /* sid */
-        def_surf[3]  = SVGA3D_SURFACE_SCREENTARGET;
+        def_surf[3]  = SVGA3D_SURFACE_SCREENTARGET | SVGA3D_SURFACE_HINT_RENDERTARGET;
         def_surf[4]  = fmt;
         def_surf[5]  = 1U; /* numMipLevels */
         def_surf[6]  = 0U; /* multisampleCount */
@@ -986,6 +1008,9 @@ static int svga_set_mode_stdu(int width, int height, int bpp,
     }
 
     if (ok) {
+        /* Unblank display output (clear SVGA_REG_ENABLE_HIDE) before defining STDU scanout. */
+        svga_write_reg(SVGA_REG_ENABLE, SVGA_REG_ENABLE_ENABLE);
+
         unsigned int def_st[9];
         def_st[0] = SVGA_3D_CMD_DEFINE_GB_SCREENTARGET;
         def_st[1] = 28U;
@@ -1070,9 +1095,10 @@ static int svga_set_mode_stdu(int width, int height, int bpp,
     svga_write_reg(SVGA_REG_CURSOR_ON, SVGA_CURSOR_HIDE);
     g_status = "3D-capable profile: STDU + GBObjects active";
 
-    klog_info("[SVGA] mode %dx%dx%d (STDU %dbpp) pitch=%u mob=0x%llx",
+    klog_info("[SVGA] mode %dx%dx%d (STDU %dbpp) pitch=%u fb=0x%llx pt_depth=%u pt_root_ppn=0x%llx ot=%u fifo_caps=0x%x",
               width, height, bpp, cand_bpp, pitch,
-              (unsigned long long)new_dma.phys);
+              (unsigned long long)new_dma.phys,
+              pt_depth, (unsigned long long)pt_root_ppn, ot_cnt, fifo_caps);
     return 1;
 }
 
@@ -1171,6 +1197,9 @@ static int svga_set_mode_screen_object(int width, int height, int bpp,
     }
 
     if (ok) {
+        /* Unblank display output (clear SVGA_REG_ENABLE_HIDE) before defining ScreenObject2 scanout. */
+        svga_write_reg(SVGA_REG_ENABLE, SVGA_REG_ENABLE_ENABLE);
+
         unsigned int def_scr[12];
         def_scr[0] = SVGA_CMD_DEFINE_SCREEN;
         def_scr[1] = 44U; /* sizeof(SVGAScreenObject) */
@@ -1322,54 +1351,62 @@ static int vmware_svga_set_mode(int width, int height, int bpp) {
     unsigned int framebuffer = 0;
     unsigned int fb_offset = 0;
 
-    int legacy_dims_ok =
-        (g_raw_max_width == 0U || (unsigned int)width <= g_raw_max_width) &&
-        (g_raw_max_height == 0U || (unsigned int)height <= g_raw_max_height);
-
-    if ((!svga_has_stdu() && !svga_has_screen_object2()) || legacy_dims_ok) {
-        for (int t = 0; t < try_cnt; t++) {
-            int cand_bpp = try_hw[t];
-            uint64_t min_need = pixels * (uint64_t)svga_bytes_per_pixel(cand_bpp);
-            if ((svga_has_stdu() || svga_has_screen_object2()) && g_raw_vram_size > 0 &&
-                min_need > (uint64_t)g_raw_vram_size) {
-                continue;
-            }
-            unsigned int cand_depth = (cand_bpp == 32) ? 24U : (unsigned int)cand_bpp;
-
-            svga_write_reg(SVGA_REG_WIDTH, (unsigned int)width);
-            svga_write_reg(SVGA_REG_HEIGHT, (unsigned int)height);
-            svga_write_reg(SVGA_REG_DEPTH, cand_depth);
-            svga_write_reg(SVGA_REG_BPP, (unsigned int)cand_bpp);
-            svga_write_reg(SVGA_REG_ENABLE, 1);
-
-            unsigned int active_enable = svga_read_reg(SVGA_REG_ENABLE);
-            unsigned int active_width = svga_read_reg(SVGA_REG_WIDTH);
-            unsigned int active_height = svga_read_reg(SVGA_REG_HEIGHT);
-            unsigned int active_bpp = svga_read_reg(SVGA_REG_BPP);
-            unsigned int active_fb_size = svga_read_reg(SVGA_REG_FB_SIZE);
-            unsigned int cand_pitch = svga_read_reg(SVGA_REG_BYTES_PER_LINE);
-            unsigned int cand_fb = svga_read_reg(SVGA_REG_FB_START);
-            unsigned int cand_off = svga_read_reg(SVGA_REG_FB_OFFSET);
-            unsigned int minimum_pitch = (unsigned int)width * svga_bytes_per_pixel(cand_bpp);
-            uint64_t fb_need = (uint64_t)cand_pitch * (uint64_t)(unsigned int)height;
-
-            if (active_enable != 0 &&
-                active_width == (unsigned int)width &&
-                active_height == (unsigned int)height &&
-                (active_bpp == 0 || active_bpp == (unsigned int)cand_bpp) &&
-                cand_fb != 0 && cand_pitch >= minimum_pitch &&
-                (active_fb_size == 0 || (uint64_t)active_fb_size >= fb_need) &&
-                (fb_limit == 0 || (uint64_t)cand_off + fb_need <= fb_limit) &&
-                (g_bar1_size == 0 || (uint64_t)cand_off + fb_need <= g_bar1_size)) {
-                if (active_fb_size > 0) g_fb_size = active_fb_size;
-                hw_bpp = cand_bpp;
-                pitch = cand_pitch;
-                framebuffer = cand_fb;
-                fb_offset = cand_off;
-                break;
-            }
-            svga_write_reg(SVGA_REG_ENABLE, 0);
+    /*
+     * Try 2D BAR1 register mode whenever the framebuffer fits within BAR1
+     * (and FB_MAX_SIZE/VRAM on non-GB/ScreenObject2 adapters) without gating
+     * against legacy 4MB raw_vram / 1176x885 raw_max; hardware readback below
+     * verifies whether the adapter accepted the requested dimensions and FB size.
+     */
+    for (int t = 0; t < try_cnt; t++) {
+        int cand_bpp = try_hw[t];
+        uint64_t min_need = pixels * (uint64_t)svga_bytes_per_pixel(cand_bpp);
+        if (g_bar1_size > 0 && min_need > g_bar1_size) {
+            continue;
         }
+        if (!svga_has_stdu() && !svga_has_screen_object2() &&
+            fb_limit > 0 && min_need > fb_limit) {
+            continue;
+        }
+        unsigned int cand_depth = (cand_bpp == 32) ? 24U : (unsigned int)cand_bpp;
+
+        svga_write_reg(SVGA_REG_WIDTH, (unsigned int)width);
+        svga_write_reg(SVGA_REG_HEIGHT, (unsigned int)height);
+        svga_write_reg(SVGA_REG_DEPTH, cand_depth);
+        svga_write_reg(SVGA_REG_BPP, (unsigned int)cand_bpp);
+        svga_write_reg(SVGA_REG_ENABLE, 1);
+
+        unsigned int active_enable = svga_read_reg(SVGA_REG_ENABLE);
+        unsigned int active_width = svga_read_reg(SVGA_REG_WIDTH);
+        unsigned int active_height = svga_read_reg(SVGA_REG_HEIGHT);
+        unsigned int active_bpp = svga_read_reg(SVGA_REG_BPP);
+        unsigned int active_fb_size = svga_read_reg(SVGA_REG_FB_SIZE);
+        unsigned int cand_pitch = svga_read_reg(SVGA_REG_BYTES_PER_LINE);
+        unsigned int cand_fb = svga_read_reg(SVGA_REG_FB_START);
+        unsigned int cand_off = svga_read_reg(SVGA_REG_FB_OFFSET);
+        unsigned int minimum_pitch = (unsigned int)width * svga_bytes_per_pixel(cand_bpp);
+        uint64_t fb_need = (uint64_t)cand_pitch * (uint64_t)(unsigned int)height;
+
+        if (active_enable != 0 &&
+            active_width == (unsigned int)width &&
+            active_height == (unsigned int)height &&
+            (active_bpp == 0 || active_bpp == (unsigned int)cand_bpp) &&
+            cand_fb != 0 && cand_pitch >= minimum_pitch &&
+            (active_fb_size == 0 || (uint64_t)active_fb_size >= fb_need) &&
+            (g_bar1_size == 0 || (uint64_t)cand_off + fb_need <= g_bar1_size)) {
+            if (active_fb_size > 0) g_fb_size = active_fb_size;
+            hw_bpp = cand_bpp;
+            pitch = cand_pitch;
+            framebuffer = cand_fb;
+            fb_offset = cand_off;
+            break;
+        }
+        klog_info("[SVGA] 2D %dx%dx%d rejected by hw (en=%u got=%ux%u bpp=%u fb_sz=%u off=%u need=%llu bar1=%llu)",
+                  width, height, cand_bpp, active_enable,
+                  active_width, active_height, active_bpp,
+                  active_fb_size, cand_off,
+                  (unsigned long long)fb_need,
+                  (unsigned long long)g_bar1_size);
+        svga_write_reg(SVGA_REG_ENABLE, 0);
     }
 
     if (hw_bpp == 0) {
