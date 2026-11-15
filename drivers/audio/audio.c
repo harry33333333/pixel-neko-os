@@ -89,12 +89,80 @@ static int audio_requested_volume(void) {
 }
 
 static short g_pcm_queue[PCM_QUEUE_SIZE / sizeof(short)];
-static unsigned int g_queue_read_idx = 0;
-static unsigned int g_queue_write_idx = 0;
-static unsigned int g_queue_bytes = 0;
+static volatile unsigned int g_queue_read_idx = 0;
+static volatile unsigned int g_queue_write_idx = 0;
+static volatile unsigned int g_queue_bytes = 0;
 
-static unsigned int g_total_frames_played = 0;
-static int g_eof_reached = 0;
+static volatile unsigned int g_total_frames_played = 0;
+static volatile int g_eof_reached = 0;
+static volatile int g_eof_stop_pending = 0;
+
+static inline uint64_t audio_irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void audio_irq_restore(uint64_t flags) {
+    if (flags & (1ULL << 9)) {
+        __asm__ volatile("sti" ::: "memory");
+    }
+}
+
+static int audio_consume_queue_half(int half_idx, short* scratch_buf) {
+    if (!g_active_driver || !scratch_buf || half_idx < 0 || half_idx > 1) {
+        return 0;
+    }
+
+    uint64_t irq_flags = audio_irq_save();
+    unsigned int avail_bytes = g_queue_bytes;
+    int eof = g_eof_reached;
+
+    if (avail_bytes >= AUDIO_DMA_HALF_BYTES) {
+        unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
+        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+        if (first_chunk > samples_needed) first_chunk = samples_needed;
+        memcpy(scratch_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+        if (samples_needed > first_chunk) {
+            memcpy(&scratch_buf[first_chunk], &g_pcm_queue[0],
+                   (samples_needed - first_chunk) * sizeof(short));
+        }
+        g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
+        g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
+        g_total_frames_played += (AUDIO_DMA_HALF_BYTES / 4);
+        audio_irq_restore(irq_flags);
+
+        g_active_driver->write_half(half_idx, scratch_buf, AUDIO_DMA_HALF_BYTES);
+        return 1;
+    }
+
+    if (avail_bytes > 0) {
+        unsigned int avail_samples = avail_bytes / sizeof(short);
+        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
+        if (first_chunk > avail_samples) first_chunk = avail_samples;
+        memcpy(scratch_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
+        if (avail_samples > first_chunk) {
+            memcpy(&scratch_buf[first_chunk], &g_pcm_queue[0],
+                   (avail_samples - first_chunk) * sizeof(short));
+        }
+        for (unsigned int i = avail_samples;
+             i < AUDIO_DMA_HALF_BYTES / sizeof(short);
+             i++) {
+            scratch_buf[i] = 0;
+        }
+        g_queue_read_idx = (g_queue_read_idx + avail_samples) & (PCM_QUEUE_SAMPLES - 1);
+        g_queue_bytes = 0;
+        g_total_frames_played += (avail_samples / 2);
+        audio_irq_restore(irq_flags);
+
+        g_active_driver->write_half(half_idx, scratch_buf, AUDIO_DMA_HALF_BYTES);
+        return 1;
+    }
+
+    audio_irq_restore(irq_flags);
+    g_active_driver->silence_half(half_idx);
+    return eof ? -1 : 0;
+}
 
 static unsigned char g_spectrum_bands[10] = {0};
 static unsigned char g_vu_l = 0, g_vu_r = 0;
@@ -208,9 +276,11 @@ const char* audio_get_probe_status(void) {
 }
 
 void audio_flush_queue(void) {
+    uint64_t irq_flags = audio_irq_save();
     g_queue_read_idx = 0;
     g_queue_write_idx = 0;
     g_queue_bytes = 0;
+    audio_irq_restore(irq_flags);
 }
 
 int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
@@ -231,6 +301,7 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
     if (decimation_ratio == 1 && src_bits == 16 && src_channels == 2 &&
         !src_float) {
         const short* src_s16 = (const short*)samples;
+        uint64_t irq_flags = audio_irq_save();
         unsigned int space_frames = (PCM_QUEUE_SIZE - g_queue_bytes) / 4;
         unsigned int to_copy =
             (sample_count < space_frames) ? sample_count : space_frames;
@@ -244,12 +315,14 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
         }
         g_queue_write_idx = (g_queue_write_idx + samples_to_copy) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes += to_copy * 4;
+        audio_irq_restore(irq_flags);
         return (int)to_copy;
     }
 
     if (decimation_ratio == 2 && src_bits == 16 && src_channels == 2 &&
         !src_float) {
         const short* src_s16 = (const short*)samples;
+        uint64_t irq_flags = audio_irq_save();
         unsigned int space_frames = (PCM_QUEUE_SIZE - g_queue_bytes) / 4;
         unsigned int out_frames = sample_count / 2;
         unsigned int to_copy =
@@ -264,12 +337,14 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
             g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes += 4;
         }
+        audio_irq_restore(irq_flags);
         return (int)(to_copy * 2);
     }
 
     if (decimation_ratio == 4 && src_bits == 16 && src_channels == 2 &&
         !src_float) {
         const short* src_s16 = (const short*)samples;
+        uint64_t irq_flags = audio_irq_save();
         unsigned int space_frames = (PCM_QUEUE_SIZE - g_queue_bytes) / 4;
         unsigned int out_frames = sample_count / 4;
         unsigned int to_copy =
@@ -286,6 +361,7 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
             g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
             g_queue_bytes += 4;
         }
+        audio_irq_restore(irq_flags);
         return (int)(to_copy * 4);
     }
 
@@ -296,8 +372,6 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
 
     for (unsigned int i = 0; i < sample_count;
          i += (unsigned int)decimation_ratio) {
-        if (g_queue_bytes + 4 > PCM_QUEUE_SIZE) break;
-
         const unsigned char* p = src_bytes + i * (unsigned int)frame_size;
         int s24_l = 0, s24_r = 0;
 
@@ -330,11 +404,17 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count,
         short s16_l = dither_s24_to_s16(s24_l);
         short s16_r = dither_s24_to_s16(s24_r);
 
+        uint64_t irq_flags = audio_irq_save();
+        if (g_queue_bytes + 4 > PCM_QUEUE_SIZE) {
+            audio_irq_restore(irq_flags);
+            break;
+        }
         unsigned int w_idx = g_queue_write_idx;
         g_pcm_queue[w_idx] = s16_l;
         g_pcm_queue[w_idx + 1] = s16_r;
         g_queue_write_idx = (w_idx + 2) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes += 4;
+        audio_irq_restore(irq_flags);
         produced_frames++;
     }
 
@@ -441,6 +521,7 @@ int audio_play_file(const char* filepath) {
     audio_flush_queue();
     g_total_frames_played = 0;
     g_eof_reached = 0;
+    g_eof_stop_pending = 0;
 
     if (g_active_driver) {
         g_active_driver->silence_half(0);
@@ -474,19 +555,7 @@ int audio_play_file(const char* filepath) {
 
     if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
-        unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
-        if (first_chunk > samples_needed) first_chunk = samples_needed;
-        memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
-        if (samples_needed > first_chunk) {
-            memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
-                   (samples_needed - first_chunk) * sizeof(short));
-        }
-        g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
-        g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
-        if (g_active_driver) {
-            g_active_driver->write_half(0, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
-        }
+        audio_consume_queue_half(0, dma_copy_buf);
     }
 
     for (int pre = 0;
@@ -515,20 +584,10 @@ int audio_play_file(const char* filepath) {
 
     if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
-        unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-        unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
-        if (first_chunk > samples_needed) first_chunk = samples_needed;
-        memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
-        if (samples_needed > first_chunk) {
-            memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
-                   (samples_needed - first_chunk) * sizeof(short));
-        }
-        g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
-        g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
-        if (g_active_driver) {
-            g_active_driver->write_half(1, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
-        }
+        audio_consume_queue_half(1, dma_copy_buf);
     }
+
+    g_total_frames_played = 0;
 
     /* Pre-decode into g_pcm_queue so DMA starts with plenty of cushion */
     for (int pre = 0;
@@ -607,6 +666,7 @@ void audio_stop(void) {
     audio_flush_queue();
     g_total_frames_played = 0;
     g_eof_reached = 0;
+    g_eof_stop_pending = 0;
     for (int i = 0; i < 10; i++) g_spectrum_bands[i] = 0;
     g_vu_l = 0;
     g_vu_r = 0;
@@ -718,9 +778,37 @@ const audio_info_t* audio_get_info(void) {
     return &g_audio_info;
 }
 
+int audio_handle_dma_half_irq(int half_idx) {
+    if (g_audio_state != AUDIO_STATE_PLAYING || !g_active_driver) return -1;
+    if (half_idx < 0 || half_idx > 1) return -1;
+
+    /* Dedicated IRQ-only scratch buffer using integer copies (no FPU/VFS in ISR). */
+    static short irq_dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
+    int status = audio_consume_queue_half(half_idx, irq_dma_copy_buf);
+
+    int tr = g_audio_info.target_rate;
+    if (tr > 0) {
+        g_audio_info.current_time_s =
+            (int)(g_total_frames_played / (unsigned int)tr);
+    }
+
+    if (status < 0) {
+        g_eof_stop_pending = 1;
+        return 1;
+    }
+    return 0;
+}
+
 void audio_poll(void) {
     if (g_audio_state != AUDIO_STATE_PLAYING) return;
     if (!audio_has_hardware() || !g_active_driver) return;
+
+    if (g_eof_stop_pending) {
+        g_active_driver->silence_half(0);
+        g_active_driver->silence_half(1);
+        audio_stop();
+        return;
+    }
 
     enable_fpu();
 
@@ -786,46 +874,11 @@ void audio_poll(void) {
             }
         }
         static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
-        if (g_queue_bytes >= AUDIO_DMA_HALF_BYTES) {
-            unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
-            unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
-            if (first_chunk > samples_needed) first_chunk = samples_needed;
-            memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
-            if (samples_needed > first_chunk) {
-                memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
-                       (samples_needed - first_chunk) * sizeof(short));
-            }
-            g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
-            g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
-            g_active_driver->write_half(
-                half_needed, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
-            g_total_frames_played += (AUDIO_DMA_HALF_BYTES / 4);
-        } else if (g_queue_bytes > 0) {
-            unsigned int avail_samples = g_queue_bytes / sizeof(short);
-            unsigned int first_chunk = PCM_QUEUE_SAMPLES - g_queue_read_idx;
-            if (first_chunk > avail_samples) first_chunk = avail_samples;
-            memcpy(dma_copy_buf, &g_pcm_queue[g_queue_read_idx], first_chunk * sizeof(short));
-            if (avail_samples > first_chunk) {
-                memcpy(&dma_copy_buf[first_chunk], &g_pcm_queue[0],
-                       (avail_samples - first_chunk) * sizeof(short));
-            }
-            for (unsigned int i = avail_samples;
-                 i < AUDIO_DMA_HALF_BYTES / sizeof(short);
-                 i++) {
-                dma_copy_buf[i] = 0;
-            }
-            g_queue_read_idx = (g_queue_read_idx + avail_samples) & (PCM_QUEUE_SAMPLES - 1);
-            g_queue_bytes = 0;
-            g_active_driver->write_half(
-                half_needed, dma_copy_buf, AUDIO_DMA_HALF_BYTES);
-            g_total_frames_played += (avail_samples / 2);
-        } else {
-            g_active_driver->silence_half(half_needed);
-            if (g_eof_reached) {
-                g_active_driver->silence_half(1 - half_needed);
-                audio_stop();
-                return;
-            }
+        int fill_rc = audio_consume_queue_half(half_needed, dma_copy_buf);
+        if (fill_rc < 0) {
+            g_active_driver->silence_half(1 - half_needed);
+            audio_stop();
+            return;
         }
 
         int tr = g_audio_info.target_rate;

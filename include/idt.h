@@ -43,10 +43,12 @@ struct trap_frame {
 typedef struct trap_frame trap_frame_t;
 
 typedef void (*irq_handler_t)(trap_frame_t* frame);
+typedef void (*pci_irq_handler_t)(void* ctx);
 
 void idt_init(void);
 void idt_set_gate(uint8_t num, uint64_t handler, uint16_t sel, uint8_t flags, uint8_t ist);
 void irq_install_handler(int irq, irq_handler_t handler);
 void irq_uninstall_handler(int irq);
+int  irq_register_pci_handler(uint8_t irq, pci_irq_handler_t handler, void* ctx);
 
 #endif /* _IDT_H */

@@ -390,6 +390,10 @@ typedef struct pdv_kernel_api {
 
     /* Generic Driver Status Table */
     int (*register_driver_descriptor)(const pdv_driver_descriptor_t* descriptor);
+
+    /* PCI Interrupts & IRQ-Driven Audio DMA Refill */
+    int (*pci_register_irq)(const pdv_pci_device_t* dev, void (*handler)(void* ctx), void* ctx);
+    int (*audio_handle_dma_half_irq)(int half_idx);
 } pdv_kernel_api_t;
 
 /* Convenience PCI byte/word helpers via kapi */

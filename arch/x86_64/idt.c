@@ -70,8 +70,17 @@ static idt_ptr_t g_idt_ptr;
 
 static irq_handler_t g_irq_handlers[16] = {0};
 
-// Forward declaration of LAPIC EOI
+#define PCI_IRQ_MAX_SLOTS 4
+typedef struct {
+    pci_irq_handler_t handler;
+    void*             ctx;
+} pci_irq_slot_t;
+
+static pci_irq_slot_t g_pci_irq_slots[16][PCI_IRQ_MAX_SLOTS];
+
+// Forward declaration of LAPIC EOI & IOAPIC PCI enable
 extern void lapic_eoi(void);
+extern void apic_enable_pci_irq(uint8_t irq_line);
 
 static const char* exception_names[32] = {
     "#DE: Divide-by-Zero Error",
@@ -130,6 +139,29 @@ void irq_uninstall_handler(int irq) {
     }
 }
 
+int irq_register_pci_handler(uint8_t irq, pci_irq_handler_t handler, void* ctx) {
+    if (irq >= 16 || !handler) return -1;
+
+    for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
+        if (g_pci_irq_slots[irq][i].handler == handler &&
+            g_pci_irq_slots[irq][i].ctx == ctx) {
+            apic_enable_pci_irq(irq);
+            return 0;
+        }
+    }
+
+    for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
+        if (!g_pci_irq_slots[irq][i].handler) {
+            g_pci_irq_slots[irq][i].handler = handler;
+            g_pci_irq_slots[irq][i].ctx = ctx;
+            apic_enable_pci_irq(irq);
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 // C-level exception dispatcher called from common_isr_stub
 trap_frame_t* c_exception_handler(trap_frame_t* frame) {
     const char* name = "Unknown Exception";
@@ -181,8 +213,15 @@ trap_frame_t* c_irq_handler(trap_frame_t* frame) {
     if (!frame) return frame;
     int irq = (int)frame->int_no - 32;
 
-    if (irq >= 0 && irq < 16 && g_irq_handlers[irq]) {
-        g_irq_handlers[irq](frame);
+    if (irq >= 0 && irq < 16) {
+        if (g_irq_handlers[irq]) {
+            g_irq_handlers[irq](frame);
+        }
+        for (int i = 0; i < PCI_IRQ_MAX_SLOTS; i++) {
+            if (g_pci_irq_slots[irq][i].handler) {
+                g_pci_irq_slots[irq][i].handler(g_pci_irq_slots[irq][i].ctx);
+            }
+        }
     }
 
     // Acknowledge before a possible address-space/context switch.

@@ -17,6 +17,11 @@ void audio_init(void) {
 void audio_poll(void) {
 }
 
+int audio_handle_dma_half_irq(int half_idx) {
+    (void)half_idx;
+    return -1;
+}
+
 void enable_fpu(void) {
 }
 

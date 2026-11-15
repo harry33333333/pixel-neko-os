@@ -41,7 +41,11 @@ static const pdv_kernel_api_t* g_kapi = 0;
 #define CT_CONTROL_DAC2_ENABLE       (1U << 5)
 #define CT_CONTROL_ADC_ENABLE        (1U << 4)
 
+#define CT_STATUS_INTR               (1U << 31)
 #define CT_STATUS_AC97_RESET         (1U << 29)
+#define CT_STATUS_DAC1               (1U << 2)
+#define CT_STATUS_DAC2               (1U << 1)
+#define CT_STATUS_ADC                (1U << 0)
 
 #define CT_SERIAL_P2_END_INC(slot)   (((slot) & 0x07) << 19)
 #define CT_SERIAL_P2_END_MASK        (0x07U << 19)
@@ -107,18 +111,21 @@ static const pdv_kernel_api_t* g_kapi = 0;
 #define CT_SRC_DAC2_VOL_RIGHT_REG 0x7FU
 
 static int g_ct_present = 0;
+static const pdv_pci_device_t* g_ct_pci_dev = 0;
 static unsigned short g_ct_io_base = 0;
 static const char* g_ct_chip_name = "None";
 static char g_ct_display_name[72];
 static unsigned char* g_ct_dma_buf = 0;
 static unsigned int g_ct_dma_phys = 0;
 static pdv_dma_buffer_t g_ct_dma;
-static int g_ct_dma_running = 0;
-static int g_ct_last_half_playing = -1;
-static int g_ct_half_filled[2] = {0, 0};
-static int g_ct_last_toggle_tick = 0;
-static unsigned int g_ct_last_seen_frame = 0xFFFFFFFFU;
-static int g_ct_hw_reg_moving = 0;
+static volatile int g_ct_dma_running = 0;
+static volatile int g_ct_irq_registered = 0;
+static volatile int g_ct_irq_seen = 0;
+static volatile int g_ct_last_half_playing = -1;
+static volatile int g_ct_half_filled[2] = {0, 0};
+static volatile int g_ct_last_toggle_tick = 0;
+static volatile unsigned int g_ct_last_seen_frame = 0xFFFFFFFFU;
+static volatile int g_ct_hw_reg_moving = 0;
 static unsigned char g_ct_revision = 0;
 static int g_ct_is_ev1938 = 0;
 static unsigned int g_ct_ctrl_base = 0;
@@ -387,6 +394,7 @@ static int ct_needs_ac97_reset_quirk(unsigned short vendor,
 }
 
 static void ct4810_set_format(int rate, int bits, int stereo);
+static void ct4810_irq_handler(void* ctx);
 
 static int ct4810_init(void) {
     unsigned int status = 0;
@@ -394,10 +402,13 @@ static int ct4810_init(void) {
     unsigned short device = 0;
 
     g_ct_present = 0;
+    g_ct_pci_dev = 0;
     g_ct_io_base = 0;
     g_ct_chip_name = "None";
     g_ct_display_name[0] = '\0';
     g_ct_dma_running = 0;
+    g_ct_irq_registered = 0;
+    g_ct_irq_seen = 0;
     g_ct_revision = 0;
     g_ct_is_ev1938 = 0;
     g_ct_ctrl_base = 0;
@@ -442,6 +453,7 @@ static int ct4810_init(void) {
         } else {
             g_ct_chip_name = "Ensoniq AudioPCI (ES1371) PCI";
         }
+        g_ct_pci_dev = pci;
         g_ct_present = 1;
         break;
     }
@@ -544,8 +556,17 @@ static int ct4810_init(void) {
     ct_write32(CT_REG_DAC2_SIZE, (CT_DMA_BUFFER_BYTES / 4) - 1);
     ct_write32(CT_REG_DAC2_COUNT, (CT_DMA_HALF_BYTES / 4) - 1);
 
-    klog_info("[CT48] active %s io=0x%x dma=0x%x codec=%04x:%04x pwr=0x%x",
-              g_ct_chip_name, g_ct_io_base, g_ct_dma_phys, id1, id2, pwr);
+    int irq_rc = -1;
+    if (g_ct_pci_dev && g_kapi->pci_register_irq) {
+        irq_rc = g_kapi->pci_register_irq(g_ct_pci_dev, ct4810_irq_handler, 0);
+    }
+    g_ct_irq_registered = (irq_rc == 0) ? 1 : 0;
+
+    klog_info("[CT48] active %s io=0x%x irq=%u(%s) dma=0x%x codec=%04x:%04x pwr=0x%x",
+              g_ct_chip_name, g_ct_io_base,
+              g_ct_pci_dev ? (unsigned int)g_ct_pci_dev->irq_line : 0U,
+              irq_rc == 0 ? "ok" : "poll",
+              g_ct_dma_phys, id1, id2, pwr);
     return 0;
 }
 
@@ -604,19 +625,22 @@ static void ct4810_start_dma(void) {
     ct_write32(CT_REG_DAC2_COUNT, (CT_DMA_HALF_BYTES / 4) - 1);
     (void)ct_read32(CT_REG_DAC2_FRAME);
 
-    control |= CT_CONTROL_DAC2_ENABLE;
-    ct_write32(CT_REG_CONTROL, control);
-    (void)ct_read32(CT_REG_CONTROL);
-
-    /* Transition P2_PAUSE 1 -> 0 while DAC2_ENABLE=1 so VMware ES1371 starts fetching. */
-    sctrl &= ~CT_SERIAL_P2_PAUSE;
-    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
-
     g_ct_dma_running = 1;
     g_ct_last_half_playing = 0;
     g_ct_last_toggle_tick = global_tick;
     g_ct_last_seen_frame = 0xFFFFFFFFU;
     g_ct_hw_reg_moving = 0;
+    g_ct_irq_seen = 0;
+
+    /* Explicitly clear ES_P2_PAUSE and enable ES_P2_INT_EN before asserting ES_DAC2_EN. */
+    sctrl &= ~CT_SERIAL_P2_PAUSE;
+    sctrl |= CT_SERIAL_P2_INTERRUPT;
+    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+    (void)ct_read32(CT_REG_SERIAL_CONTROL);
+
+    control |= CT_CONTROL_DAC2_ENABLE;
+    ct_write32(CT_REG_CONTROL, control);
+    (void)ct_read32(CT_REG_CONTROL);
 }
 
 static void ct4810_stop_dma(void) {
@@ -631,6 +655,7 @@ static void ct4810_stop_dma(void) {
     ct_write32(CT_REG_SERIAL_CONTROL, (sctrl & ~CT_SERIAL_P2_INTERRUPT) | CT_SERIAL_P2_PAUSE);
 
     g_ct_dma_running = 0;
+    g_ct_irq_seen = 0;
     g_ct_last_half_playing = -1;
     g_ct_last_toggle_tick = 0;
     g_ct_last_seen_frame = 0xFFFFFFFFU;
@@ -649,15 +674,74 @@ static void ct4810_pause_dma(int pause) {
     if (!g_ct_present || !g_ct_io_base) return;
     unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
     if (pause) {
-        sctrl |= CT_SERIAL_P2_PAUSE;
+        sctrl = (sctrl & ~CT_SERIAL_P2_INTERRUPT) | CT_SERIAL_P2_PAUSE;
         ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
     } else {
         unsigned int frame = ct4810_get_dma_frame_pos();
         g_ct_last_seen_frame = frame;
         g_ct_last_half_playing = (frame < CT_DMA_HALF_FRAMES) ? 0 : 1;
         g_ct_last_toggle_tick = global_tick;
-        sctrl &= ~CT_SERIAL_P2_PAUSE;
+
+        sctrl = (sctrl & ~CT_SERIAL_P2_PAUSE) | CT_SERIAL_P2_INTERRUPT;
         ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+
+        unsigned int control = ct_read32(CT_REG_CONTROL);
+        control = (control & ~(CT_CONTROL_P2_BYPASS | CT_CONTROL_BUS_MASTER_REQ)) |
+                  g_ct_ctrl_base | CT_CONTROL_DAC2_ENABLE;
+        ct_write32(CT_REG_CONTROL, control);
+    }
+}
+
+static void ct4810_irq_handler(void* ctx) {
+    (void)ctx;
+    if (!g_ct_present || !g_ct_io_base) return;
+
+    unsigned int status = ct_read32(CT_REG_STATUS);
+    if (!(status & CT_STATUS_INTR) || !(status & CT_STATUS_DAC2)) return;
+
+    /* Clear ES_P2_INT_EN first to acknowledge the ES1371 DAC2 interrupt. */
+    unsigned int sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
+    sctrl &= ~CT_SERIAL_P2_INTERRUPT;
+    ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+    (void)ct_read32(CT_REG_SERIAL_CONTROL);
+
+    g_ct_irq_seen = 1;
+
+    if (g_ct_dma_running && !(sctrl & CT_SERIAL_P2_PAUSE)) {
+        unsigned int frame = ct4810_get_dma_frame_pos();
+        int next_fill_half = 0;
+
+        if (frame != g_ct_last_seen_frame) {
+            int current_playing_half = (frame < CT_DMA_HALF_FRAMES) ? 0 : 1;
+            g_ct_last_seen_frame = frame;
+            g_ct_hw_reg_moving = 1;
+            if (current_playing_half != g_ct_last_half_playing) {
+                g_ct_last_half_playing = current_playing_half;
+                next_fill_half = 1 - current_playing_half;
+            } else {
+                g_ct_last_half_playing = 1 - current_playing_half;
+                next_fill_half = current_playing_half;
+            }
+        } else {
+            next_fill_half = (g_ct_last_half_playing >= 0) ? g_ct_last_half_playing : 0;
+            g_ct_last_half_playing = 1 - next_fill_half;
+        }
+
+        g_ct_last_toggle_tick = global_tick;
+        g_ct_half_filled[next_fill_half] = 0;
+
+        if (g_kapi && g_kapi->audio_handle_dma_half_irq) {
+            g_kapi->audio_handle_dma_half_irq(next_fill_half);
+        }
+
+        /* Re-arm ES_P2_INT_EN after refilling the next half-buffer. */
+        if (g_ct_dma_running) {
+            sctrl = ct_read32(CT_REG_SERIAL_CONTROL);
+            if (!(sctrl & CT_SERIAL_P2_PAUSE)) {
+                sctrl |= CT_SERIAL_P2_INTERRUPT;
+                ct_write32(CT_REG_SERIAL_CONTROL, sctrl);
+            }
+        }
     }
 }
 
@@ -729,6 +813,8 @@ static void ct4810_silence_half(int half_idx) {
 
 static int ct4810_poll_half_needed(void) {
     if (!g_ct_present || !g_ct_io_base || !g_ct_dma_running) return -1;
+    if (g_ct_irq_seen) return -1;
+    if (g_ct_irq_registered && (global_tick - g_ct_last_toggle_tick) < 100) return -1;
 
     unsigned int frame = ct4810_get_dma_frame_pos();
     if (g_ct_last_seen_frame == 0xFFFFFFFFU) {

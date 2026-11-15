@@ -1,9 +1,11 @@
 #include "pdv.h"
+#include "audio.h"
 #include "blkdev.h"
 #include "boot_framebuffer.h"
 #include "dma.h"
 #include "driver.h"
 #include "heap.h"
+#include "idt.h"
 #include "isadma.h"
 #include "log.h"
 #include "mm.h"
@@ -250,6 +252,22 @@ static int ddi_register_driver_descriptor(const pdv_driver_descriptor_t* desc) {
     return driver_register((const driver_descriptor_t*)desc);
 }
 
+static int ddi_pci_register_irq(const pdv_pci_device_t* dev,
+                                void (*handler)(void* ctx),
+                                void* ctx) {
+    if (!dev || !handler || dev->irq_line >= 16) return -1;
+
+    uint32_t cmd_sts = pci_config_read(dev->bus, dev->slot, dev->function, 0x04);
+    uint16_t cmd = (uint16_t)(cmd_sts & 0xFFFFu);
+    if (cmd & (1u << 10)) {
+        /* Ensure PCI INTx Disable (command bit 10) is clear before arming IRQ. */
+        pci_config_write(dev->bus, dev->slot, dev->function, 0x04,
+                         (uint32_t)(cmd & ~(1u << 10)));
+    }
+
+    return irq_register_pci_handler(dev->irq_line, handler, ctx);
+}
+
 static const pdv_kernel_api_t g_pdv_kernel_api = {
     .ddk_version              = PDV_DDK_VERSION_1_0,
     .log_printf               = log_printf,
@@ -299,6 +317,8 @@ static const pdv_kernel_api_t g_pdv_kernel_api = {
     .block_unregister         = ddi_block_unregister,
     .block_set_capacity       = ddi_block_set_capacity,
     .register_driver_descriptor = ddi_register_driver_descriptor,
+    .pci_register_irq           = ddi_pci_register_irq,
+    .audio_handle_dma_half_irq  = audio_handle_dma_half_irq,
 };
 
 /* --------------------------------------------------------------------------

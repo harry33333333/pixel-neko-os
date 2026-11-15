@@ -67,6 +67,21 @@ void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t fla
     ioapic_write(IOAPIC_REDTBL(gsi) + 1, high);
 }
 
+void apic_enable_pci_irq(uint8_t irq_line) {
+    if (irq_line >= 16) return;
+
+    uint32_t gsi = acpi_remap_irq(irq_line);
+    uint16_t flags = acpi_get_irq_flags(irq_line);
+    if (flags == 0) {
+        /* PCI INTx lines are level-triggered (bit 3) and active-low (bit 1). */
+        flags = 0x000Au;
+    }
+
+    ioapic_set_entry((uint8_t)gsi, (uint8_t)(32u + irq_line), 0, flags, false);
+    log_printf("[APIC] Enabled PCI IRQ %u -> GSI %u, Vector %u (flags=0x%02x)\n",
+               irq_line, gsi, 32u + irq_line, flags);
+}
+
 static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
 }
