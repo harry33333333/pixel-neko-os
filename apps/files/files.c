@@ -299,6 +299,73 @@ static void open_entry(fm_t* fm, int idx) {
         return;
     }
 
+    if (strcasecmp(ext, ".pnk") == 0) {
+        unsigned char data[512];
+        memset(data, 0, sizeof(data));
+        int length = pxe_read_file(full, data, sizeof(data) - 1);
+        char target[256];
+        target[0] = '\0';
+        if (length > 0) {
+            data[length] = '\0';
+            const char* cursor = (const char*)data;
+            while (*cursor) {
+                if (strncmp(cursor, "target=", 7) == 0) {
+                    const char* end = cursor + 7;
+                    while (*end && *end != '\r' && *end != '\n') end++;
+                    size_t count = (size_t)(end - (cursor + 7));
+                    if (count >= sizeof(target)) count = sizeof(target) - 1;
+                    memcpy(target, cursor + 7, count);
+                    target[count] = '\0';
+                    break;
+                }
+                while (*cursor && *cursor != '\r' && *cursor != '\n') cursor++;
+                while (*cursor == '\r' || *cursor == '\n') cursor++;
+            }
+        }
+        if (!target[0]) {
+            show_msg(fm, "Shortcut Error", "The .pnk target is missing.", 1);
+            return;
+        }
+        if (target[0] && target[1] != ':') {
+            pxe_basic_sysinfo_t info;
+            memset(&info, 0, sizeof(info));
+            pxe_sys_get_basic_info(&info);
+            char resolved[256];
+            char boot_drive = fm->current_path[0] ? fm->current_path[0] :
+                              (info.system_drive ? info.system_drive :
+                               info.cdrom_drive);
+            if (!boot_drive) {
+                show_msg(fm, "Shortcut Error",
+                         "Cannot resolve the shortcut system drive.", 1);
+                return;
+            }
+            snprintf(resolved, sizeof(resolved), "%c:%s", boot_drive,
+                     target);
+            strncpy(target, resolved, sizeof(target) - 1);
+            target[sizeof(target) - 1] = '\0';
+        }
+        pxe_dirent_t target_stat;
+        if (pxe_stat(target, &target_stat) != 0) {
+            show_msg(fm, "Shortcut Error", "The shortcut target no longer exists.", 1);
+            return;
+        }
+        if (target_stat.is_dir) {
+            char files_path[128];
+            if (resolve_app_path("files.pxe", files_path,
+                                 sizeof(files_path)) != 0) {
+                show_msg(fm, "Shortcut Error", "File Manager is unavailable.", 1);
+                return;
+            }
+            const char* argv[2] = { files_path, target };
+            if (pxe_spawn(files_path, 2, argv) < 0) {
+                show_msg(fm, "Shortcut Error", "Folder could not be opened.", 1);
+            }
+        } else if (pxe_spawn(target, 0, NULL) < 0) {
+            show_msg(fm, "Shortcut Error", "PXE shortcut could not be launched.", 1);
+        }
+        return;
+    }
+
     if (strcasecmp(ext, ".pdv") == 0) {
         show_msg(fm, "Device Driver (.pdv)",
                  "Copy .pdv to SYSTEM:\\PDEVICE\\ or load in SysInfo.", 0);
@@ -502,8 +569,14 @@ static void submit_modal(fm_t* fm) {
         char new_full[256];
         join_path(new_full, sizeof(new_full), fm->current_path, fm->modal_input);
         fm->modal = MODAL_NONE;
-        if (pxe_rename(fm->modal_target_path, new_full) != 0) {
-            show_msg(fm, "Rename Failed", "Name collision or I/O error.", 1);
+        int renamed = pxe_rename(fm->modal_target_path, new_full);
+        if (renamed != 0) {
+            if (renamed == -8) {
+                show_msg(fm, "Protected System File",
+                         "Required system files and locked shortcuts cannot be renamed.", 1);
+            } else {
+                show_msg(fm, "Rename Failed", "Name collision or I/O error.", 1);
+            }
             return;
         }
         load_directory(fm);
@@ -522,8 +595,15 @@ static void submit_modal(fm_t* fm) {
         load_directory(fm);
     } else if (fm->modal == MODAL_CONFIRM_DEL) {
         fm->modal = MODAL_NONE;
-        if (pxe_unlink(fm->modal_target_path) != 0) {
-            show_msg(fm, "Delete Failed", "Folder non-empty or read-only.", 1);
+        int deleted = pxe_unlink(fm->modal_target_path);
+        if (deleted != 0) {
+            if (deleted == -8) {
+                show_msg(fm, "Protected System File",
+                         "Required system software and locked shortcuts cannot be deleted.", 1);
+            } else {
+                show_msg(fm, "Delete Failed",
+                         "Folder non-empty, read-only, or protected.", 1);
+            }
             return;
         }
         load_directory(fm);

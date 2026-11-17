@@ -5,5 +5,6 @@
 
 void storage_init(void);
 int storage_self_test(void);
+void storage_rescan(void);
 
 #endif

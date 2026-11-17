@@ -11,6 +11,7 @@ typedef enum {
 } settings_boot_mode_t;
 
 void settings_set_boot_mode(settings_boot_mode_t mode);
+settings_boot_mode_t settings_get_boot_mode(void);
 void settings_init(void);
 char settings_get_system_drive(void);
 bool settings_load(void);

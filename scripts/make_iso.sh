@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A225h"
+    BUILD_ID="26A230a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -31,8 +31,10 @@ fi
 
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
-mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE iso_root/APPS iso_root/DEMO
-mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE iso_root/payload/APPS iso_root/payload/DEMO
+mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE iso_root/APPS
+mkdir -p iso_root/GAME iso_root/Desktop
+mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE iso_root/payload/APPS
+mkdir -p iso_root/payload/GAME iso_root/payload/Desktop
 mkdir -p iso_root/payload/system
 
 # Copy kernel
@@ -55,19 +57,19 @@ fi
 cp "${PDV_FILES[@]}" iso_root/PDEVICE/
 cp "${PDV_FILES[@]}" iso_root/payload/PDEVICE/
 
-# Copy native loadable PXE example executables for Live CD and offline installer payload
+# Copy user games into the root GAME directory
 shopt -s nullglob
-PXE_FILES=(build/pxe_examples/*.pxe)
+GAME_FILES=(build/games/*.pxe)
 shopt -u nullglob
-if [ "${#PXE_FILES[@]}" -eq 0 ]; then
-    echo "Error: No PXE example binaries found in build/pxe_examples/! Run make first."
+if [ "${#GAME_FILES[@]}" -eq 0 ]; then
+    echo "Error: No game binaries found in build/games/! Run make first."
     exit 1
 fi
-cp "${PXE_FILES[@]}" iso_root/DEMO/
-cp "${PXE_FILES[@]}" iso_root/payload/DEMO/
+cp "${GAME_FILES[@]}" iso_root/GAME/
+cp "${GAME_FILES[@]}" iso_root/payload/GAME/
 
 # Copy modular built-in system applications (*.pxe in APPS\) for Live CD and offline installer payload
-REQUIRED_APPS=(about clock calc puzzle notepad cpanel player viewer files sysinfo taskmgr install)
+REQUIRED_APPS=(about clock calc notepad cpanel player viewer files sysinfo taskmgr install)
 for app_name in "${REQUIRED_APPS[@]}"; do
     app_pxe="build/apps/${app_name}.pxe"
     if [ ! -f "${app_pxe}" ]; then
@@ -77,6 +79,11 @@ for app_name in "${REQUIRED_APPS[@]}"; do
     cp "${app_pxe}" iso_root/APPS/
     cp "${app_pxe}" iso_root/payload/APPS/
 done
+
+# Desktop is persisted as a normal directory. Shortcuts are .pnk text files,
+# while .desktop-layout stores every icon position just like macOS Finder.
+cp -R desktop/. iso_root/Desktop/
+cp -R desktop/. iso_root/payload/Desktop/
 
 # Copy Limine BIOS & UEFI CD boot images
 cp boot/limine/limine-bios.sys iso_root/boot/limine/
@@ -110,8 +117,9 @@ Pixel Neko OS ${BUILD_ID} complete offline payload
 
 Static system executable: boot/kernel.elf
 Loadable hardware drivers: PDEVICE/*.pdv
-Native example PXE executables: DEMO/*.pxe
-System PXE applications: APPS/*.pxe (about, clock, calc, puzzle, notepad, cpanel, player, viewer, files, sysinfo, taskmgr, install)
+Default games: GAME/*.pxe (puzzle, solitaire, gomoku, aerochess)
+Persistent desktop: Desktop/*.pnk and Desktop/.desktop-layout
+System PXE applications: APPS/*.pxe (about, clock, calc, notepad, cpanel, player, viewer, files, sysinfo, taskmgr, install)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
@@ -124,11 +132,11 @@ Loadable PDV drivers in PDEVICE/:
 - Storage: fdc.pdv
 
 Built-in PXE applications in APPS/:
-- Ring 3: about.pxe, clock.pxe, calc.pxe, puzzle.pxe, notepad.pxe, cpanel.pxe, player.pxe, viewer.pxe, files.pxe
+- Ring 3: about.pxe, clock.pxe, calc.pxe, notepad.pxe, cpanel.pxe, player.pxe, viewer.pxe, files.pxe
 - Ring 0: sysinfo.pxe, taskmgr.pxe, install.pxe
 
-Example PXE applications in DEMO/:
-- hello.pxe (Ring 3 GUI sandboxed demo with menu & crash test)
+Default games in GAME/:
+- puzzle.pxe, solitaire.pxe, gomoku.pxe, aerochess.pxe
 
 Embedded in kernel.elf:
 - Core kernel, USB stack, boot storage and filesystems

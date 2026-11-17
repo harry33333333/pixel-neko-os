@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\viewer.pxe
+title=Image Viewer
+locked=0

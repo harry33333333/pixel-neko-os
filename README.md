@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A225g - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A230a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -30,7 +30,12 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **动态分辨率、VRAM 精确探测与显存 WC 加速**：
   - 由已加载显卡 `.pdv`（如 `vmwgfx`、`mach64`、`nvg7x`）动态枚举分辨率与 `8/16/24/32-bit` 色深能力，彻底移除硬编码上限；VMware 模式下兼容 SVGA II 2D（放宽 `BAR1` 探测）与 SVGA3D Screen Target（`STDU`）。
   - 结合显存 PAT Write-Combining 纯写脏矩形双缓冲与 64 MiB `SHM` 共享窗口画布槽，支持控制面板可滚动高分辨率选择（含滑块滚动条）且无撕裂卡顿。
-- **经典内置应用程序（`APPS\*.pxe`）**：`files`（文件管理器）、`notepad`（文本编辑器）、`calc`（简易计算器）、`cpanel`（控制面板）、`player`（多媒体音乐播放器，支持窗口关闭/进程终止自动停音）、`viewer`（图片查看器）、`clock`（数字时钟）、`about`（关于）、`sysinfo`（系统与驱动诊断）、`taskmgr`（Ring 0 任务管理器，支持 `Ctrl+Shift+Esc`）、`puzzle`（15 数字拼图）、`install`（图形化离线安装器）。
+- **经典内置应用程序（`APPS\*.pxe`）**：`files`（文件管理器）、`notepad`（文本编辑器）、`calc`（简易计算器）、`cpanel`（控制面板）、`player`（多媒体音乐播放器）、`viewer`（图片查看器）、`clock`（数字时钟）、`about`（关于）、`sysinfo`（系统与驱动诊断）、`taskmgr`（Ring 0 任务管理器）、`install`（图形化离线安装器）。Puzzle、Solitaire、Gomoku 与 Aero Chess 统一位于根目录 `GAME\`。
+- **持久化 Windows 风格桌面（`Desktop\`）**：桌面文件直接存放在系统盘 `Desktop\` 中，应用默认以 `*.pnk` 快捷方式出现，桌面隐藏后缀并绘制右下角快捷箭头；`.desktop-layout` 保存全部图标位置。文件管理与关于本机快捷方式锁定，`APPS\`、`PDEVICE\`、`boot\`、`system\` 等系统文件禁止删除或重命名。Live 模式使用只读桌面，不会读取本地系统盘的桌面。
+
+### 26A230a 存储兼容修复
+- ASUS P7H55-M LE / Intel H55：枚举全部 AHCI 控制器，并在 AHCI 已注册设备但无法取得可读卷时回退到 ATA PIO；不再以“块设备数量非零”误判存储成功。
+- USB 启动：支持 USB 混合 ISO 的原生 ISO9660 挂载与 512/2048 字节扇区转换；EHCI/UHCI/OHCI 枚举失败可重试，USB BOT 正确处理短传输、CSW residue 与设备就绪延迟。
 
 ### 3. 全栈 USB 架构与现代芯片组兼容
 - **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
@@ -61,18 +66,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A225g.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A230a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A225g.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A230a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A225g.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A230a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -87,6 +92,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A225g.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
+- [26A230a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

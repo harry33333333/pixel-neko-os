@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A225g`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A230a`）
 
-在当前 `main` 主干（基准版本 **`v26A225g`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 `main` 主干（基准版本 **`v26A230a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -13,8 +13,9 @@
   - **384 字节 `pxe_resource_t`**：内嵌 `16x16` 8-bit 索引色图标（`255` 为透明）、窗口标题 `title`、作者 `author`、文件扩展名关联 `ext_assoc`（如 `"txt,log,md"`）。
   - **4096 字节对齐的 ELF64 PIE 载荷**：单文件大小上限 `8 MB`（`PXE_MAX_FILE_BYTES`）。
 - **磁盘部署路径**：
-  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`puzzle`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`taskmgr`、`install`）
-  - 示例程序：`\DEMO\*.pxe`（`hello.pxe`、`mini_taskmon.pxe`）
+  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`taskmgr`、`install`）
+  - 默认游戏：`\GAME\*.pxe`（`puzzle`、`solitaire`、`gomoku`、`aerochess`）
+  - 桌面快捷方式：`\Desktop\*.pnk`，图标位置保存在 `\Desktop\.desktop-layout`
   - 用户双击文件管理（`files.pxe`）中任意 `.pxe`（或关联扩展名的文件）即可由内核动态加载运行。
 
 ### 1.2 Ring 3 与 Ring 0 执行对比

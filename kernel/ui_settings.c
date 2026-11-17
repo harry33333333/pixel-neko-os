@@ -116,31 +116,44 @@ static bool find_system_partition(void) {
         kernel_file_request.response ?
             kernel_file_request.response->kernel_file : NULL;
     uint32_t boot_disk_id = boot_file ? boot_file->mbr_disk_id : 0;
-    for (char letter = 'C'; letter <= 'Z'; letter++) {
-        vfs_drive_t* drive = vfs_get_drive(letter);
-        if (!drive || !drive->present || !drive->mounted ||
-            drive->is_readonly || drive->drv_type != VFS_DRV_HDD ||
-            !drive->dev || drive->dev->is_removable ||
-            !drive->is_supported) {
-            continue;
-        }
-        if (drive->fs_type != PART_FS_FAT12 &&
-            drive->fs_type != PART_FS_FAT16 &&
-            drive->fs_type != PART_FS_FAT32 &&
-            drive->fs_type != PART_FS_EXFAT) {
-            continue;
-        }
-        if (!boot_disk_matches(drive->dev, boot_disk_id)) continue;
-        if (path_has_file(letter, "\\boot\\kernel.elf") &&
-            path_has_file(letter, "\\system\\PAYLOAD.TXT")) {
-            g_system_drive = letter;
-            make_drive_path(g_config_path[0], sizeof(g_config_path[0]),
-                            letter, "\\system\\PIXEL.pse");
-            make_drive_path(g_config_path[1], sizeof(g_config_path[1]),
-                            letter, "\\system\\PIXEL2.pse");
-            log_printf("[SETTINGS] system partition=%c: config=%s\n",
-                       letter, g_config_path[0]);
-            return true;
+    for (int relaxed = 0; relaxed < 2; relaxed++) {
+        for (char letter = 'C'; letter <= 'Z'; letter++) {
+            vfs_drive_t* drive = vfs_get_drive(letter);
+            if (!drive || !drive->present || !drive->mounted ||
+                drive->is_readonly ||
+                (drive->drv_type != VFS_DRV_HDD &&
+                 drive->drv_type != VFS_DRV_USB) ||
+                !drive->dev || !drive->is_supported) {
+                continue;
+            }
+            if (drive->fs_type != PART_FS_FAT12 &&
+                drive->fs_type != PART_FS_FAT16 &&
+                drive->fs_type != PART_FS_FAT32 &&
+                drive->fs_type != PART_FS_EXFAT) {
+                continue;
+            }
+            if (relaxed == 0 &&
+                !boot_disk_matches(drive->dev, boot_disk_id)) {
+                continue;
+            }
+            /*
+             * PAYLOAD.TXT is optional for systems installed by older
+             * releases.  The kernel plus the system app directory are the
+             * stable identity of an installed Pixel Neko volume.
+             */
+            if (path_has_file(letter, "\\boot\\kernel.elf") &&
+                (path_has_file(letter, "\\APPS\\files.pxe") ||
+                 path_has_file(letter, "\\system\\PAYLOAD.TXT"))) {
+                g_system_drive = letter;
+                make_drive_path(g_config_path[0], sizeof(g_config_path[0]),
+                                letter, "\\system\\PIXEL.pse");
+                make_drive_path(g_config_path[1], sizeof(g_config_path[1]),
+                                letter, "\\system\\PIXEL2.pse");
+                log_printf("[SETTINGS] system partition=%c (%s): config=%s\n",
+                           letter, relaxed ? "fallback scan" : "boot disk",
+                           g_config_path[0]);
+                return true;
+            }
         }
     }
     return false;
@@ -278,6 +291,10 @@ static bool apply_wallpaper(const pse_config_t* config) {
 
 void settings_set_boot_mode(settings_boot_mode_t mode) {
     g_boot_mode = mode;
+}
+
+settings_boot_mode_t settings_get_boot_mode(void) {
+    return g_boot_mode;
 }
 
 void settings_init(void) {

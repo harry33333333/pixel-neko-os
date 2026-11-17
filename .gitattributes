@@ -4,6 +4,8 @@ Makefile text eol=lf
 *.asm text eol=lf
 *.ld text eol=lf
 *.conf text eol=lf
+*.pnk text eol=lf
+.desktop-layout text eol=lf
 *.bin binary
 *.sys binary
 *.EFI binary

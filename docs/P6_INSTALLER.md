@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A181f`
+Build version: `26A230a`
 
 ## Boot modes
 
@@ -56,14 +56,19 @@ partition start/end sectors and type GUIDs are preserved.
 - `boot/limine/limine.conf`
 - `boot/limine/limine-bios.sys`
 - `EFI/BOOT/BOOTX64.EFI`
+- `APPS/*.pxe`
+- `PDEVICE/*.pdv`
+- `GAME/puzzle.pxe`, `solitaire.pxe`, `gomoku.pxe`, `aerochess.pxe`
+- `Desktop/*.pnk` and `Desktop/.desktop-layout`
 - `system/LICENSE.TXT`
 - `system/PAYLOAD.TXT`
 - `system/README.TXT`
 - `system/THIRDPARTY.TXT`
 
-The desktop, nine applications, fonts, wallpaper assets and splash resources
-are statically linked into `kernel.elf`, as required by the P6 stage-one
-implementation.
+The kernel, window manager, fonts, wallpaper assets and splash resources are
+contained in `kernel.elf`; system applications, hardware drivers, games and
+desktop shortcuts are versioned offline payload files. Keep-filesystem mode
+preserves an existing `Desktop\` layout during upgrades.
 
 ## Automated acceptance
 

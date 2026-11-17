@@ -1,6 +1,7 @@
 #include "usb_ehci.h"
 #include "usb_core.h"
 #include "usb_compat.h"
+#include "apic.h"
 #include "dma.h"
 #include "log.h"
 #include "string.h"
@@ -74,6 +75,7 @@ typedef struct {
     uint32_t operational;
     uint8_t ports;
     uint32_t ports_seen;
+    uint64_t retry_tick[16];
     bool companion_present;
 } ehci_controller_t;
 
@@ -483,14 +485,20 @@ static void ehci_poll(usb_hci_t* hci) {
                 usb_disconnect_port(hci, port);
                 c->ports_seen &= ~bit;
             }
+            c->retry_tick[port - 1] = 0;
             continue;
         }
         if (c->ports_seen & bit) continue;
-        c->ports_seen |= bit;
+        if (c->retry_tick[port - 1] > apic_get_ticks()) continue;
         uint8_t speed = (uint8_t)ehci_port_reset(hci, port);
         if (speed == USB_SPEED_HIGH) {
             log_printf("[EHCI] root port %u High-Speed connected\n", port);
-            (void)usb_enumerate(hci, port, speed);
+            if (usb_enumerate(hci, port, speed) == 0) {
+                c->ports_seen |= bit;
+                c->retry_tick[port - 1] = 0;
+            } else {
+                c->retry_tick[port - 1] = apic_get_ticks() + 10;
+            }
         } else if (c->companion_present) {
             value = ehci_reg_read(c, reg);
             if (value & EHCI_PORT_CONNECT) {
@@ -500,6 +508,8 @@ static void ehci_poll(usb_hci_t* hci) {
                 log_printf("[EHCI] root port %u routed to physical companion\n",
                            port);
             }
+        } else {
+            c->retry_tick[port - 1] = apic_get_ticks() + 10;
         }
     }
 }

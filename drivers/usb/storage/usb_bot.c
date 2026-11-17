@@ -101,36 +101,46 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
         return -1;
     }
 
+    uint32_t transferred = 0;
     if (data_length) {
         if (direction == USB_DIR_OUT) {
             memcpy(bot->buffer, data, data_length);
         } else {
             memset(bot->buffer, 0, data_length);
         }
-        if (bot_bulk(bot, direction == USB_DIR_IN ? bot->bulk_in :
-                                                     bot->bulk_out,
-                     bot->buffer, data_length, direction) !=
-            (int)data_length) {
+        int bulk_result = bot_bulk(
+            bot, direction == USB_DIR_IN ? bot->bulk_in : bot->bulk_out,
+            bot->buffer, data_length, direction);
+        if (bulk_result < 0) {
             log_printf("[USBMS] data transfer failed tag=%u dir=%d length=%u\n",
                        cbw.tag, direction, data_length);
             (void)bot_reset_recovery(bot);
             return -1;
         }
+        /*
+         * A short bulk transfer is legal for BOT.  The CSW carries the byte
+         * residue and must still be consumed before the next command.
+         */
+        transferred = (uint32_t)bulk_result;
+        if (transferred > data_length) transferred = data_length;
     }
 
     bot_csw_t csw;
     memset(&csw, 0, sizeof(csw));
-    if (bot_bulk(bot, bot->bulk_in, &csw, sizeof(csw), USB_DIR_IN) !=
-        (int)sizeof(csw) ||
+    int csw_result = bot_bulk(bot, bot->bulk_in, &csw, sizeof(csw),
+                              USB_DIR_IN);
+    if (csw_result != (int)sizeof(csw) ||
         csw.signature != USB_BOT_CSW_SIGNATURE || csw.tag != cbw.tag ||
-        csw.status != 0) {
+        csw.status != 0 || csw.residue > data_length) {
         log_printf("[USBMS] CSW failure tag=%u got_tag=%u signature=%08x status=%u\n",
                    cbw.tag, csw.tag, csw.signature, csw.status);
         (void)bot_reset_recovery(bot);
         return -1;
     }
     if (data_length && direction == USB_DIR_IN) {
-        memcpy(data, bot->buffer, data_length);
+        uint32_t actual = data_length - csw.residue;
+        if (actual > transferred) actual = transferred;
+        memcpy(data, bot->buffer, actual);
     }
     return 0;
 }
@@ -163,6 +173,19 @@ static int scsi_capacity(usb_bot_device_t* bot) {
     bot->sector_size = be32(response + 4);
     if (!bot->sector_size) bot->sector_size = 512;
     return bot->sector_count ? 0 : -1;
+}
+
+static int scsi_test_ready(usb_bot_device_t* bot) {
+    uint8_t command[6] = { 0x00 };
+    return bot_command(bot, command, sizeof(command), NULL, 0, USB_DIR_IN);
+}
+
+static int scsi_wait_ready(usb_bot_device_t* bot) {
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (scsi_test_ready(bot) == 0) return 0;
+        usb_delay_ms(25);
+    }
+    return -1;
 }
 
 static int bot_read_write(blkdev_t* block, uint64_t lba, uint32_t count,
@@ -222,13 +245,19 @@ int usb_storage_attach(usb_device_t* device) {
     bot->device = device;
     bot->bulk_in = bulk_in;
     bot->bulk_out = bulk_out;
-    if (scsi_inquiry(bot) != 0) {
+    if (scsi_inquiry(bot) != 0 || scsi_wait_ready(bot) != 0) {
         log_printf("[USBMS] SCSI INQUIRY failed on device %u\n",
                    device->address);
         memset(bot, 0, sizeof(*bot));
         return -1;
     }
-    if (scsi_capacity(bot) != 0) {
+    int capacity_result = -1;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        capacity_result = scsi_capacity(bot);
+        if (capacity_result == 0) break;
+        usb_delay_ms(25);
+    }
+    if (capacity_result != 0) {
         log_printf("[USBMS] READ CAPACITY failed on device %u\n",
                    device->address);
         memset(bot, 0, sizeof(*bot));

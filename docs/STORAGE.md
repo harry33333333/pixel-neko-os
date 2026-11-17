@@ -49,9 +49,13 @@ and ISO9660:
 
 ## Controllers
 
-AHCI uses a command list, received-FIS area and 64-bit PRDT DMA. The driver
-preserves firmware-established SATA links and performs COMRESET only when a
-link is not ready. Legacy IDE provides PIO ATA and packet ATAPI fallback.
+AHCI uses a command list, received-FIS area and 64-bit PRDT DMA. The kernel
+enumerates every AHCI-capable PCI function, including controllers reported by
+the P55/H55 PCH as either `01:06` or `01:01` with programming interface 1.
+The driver preserves firmware-established SATA links and performs COMRESET
+only when a link is not ready. If AHCI registers devices but no supported
+volume can be found, legacy PIO ATA/ATAPI is probed as a real compatibility
+fallback. This avoids treating a successful IDENTIFY alone as usable storage.
 
 The floppy stack uses 8237 ISA DMA channel 2 with an address/count buffer
 below 16 MiB that never crosses a 64 KiB boundary. The FDC driver probes the
@@ -63,9 +67,17 @@ media. Firmware CMOS drive-type hints are used when available; if a virtual
 or UEFI environment leaves them empty, both physical FDC units are probed and
 only media-bearing unhinted drives are registered.
 
-USB Mass Storage implements Bulk-Only Transport with SCSI INQUIRY, READ
-CAPACITY, READ(10), WRITE(10), REQUEST SENSE handling and reset recovery.
-UHCI, OHCI, EHCI and xHCI each provide bulk endpoint transport.
+USB Mass Storage implements Bulk-Only Transport with SCSI INQUIRY,
+TEST UNIT READY, READ CAPACITY, READ(10), WRITE(10), CSW residue handling and
+reset recovery. Legal short bulk transfers still consume the CSW before the
+next command. UHCI, OHCI, EHCI and xHCI each provide bulk endpoint transport;
+EHCI/UHCI/OHCI port enumeration is retried instead of permanently marking a
+transiently failed port as handled.
+
+Hybrid ISO images written directly to USB are mounted as `ISO9660` even though
+the block device is not ATAPI. The ISO reader translates its fixed 2048-byte
+extents to the host device's 512-byte or 2048-byte sectors, allowing a USB
+Live boot to locate `APPS\`, `PDEVICE\`, and `Desktop\`.
 
 ## Validation
 

@@ -12,7 +12,8 @@ typedef enum {
     VFS_ERR_NOT_FOUND = -4,
     VFS_ERR_READONLY = -5,
     VFS_ERR_IO = -6,
-    VFS_ERR_NOT_DIR = -7
+    VFS_ERR_NOT_DIR = -7,
+    VFS_ERR_PROTECTED = -8
 } vfs_error_t;
 
 typedef enum {
@@ -61,6 +62,8 @@ int  vfs_write_file(const char* path, const unsigned char* buf, unsigned int siz
 int  vfs_mkdir(const char* path);
 int  vfs_unlink(const char* path);
 int  vfs_rename(const char* old_path, const char* new_path);
+bool vfs_path_is_protected(const char* path);
+void vfs_migrate_legacy_layout(void);
 const char* vfs_get_fs_name(part_fs_type_t type);
 int  vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb, int* is_known);
 bool vfs_poll_media(void);

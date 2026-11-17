@@ -1333,7 +1333,8 @@ static int run_installation(installer_t* inst) {
     }
 
     snprintf(mmsg, sizeof(mmsg), "Copying %d payload files...", file_count);
-    set_stage(inst, 24, mmsg, "Includes kernel, boot files, APPS\\*.pxe, PDEVICE\\*.pdv");
+    set_stage(inst, 24, mmsg,
+              "Includes boot files, APPS, PDEVICE, GAME and Desktop");
     add_log(inst, mmsg);
 
     /* Step 3: Copy & verify every payload file */
@@ -1350,6 +1351,15 @@ static int run_installation(installer_t* inst) {
         char src_file[256], dst_file[256];
         snprintf(src_file, sizeof(src_file), "%c:\\payload\\%s", src_letter, files[i].rel);
         snprintf(dst_file, sizeof(dst_file), "%c:\\%s", target_letter, files[i].rel);
+        /*
+         * Existing-system upgrades preserve the user's Desktop and icon
+         * layout. Missing defaults are recreated by the desktop service.
+         */
+        pxe_dirent_t existing;
+        if (strncasecmp(files[i].rel, "Desktop\\", 8) == 0 &&
+            pxe_stat(dst_file, &existing) == 0) {
+            continue;
+        }
 
         int pct = 24 + ((i * 42) / file_count);
         snprintf(inst->status_detail, sizeof(inst->status_detail), "Copying %d/%d: %s",

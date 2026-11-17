@@ -6,6 +6,7 @@
 #include "fat.h"
 #include "iso9660.h"
 #include "log.h"
+#include "settings.h"
 #include "string.h"
 
 vfs_drive_t g_vfs_drives[26];
@@ -35,6 +36,74 @@ static void copy_text(char* target, unsigned int capacity, const char* source) {
 
 static char normalize_letter(char letter) {
     return letter >= 'a' && letter <= 'z' ? (char)(letter - 32) : letter;
+}
+
+static char lower_ascii(char value) {
+    return value >= 'A' && value <= 'Z' ? (char)(value + 32) : value;
+}
+
+static const char* path_relative(const char* path) {
+    if (!path) return NULL;
+    if (path[0] && path[1] == ':') path += 2;
+    while (*path == '\\' || *path == '/') path++;
+    return path;
+}
+
+static bool path_has_prefix(const char* path, const char* prefix) {
+    const char* relative = path_relative(path);
+    if (!relative || !prefix) return false;
+    while (*prefix) {
+        if (lower_ascii(*relative) != lower_ascii(*prefix)) return false;
+        relative++;
+        prefix++;
+    }
+    return true;
+}
+
+static bool path_name_equals(const char* path, const char* name) {
+    const char* relative = path_relative(path);
+    if (!relative) return false;
+    const char* base = relative;
+    for (const char* cursor = relative; *cursor; cursor++) {
+        if (*cursor == '\\' || *cursor == '/') base = cursor + 1;
+    }
+    while (*base && *name) {
+        if (lower_ascii(*base) != lower_ascii(*name)) return false;
+        base++;
+        name++;
+    }
+    return *base == '\0' && *name == '\0';
+}
+
+bool vfs_path_is_protected(const char* path) {
+    const char* relative = path_relative(path);
+    if (!relative || !*relative) return false;
+    if (path_has_prefix(path, "apps\\") ||
+        path_has_prefix(path, "boot\\") ||
+        path_has_prefix(path, "system\\") ||
+        path_has_prefix(path, "pdevice\\") ||
+        path_has_prefix(path, "efi\\")) {
+        return true;
+    }
+    if (path_name_equals(path, "apps") ||
+        path_name_equals(path, "boot") ||
+        path_name_equals(path, "system") ||
+        path_name_equals(path, "pdevice") ||
+        path_name_equals(path, "efi") ||
+        path_name_equals(path, "desktop") ||
+        path_name_equals(path, "limine.conf") ||
+        path_name_equals(path, ".desktop-layout") ||
+        path_name_equals(path, "File Management.pnk") ||
+        path_name_equals(path, "About This Machine.pnk")) {
+        return true;
+    }
+    return false;
+}
+
+static bool vfs_live_desktop_locked(const char* path) {
+    return settings_get_boot_mode() == SETTINGS_BOOT_LIVE &&
+           (path_has_prefix(path, "desktop\\") ||
+            path_name_equals(path, "desktop"));
 }
 
 const char* vfs_get_fs_name(part_fs_type_t type) {
@@ -149,6 +218,41 @@ static void mount_optical(blkdev_t* dev, char letter) {
                   dev->media_state == MEDIA_PRESENT ?
                       "Optical Drive (No ISO)" : "Optical Drive (Empty)");
     }
+}
+
+static bool mount_raw_iso(blkdev_t* dev, char letter) {
+    if (!dev || letter < 'A' || letter > 'Z' ||
+        g_vfs_drives[letter - 'A'].present) {
+        return false;
+    }
+    for (int index = 0; index < 4; index++) {
+        if (g_iso_filesystems[index].mounted &&
+            g_iso_filesystems[index].dev != dev) {
+            continue;
+        }
+        if (iso_mount(dev, &g_iso_filesystems[index]) != 0) continue;
+        vfs_drive_t* drive = initialize_drive(letter);
+        if (!drive) return false;
+        drive->drv_type = VFS_DRV_CDROM;
+        drive->fs_type = PART_FS_UNKNOWN;
+        drive->is_supported = 1;
+        drive->is_readonly = 1;
+        drive->mounted = 1;
+        drive->dev = dev;
+        drive->total_sectors = g_iso_filesystems[index].total_sectors;
+        drive->total_kb = drive->total_sectors * 2;
+        drive->media_generation = dev->media_generation;
+        copy_text(drive->label, sizeof(drive->label),
+                  g_iso_filesystems[index].volume_label[0]
+                      ? g_iso_filesystems[index].volume_label
+                      : "Pixel Neko Live Media");
+        g_filesystem_kind[letter - 'A'] = VFS_FS_ISO;
+        log_printf("[VFS ] %c: ISO9660 live volume on %s (%llu sectors)\n",
+                   letter, dev->name,
+                   (unsigned long long)drive->total_sectors);
+        return true;
+    }
+    return false;
 }
 
 static void clear_optical_mount(vfs_drive_t* drive) {
@@ -359,6 +463,34 @@ void vfs_init(void) {
         }
         if (optical_cursor > 'Z') break;
         mount_optical(dev, optical_cursor++);
+    }
+
+    /*
+     * A dd'ed hybrid ISO boots from USB as a raw disk, not as ATAPI media.
+     * Retry all non-optical block devices through the sector-translating ISO
+     * reader so a USB Live session can find APPS\ and PDEVICE\.
+     */
+    for (int index = 0; index < blkdev_count(); index++) {
+        blkdev_t* dev = blkdev_get(index);
+        if (!dev || dev->type == BLK_TYPE_ATAPI ||
+            dev->type == BLK_TYPE_FLOPPY || !dev->total_sectors) {
+            continue;
+        }
+        bool already_mounted = false;
+        for (char letter = 'A'; letter <= 'Z'; letter++) {
+            vfs_drive_t* drive = &g_vfs_drives[letter - 'A'];
+            if (drive->present && drive->mounted && drive->dev == dev) {
+                already_mounted = true;
+                break;
+            }
+        }
+        if (already_mounted) continue;
+        while (optical_cursor <= 'Z' &&
+               g_vfs_drives[optical_cursor - 'A'].present) {
+            optical_cursor++;
+        }
+        if (optical_cursor > 'Z') break;
+        if (mount_raw_iso(dev, optical_cursor)) optical_cursor++;
     }
 
     int mounted = 0;
@@ -597,6 +729,7 @@ int vfs_write_file(const char* path, const unsigned char* buffer,
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_write_file(path, buffer, size) == 0 ? VFS_OK : VFS_ERR_IO;
     }
@@ -613,6 +746,7 @@ int vfs_mkdir(const char* path) {
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_create_dir(path) == 0 ? VFS_OK : VFS_ERR_IO;
     }
@@ -629,6 +763,8 @@ int vfs_unlink(const char* path) {
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
+    if (vfs_path_is_protected(path)) return VFS_ERR_PROTECTED;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_delete(path) == 0 ? VFS_OK : VFS_ERR_IO;
     }
@@ -645,6 +781,14 @@ int vfs_rename(const char* old_path, const char* new_path) {
     vfs_drive_t* drive = vfs_get_drive(old_path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
+    if (vfs_live_desktop_locked(old_path) ||
+        vfs_live_desktop_locked(new_path)) {
+        return VFS_ERR_READONLY;
+    }
+    if (vfs_path_is_protected(old_path) ||
+        vfs_path_is_protected(new_path)) {
+        return VFS_ERR_PROTECTED;
+    }
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_rename(old_path, new_path) == 0 ? VFS_OK : VFS_ERR_IO;
     }
@@ -655,6 +799,70 @@ int vfs_rename(const char* old_path, const char* new_path) {
                    : VFS_ERR_IO;
     }
     return VFS_ERR_UNSUPPORTED;
+}
+
+static int remove_legacy_system_file(const char* path) {
+    vfs_drive_t* drive = vfs_get_drive(path[0]);
+    if (!drive || !drive->mounted || drive->is_readonly) return -1;
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
+        return fat_delete(path);
+    }
+    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        return exfat_unlink(&g_exfat_filesystems[drive->letter - 'A'], path);
+    }
+    return -1;
+}
+
+typedef struct {
+    char names[16][128];
+    int count;
+} legacy_demo_scan_t;
+
+static legacy_demo_scan_t g_legacy_demo_scan;
+
+static void collect_legacy_demo_entry(const vfs_dirent_t* entry) {
+    if (!entry || entry->is_dir || g_legacy_demo_scan.count >= 16) return;
+    copy_text(g_legacy_demo_scan.names[g_legacy_demo_scan.count++],
+              sizeof(g_legacy_demo_scan.names[0]), entry->name);
+}
+
+void vfs_migrate_legacy_layout(void) {
+    char drive = settings_get_system_drive();
+    if (!drive) return;
+
+    char legacy_puzzle[64];
+    legacy_puzzle[0] = drive;
+    legacy_puzzle[1] = ':';
+    copy_text(legacy_puzzle + 2, sizeof(legacy_puzzle) - 2,
+              "\\APPS\\puzzle.pxe");
+    vfs_dirent_t entry;
+    if (vfs_find_file(legacy_puzzle, &entry) == VFS_OK &&
+        remove_legacy_system_file(legacy_puzzle) == 0) {
+        log_printf("[VFS ] Upgrade moved legacy puzzle out of APPS\n");
+    }
+
+    char demo_dir[48];
+    demo_dir[0] = drive;
+    demo_dir[1] = ':';
+    copy_text(demo_dir + 2, sizeof(demo_dir) - 2, "\\DEMO");
+    if (vfs_find_file(demo_dir, &entry) != VFS_OK || !entry.is_dir) return;
+    memset(&g_legacy_demo_scan, 0, sizeof(g_legacy_demo_scan));
+    if (vfs_list_dir(demo_dir, collect_legacy_demo_entry) == VFS_OK) {
+        for (int index = 0; index < g_legacy_demo_scan.count; index++) {
+            char path[96];
+            copy_text(path, sizeof(path), demo_dir);
+            size_t used = strlen(path);
+            copy_text(path + used, sizeof(path) - used, "\\");
+            used = strlen(path);
+            copy_text(path + used, sizeof(path) - used,
+                      g_legacy_demo_scan.names[index]);
+            (void)vfs_unlink(path);
+        }
+    }
+    if (vfs_list_dir(demo_dir, NULL) == VFS_OK) {
+        (void)vfs_unlink(demo_dir);
+    }
+    fat_flush_all();
 }
 
 int vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb,
@@ -721,6 +929,7 @@ int vfs_stream_create(const char* path, vfs_stream_t* stream) {
     copy_text(stream->path, sizeof(stream->path), path);
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted || drive->is_readonly) return -1;
+    if (vfs_live_desktop_locked(path)) return -1;
     stream->fs_kind = g_filesystem_kind[drive->letter - 'A'];
     stream->is_write = 1;
     if (stream->fs_kind == VFS_FS_FAT) {

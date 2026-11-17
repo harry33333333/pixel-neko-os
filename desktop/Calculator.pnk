@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\calc.pxe
+title=Calculator
+locked=0

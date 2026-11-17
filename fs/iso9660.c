@@ -1,6 +1,38 @@
 #include "iso9660.h"
 #include "log.h"
 
+/*
+ * ISO9660 extent numbers are always in 2048-byte logical sectors.  A USB
+ * installation image is normally exposed as a 512-byte block device, while
+ * ATAPI media reports 2048-byte sectors.  Translate the ISO logical address
+ * instead of calling the block device directly with a 2048-byte buffer.
+ */
+static int iso_read_sector(blkdev_t* dev, uint64_t iso_lba,
+                           unsigned char* buffer) {
+    if (!dev || !buffer || !dev->read_sectors || !dev->sector_size) return -1;
+    if (dev->sector_size == 2048) {
+        return block_read(dev, iso_lba, 1, buffer);
+    }
+    if (dev->sector_size < 2048 && 2048u % dev->sector_size == 0) {
+        uint32_t count = 2048u / dev->sector_size;
+        uint64_t lba = iso_lba * count;
+        return block_read(dev, lba, count, buffer);
+    }
+    if (dev->sector_size > 2048 && dev->sector_size <= 4096 &&
+        dev->sector_size % 2048u == 0) {
+        unsigned char physical[4096];
+        uint32_t sectors_per_iso = dev->sector_size / 2048u;
+        uint64_t lba = iso_lba / sectors_per_iso;
+        uint32_t offset = (uint32_t)(iso_lba % sectors_per_iso) * 2048u;
+        if (block_read(dev, lba, 1, physical) != 0) return -1;
+        for (uint32_t index = 0; index < 2048u; index++) {
+            buffer[index] = physical[offset + index];
+        }
+        return 0;
+    }
+    return -1;
+}
+
 static int str_case_eq(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) {
@@ -14,7 +46,7 @@ static int str_case_eq(const char* a, const char* b) {
 }
 
 int iso_mount(blkdev_t* dev, iso_fs_t* fs) {
-    if (!dev || dev->type != BLK_TYPE_ATAPI) return -1;
+    if (!dev || !fs || !dev->read_sectors) return -1;
     fs->dev = dev;
     fs->mounted = 0;
     fs->is_joliet = 0;
@@ -24,7 +56,7 @@ int iso_mount(blkdev_t* dev, iso_fs_t* fs) {
     int found_pvd = 0;
 
     for (unsigned int lba = 16; lba < 32; lba++) {
-        if (dev->read_sectors(dev, lba, 1, sec) != 0) {
+        if (iso_read_sector(dev, lba, sec) != 0) {
             log_printf("[ISO ] Read failed at sector %u\n", lba);
             break;
         }
@@ -87,7 +119,7 @@ static int parse_directory(iso_fs_t* fs, unsigned int start_lba, unsigned int to
     unsigned int sectors = (total_len + 2047) / 2048;
 
     for (unsigned int s = 0; s < sectors; s++) {
-        if (fs->dev->read_sectors(fs->dev, start_lba + s, 1, sec) != 0) {
+        if (iso_read_sector(fs->dev, start_lba + s, sec) != 0) {
             return -1;
         }
 
@@ -254,7 +286,7 @@ int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, uint64_t offset,
         unsigned int sec_idx = cur_offset / 2048;
         unsigned int sec_off = cur_offset % 2048;
 
-        if (fs->dev->read_sectors(fs->dev, info->extent_lba + sec_idx, 1, sec) != 0) {
+        if (iso_read_sector(fs->dev, info->extent_lba + sec_idx, sec) != 0) {
             break;
         }
 

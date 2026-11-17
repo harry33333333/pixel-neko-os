@@ -8,6 +8,7 @@
 #include "usb_core.h"
 
 #define AHCI_MAX_PORTS 16
+#define AHCI_MAX_CONTROLLERS 4
 #define AHCI_SECTOR_SIZE 512
 
 #define AHCI_CAP 0x00
@@ -74,6 +75,7 @@ typedef struct {
 typedef struct ahci_controller {
     volatile uint8_t* mmio;
     const pci_device_t* pci;
+    uint8_t index;
     uint32_t implemented_ports;
     uint64_t dma_mask;
     struct ahci_port* ports;
@@ -92,7 +94,9 @@ typedef struct ahci_port {
     ahci_port_dma_t* memory;
 } ahci_port_t;
 
-static ahci_controller_t g_ahci;
+static ahci_controller_t g_ahci_controllers[AHCI_MAX_CONTROLLERS];
+static ahci_port_t g_ahci_ports[AHCI_MAX_CONTROLLERS][AHCI_MAX_PORTS];
+static uint32_t g_ahci_controller_count;
 
 static uint32_t ahci_read(ahci_controller_t* controller, uint32_t offset) {
     return *(volatile uint32_t*)(controller->mmio + offset);
@@ -467,74 +471,127 @@ static int ahci_probe_port(ahci_port_t* port) {
         }
     }
     if (!port->packet && !port->sectors) return -1;
+    char device_name[32];
+    if (port->packet) {
+        memcpy(device_name, "ahci-atapi", 10);
+        device_name[10] = (char)('0' + port->controller->index);
+        device_name[11] = '\0';
+    } else {
+        memcpy(device_name, "ahci-sata", 9);
+        device_name[9] = (char)('0' + port->controller->index);
+        device_name[10] = '\0';
+    }
+    int unit = (int)port->controller->index * AHCI_MAX_PORTS + port->index;
     blkdev_t* block = block_register(
-        port->packet ? "ahci-atapi" : "ahci-sata",
-        port->packet ? BLK_TYPE_ATAPI : BLK_TYPE_AHCI, port->index,
+        device_name, port->packet ? BLK_TYPE_ATAPI : BLK_TYPE_AHCI, unit,
         port->sector_size, port->sectors, port->packet, port->packet,
         ahci_read_blocks, port->packet ? NULL : ahci_write_blocks,
         port->packet ? ahci_atapi_check_media : NULL, port);
     if (!block) return -1;
     memcpy(block->model, port->model, sizeof(block->model));
-    log_printf("[AHCI] Port %u %s: %s, %llu sectors\n", port->index,
+    log_printf("[AHCI] Controller %u port %u %s: %s, %llu sectors\n",
+               port->controller->index, port->index,
                port->packet ? "ATAPI" : "SATA", port->model,
                (unsigned long long)port->sectors);
     return 0;
 }
 
-void ahci_init(void) {
-    memset(&g_ahci, 0, sizeof(g_ahci));
-    const pci_device_t* pci = pci_find_class(0x01, 0x06);
-    if (!pci || pci->prog_if != 0x01 || !pci->bar[5].valid ||
-        pci->bar[5].is_io) {
+static bool ahci_is_candidate(const pci_device_t* pci) {
+    if (!pci || pci->class_code != 0x01 || pci->prog_if != 0x01 ||
+        (pci->subclass != 0x06 && pci->subclass != 0x01) ||
+        !pci->bar[5].valid || pci->bar[5].is_io ||
+        pci->bar[5].address == 0) {
+        return false;
+    }
+    return true;
+}
+
+static void ahci_init_controller(const pci_device_t* pci, uint8_t index) {
+    ahci_controller_t* controller = &g_ahci_controllers[index];
+    memset(controller, 0, sizeof(*controller));
+    controller->index = index;
+    controller->pci = pci;
+    controller->mmio = (volatile uint8_t*)usb_map_mmio(
+        pci->bar[5].address, 0x2000);
+    if (!controller->mmio) {
+        log_printf("[AHCI] Controller %04x:%04x BAR5 mapping failed\n",
+                   pci->vendor, pci->device);
         return;
     }
-    g_ahci.pci = pci;
-    g_ahci.mmio = (volatile uint8_t*)usb_map_mmio(pci->bar[5].address,
-                                                  0x2000);
-    if (!g_ahci.mmio) return;
     pci_enable_memory(pci);
     pci_enable_bus_master(pci);
-    uint32_t cap = ahci_read(&g_ahci, AHCI_CAP);
-    uint32_t cap2 = ahci_read(&g_ahci, AHCI_CAP2);
-    g_ahci.dma_mask = (cap & (1u << 31)) || (cap2 & (1u << 0))
-                          ? UINT64_MAX : UINT32_MAX;
+    uint32_t cap = ahci_read(controller, AHCI_CAP);
+    uint32_t cap2 = ahci_read(controller, AHCI_CAP2);
+    controller->dma_mask = (cap & (1u << 31)) || (cap2 & (1u << 0))
+                               ? UINT64_MAX : UINT32_MAX;
 
-    uint32_t ghc = ahci_read(&g_ahci, AHCI_GHC);
-    ahci_write(&g_ahci, AHCI_GHC, ghc | AHCI_GHC_AE);
-    g_ahci.implemented_ports = ahci_read(&g_ahci, AHCI_PI);
+    uint32_t ghc = ahci_read(controller, AHCI_GHC);
+    ahci_write(controller, AHCI_GHC, ghc | AHCI_GHC_AE);
+    controller->implemented_ports = ahci_read(controller, AHCI_PI);
     bool link_ready = false;
     for (uint8_t index = 0; index < AHCI_MAX_PORTS; index++) {
-        if (!(g_ahci.implemented_ports & (1u << index))) continue;
+        if (!(controller->implemented_ports & (1u << index))) continue;
         uint32_t ssts = ahci_read(
-            &g_ahci, AHCI_PORT_BASE + index * AHCI_PORT_STRIDE + AHCI_PX_SSTS);
+            controller,
+            AHCI_PORT_BASE + index * AHCI_PORT_STRIDE + AHCI_PX_SSTS);
         if ((ssts & AHCI_PORT_SSTS_DET) == 3) {
             link_ready = true;
             break;
         }
     }
     if (!link_ready) {
-        ahci_write(&g_ahci, AHCI_GHC, ghc | AHCI_GHC_AE | AHCI_GHC_HR);
+        ahci_write(controller, AHCI_GHC,
+                   ghc | AHCI_GHC_AE | AHCI_GHC_HR);
         for (int timeout = 0; timeout < 1000; timeout++) {
-            ghc = ahci_read(&g_ahci, AHCI_GHC);
+            ghc = ahci_read(controller, AHCI_GHC);
             if (!(ghc & AHCI_GHC_HR)) break;
             usb_delay_ms(1);
         }
-        ahci_write(&g_ahci, AHCI_GHC,
-                   ahci_read(&g_ahci, AHCI_GHC) | AHCI_GHC_AE);
+        if (ghc & AHCI_GHC_HR) {
+            log_printf("[AHCI] Controller %u reset timed out\n",
+                       controller->index);
+            return;
+        }
+        ahci_write(controller, AHCI_GHC,
+                   ahci_read(controller, AHCI_GHC) | AHCI_GHC_AE);
+        usb_delay_ms(100);
     }
-    ahci_write(&g_ahci, AHCI_IS, 0xFFFFFFFFu);
+    ahci_write(controller, AHCI_IS, 0xFFFFFFFFu);
     log_printf("[AHCI] Controller %04x:%04x version=%x ports=0x%x\n",
-               pci->vendor, pci->device, ahci_read(&g_ahci, AHCI_VS),
-               g_ahci.implemented_ports);
+               pci->vendor, pci->device, ahci_read(controller, AHCI_VS),
+               controller->implemented_ports);
 
-    static ahci_port_t ports[AHCI_MAX_PORTS];
-    memset(ports, 0, sizeof(ports));
-    g_ahci.ports = ports;
-    for (uint8_t index = 0; index < AHCI_MAX_PORTS; index++) {
-        if (!(g_ahci.implemented_ports & (1u << index))) continue;
-        ahci_port_t* port = &ports[index];
-        port->controller = &g_ahci;
-        port->index = index;
+    controller->ports = g_ahci_ports[index];
+    for (uint8_t port_index = 0; port_index < AHCI_MAX_PORTS;
+         port_index++) {
+        if (!(controller->implemented_ports & (1u << port_index))) continue;
+        ahci_port_t* port = &controller->ports[port_index];
+        memset(port, 0, sizeof(*port));
+        port->controller = controller;
+        port->index = port_index;
         (void)ahci_probe_port(port);
+    }
+}
+
+void ahci_init(void) {
+    memset(g_ahci_controllers, 0, sizeof(g_ahci_controllers));
+    memset(g_ahci_ports, 0, sizeof(g_ahci_ports));
+    g_ahci_controller_count = 0;
+
+    int pci_count = pci_get_device_count();
+    for (int pci_index = 0;
+         pci_index < pci_count &&
+         g_ahci_controller_count < AHCI_MAX_CONTROLLERS;
+         pci_index++) {
+        const pci_device_t* pci = pci_get_device(pci_index);
+        if (!ahci_is_candidate(pci)) continue;
+        ahci_init_controller(pci, (uint8_t)g_ahci_controller_count);
+        g_ahci_controller_count++;
+    }
+    if (!g_ahci_controller_count) {
+        log_printf("[AHCI] No AHCI-capable controller found\n");
+    } else {
+        log_printf("[AHCI] Enumerated %u AHCI controller(s)\n",
+                   g_ahci_controller_count);
     }
 }

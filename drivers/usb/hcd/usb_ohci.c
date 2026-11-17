@@ -1,6 +1,7 @@
 #include "usb_ohci.h"
 #include "usb_core.h"
 #include "usb_compat.h"
+#include "apic.h"
 #include "dma.h"
 #include "log.h"
 #include "string.h"
@@ -62,6 +63,7 @@ typedef struct {
     usb_hci_t hci;
     uint16_t ports;
     uint32_t ports_seen;
+    uint64_t retry_tick[16];
 } ohci_controller_t;
 
 static ohci_controller_t g_ohci[OHCI_MAX_CONTROLLERS];
@@ -450,15 +452,23 @@ static void ohci_poll(usb_hci_t* hci) {
                 usb_disconnect_port(hci, port);
                 c->ports_seen &= ~bit;
             }
+            c->retry_tick[port - 1] = 0;
             continue;
         }
         if (c->ports_seen & bit) continue;
-        c->ports_seen |= bit;
+        if (c->retry_tick[port - 1] > apic_get_ticks()) continue;
         uint8_t speed = (uint8_t)ohci_port_reset(hci, port);
         if (speed) {
             log_printf("[OHCI] root port %u %s connected\n",
                        port, usb_speed_name(speed));
-            (void)usb_enumerate(hci, port, speed);
+            if (usb_enumerate(hci, port, speed) == 0) {
+                c->ports_seen |= bit;
+                c->retry_tick[port - 1] = 0;
+            } else {
+                c->retry_tick[port - 1] = apic_get_ticks() + 10;
+            }
+        } else {
+            c->retry_tick[port - 1] = apic_get_ticks() + 10;
         }
     }
 }

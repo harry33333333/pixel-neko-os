@@ -27,6 +27,7 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "cpu.h"
 #include "ui_compat.h"
 #include "part.h"
+#include "desktop.h"
 
 extern int total_ram_mb;
 extern int usable_ram_mb;
@@ -47,28 +48,6 @@ static void show_opened(const char* name)
     redraw = 1; need_mr = 1;
 }
 
-static const struct {
-    const char* filename;
-    const char* label;
-    unsigned char fallback_bg;
-    bool bypass_r0_prompt;
-} g_desktop_apps[10] = {
-    { "about.pxe",   "About",   1,  false },
-    { "clock.pxe",   "Clock",   2,  false },
-    { "calc.pxe",    "Calc",    4,  false },
-    { "cpanel.pxe",  "CPanel",  6,  false },
-    { "files.pxe",   "Files",   5,  false },
-    { "notepad.pxe", "Notepad", 3,  false },
-    { "sysinfo.pxe", "SysInfo", 7,  true  },
-    { "puzzle.pxe",  "Puzzle",  8,  false },
-    { "viewer.pxe",  "Viewer",  9,  false },
-    { "player.pxe",  "Player",  10, false }
-};
-
-static uint8_t g_desk_icon_cache[10][16][16];
-static uint8_t g_desk_icon_loaded[10] = {0};
-
-static int desk_icon_x[10] = {0}, desk_icon_y[10] = {0};
 static int icon_dragging = -1;
 static int icon_drag_ox = 0, icon_drag_oy = 0;
 static int icon_drag_active = 0, icon_drag_bx = 0, icon_drag_by = 0;
@@ -79,6 +58,11 @@ static int menu_open = 0, menu_index = -1;
 extern volatile int global_tick;
 static int input_event_tick = -1;
 static int last_click_icon = -1, last_s = -1;
+static int desktop_menu_mode;
+static int desktop_menu_item = -1;
+static int desktop_menu_x;
+static int desktop_menu_y;
+static void draw_desktop_context_menu(unsigned char* v);
 // Track previous click release for double-click timing (separate from visual selection)
 static int last_click_icon_prev = -1, last_click_time_prev = 0;
 
@@ -318,7 +302,8 @@ static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, i
     }
 }
 
-static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, const char* lb, int sel)
+static void icon(unsigned char* v, int x, int y, int desktop_index,
+                 unsigned char bg, const char* lb, int sel, bool shortcut)
 {
     if (sel) {
         for(int i=y-4; i<y+54; i++) for(int j=x-4; j<x+36; j++) PUT_PIXEL(v, j, i, 11);
@@ -328,23 +313,9 @@ static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, 
     for(int i=0;i<16;i++)for(int j=0;j<16;j++) ic[i][j]=255;
 
     bool custom_ok = false;
-    if (app_idx >= 0 && app_idx < 10) {
-        if (g_desk_icon_loaded[app_idx] == 0) {
-            if (pxe_load_builtin_icon16(g_desktop_apps[app_idx].filename,
-                                        g_desk_icon_cache[app_idx])) {
-                g_desk_icon_loaded[app_idx] = 1;
-            } else {
-                g_desk_icon_loaded[app_idx] = 2;
-            }
-        }
-        if (g_desk_icon_loaded[app_idx] == 1) {
-            for (int i = 0; i < 16; i++) {
-                for (int j = 0; j < 16; j++) {
-                    ic[i][j] = g_desk_icon_cache[app_idx][i][j];
-                }
-            }
-            custom_ok = true;
-        }
+    if (desktop_index >= 0 &&
+        desktop_load_icon(desktop_index, ic)) {
+        custom_ok = true;
     }
 
     if (custom_ok) {
@@ -476,6 +447,24 @@ static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, 
                 PUT_PIXEL(v, x+j*2+1, y+i*2+1, c);
             }
         }
+    }
+
+    if (shortcut) {
+        for (int i = 22; i < 32; i++) {
+            for (int j = 22; j < 32; j++) PUT_PIXEL(v, x + j, y + i, 15);
+        }
+        for (int i = 0; i < 10; i++) {
+            PUT_PIXEL(v, x + 22 + i, y + 22, 0);
+            PUT_PIXEL(v, x + 22 + i, y + 31, 0);
+            PUT_PIXEL(v, x + 22, y + 22 + i, 0);
+            PUT_PIXEL(v, x + 31, y + 22 + i, 0);
+        }
+        for (int i = 0; i < 5; i++) {
+            PUT_PIXEL(v, x + 25 + i, y + 26 + i, 0);
+            PUT_PIXEL(v, x + 25 + i, y + 28 + i, 0);
+        }
+        PUT_PIXEL(v, x + 23, y + 28, 0);
+        PUT_PIXEL(v, x + 24, y + 27, 0);
     }
     
     if (lb) {
@@ -940,14 +929,13 @@ static void draw_menubar(unsigned char* v)
     } else if (menu_open) {
         if (menu_index != 4 && !install_mode) {
             int mx = 30 + menu_index * 40;
-            int mw = (menu_index == 3) ? 64 : 40;
+            int mw = 40;
             for(int y=2; y<18; y++) for(int x=mx-4; x<mx+mw; x++) PUT_PIXEL(v, x, y, 1);
         }
         if (!install_mode) {
             font_draw_text(v, 30, 2, "File", menu_index==0?15:0);
             font_draw_text(v, 70, 2, "Edit", menu_index==1?15:0);
             font_draw_text(v, 110, 2, "View", menu_index==2?15:0);
-            font_draw_text(v, 150, 2, "Special", menu_index==3?15:0);
         }
         
         if (menu_index == 4) { // Apple Logo
@@ -976,22 +964,13 @@ static void draw_menubar(unsigned char* v)
             font_draw_text(v, 74, 24+90, "Clear", 8);
         } else if (!install_mode && menu_index == 2) { // View
             draw_menu_popup(v, 106, 20, 160, 1*18+4);
-            font_draw_text(v, 114, 24, "Clean Up Desktop", 0);
-        } else if (!install_mode && menu_index == 3) { // Special
-            draw_menu_popup(v, 146, 20, 172, 7*18+4);
-            font_draw_text(v, 154, 24, "About Pixel Neko", 0);
-            font_draw_text(v, 154, 24+18, "System Information", 0);
-            font_draw_text(v, 154, 24+36, "Task Manager", 0);
-            font_draw_text(v, 154, 24+54, "15-Puzzle", 0);
-            font_draw_text(v, 154, 24+72, "Empty Trash", 0);
-            font_draw_text(v, 154, 24+90, "Restart Computer", 0);
-            font_draw_text(v, 154, 24+108, "Shut Down Computer", 0);
+            font_draw_text(v, 114, 24, "Rearrange Desktop",
+                           desktop_is_mutable() ? 0 : 8);
         }
     } else if (!install_mode) {
         font_draw_text(v, 30, 2, "File", 0);
         font_draw_text(v, 70, 2, "Edit", 0);
         font_draw_text(v, 110, 2, "View", 0);
-        font_draw_text(v, 150, 2, "Special", 0);
     }
     
     int h,m,s; get_time(&h,&m,&s); char b[9];
@@ -1014,20 +993,6 @@ static const unsigned char g_patterns[6][8] = {
     { 0xAA, 0x00, 0xAA, 0x00, 0xAA, 0x00, 0xAA, 0x00 }, // 4: Slate Gray
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }  // 5: Solid Gray
 };
-
-static void layout_desktop_icons(void) {
-    int rows_per_col = (screen_h - 40) / 52;
-    if (rows_per_col < 2) rows_per_col = 2;
-    if (rows_per_col > 6) rows_per_col = 6;
-    for (int i = 0; i < 10; i++) {
-        int col = i / rows_per_col;
-        int row = i % rows_per_col;
-        desk_icon_x[i] = screen_w - 60 - col * 64;
-        desk_icon_y[i] = 30 + row * 52;
-        if (desk_icon_x[i] < 4) desk_icon_x[i] = 4;
-        if (desk_icon_y[i] > screen_h - 48) desk_icon_y[i] = screen_h - 48;
-    }
-}
 
 static void clamp_win_pos(int* x, int* y, int* w, int* h, int min_w, int min_h) {
     if (*w > screen_w - 8) *w = screen_w - 8;
@@ -1087,7 +1052,7 @@ static void wm_dyn_push_simple(wm_dyn_win_t* dw, uint32_t type) {
 void wm_on_resolution_change(int w, int h) {
     (void)w;
     (void)h;
-    layout_desktop_icons();
+    desktop_on_resolution_change(w, h);
     for (int s = 0; s < WM_DYN_MAX; s++) {
         wm_dyn_win_t* dw = &g_dyn_wins[s];
         if (!dw->used) continue;
@@ -1119,7 +1084,7 @@ void wm_on_resolution_change(int w, int h) {
 }
 
 void wm_init(void){
-    layout_desktop_icons();
+    desktop_init();
     redraw = 1;
 }
 
@@ -1173,13 +1138,18 @@ void wm_draw(unsigned char* v){
             }
         }
         if (!ui_install_mode_requested()) {
-            int num_icons = 10;
+            int num_icons = desktop_count();
             for (int i = 0; i < num_icons; i++) {
-                if (desk_icon_x[i] == 0 || desk_icon_x[i] > screen_w - 32) desk_icon_x[i] = screen_w - 60 - (i / 6) * 64;
-                if (desk_icon_y[i] == 0 || desk_icon_y[i] > screen_h - 32) desk_icon_y[i] = 30 + (i % 6) * 52;
-                icon(v, desk_icon_x[i], desk_icon_y[i], i,
-                     g_desktop_apps[i].fallback_bg, g_desktop_apps[i].label,
-                     last_click_icon == i);
+                desktop_item_t* item = desktop_get(i);
+                if (!item) continue;
+                unsigned char fallback_bg =
+                    (item->kind == DESKTOP_ITEM_FOLDER ||
+                     (item->kind == DESKTOP_ITEM_SHORTCUT &&
+                      item->target_kind == DESKTOP_TARGET_FOLDER)) ? 5 :
+                    item->kind == DESKTOP_ITEM_SHORTCUT ? 6 : 3;
+                icon(v, item->x, item->y, i, fallback_bg,
+                     item->display_name, last_click_icon == i,
+                     item->kind == DESKTOP_ITEM_SHORTCUT);
             }
         }
         draw_all(v);
@@ -1194,20 +1164,21 @@ void wm_draw(unsigned char* v){
         if(r0_confirm_active)    { draw_r0_confirm_dialog(v); }
         if(crash_dialog_active)  { draw_crash_dialog(v); }
         if(power_confirm)        { draw_power_dialog(v); }
+        draw_desktop_context_menu(v);
     }
     redraw=0;
 }
 
 
 static int in_icon(int mx, int my, int i) {
-    return (mx >= desk_icon_x[i] - 4 && mx < desk_icon_x[i] + 36 &&
-            my >= desk_icon_y[i] - 4 && my < desk_icon_y[i] + 52);
+    desktop_item_t* item = desktop_get(i);
+    return item && mx >= item->x - 4 && mx < item->x + 36 &&
+           my >= item->y - 4 && my < item->y + 52;
 }
 
 static void open_icon_app(int clicked_icon) {
-    if (ui_install_mode_requested() || clicked_icon < 0 || clicked_icon >= 10) return;
-    pxe_launch_builtin_app(g_desktop_apps[clicked_icon].filename, NULL,
-                           g_desktop_apps[clicked_icon].bypass_r0_prompt);
+    if (ui_install_mode_requested() || !desktop_get(clicked_icon)) return;
+    desktop_open_item(clicked_icon);
     last_click_icon = -1;
     last_click_icon_prev = -1;
     last_click_time_prev = 0;
@@ -1215,6 +1186,30 @@ static void open_icon_app(int clicked_icon) {
     icon_dragging = -1;
     redraw = 1;
     need_mr = 1;
+}
+
+static void draw_desktop_context_menu(unsigned char* v) {
+    if (!desktop_menu_mode) return;
+    int width = 150;
+    int rows = desktop_menu_mode == 1 ? 2 : 3;
+    int height = rows * 18 + 4;
+    draw_menu_popup(v, desktop_menu_x, desktop_menu_y, width, height);
+    if (desktop_menu_mode == 1) {
+        desktop_item_t* item = desktop_get(desktop_menu_item);
+        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
+                       "Delete", item && item->locked ? 8 : 0);
+        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
+                       "Properties", 0);
+    } else {
+        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
+                       desktop_is_mutable() ? "New Folder" : "Live: Read-only",
+                       desktop_is_mutable() ? 0 : 8);
+        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
+                       "Rearrange Desktop",
+                       desktop_is_mutable() ? 0 : 8);
+        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 40,
+                       "Refresh", 0);
+    }
 }
 
 static int in_cl(int mx, int my, int cx, int cy) { return (mx>=cx && mx<cx+12 && my>=cy && my<cy+12); }
@@ -1560,20 +1555,11 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             }
         } else if (menu_index == 2 && !inst_mode) { // View
             if (mx >= 106 && mx < 106 + 160 && my >= 20 && my < 20 + 1*18 + 4) {
-                layout_desktop_icons();
-                show_opened("Desktop Cleaned");
-            }
-        } else if (menu_index == 3 && !inst_mode) { // Special
-            if (mx >= 146 && mx < 146 + 172 && my >= 20 && my < 20 + 7*18 + 4) {
-                int item = (my - 24) / 18;
-                if (item >= 0 && item < 7) {
-                    if (item == 0 && !inst_mode) { pxe_launch_builtin_app("about.pxe", NULL, false); }
-                    if (item == 1 && !inst_mode) { pxe_launch_builtin_app("sysinfo.pxe", NULL, true); }
-                    if (item == 2 && !inst_mode) { pxe_launch_builtin_app("taskmgr.pxe", NULL, true); }
-                    if (item == 3 && !inst_mode) { pxe_launch_builtin_app("puzzle.pxe", NULL, false); }
-                    if (item == 4 && !inst_mode) { speaker_beep(); show_opened("Trash Emptied"); }
-                    if (item == 5) { power_confirm = 1; }
-                    if (item == 6) { power_confirm = 2; }
+                if (desktop_is_mutable()) {
+                    desktop_rearrange();
+                    show_opened("Desktop Rearranged");
+                } else {
+                    wm_notify_banner("Live Desktop is read-only");
                 }
             }
         }
@@ -1613,7 +1599,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         } else if (!inst_mode && mx >= 30 && mx < 62) { menu_open = (menu_open && menu_index == 0) ? 0 : 1; menu_index = 0; redraw = 1; need_mr = 1; }
         else if (!inst_mode && mx >= 70 && mx < 102) { menu_open = (menu_open && menu_index == 1) ? 0 : 1; menu_index = 1; redraw = 1; need_mr = 1; }
         else if (!inst_mode && mx >= 110 && mx < 142) { menu_open = (menu_open && menu_index == 2) ? 0 : 1; menu_index = 2; redraw = 1; need_mr = 1; }
-        else if (!inst_mode && mx >= 150 && mx < 206) { menu_open = (menu_open && menu_index == 3) ? 0 : 1; menu_index = 3; redraw = 1; need_mr = 1; }
         else { menu_open = 0; redraw = 1; }
         return;
     }
@@ -1695,6 +1680,59 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         key = keyboard_get_key();
     }
 
+    if (desktop_poll()) {
+        redraw = 1;
+        need_mr = 1;
+    }
+
+    if (desktop_menu_mode && mb_press) {
+        int rows = desktop_menu_mode == 1 ? 2 : 3;
+        if (mx >= desktop_menu_x && mx < desktop_menu_x + 150 &&
+            my >= desktop_menu_y &&
+            my < desktop_menu_y + rows * 18 + 4) {
+            int item = (my - desktop_menu_y - 4) / 18;
+            if (desktop_menu_mode == 1) {
+                if (item == 0) {
+                    char error[96] = { 0 };
+                    int result = desktop_delete_item(desktop_menu_item,
+                                                     error, sizeof(error));
+                    if (result != VFS_OK) {
+                        wm_notify_banner(error[0] ? error :
+                                         "Unable to delete desktop item");
+                    } else {
+                        show_opened("Moved to Trash");
+                    }
+                } else if (item == 1) {
+                    desktop_item_t* selected = desktop_get(desktop_menu_item);
+                    if (selected) wm_notify_banner(selected->path);
+                }
+            } else if (item == 0) {
+                char error[96] = { 0 };
+                if (desktop_create_folder(error, sizeof(error)) != VFS_OK) {
+                    wm_notify_banner(error[0] ? error :
+                                     "Unable to create desktop folder");
+                } else {
+                    show_opened("Folder Created");
+                }
+            } else if (item == 1) {
+                if (desktop_is_mutable()) {
+                    desktop_rearrange();
+                    show_opened("Desktop Rearranged");
+                } else {
+                    wm_notify_banner("Live Desktop is read-only");
+                }
+            } else if (item == 2) {
+                desktop_refresh();
+                show_opened("Desktop Refreshed");
+            }
+        }
+        desktop_menu_mode = 0;
+        desktop_menu_item = -1;
+        redraw = 1;
+        need_mr = 1;
+        return;
+    }
+
     // Handle active desktop icon drag (fast outline box)
     if (icon_dragging != -1) {
         if (mb & 1) {
@@ -1709,8 +1747,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             icon_drag_active = 1;
         } else {
             if (icon_drag_active) {
-                desk_icon_x[icon_dragging] = icon_drag_bx;
-                desk_icon_y[icon_dragging] = icon_drag_by;
+                (void)desktop_set_position(icon_dragging, icon_drag_bx,
+                                           icon_drag_by);
             }
             icon_dragging = -1;
             icon_drag_active = 0;
@@ -1722,17 +1760,30 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     // Handle pending desktop icon press (transition to drag or release to select)
     if (icon_pressed != -1) {
+        desktop_item_t* pressed_item = desktop_get(icon_pressed);
+        if (!pressed_item) {
+            icon_pressed = -1;
+            need_mr = 1;
+            return;
+        }
         if (mb & 1) {
-            int dx = mx - (desk_icon_x[icon_pressed] + icon_press_ox);
-            int dy = my - (desk_icon_y[icon_pressed] + icon_press_oy);
+            int dx = mx - (pressed_item->x + icon_press_ox);
+            int dy = my - (pressed_item->y + icon_press_oy);
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
             if (dx > 6 || dy > 6) {
+                if (!desktop_is_mutable()) {
+                    icon_pressed = -1;
+                    icon_press_moved = 1;
+                    redraw = 1;
+                    need_mr = 1;
+                    return;
+                }
                 icon_dragging = icon_pressed;
                 icon_drag_ox = icon_press_ox;
                 icon_drag_oy = icon_press_oy;
-                icon_drag_bx = desk_icon_x[icon_pressed];
-                icon_drag_by = desk_icon_y[icon_pressed];
+                icon_drag_bx = pressed_item->x;
+                icon_drag_by = pressed_item->y;
                 icon_drag_active = 1;
                 icon_pressed = -1;
                 icon_press_moved = 1;
@@ -1996,7 +2047,27 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     break;
                 }
             }
+            if (mb_press & INPUT_MOUSE_RIGHT) {
+                desktop_menu_mode = clicked_icon != -1 ? 1 : 2;
+                desktop_menu_item = clicked_icon;
+                desktop_menu_x = mx;
+                desktop_menu_y = my;
+                int menu_rows = desktop_menu_mode == 1 ? 2 : 3;
+                if (desktop_menu_x + 150 > screen_w) {
+                    desktop_menu_x = screen_w - 150;
+                }
+                if (desktop_menu_y + menu_rows * 18 + 4 > screen_h) {
+                    desktop_menu_y = screen_h - (menu_rows * 18 + 4);
+                }
+                if (desktop_menu_x < 4) desktop_menu_x = 4;
+                if (desktop_menu_y < 22) desktop_menu_y = 22;
+                redraw = 1;
+                need_mr = 1;
+                return;
+            }
             if (clicked_icon != -1) {
+                desktop_item_t* clicked_item = desktop_get(clicked_icon);
+                if (!clicked_item) return;
                 if (last_click_icon_prev == clicked_icon &&
                     (wm_get_input_event_tick() - last_click_time_prev) <
                     WM_DOUBLE_CLICK_TICKS) {
@@ -2004,8 +2075,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     return;
                 }
                 icon_pressed = clicked_icon;
-                icon_press_ox = mx - desk_icon_x[clicked_icon];
-                icon_press_oy = my - desk_icon_y[clicked_icon];
+                icon_press_ox = mx - clicked_item->x;
+                icon_press_oy = my - clicked_item->y;
                 icon_press_moved = 0;
                 last_click_icon = clicked_icon;
                 redraw = 1;
@@ -2463,13 +2534,11 @@ void wm_request_desktop_redraw(void) {
 
 void wm_notify_media_changed(void) {
     uint64_t flags = wm_irq_save();
-    for (int i = 0; i < 10; i++) {
-        g_desk_icon_loaded[i] = 0;
-    }
     g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     redraw = 1;
     wm_irq_restore(flags);
+    desktop_refresh();
 
     for (int s = 0; s < WM_DYN_MAX; s++) {
         if (g_dyn_wins[s].used) {

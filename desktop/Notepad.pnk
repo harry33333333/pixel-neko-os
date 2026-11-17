@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\notepad.pxe
+title=Notepad
+locked=0

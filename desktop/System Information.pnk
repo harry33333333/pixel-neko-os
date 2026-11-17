@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\sysinfo.pxe
+title=System Information
+locked=0

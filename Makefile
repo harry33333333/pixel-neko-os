@@ -6,8 +6,8 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 225
-PIXEL_NEKO_BUILD_SUFFIX ?= h
+PIXEL_NEKO_BUILD_NUMBER ?= 230
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -79,6 +79,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/ui_timer.c \
            kernel/ui_settings.c \
            kernel/ui_power.c \
+           kernel/desktop.c \
            drivers/bus/device.c \
            drivers/bus/pci.c \
            drivers/input/input_manager.c \
@@ -140,7 +141,7 @@ PDV_DRIVERS = vmwgfx mach64 nvg7x fdc ac97 ct4810 cmi8738 hdaudio
 PDV_OUT_DIR = build/pdevice
 PDV_TARGETS = $(patsubst %,$(PDV_OUT_DIR)/%.pdv,$(PDV_DRIVERS))
 
-# Native PXE SDK & Example Executables (*.pxe in DEMO\)
+# Native PXE SDK and optional developer examples
 PXE_OUT_DIR = build/pxe_examples
 PXE_EXAMPLES = $(PXE_OUT_DIR)/hello.pxe
 PXE_SDK_STAMP = build/pxe_sdk.stamp
@@ -153,8 +154,14 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
 
 # Built-in Modular PXE Applications (*.pxe in APPS\)
 APPS_OUT_DIR = build/apps
-APPS_PXE_NAMES = about clock calc puzzle notepad cpanel player viewer files sysinfo taskmgr install
+APPS_PXE_NAMES = about clock calc notepad cpanel player viewer files sysinfo taskmgr install
 APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
+
+# Default games live in GAME\ so system applications and user games have
+# separate, predictable storage.
+GAMES_OUT_DIR = build/games
+GAME_PXE_NAMES = puzzle solitaire gomoku aerochess
+GAME_PXE_TARGETS = $(patsubst %,$(GAMES_OUT_DIR)/%.pxe,$(GAME_PXE_NAMES))
 
 # Object Files
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
@@ -164,9 +171,9 @@ OBJS     = $(ASM_OBJS) $(C_OBJS) $(USER_EMBED_OBJ)
 
 TARGET   = bin/kernel.elf
 
-.PHONY: all pdv pxe-sdk pxe-examples apps iso clean version
+.PHONY: all pdv pxe-sdk pxe-examples apps games iso clean version
 
-all: version $(TARGET) $(PDV_TARGETS) $(PXE_EXAMPLES) $(APPS_PXE_TARGETS)
+all: version $(TARGET) $(PDV_TARGETS) $(APPS_PXE_TARGETS) $(GAME_PXE_TARGETS)
 
 pdv: $(PDV_TARGETS)
 
@@ -175,6 +182,8 @@ pxe-sdk: $(PXE_SDK_STAMP)
 pxe-examples: $(PXE_EXAMPLES)
 
 apps: $(APPS_PXE_TARGETS)
+
+games: $(GAME_PXE_TARGETS)
 
 $(PXE_SDK_STAMP): $(PXE_SDK_DEPS)
 	@mkdir -p build
@@ -198,6 +207,25 @@ $$(APPS_OUT_DIR)/$(1).pxe: $$(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
 endef
 
 $(foreach app,$(APPS_PXE_NAMES),$(eval $(call BUILD_BUILTIN_APP,$(app))))
+
+$(GAMES_OUT_DIR)/puzzle.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
+                             apps/puzzle/puzzle.c apps/puzzle/puzzle.pxi \
+                             apps/puzzle/Makefile
+	@mkdir -p $(GAMES_OUT_DIR)
+	$(MAKE) -C apps/puzzle \
+		OBJ_DIR="$(abspath $(GAMES_OUT_DIR)/obj_puzzle)" \
+		OUT_DIR="$(abspath $(GAMES_OUT_DIR))"
+
+define BUILD_GAME_APP
+$$(GAMES_OUT_DIR)/$(1).pxe: $$(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
+                            games/$(1)/$(1).c games/$(1)/$(1).pxi \
+                            games/$(1)/Makefile
+	$$(MAKE) -C games/$(1) \
+		OBJ_DIR="$$(abspath $$(GAMES_OUT_DIR)/obj_$(1))" \
+		OUT_DIR="$$(abspath $$(GAMES_OUT_DIR))"
+endef
+
+$(foreach game,solitaire gomoku aerochess,$(eval $(call BUILD_GAME_APP,$(game))))
 
 version:
 	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh

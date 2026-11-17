@@ -533,7 +533,9 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
             log_printf("[USB ] HID attach failed for device %u\n", dev->address);
         }
     } else if (dev->class_code == USB_CLASS_MASS_STORAGE &&
-               dev->subclass == 0x06 && dev->protocol == 0x50) {
+               dev->protocol != 0x62) {
+        /* USB Attached SCSI (0x62) uses a different transport; BOT devices
+         * across SCSI-transparent/vendor subclasses can still use bulk-only. */
         if (usb_storage_attach(dev) != 0) {
             log_printf("[USB ] USB Mass Storage attach failed for device %u\n",
                        dev->address);

@@ -757,6 +757,10 @@ void kmain(void) {
     blkdev_init();
     boot_screen_tick();
     usb_init();
+    for (int retry = 0; retry < 4; retry++) {
+        usb_poll();
+        usb_delay_ms(25);
+    }
     boot_screen_tick();
     log_printf("[P4B] USB controllers=%u devices=%u summary=%s HID(K=%d M=%d)\n",
                usb_get_hci_count(), usb_get_device_count(),
@@ -773,6 +777,7 @@ void kmain(void) {
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
     settings_init();
+    vfs_migrate_legacy_layout();
 
     boot_progress_notify("Pixel Neko OS :: [18b/23] Loading Hardware Drivers (PDEVICE)...");
     (void)pdv_autoload_boot_drivers(cmdline_contains("safe_mode=1"),

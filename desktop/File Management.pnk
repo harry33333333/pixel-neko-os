@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\files.pxe
+title=File Management
+locked=1

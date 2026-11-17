@@ -1801,7 +1801,11 @@ bool pxe_load_builtin_icon16(const char* filename, uint8_t out_icon[16][16]) {
     if (!filename || !*filename || !out_icon) return false;
     char path[96];
     if (!pxe_resolve_builtin_app_path(filename, path, (int)sizeof(path))) return false;
+    return pxe_load_icon16_path(path, out_icon);
+}
 
+bool pxe_load_icon16_path(const char* path, uint8_t out_icon[16][16]) {
+    if (!path || !*path || !out_icon) return false;
     vfs_stream_t stream;
     if (vfs_stream_open(path, &stream) != 0) return false;
 
