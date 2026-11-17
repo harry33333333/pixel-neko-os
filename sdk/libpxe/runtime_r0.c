@@ -98,6 +98,20 @@ int pxe_desktop_clear_wallpaper(void) {
         ? __pxe_r0_api->sys_config(PXE_CFG_CLEAR_WALLPAPER, 0, 0, (const char*)0) : -1;
 }
 
+int pxe_desktop_restore_default_wallpaper(void) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_RESTORE_DEFAULT, 0, 0,
+                                   (const char*)0) : -1;
+}
+
+int pxe_clock_set_options(int show_date, int show_seconds) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SET_CLOCK_OPTIONS,
+                                   show_date ? 1 : 0,
+                                   show_seconds ? 1 : 0,
+                                   (const char*)0) : -1;
+}
+
 int pxe_mouse_set_speed(int speed) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_MOUSE_SPEED, speed, 0, (const char*)0) : -1;

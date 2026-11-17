@@ -110,7 +110,7 @@ typedef struct {
 } pxe_win_surface_t;
 
 #define PXE_MAX_MENUS       4
-#define PXE_MAX_MENU_ITEMS  8
+#define PXE_MAX_MENU_ITEMS  10
 
 typedef struct {
     char     label[24];
@@ -194,6 +194,9 @@ typedef struct {
     char     gfx_status[48];
     char     gfx_fallback[48];
     char     audio_probe[48];
+    uint8_t  clock_show_date;    /* 1 = show date */
+    uint8_t  clock_show_seconds; /* 1 = show seconds */
+    uint16_t clock_pad;
 } pxe_basic_sysinfo_t;
 
 /* Display mode & capability query ABI */
@@ -244,6 +247,8 @@ typedef struct {
 #define PXE_CFG_SAVE_SETTINGS      6
 #define PXE_CFG_APPLY_RESOLUTION   7
 #define PXE_CFG_SET_WALLPAPER_MODE 8
+#define PXE_CFG_SET_CLOCK_OPTIONS  9
+#define PXE_CFG_RESTORE_DEFAULT    10
 
 /* Filesystem directory & drive structures */
 typedef struct {

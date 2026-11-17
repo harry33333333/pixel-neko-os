@@ -300,6 +300,8 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     out->gfx_is_2d_hw      = (uint8_t)(gfx_accel_is_hardware_2d_active() ? 1 : 0);
     out->gfx_has_hw_cursor = (uint8_t)(gfx_accel_has_hardware_cursor() ? 1 : 0);
     out->vram_bytes        = (uint64_t)gfx_accel_get_vram_size();
+    out->clock_show_date    = (uint8_t)(settings_get_clock_show_date() ? 1 : 0);
+    out->clock_show_seconds = (uint8_t)(settings_get_clock_show_seconds() ? 1 : 0);
 
     static const int k_res_w[4] = { 640, 800, 1024, 1280 };
     static const int k_res_h[4] = { 480, 600,  768, 1024 };
@@ -458,6 +460,14 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
         case PXE_CFG_CLEAR_WALLPAPER:
             wallpaper_clear();
             settings_clear_wallpaper();
+            wm_request_desktop_redraw();
+            return 0;
+        case PXE_CFG_RESTORE_DEFAULT:
+            settings_restore_default_wallpaper();
+            wm_request_desktop_redraw();
+            return 0;
+        case PXE_CFG_SET_CLOCK_OPTIONS:
+            settings_set_clock_options(arg0 != 0, arg1 != 0);
             wm_request_desktop_redraw();
             return 0;
         case PXE_CFG_SET_MOUSE_SPEED:

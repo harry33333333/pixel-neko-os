@@ -1,4 +1,4 @@
-# Pixel Neko OS 26A230a Desktop Storage
+# Pixel Neko OS 26A231a Desktop Storage
 
 The desktop uses ordinary files on the installed system volume:
 
@@ -31,6 +31,8 @@ locked=0
 `kind` may be `app`, `folder`, or `file`. A target beginning with `\` is
 resolved against the current boot-system volume. The Desktop hides the `.pnk`
 extension and draws a shortcut marker in the lower-right corner of the icon.
+Long desktop names wrap to a second line at word boundaries. If the remaining
+text is still too long, the second line ends with `...`.
 
 `File Management.pnk` and `About This Machine.pnk` have `locked=1` and are
 also protected by the VFS. They cannot be deleted, renamed, or overwritten
@@ -55,6 +57,15 @@ manual absolute positions created by dragging an icon.
 resolution-aware layout. `Clean Up Desktop` no longer exists. Legacy
 `PNK_LAYOUT1` files are migrated automatically.
 
+## Top-bar clock and wallpaper
+
+Control Panel can toggle the date and seconds independently. Both are enabled
+by default. The setting is stored in the existing `.pse` reserved flags so old
+configuration slots remain readable.
+
+`Restore Default Wallpaper` clears the custom image and returns the desktop to
+the default Stipple 50% pattern.
+
 ## Live mode
 
 Live boots use the read-only `Desktop\` tree from the boot ISO/USB image.
@@ -62,10 +73,14 @@ They never resolve the Desktop through a local disk partition. Dragging,
 creating, copying into, renaming, and deleting desktop items are rejected in
 Live mode.
 
+Shortcut launches from Live media are resolved again through `APPS\` instead
+of relying only on the current drive letter. Ring 0 system shortcuts use an
+explicit trusted launch path.
+
 ## Upgrade behavior
 
 The graphical installer's keep-filesystem mode copies missing versioned files
 into `GAME\`, `APPS\`, `PDEVICE\`, and related system folders, but preserves
 existing `Desktop\` files and `.desktop-layout`. Legacy `APPS\puzzle.pxe` and
 the `DEMO\` directory are migrated/removed on the first local boot of
-26A230a. Missing locked desktop shortcuts are recreated automatically.
+26A231a. Missing locked desktop shortcuts are recreated automatically.

@@ -28,6 +28,7 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "ui_compat.h"
 #include "part.h"
 #include "desktop.h"
+#include "settings.h"
 
 extern int total_ram_mb;
 extern int usable_ram_mb;
@@ -231,6 +232,71 @@ static void get_time(int*h,int*m,int*s){
     }
 }
 
+static void get_date(int* year,int* month,int* day){
+    int timeout = 10000;
+    while ((cmos_read(0x0A) & 0x80) && --timeout);
+    unsigned char day_raw = cmos_read(0x07);
+    unsigned char month_raw = cmos_read(0x08);
+    unsigned char year_raw = cmos_read(0x09);
+    unsigned char regb = cmos_read(0x0B);
+    if (!(regb & 0x04)) {
+        *day = bcd_to_int(day_raw);
+        *month = bcd_to_int(month_raw);
+        *year = 2000 + bcd_to_int(year_raw);
+    } else {
+        *day = day_raw;
+        *month = month_raw;
+        *year = 2000 + year_raw;
+    }
+}
+
+static void put_two_digits(char* out, int value) {
+    out[0] = (char)('0' + (value / 10) % 10);
+    out[1] = (char)('0' + value % 10);
+}
+
+static int format_clock_text(char* out, int capacity) {
+    if (!out || capacity < 6) return 0;
+    out[0] = '\0';
+    int hour = 0, minute = 0, second = 0;
+    int year = 0, month = 0, day = 0;
+    get_time(&hour, &minute, &second);
+    int used = 0;
+    if (settings_get_clock_show_date()) {
+        get_date(&year, &month, &day);
+        if (capacity < used + 11) {
+            out[used] = '\0';
+            return used;
+        }
+        char year_text[5];
+        year_text[0] = (char)('0' + (year / 1000) % 10);
+        year_text[1] = (char)('0' + (year / 100) % 10);
+        year_text[2] = (char)('0' + (year / 10) % 10);
+        year_text[3] = (char)('0' + year % 10);
+        year_text[4] = '\0';
+        for (int i = 0; i < 4; i++) out[used++] = year_text[i];
+        out[used++] = '-';
+        put_two_digits(out + used, month);
+        used += 2;
+        out[used++] = '-';
+        put_two_digits(out + used, day);
+        used += 2;
+        out[used++] = ' ';
+    }
+    put_two_digits(out + used, hour);
+    used += 2;
+    out[used++] = ':';
+    put_two_digits(out + used, minute);
+    used += 2;
+    if (settings_get_clock_show_seconds() && used + 3 <= capacity - 1) {
+        out[used++] = ':';
+        put_two_digits(out + used, second);
+        used += 2;
+    }
+    out[used] = '\0';
+    return used;
+}
+
 static void cl_btn(unsigned char* v, int cx, int cy, int p)
 {
     for(int y=cy;y<cy+11;y++)for(int x=cx;x<cx+11;x++)PUT_PIXEL(v, x, y, 15);
@@ -303,11 +369,55 @@ static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, i
     }
 }
 
+static void wrap_desktop_label(const char* label, char* line1,
+                               char* line2) {
+    line1[0] = '\0';
+    line2[0] = '\0';
+    if (!label) return;
+    int length = (int)strlen(label);
+    if (length <= 18) {
+        strncpy(line1, label, 23);
+        line1[23] = '\0';
+        return;
+    }
+
+    int split = 18;
+    for (int index = 18; index > 0; index--) {
+        if (label[index] == ' ') {
+            split = index;
+            break;
+        }
+    }
+    int first_length = split;
+    while (first_length > 0 && label[first_length - 1] == ' ') first_length--;
+    if (first_length > 23) first_length = 23;
+    for (int index = 0; index < first_length; index++) line1[index] = label[index];
+    line1[first_length] = '\0';
+
+    int second_start = split;
+    while (label[second_start] == ' ') second_start++;
+    int remaining = length - second_start;
+    if (remaining <= 18) {
+        for (int index = 0; index < remaining; index++) {
+            line2[index] = label[second_start + index];
+        }
+        line2[remaining] = '\0';
+    } else {
+        for (int index = 0; index < 15; index++) {
+            line2[index] = label[second_start + index];
+        }
+        line2[15] = '.';
+        line2[16] = '.';
+        line2[17] = '.';
+        line2[18] = '\0';
+    }
+}
+
 static void icon(unsigned char* v, int x, int y, int desktop_index,
                  unsigned char bg, const char* lb, int sel, bool shortcut)
 {
     if (sel) {
-        for(int i=y-4; i<y+54; i++) for(int j=x-4; j<x+36; j++) PUT_PIXEL(v, j, i, 11);
+        for(int i=y-4; i<y+70; i++) for(int j=x-4; j<x+36; j++) PUT_PIXEL(v, j, i, 11);
     }
     
     unsigned char ic[16][16];
@@ -469,13 +579,28 @@ static void icon(unsigned char* v, int x, int y, int desktop_index,
     }
     
     if (lb) {
-        int tw = 0; while(lb[tw]) tw++;
-        int tx = x + 16 - tw*4; // center 32px
+        char line1[24];
+        char line2[24];
+        wrap_desktop_label(lb, line1, line2);
+        int tw1 = (int)strlen(line1);
+        int tw2 = (int)strlen(line2);
+        int tx1 = x + 16 - tw1 * 4;
+        int tx2 = x + 16 - tw2 * 4;
+        int y1 = line2[0] ? y + 34 : y + 36;
         if (sel) {
-            for(int yy=y+36; yy<y+48; yy++) for(int xx=tx-2; xx<tx+tw*8+2; xx++) PUT_PIXEL(v, xx, yy, 1);
-            font_draw_text(v, tx, y+38, lb, 15);
+            int label_chars = tw1 > tw2 ? tw1 : tw2;
+            int label_left = x + 16 - label_chars * 4 - 2;
+            int label_right = x + 16 + label_chars * 4 + 2;
+            for(int yy=y1-2; yy<y+68; yy++) {
+                for(int xx=label_left; xx<label_right; xx++) {
+                    PUT_PIXEL(v, xx, yy, 1);
+                }
+            }
+            font_draw_text(v, tx1, y1, line1, 15);
+            if (line2[0]) font_draw_text(v, tx2, y+50, line2, 15);
         } else {
-            font_draw_text(v, tx, y+38, lb, 0);
+            font_draw_text(v, tx1, y1, line1, 0);
+            if (line2[0]) font_draw_text(v, tx2, y+50, line2, 0);
         }
     }
 }
@@ -974,9 +1099,11 @@ static void draw_menubar(unsigned char* v)
         font_draw_text(v, 110, 2, "View", 0);
     }
     
-    int h,m,s; get_time(&h,&m,&s); char b[9];
-    b[0]='0'+h/10;b[1]='0'+h%10;b[2]=':';b[3]='0'+m/10;b[4]='0'+m%10;b[5]=':';b[6]='0'+s/10;b[7]='0'+s%10;b[8]=0;
-    font_draw_text(v, screen_w - 75, 2, b, 0);
+    char clock_text[32];
+    int clock_length = format_clock_text(clock_text, sizeof(clock_text));
+    int clock_x = screen_w - clock_length * 8 - 10;
+    if (clock_x < 24) clock_x = 24;
+    font_draw_text(v, clock_x, 2, clock_text, 0);
 
     if (opened_msg[0]) {
         int ox = screen_w / 2 - 40;
@@ -1174,7 +1301,7 @@ void wm_draw(unsigned char* v){
 static int in_icon(int mx, int my, int i) {
     desktop_item_t* item = desktop_get(i);
     return item && mx >= item->x - 4 && mx < item->x + 36 &&
-           my >= item->y - 4 && my < item->y + 52;
+           my >= item->y - 4 && my < item->y + 72;
 }
 
 static void open_icon_app(int clicked_icon) {
@@ -1239,7 +1366,7 @@ int wm_get_drag_box(int* x, int* y, int* w, int* h){
         if (x) *x = icon_drag_bx;
         if (y) *y = icon_drag_by;
         if (w) *w = 36;
-        if (h) *h = 48;
+        if (h) *h = 70;
         return 1;
     }
     return 0;
@@ -1352,33 +1479,40 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     // Poll RTC once every 100 ticks (1 Hz / 1 second) to prevent ISA bus stalls
     static int last_rtc_tick = 0;
+    static char last_clock_text[32];
     if (global_tick - last_rtc_tick >= 100 || last_s == -1) {
         last_rtc_tick = global_tick;
         int h, m, s;
         get_time(&h, &m, &s);
-        if (s != last_s) {
-            last_s = s;
+        last_s = s;
+        char next_clock[32];
+        format_clock_text(next_clock, sizeof(next_clock));
+        if (strcmp(next_clock, last_clock_text) != 0) {
             if (!dragging) {
                 if (!redraw && v && !power_confirm && !crash_dialog_active &&
                     !r0_confirm_active && !uninit_dialog_active && !menu_open &&
                     icon_dragging == -1) {
-                    int cx0 = screen_w - 78;
+                    int old_width = (int)strlen(last_clock_text) * 8;
+                    int new_width = (int)strlen(next_clock) * 8;
+                    int width = old_width > new_width ? old_width : new_width;
+                    int cx0 = screen_w - width - 12;
                     if (cx0 < 24) cx0 = 24;
                     for (int cy = 0; cy < 20; cy++) {
                         for (int cx = cx0; cx < screen_w; cx++) {
                             PUT_PIXEL(v, cx, cy, 15);
                         }
                     }
-                    char cb[9];
-                    cb[0] = (char)('0' + h / 10); cb[1] = (char)('0' + h % 10); cb[2] = ':';
-                    cb[3] = (char)('0' + m / 10); cb[4] = (char)('0' + m % 10); cb[5] = ':';
-                    cb[6] = (char)('0' + s / 10); cb[7] = (char)('0' + s % 10); cb[8] = '\0';
-                    font_draw_text(v, screen_w - 75, 2, cb, 0);
+                    int tx = screen_w - new_width - 10;
+                    if (tx < 24) tx = 24;
+                    font_draw_text(v, tx, 2, next_clock, 0);
                     wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
                 } else {
                     redraw = 1;
                 }
             }
+            strncpy(last_clock_text, next_clock,
+                    sizeof(last_clock_text) - 1);
+            last_clock_text[sizeof(last_clock_text) - 1] = '\0';
         }
     }
 
@@ -1742,7 +1876,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (nix < 0) nix = 0;
             if (nix + 36 > screen_w) nix = screen_w - 36;
             if (niy < 20) niy = 20;
-            if (niy + 48 > screen_h) niy = screen_h - 48;
+            if (niy + 70 > screen_h) niy = screen_h - 70;
             icon_drag_bx = nix;
             icon_drag_by = niy;
             icon_drag_active = 1;

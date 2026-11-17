@@ -97,7 +97,7 @@ static int desktop_strcasecmp(const char* left, const char* right) {
 #define DESKTOP_LAYOUT_MAX 16384
 #define DESKTOP_LAYOUT_HEADER "PNK_LAYOUT2"
 #define DESKTOP_RIGHT_MARGIN 104
-#define DESKTOP_ROW_STEP 56
+#define DESKTOP_ROW_STEP 72
 #define DESKTOP_COLUMN_STEP 184
 
 typedef struct {
@@ -164,6 +164,16 @@ static bool text_equal_ci(const char* left, const char* right) {
         right++;
     }
     return *left == '\0' && *right == '\0';
+}
+
+static bool text_starts_with_ci(const char* text, const char* prefix) {
+    if (!text || !prefix) return false;
+    while (*prefix) {
+        if (!*text || lower_ascii(*text) != lower_ascii(*prefix)) return false;
+        text++;
+        prefix++;
+    }
+    return true;
 }
 
 static bool ends_with_ci(const char* text, const char* suffix) {
@@ -422,7 +432,7 @@ static void default_position(int ordinal, int* x, int* y) {
     *x = screen_w - DESKTOP_RIGHT_MARGIN - column * DESKTOP_COLUMN_STEP;
     *y = 30 + row * DESKTOP_ROW_STEP;
     if (*x < 4) *x = 4;
-    if (*y > screen_h - 52) *y = screen_h - 52;
+    if (*y > screen_h - 70) *y = screen_h - 70;
 }
 
 static void apply_anchored_position(desktop_item_t* item, int ordinal) {
@@ -443,7 +453,7 @@ static void clamp_position(int* x, int* y) {
     if (*x < 4) *x = 4;
     if (*x + 36 > screen_w) *x = screen_w - 36;
     if (*y < 24) *y = 24;
-    if (*y + 52 > screen_h) *y = screen_h - 52;
+    if (*y + 70 > screen_h) *y = screen_h - 70;
     if (*x < 4) *x = 4;
     if (*y < 24) *y = 24;
 }
@@ -836,13 +846,36 @@ bool desktop_is_mutable(void) {
     return g_mutable;
 }
 
-static bool launch_files_for(const char* path) {
-    char files_path[96];
-    if (!pxe_resolve_builtin_app_path("files.pxe", files_path,
-                                      sizeof(files_path))) {
-        return false;
+static bool apps_path_filename(const char* path, char* filename,
+                               size_t capacity) {
+    if (!path || !filename || !capacity) return false;
+    const char* apps = NULL;
+    for (const char* cursor = path; *cursor; cursor++) {
+        if ((*cursor == '\\' || *cursor == '/') &&
+            (text_starts_with_ci(cursor + 1, "APPS\\") ||
+             text_starts_with_ci(cursor + 1, "APPS/"))) {
+            apps = cursor + 6;
+        }
     }
-    return pxe_ui_launch_from_path(files_path, path) >= 0;
+    if (!apps || !*apps) return false;
+    copy_text(filename, capacity, apps);
+    return true;
+}
+
+static bool launch_system_app_path(const char* path) {
+    char filename[64];
+    if (apps_path_filename(path, filename, sizeof(filename))) {
+        bool bypass = text_equal_ci(filename, "sysinfo.pxe") ||
+                      text_equal_ci(filename, "taskmgr.pxe") ||
+                      text_equal_ci(filename, "install.pxe");
+        log_printf("[DESK] Launch system app %s from %s\n", filename, path);
+        return pxe_launch_builtin_app(filename, NULL, bypass) >= 0;
+    }
+    return pxe_ui_launch_from_path(path, NULL) >= 0;
+}
+
+static bool launch_files_for(const char* path) {
+    return pxe_launch_builtin_app("files.pxe", path, false) >= 0;
 }
 
 void desktop_open_item(int index) {
@@ -856,14 +889,14 @@ void desktop_open_item(int index) {
         if (item->target_kind == DESKTOP_TARGET_FOLDER) {
             (void)launch_files_for(item->target);
         } else if (ends_with_ci(item->target, ".pxe")) {
-            (void)pxe_ui_launch_from_path(item->target, NULL);
+            (void)launch_system_app_path(item->target);
         } else {
             (void)launch_files_for(item->target);
         }
         return;
     }
     if (ends_with_ci(item->path, ".pxe")) {
-        (void)pxe_ui_launch_from_path(item->path, NULL);
+        (void)launch_system_app_path(item->path);
     } else {
         (void)launch_files_for(item->path);
     }
@@ -885,7 +918,7 @@ bool desktop_set_position(int index, int x, int y) {
     if (x < 4) x = 4;
     if (x + 36 > screen_w) x = screen_w - 36;
     if (y < 24) y = 24;
-    if (y + 52 > screen_h) y = screen_h - 52;
+    if (y + 70 > screen_h) y = screen_h - 70;
     item->anchored_right = false;
     item->right_offset = 0;
     item->x = x;

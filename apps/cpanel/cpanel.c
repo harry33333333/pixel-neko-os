@@ -236,15 +236,22 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         draw_mode_btn(surf, 270, 140, 80, 20, "Set File..", 0);
     }
 
-    /* 6. Driver / VRAM / Persistence info (y=168..246) */
-    pxe_draw_hline(surf, 10, 168, surf->width - 20, PXE_COL_DARK_GRAY);
-    pxe_draw_hline(surf, 10, 169, surf->width - 20, PXE_COL_WHITE);
+    /* 6. Default appearance and top-bar clock */
+    draw_mode_btn(surf, 96, 168, 102, 20, "Default Wall", 0);
+    draw_mode_btn(surf, 204, 168, 56, 20, "Date",
+                  cp->info.clock_show_date ? 1 : 0);
+    draw_mode_btn(surf, 264, 168, 74, 20, "Seconds",
+                  cp->info.clock_show_seconds ? 1 : 0);
+
+    /* 7. Driver / VRAM / Persistence info */
+    pxe_draw_hline(surf, 10, 194, surf->width - 20, PXE_COL_DARK_GRAY);
+    pxe_draw_hline(surf, 10, 195, surf->width - 20, PXE_COL_WHITE);
 
     const char* drv_name = cp->caps.driver_name[0]
         ? cp->caps.driver_name
         : (cp->info.gfx_backend[0] ? cp->info.gfx_backend : "Framebuffer");
-    pxe_draw_text_small(surf, 10, 176, "Display:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 176, drv_name,
+    pxe_draw_text_small(surf, 10, 202, "Display:", PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 70, 202, drv_name,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
 
@@ -257,8 +264,8 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     } else {
         snprintf(cap_line, sizeof(cap_line), "Fallback(No Drv): Max 1024x768 @ 8/16b");
     }
-    pxe_draw_text_small(surf, 10, 194, "Limits:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 194, cap_line,
+    pxe_draw_text_small(surf, 10, 220, "Limits:", PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 70, 220, cap_line,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_BLACK : PXE_COL_BROWN);
 
@@ -271,30 +278,30 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
              (sel_mask & PXE_DISP_BPP_24) ? "24b " : "",
              (sel_mask & PXE_DISP_BPP_32) ? "32b"  : "",
              (sel_mask == 0) ? "None" : "");
-    pxe_draw_text_small(surf, 10, 212, "BPP Mode:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 212, bpp_line, PXE_COL_DARK_BLUE);
+    pxe_draw_text_small(surf, 10, 238, "BPP Mode:", PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 70, 238, bpp_line, PXE_COL_DARK_BLUE);
 
     if (cp->notice[0]) {
-        pxe_draw_text_small(surf, 10, 234, cp->notice, PXE_COL_DARK_GREEN);
+        pxe_draw_text_small(surf, 10, 260, cp->notice, PXE_COL_DARK_GREEN);
     } else if (!cp->info.settings_writable) {
-        pxe_draw_text_small(surf, 10, 234, "Live Mode: .pse settings read-only", PXE_COL_BROWN);
+        pxe_draw_text_small(surf, 10, 260, "Live Mode: settings apply for this session", PXE_COL_BROWN);
     } else {
-        pxe_draw_text_small(surf, 10, 234, "Changes persist to SYSTEM.PSE", PXE_COL_DARK_GRAY);
+        pxe_draw_text_small(surf, 10, 260, "Changes persist to SYSTEM.PSE", PXE_COL_DARK_GRAY);
     }
 
-    /* 7. Bottom Actions (y=260) */
+    /* 8. Bottom Actions (y=286) */
     if (cp->revert_sec > 0) {
         char rbuf[32];
         snprintf(rbuf, sizeof(rbuf), "Revert in %2ds...", cp->revert_sec);
-        pxe_draw_text(surf, 12, 264, rbuf, PXE_COL_DARK_RED);
-        pxe_draw_button(surf, 188, 260, 156, 24, "Keep (OK)", 0, 1);
+        pxe_draw_text(surf, 12, 290, rbuf, PXE_COL_DARK_RED);
+        pxe_draw_button(surf, 188, 286, 156, 24, "Keep (OK)", 0, 1);
     } else {
-        pxe_draw_button(surf, 10,  260, 108, 24, "Apply Mode", 0, 1);
-        pxe_draw_button(surf, 126, 260, 108, 24, "Save (.pse)", 0, 1);
-        pxe_draw_button(surf, 242, 260, 108, 24, "OK", 0, 1);
+        pxe_draw_button(surf, 10,  286, 108, 24, "Apply Mode", 0, 1);
+        pxe_draw_button(surf, 126, 286, 108, 24, "Save (.pse)", 0, 1);
+        pxe_draw_button(surf, 242, 286, 108, 24, "OK", 0, 1);
     }
 
-    /* 8. Open Dropdowns on top */
+    /* 9. Open Dropdowns on top */
     if (cp->res_open) {
         int vis = (cp->caps.mode_count <= CPANEL_DROPDOWN_VIS)
                   ? cp->caps.mode_count : CPANEL_DROPDOWN_VIS;
@@ -345,7 +352,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         }
     }
 
-    /* 9. Wallpaper File Path Prompt Modal */
+    /* 10. Wallpaper File Path Prompt Modal */
     if (cp->wp_modal) {
         int dw = 280, dh = 96;
         int dx = (surf->width - dw) / 2;
@@ -407,9 +414,9 @@ int main(int argc, char** argv) {
     desc.x = 120;
     desc.y = 48;
     desc.w = 360;
-    desc.h = 304;
+    desc.h = 330;
     desc.min_w = 360;
-    desc.min_h = 304;
+    desc.min_h = 330;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
     strcpy(desc.title, "Control Panel");
@@ -734,9 +741,42 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
 
+                /* Default appearance and clock options */
+                if (pxe_point_in_rect(mx, my, 96, 168, 102, 20)) {
+                    if (pxe_desktop_restore_default_wallpaper() == 0) {
+                        cp.pattern = 0;
+                        pxe_settings_save();
+                        sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice),
+                                 "Default wallpaper restored.");
+                    } else {
+                        pxe_beep();
+                        snprintf(cp.notice, sizeof(cp.notice),
+                                 "Failed to restore default wallpaper.");
+                    }
+                    dirty = 1;
+                    continue;
+                }
+                if (pxe_point_in_rect(mx, my, 204, 168, 56, 20)) {
+                    pxe_clock_set_options(!cp.info.clock_show_date,
+                                          cp.info.clock_show_seconds);
+                    pxe_settings_save();
+                    sync_from_sysinfo(&cp);
+                    dirty = 1;
+                    continue;
+                }
+                if (pxe_point_in_rect(mx, my, 264, 168, 74, 20)) {
+                    pxe_clock_set_options(cp.info.clock_show_date,
+                                          !cp.info.clock_show_seconds);
+                    pxe_settings_save();
+                    sync_from_sysinfo(&cp);
+                    dirty = 1;
+                    continue;
+                }
+
                 /* Bottom actions */
                 if (cp.revert_sec > 0) {
-                    if (pxe_point_in_rect(mx, my, 188, 260, 156, 24)) {
+                    if (pxe_point_in_rect(mx, my, 188, 286, 156, 24)) {
                         cp.revert_sec = 0;
                         pxe_display_set_mode(cp.info.screen_w, cp.info.screen_h, cp.info.screen_bpp);
                         pxe_settings_save();
@@ -745,10 +785,10 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     }
                 } else {
-                    if (pxe_point_in_rect(mx, my, 10, 260, 108, 24)) {
+                    if (pxe_point_in_rect(mx, my, 10, 286, 108, 24)) {
                         start_apply_mode(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 126, 260, 108, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 126, 286, 108, 24)) {
                         if (pxe_settings_save() == 0) {
                             snprintf(cp.notice, sizeof(cp.notice), "Saved settings to .pse.");
                         } else {
@@ -756,7 +796,7 @@ int main(int argc, char** argv) {
                             snprintf(cp.notice, sizeof(cp.notice), "Save failed (read-only medium?).");
                         }
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 242, 260, 108, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 242, 286, 108, 24)) {
                         int tw = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
                                  ? (int)cp.caps.modes[cp.sel_res].width : cp.info.screen_w;
                         int th = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)

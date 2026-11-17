@@ -23,6 +23,8 @@ int      pxe_desktop_set_pattern(int pattern);
 int      pxe_desktop_set_wallpaper(const char* path, int mode);
 int      pxe_desktop_set_wallpaper_mode(int mode);
 int      pxe_desktop_clear_wallpaper(void);
+int      pxe_desktop_restore_default_wallpaper(void);
+int      pxe_clock_set_options(int show_date, int show_seconds);
 int      pxe_mouse_set_speed(int speed);
 int      pxe_settings_save(void);
 

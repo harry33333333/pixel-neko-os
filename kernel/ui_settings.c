@@ -12,6 +12,8 @@
 #define PSE_MAGIC 0x31455350u /* "PSE1" */
 #define PSE_VERSION 1u
 #define PSE_WALLPAPER_PATH_MAX 256
+#define PSE_CLOCK_HIDE_DATE     0x01u
+#define PSE_CLOCK_HIDE_SECONDS  0x02u
 
 typedef struct {
     uint32_t magic;
@@ -50,6 +52,8 @@ static int g_saved_height = 0;
 static int g_saved_bpp = 0;
 static char g_wallpaper_path[PSE_WALLPAPER_PATH_MAX];
 static bool g_missing_notice_logged = false;
+static bool g_clock_show_date = true;
+static bool g_clock_show_seconds = true;
 
 static unsigned int copy_text(char* target, unsigned int capacity,
                               const char* source) {
@@ -309,6 +313,8 @@ void settings_init(void) {
     g_saved_bpp = 0;
     g_wallpaper_path[0] = '\0';
     g_missing_notice_logged = false;
+    g_clock_show_date = true;
+    g_clock_show_seconds = true;
 
     if (g_boot_mode != SETTINGS_BOOT_LOCAL) {
         log_printf("[SETTINGS] persistent config disabled in %s mode\n",
@@ -364,6 +370,10 @@ bool settings_load(void) {
     }
     mouse_set_speed(records[selected].mouse_speed);
     g_desktop_pattern = records[selected].pattern;
+    g_clock_show_date =
+        (records[selected].reserved[0] & PSE_CLOCK_HIDE_DATE) == 0;
+    g_clock_show_seconds =
+        (records[selected].reserved[0] & PSE_CLOCK_HIDE_SECONDS) == 0;
     apply_resolution(&records[selected]);
     if (!apply_wallpaper(&records[selected])) {
         g_wallpaper_path[0] = '\0';
@@ -386,6 +396,25 @@ void settings_set_resolution(int width, int height, int bpp) {
 
 void settings_set_pattern(int pattern) {
     if (pattern >= 0 && pattern <= 5) g_desktop_pattern = pattern;
+}
+
+void settings_set_clock_options(bool show_date, bool show_seconds) {
+    g_clock_show_date = show_date;
+    g_clock_show_seconds = show_seconds;
+}
+
+bool settings_get_clock_show_date(void) {
+    return g_clock_show_date;
+}
+
+bool settings_get_clock_show_seconds(void) {
+    return g_clock_show_seconds;
+}
+
+void settings_restore_default_wallpaper(void) {
+    wallpaper_clear();
+    g_wallpaper_path[0] = '\0';
+    g_desktop_pattern = 0;
 }
 
 void settings_set_wallpaper(const char* path, wallpaper_mode_t mode) {
@@ -425,6 +454,9 @@ bool settings_save(void) {
     config.wallpaper_mode = (uint8_t)wallpaper_get_mode();
     config.wallpaper_active =
         (uint8_t)(wallpaper_is_active() && g_wallpaper_path[0]);
+    config.reserved[0] = (uint8_t)(
+        (g_clock_show_date ? 0u : PSE_CLOCK_HIDE_DATE) |
+        (g_clock_show_seconds ? 0u : PSE_CLOCK_HIDE_SECONDS));
     copy_text(config.wallpaper_path, sizeof(config.wallpaper_path),
               g_wallpaper_path);
     config.checksum = pse_crc32(

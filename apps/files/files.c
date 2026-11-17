@@ -51,6 +51,7 @@ typedef struct {
     char       clip_path[256];
     char       clip_name[128];
     uint8_t    clip_is_dir;
+    uint8_t    clip_is_cut;
     int        has_clip;
 
     uint64_t   last_click_ticks;
@@ -143,6 +144,24 @@ static int resolve_app_path(const char* app_filename, char* out, size_t cap) {
         if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
     }
     return -1;
+}
+
+static int text_contains_ci(const char* text, const char* needle) {
+    if (!text || !needle || !*needle) return 0;
+    size_t needle_len = strlen(needle);
+    for (const char* cursor = text; *cursor; cursor++) {
+        size_t index = 0;
+        while (index < needle_len && cursor[index]) {
+            char left = cursor[index];
+            char right = needle[index];
+            if (left >= 'A' && left <= 'Z') left = (char)(left + 32);
+            if (right >= 'A' && right <= 'Z') right = (char)(right + 32);
+            if (left != right) break;
+            index++;
+        }
+        if (index == needle_len) return 1;
+    }
+    return 0;
 }
 
 static int drive_is_readonly(char letter) {
@@ -360,8 +379,24 @@ static void open_entry(fm_t* fm, int idx) {
             if (pxe_spawn(files_path, 2, argv) < 0) {
                 show_msg(fm, "Shortcut Error", "Folder could not be opened.", 1);
             }
-        } else if (pxe_spawn(target, 0, NULL) < 0) {
-            show_msg(fm, "Shortcut Error", "PXE shortcut could not be launched.", 1);
+        } else {
+            char canonical[128];
+            const char* base = strrchr(target, '\\');
+            if (!base && !(base = strrchr(target, '/'))) base = target;
+            else base++;
+            if (text_contains_ci(target, "\\APPS\\")) {
+                if (resolve_app_path(base, canonical, sizeof(canonical)) != 0) {
+                    show_msg(fm, "Shortcut Error",
+                             "The system application is unavailable.", 1);
+                    return;
+                }
+            } else {
+                snprintf(canonical, sizeof(canonical), "%s", target);
+            }
+            if (pxe_spawn(canonical, 0, NULL) < 0) {
+                show_msg(fm, "Shortcut Error",
+                         "PXE shortcut could not be launched.", 1);
+            }
         }
         return;
     }
@@ -410,6 +445,19 @@ static void action_copy(fm_t* fm, int idx) {
     join_path(fm->clip_path, sizeof(fm->clip_path), fm->current_path, fm->entries[idx].name);
     snprintf(fm->clip_name, sizeof(fm->clip_name), "%s", fm->entries[idx].name);
     fm->clip_is_dir = fm->entries[idx].is_dir;
+    fm->clip_is_cut = 0;
+    fm->has_clip = 1;
+}
+
+static void action_cut(fm_t* fm, int idx) {
+    if (fm->current_path[0] == '\0' || idx < 0 || idx >= fm->entry_count) return;
+    if (fm->entries[idx].is_parent) return;
+    join_path(fm->clip_path, sizeof(fm->clip_path), fm->current_path,
+              fm->entries[idx].name);
+    snprintf(fm->clip_name, sizeof(fm->clip_name), "%s",
+             fm->entries[idx].name);
+    fm->clip_is_dir = fm->entries[idx].is_dir;
+    fm->clip_is_cut = 1;
     fm->has_clip = 1;
 }
 
@@ -463,7 +511,7 @@ static void copy_progress_cb(uint64_t copied, uint64_t total) {
 
 static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     if (!fm->has_clip || fm->current_path[0] == '\0') return;
-    if (fm->clip_is_dir) {
+    if (fm->clip_is_dir && !fm->clip_is_cut) {
         show_msg(fm, "Paste Error", "Folder copy is not supported directly.", 1);
         return;
     }
@@ -475,9 +523,33 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     char dst[256];
     join_path(dst, sizeof(dst), fm->current_path, fm->clip_name);
     if (strcasecmp(dst, fm->clip_path) == 0) {
+        if (fm->clip_is_cut) {
+            fm->has_clip = 0;
+            show_msg(fm, "Move", "The item is already in this folder.", 0);
+            return;
+        }
         char alt[128];
         snprintf(alt, sizeof(alt), "COPY_%s", fm->clip_name);
         join_path(dst, sizeof(dst), fm->current_path, alt);
+    }
+
+    if (fm->clip_is_cut) {
+        pxe_dirent_t existing;
+        if (pxe_stat(dst, &existing) == 0) {
+            show_msg(fm, "Move Failed",
+                     "A file or folder with that name already exists.", 1);
+            return;
+        }
+        if (pxe_rename(fm->clip_path, dst) != 0) {
+            show_msg(fm, "Move Failed",
+                     "Cut/paste failed (read-only or protected item).", 1);
+            return;
+        }
+        fm->has_clip = 0;
+        fm->clip_is_cut = 0;
+        load_directory(fm);
+        show_msg(fm, "Move Complete", "Item moved to this folder.", 0);
+        return;
     }
 
     g_prog_surf = surf;
@@ -492,6 +564,7 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
         show_msg(fm, "Paste Failed", "Copy error (disk full / >4GB FAT32 limit).", 1);
         return;
     }
+    fm->clip_is_cut = 0;
     load_directory(fm);
 }
 
@@ -617,16 +690,17 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
 
     /* 1. Toolbar */
     int bx = 4;
-    pxe_draw_button(surf, bx, 3, 52, 20, "Drives", 0, 1); bx += 56;
-    pxe_draw_button(surf, bx, 3, 44, 20, "^ Up", 0, fm->current_path[0] != 0); bx += 48;
+    pxe_draw_button(surf, bx, 3, 46, 20, "Drives", 0, 1); bx += 50;
+    pxe_draw_button(surf, bx, 3, 36, 20, "Up", 0, fm->current_path[0] != 0); bx += 40;
     int can_open = (fm->selected >= 0 && fm->selected < fm->entry_count);
-    pxe_draw_button(surf, bx, 3, 46, 20, "Open", 0, can_open); bx += 50;
+    pxe_draw_button(surf, bx, 3, 42, 20, "Open", 0, can_open); bx += 46;
     int can_copy = (fm->current_path[0] != 0 && can_open && !fm->entries[fm->selected].is_parent);
-    pxe_draw_button(surf, bx, 3, 46, 20, "Copy", 0, can_copy); bx += 50;
+    pxe_draw_button(surf, bx, 3, 38, 20, "Copy", 0, can_copy); bx += 42;
+    pxe_draw_button(surf, bx, 3, 32, 20, "Cut", 0, can_copy); bx += 36;
     int can_paste = (fm->has_clip && fm->current_path[0] != 0);
-    pxe_draw_button(surf, bx, 3, 52, 20, "Paste", 0, can_paste); bx += 56;
-    pxe_draw_button(surf, bx, 3, 62, 20, "NewDir", 0, fm->current_path[0] != 0); bx += 66;
-    pxe_draw_button(surf, bx, 3, 50, 20, "Eject", 0, 1);
+    pxe_draw_button(surf, bx, 3, 42, 20, "Paste", 0, can_paste); bx += 46;
+    pxe_draw_button(surf, bx, 3, 50, 20, "NewDir", 0, fm->current_path[0] != 0); bx += 54;
+    pxe_draw_button(surf, bx, 3, 42, 20, "Eject", 0, 1);
 
     /* 2. Path bar */
     pxe_draw_bevel_box(surf, 4, 26, surf->width - 8, 17, 1, PXE_COL_WHITE);
@@ -726,13 +800,14 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     pxe_draw_hline(surf, 0, sby, surf->width, PXE_COL_DARK_GRAY);
     char sbuf[128];
     if (fm->has_clip) {
-        snprintf(sbuf, sizeof(sbuf), "Clipboard: %s | Items: %d",
+        snprintf(sbuf, sizeof(sbuf), "%s: %s | Items: %d",
+                 fm->clip_is_cut ? "Cut" : "Copied",
                  fm->clip_name, fm->entry_count);
     } else if (fm->current_path[0] == '\0') {
         snprintf(sbuf, sizeof(sbuf), "Drives: %d | Double-click to open | Eject unmounts CD/FD",
                  fm->entry_count);
     } else {
-        snprintf(sbuf, sizeof(sbuf), "Items: %d | Right-click for Copy/Paste/Rename/Delete",
+        snprintf(sbuf, sizeof(sbuf), "Items: %d | Right-click for Cut/Copy/Paste/Rename/Delete",
                  fm->entry_count > 0 ? fm->entry_count - 1 : 0);
     }
     int max_sc = (surf->width - 14) / 6;
@@ -743,11 +818,12 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     if (fm->ctx_kind != CTX_NONE) {
         pxe_draw_bevel_box(surf, fm->ctx_x, fm->ctx_y, fm->ctx_w, fm->ctx_h, 0, PXE_COL_LIGHT_GRAY);
         if (fm->ctx_kind == CTX_ITEM) {
-            const char* items[7] = {
-                "Open", "Copy", "Paste", "Rename...", "Delete", "New Folder...", "Properties..."
+            const char* items[8] = {
+                "Open", "Cut", "Copy", "Paste", "Rename...",
+                "Delete", "New Folder...", "Properties..."
             };
-            int en[7] = { 1, 1, fm->has_clip, 1, 1, 1, 1 };
-            for (int i = 0; i < 7; i++) {
+            int en[8] = { 1, 1, 1, fm->has_clip, 1, 1, 1, 1 };
+            for (int i = 0; i < 8; i++) {
                 pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 5 + i * 18,
                                     items[i], en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
             }
@@ -846,15 +922,16 @@ int main(int argc, char** argv) {
     memset(&mb, 0, sizeof(mb));
     mb.menu_count = 2;
     strcpy(mb.menus[0].title, "File");
-    mb.menus[0].item_count = 8;
+    mb.menus[0].item_count = 9;
     strcpy(mb.menus[0].items[0].label, "Open");          mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, "Copy");          mb.menus[0].items[1].enabled = 1;
-    strcpy(mb.menus[0].items[2].label, "Paste");         mb.menus[0].items[2].enabled = 1;
-    strcpy(mb.menus[0].items[3].label, "Rename...");     mb.menus[0].items[3].enabled = 1;
-    strcpy(mb.menus[0].items[4].label, "New Folder..."); mb.menus[0].items[4].enabled = 1;
-    strcpy(mb.menus[0].items[5].label, "Delete");        mb.menus[0].items[5].enabled = 1;
-    strcpy(mb.menus[0].items[6].label, "Eject");         mb.menus[0].items[6].enabled = 1;
-    strcpy(mb.menus[0].items[7].label, "Exit");          mb.menus[0].items[7].enabled = 1;
+    strcpy(mb.menus[0].items[1].label, "Cut");           mb.menus[0].items[1].enabled = 1;
+    strcpy(mb.menus[0].items[2].label, "Copy");          mb.menus[0].items[2].enabled = 1;
+    strcpy(mb.menus[0].items[3].label, "Paste");         mb.menus[0].items[3].enabled = 1;
+    strcpy(mb.menus[0].items[4].label, "Rename...");     mb.menus[0].items[4].enabled = 1;
+    strcpy(mb.menus[0].items[5].label, "New Folder..."); mb.menus[0].items[5].enabled = 1;
+    strcpy(mb.menus[0].items[6].label, "Delete");        mb.menus[0].items[6].enabled = 1;
+    strcpy(mb.menus[0].items[7].label, "Eject");         mb.menus[0].items[7].enabled = 1;
+    strcpy(mb.menus[0].items[8].label, "Exit");          mb.menus[0].items[8].enabled = 1;
 
     strcpy(mb.menus[1].title, "View");
     mb.menus[1].item_count = 4;
@@ -910,13 +987,14 @@ int main(int argc, char** argv) {
                 fm->ctx_kind = CTX_NONE;
                 if (ev.arg0 == 0) {
                     if (ev.arg1 == 0 && fm->selected >= 0) open_entry(fm, fm->selected);
-                    else if (ev.arg1 == 1 && fm->selected >= 0) action_copy(fm, fm->selected);
-                    else if (ev.arg1 == 2) action_paste(fm, &surf);
-                    else if (ev.arg1 == 3 && fm->selected >= 0) action_begin_rename(fm, fm->selected);
-                    else if (ev.arg1 == 4) action_begin_mkdir(fm);
-                    else if (ev.arg1 == 5 && fm->selected >= 0) action_begin_delete(fm, fm->selected);
-                    else if (ev.arg1 == 6) action_eject(fm);
-                    else if (ev.arg1 == 7) running = 0;
+                    else if (ev.arg1 == 1 && fm->selected >= 0) action_cut(fm, fm->selected);
+                    else if (ev.arg1 == 2 && fm->selected >= 0) action_copy(fm, fm->selected);
+                    else if (ev.arg1 == 3) action_paste(fm, &surf);
+                    else if (ev.arg1 == 4 && fm->selected >= 0) action_begin_rename(fm, fm->selected);
+                    else if (ev.arg1 == 5) action_begin_mkdir(fm);
+                    else if (ev.arg1 == 6 && fm->selected >= 0) action_begin_delete(fm, fm->selected);
+                    else if (ev.arg1 == 7) action_eject(fm);
+                    else if (ev.arg1 == 8) running = 0;
                 } else if (ev.arg0 == 1) {
                     if (ev.arg1 == 0) load_directory(fm);
                     else if (ev.arg1 == 1) { fm->sort_by_size = 0; sort_entries(fm); }
@@ -978,12 +1056,13 @@ int main(int argc, char** argv) {
                     if (inside && (ev.buttons & PXE_BTN_LEFT)) {
                         if (kind == CTX_ITEM) {
                             if (item == 0) open_entry(fm, tgt);
-                            else if (item == 1) action_copy(fm, tgt);
-                            else if (item == 2) action_paste(fm, &surf);
-                            else if (item == 3) action_begin_rename(fm, tgt);
-                            else if (item == 4) action_begin_delete(fm, tgt);
-                            else if (item == 5) action_begin_mkdir(fm);
-                            else if (item == 6) action_properties(fm, tgt);
+                            else if (item == 1) action_cut(fm, tgt);
+                            else if (item == 2) action_copy(fm, tgt);
+                            else if (item == 3) action_paste(fm, &surf);
+                            else if (item == 4) action_begin_rename(fm, tgt);
+                            else if (item == 5) action_begin_delete(fm, tgt);
+                            else if (item == 6) action_begin_mkdir(fm);
+                            else if (item == 7) action_properties(fm, tgt);
                         } else if (kind == CTX_BG) {
                             if (item == 0) action_paste(fm, &surf);
                             else if (item == 1) action_begin_mkdir(fm);
@@ -1000,20 +1079,22 @@ int main(int argc, char** argv) {
 
                 /* Toolbar left clicks */
                 if ((ev.buttons & PXE_BTN_LEFT) && my >= 3 && my < 23) {
-                    if (pxe_point_in_rect(mx, my, 4, 3, 52, 20)) {
+                    if (pxe_point_in_rect(mx, my, 4, 3, 46, 20)) {
                         fm->current_path[0] = '\0';
                         load_directory(fm);
-                    } else if (pxe_point_in_rect(mx, my, 60, 3, 44, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 54, 3, 36, 20)) {
                         go_up(fm);
-                    } else if (pxe_point_in_rect(mx, my, 108, 3, 46, 20) && fm->selected >= 0) {
+                    } else if (pxe_point_in_rect(mx, my, 94, 3, 42, 20) && fm->selected >= 0) {
                         open_entry(fm, fm->selected);
-                    } else if (pxe_point_in_rect(mx, my, 158, 3, 46, 20) && fm->selected >= 0) {
+                    } else if (pxe_point_in_rect(mx, my, 140, 3, 38, 20) && fm->selected >= 0) {
                         action_copy(fm, fm->selected);
-                    } else if (pxe_point_in_rect(mx, my, 208, 3, 52, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 182, 3, 32, 20) && fm->selected >= 0) {
+                        action_cut(fm, fm->selected);
+                    } else if (pxe_point_in_rect(mx, my, 218, 3, 42, 20)) {
                         action_paste(fm, &surf);
-                    } else if (pxe_point_in_rect(mx, my, 264, 3, 62, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 264, 3, 50, 20)) {
                         action_begin_mkdir(fm);
-                    } else if (pxe_point_in_rect(mx, my, 330, 3, 50, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 318, 3, 42, 20)) {
                         action_eject(fm);
                     }
                     dirty = 1;
@@ -1052,7 +1133,7 @@ int main(int argc, char** argv) {
                                 clamp_ctx_menu(fm, &surf, mx, my, 2);
                             } else if (!fm->entries[idx].is_parent) {
                                 fm->ctx_kind = CTX_ITEM;
-                                clamp_ctx_menu(fm, &surf, mx, my, 7);
+                                clamp_ctx_menu(fm, &surf, mx, my, 8);
                             } else if (fm->current_path[0] != '\0') {
                                 fm->ctx_kind = CTX_BG;
                                 clamp_ctx_menu(fm, &surf, mx, my, 4);
@@ -1109,6 +1190,10 @@ int main(int argc, char** argv) {
                 if (ev.modifiers & PXE_MOD_CTRL) {
                     if ((ev.key == 'c' || ev.key == 'C') && fm->selected >= 0) {
                         action_copy(fm, fm->selected);
+                        dirty = 1;
+                    } else if ((ev.key == 'x' || ev.key == 'X') &&
+                               fm->selected >= 0) {
+                        action_cut(fm, fm->selected);
                         dirty = 1;
                     } else if (ev.key == 'v' || ev.key == 'V') {
                         action_paste(fm, &surf);

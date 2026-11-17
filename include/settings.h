@@ -20,6 +20,10 @@ bool settings_storage_available(void);
 void settings_set_mouse_speed(int speed);
 void settings_set_resolution(int w, int h, int bpp);
 void settings_set_pattern(int pattern);
+void settings_set_clock_options(bool show_date, bool show_seconds);
+bool settings_get_clock_show_date(void);
+bool settings_get_clock_show_seconds(void);
+void settings_restore_default_wallpaper(void);
 void settings_set_wallpaper(const char* path, wallpaper_mode_t mode);
 void settings_clear_wallpaper(void);
 

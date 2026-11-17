@@ -161,6 +161,18 @@ int pxe_desktop_clear_wallpaper(void) {
                               0, 0, 0);
 }
 
+int pxe_desktop_restore_default_wallpaper(void) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_RESTORE_DEFAULT,
+                              0, 0, 0);
+}
+
+int pxe_clock_set_options(int show_date, int show_seconds) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG,
+                              PXE_CFG_SET_CLOCK_OPTIONS,
+                              show_date ? 1 : 0,
+                              show_seconds ? 1 : 0, 0);
+}
+
 int pxe_mouse_set_speed(int speed) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_MOUSE_SPEED,
                               (long)speed, 0, 0);
