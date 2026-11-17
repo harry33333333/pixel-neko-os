@@ -375,14 +375,14 @@ static void wrap_desktop_label(const char* label, char* line1,
     line2[0] = '\0';
     if (!label) return;
     int length = (int)strlen(label);
-    if (length <= 18) {
+    if (length <= 7) {
         strncpy(line1, label, 23);
         line1[23] = '\0';
         return;
     }
 
-    int split = 18;
-    for (int index = 18; index > 0; index--) {
+    int split = 7;
+    for (int index = 7; index > 0; index--) {
         if (label[index] == ' ') {
             split = index;
             break;
@@ -390,27 +390,60 @@ static void wrap_desktop_label(const char* label, char* line1,
     }
     int first_length = split;
     while (first_length > 0 && label[first_length - 1] == ' ') first_length--;
-    if (first_length > 23) first_length = 23;
+    if (first_length > 7) first_length = 7;
     for (int index = 0; index < first_length; index++) line1[index] = label[index];
     line1[first_length] = '\0';
 
     int second_start = split;
     while (label[second_start] == ' ') second_start++;
     int remaining = length - second_start;
-    if (remaining <= 18) {
+    if (remaining <= 7) {
         for (int index = 0; index < remaining; index++) {
             line2[index] = label[second_start + index];
         }
         line2[remaining] = '\0';
     } else {
-        for (int index = 0; index < 15; index++) {
+        for (int index = 0; index < 7; index++) {
             line2[index] = label[second_start + index];
         }
-        line2[15] = '.';
-        line2[16] = '.';
-        line2[17] = '.';
-        line2[18] = '\0';
+        line2[7] = '.';
+        line2[8] = '.';
+        line2[9] = '.';
+        line2[10] = '\0';
     }
+}
+
+static int label_equals_ci(const char* left, const char* right) {
+    if (!left || !right) return 0;
+    while (*left && *right) {
+        char a = *left++;
+        char b = *right++;
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+        if (a != b) return 0;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+static unsigned char desktop_fallback_icon(const desktop_item_t* item) {
+    static const unsigned char alternate[] = { 1, 2, 4, 7, 8, 9, 10, 11 };
+    if (!item) return 6;
+    if (item->kind == DESKTOP_ITEM_FOLDER ||
+        (item->kind == DESKTOP_ITEM_SHORTCUT &&
+         item->target_kind == DESKTOP_TARGET_FOLDER)) {
+        return 5;
+    }
+    if (label_equals_ci(item->display_name, "About This Machine")) return 1;
+    if (label_equals_ci(item->display_name, "Clock")) return 2;
+    if (label_equals_ci(item->display_name, "Calculator")) return 4;
+    if (label_equals_ci(item->display_name, "Control Panel")) return 6;
+    if (label_equals_ci(item->display_name, "System Information")) return 7;
+    if (label_equals_ci(item->display_name, "Notepad")) return 3;
+    if (label_equals_ci(item->display_name, "Media Player")) return 10;
+    if (label_equals_ci(item->display_name, "Image Viewer")) return 9;
+    if (label_equals_ci(item->display_name, "File Management")) return 5;
+    return alternate[(unsigned char)item->display_name[0] %
+                     (sizeof(alternate) / sizeof(alternate[0]))];
 }
 
 static void icon(unsigned char* v, int x, int y, int desktop_index,
@@ -1270,11 +1303,7 @@ void wm_draw(unsigned char* v){
             for (int i = 0; i < num_icons; i++) {
                 desktop_item_t* item = desktop_get(i);
                 if (!item) continue;
-                unsigned char fallback_bg =
-                    (item->kind == DESKTOP_ITEM_FOLDER ||
-                     (item->kind == DESKTOP_ITEM_SHORTCUT &&
-                      item->target_kind == DESKTOP_TARGET_FOLDER)) ? 5 :
-                    item->kind == DESKTOP_ITEM_SHORTCUT ? 6 : 3;
+                unsigned char fallback_bg = desktop_fallback_icon(item);
                 icon(v, item->x, item->y, i, fallback_bg,
                      item->display_name, last_click_icon == i,
                      item->kind == DESKTOP_ITEM_SHORTCUT);

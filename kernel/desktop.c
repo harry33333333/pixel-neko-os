@@ -682,6 +682,12 @@ void desktop_refresh(void) {
         }
         if (is_locked_shortcut(item->name)) item->locked = true;
         desktop_item_t* previous = old_item(item->name);
+        if (previous && previous->kind == item->kind &&
+            previous->icon_state == 1 &&
+            text_equal_ci(previous->target, item->target)) {
+            item->icon_state = previous->icon_state;
+            memcpy(item->icon, previous->icon, sizeof(item->icon));
+        }
         desktop_layout_entry_t* saved = layout_entry(item->name);
         if (saved) {
             item->anchored_right = saved->anchored_right;

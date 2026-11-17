@@ -1460,7 +1460,13 @@ int xhci_probe(const pci_device_t* device) {
     uint64_t erst_phys = (uint64_t)((uint8_t*)erst - c->memory) +
                          c->memory_phys;
     erst[0] = c->event_ring_phys;
-    erst[1] = XHCI_EVENT_RING_SIZE;
+    /*
+     * ERST Entry bit 31 is the Change (C) flag. Intel 600-series controllers
+     * use it to detect the end of a ring segment. Without it the event ring
+     * can appear to work until the first wrap, then silently stop retiring
+     * HID transfer events.
+     */
+    erst[1] = (uint64_t)XHCI_EVENT_RING_SIZE | (1ULL << 31);
     c->dcbaa = xhci_arena_alloc(
         c, sizeof(uint64_t) * (XHCI_MAX_SLOTS + 1), 64, &c->dcbaa_phys);
     c->input_context = xhci_arena_alloc(c, c->context_size * 33, 64,
