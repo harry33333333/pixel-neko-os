@@ -58,9 +58,11 @@ manual absolute positions created by dragging an icon.
 resolution-aware layout. `Clean Up Desktop` no longer exists. Legacy
 `PNK_LAYOUT1` files are migrated automatically.
 
-The Desktop directory is scanned at startup and when the user selects
-`Refresh`; it is not polled every second. This keeps blocking FAT/ATA I/O out
-of the mouse, keyboard and audio hot path on older real-hardware chipsets.
+The Desktop directory is scanned at startup, on explicit `Refresh`, and after
+supported file-system mutations under `Desktop\`. These mutations only set a
+pending flag; the compositor performs one refresh on its next update. The
+directory is never polled every second, keeping blocking FAT/ATA I/O out of the
+mouse, keyboard and audio hot path on older real-hardware chipsets.
 
 Automatic icons use a 72-pixel right margin, 96-pixel column spacing and
 72-pixel row spacing. Existing automatic `PNK_LAYOUT2` entries are normalized

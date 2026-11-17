@@ -36,6 +36,7 @@ extern int g_desktop_pattern;
 #include "image_dec.h"
 #include "wallpaper.h"
 #include "cpu.h"
+#include "desktop.h"
 #include "display_modes.h"
 #include "wm.h"
 #include "fat.h"
@@ -549,6 +550,7 @@ int pxe_kern_fs_create(process_t* proc, const char* path) {
         return -1;
     }
     proc->streams[fd] = stream;
+    desktop_notify_path_changed(path);
     return fd;
 }
 
@@ -582,7 +584,10 @@ int pxe_kern_fs_close(process_t* proc, int fd) {
     if (!proc || fd < 0 || fd >= PROCESS_MAX_STREAMS) return -1;
     vfs_stream_t* stream = (vfs_stream_t*)proc->streams[fd];
     if (!stream) return -1;
-    if (stream->is_open) vfs_stream_close(stream);
+    if (stream->is_open) {
+        vfs_stream_close(stream);
+        if (stream->is_write) desktop_notify_path_changed(stream->path);
+    }
     kfree(stream);
     proc->streams[fd] = NULL;
     return 0;
@@ -609,7 +614,9 @@ int pxe_kern_fs_write_file(const char* path, const void* buf, size_t size) {
     if (!path || (!buf && size > 0)) return -1;
     static const unsigned char empty_byte = 0;
     const unsigned char* ptr = buf ? (const unsigned char*)buf : &empty_byte;
-    return vfs_write_file(path, ptr, (unsigned int)size);
+    int result = vfs_write_file(path, ptr, (unsigned int)size);
+    if (result == 0) desktop_notify_path_changed(path);
+    return result;
 }
 
 static pxe_dirent_t* g_listdir_out = NULL;
@@ -640,15 +647,24 @@ int pxe_kern_fs_listdir(const char* path, pxe_dirent_t* out, int max_entries) {
 }
 
 int pxe_kern_fs_mkdir(const char* path) {
-    return vfs_mkdir(path);
+    int result = vfs_mkdir(path);
+    if (result == VFS_OK) desktop_notify_path_changed(path);
+    return result;
 }
 
 int pxe_kern_fs_unlink(const char* path) {
-    return vfs_unlink(path);
+    int result = vfs_unlink(path);
+    if (result == VFS_OK) desktop_notify_path_changed(path);
+    return result;
 }
 
 int pxe_kern_fs_rename(const char* old_path, const char* new_path) {
-    return vfs_rename(old_path, new_path);
+    int result = vfs_rename(old_path, new_path);
+    if (result == VFS_OK) {
+        desktop_notify_path_changed(old_path);
+        desktop_notify_path_changed(new_path);
+    }
+    return result;
 }
 
 int pxe_kern_fs_get_drives(pxe_drive_info_t* out, int max_drives) {

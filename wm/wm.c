@@ -1844,6 +1844,11 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         key = keyboard_get_key();
     }
 
+    if (desktop_poll()) {
+        redraw = 1;
+        need_mr = 1;
+    }
+
     if (desktop_menu_mode && mb_press) {
         int rows = desktop_menu_mode == 1 ? 2 : 3;
         if (mx >= desktop_menu_x && mx < desktop_menu_x + 150 &&

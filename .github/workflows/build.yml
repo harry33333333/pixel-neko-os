@@ -101,6 +101,7 @@ jobs:
           - Persistent Windows-style `Desktop\` storage with `.pnk` shortcuts, locked File Management/About shortcuts, protected `APPS\` system software, `.desktop-layout` icon positions, desktop folder creation/deletion, and a read-only Live Desktop.
           - Real-hardware input/audio fix: removed blocking one-second Desktop FAT scans and ATAPI medium probes from the compositor hot path.
           - Desktop hit testing now follows the live icon count, so CPU Detect, Sysinfo and other trailing shortcuts remain clickable.
+          - Live, installer, installed and recovery entries now all boot at `800x600x16`; Desktop mutations trigger one synchronized refresh without periodic disk polling.
           - EDID/GOP/VBE mode discovery now feeds NVIDIA, ATI Mach64 and fallback framebuffer mode lists; ATI 2MB keeps `1024x768x16` and VMware retains its virtual mode catalog.
           - Offline installer upgrade payload now ships `GAME\` with Puzzle, Solitaire, Gomoku and Aero Chess while preserving an existing Desktop during upgrades.
 

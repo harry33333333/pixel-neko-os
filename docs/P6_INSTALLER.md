@@ -10,10 +10,10 @@ The ISO exposes the following Limine entries:
 2. Graphical Installer
 3. Safe Graphics Live
 
-Normal live and installer boots request 1920x1080x32. Limine chooses the
-closest GOP/VBE mode supported by the GPU and monitor, then the kernel uses
-EDID or the firmware mode table to populate the settings list. Safe Graphics
-Live requests 1024x768x16 as a low-VRAM-compatible recovery entry.
+Live, installer, installed-system and Safe Graphics boots all request
+`800x600x16` so the boot progress screen and initial scanout follow one
+compatible path. The kernel still uses EDID or the GOP/VBE firmware mode table
+to populate higher resolutions available inside the Desktop settings.
 
 `mode=install` opens the installer in a near-full-screen classic window after
 the desktop and splash have initialized.

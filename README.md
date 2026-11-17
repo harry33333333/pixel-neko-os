@@ -56,10 +56,10 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - libcpuid 的 BSD-2-Clause 版权与许可证记录已加入 `THIRD_PARTY_LICENSES.md`。
 
 ### 26A250a 真机输入/音频、桌面命中与显示模式修复
-- 修复 ASUS P7H55-M LE 等真实 ATA/ATAPI 平台上的周期性卡顿：桌面不再每秒遍历 FAT 并重读全部快捷方式，VFS 也不再每秒对光驱发送阻塞式 `TEST UNIT READY`；介质与桌面改为用户刷新时检查。
+- 修复 ASUS P7H55-M LE 等真实 ATA/ATAPI 平台上的周期性卡顿：桌面不再每秒遍历 FAT 并重读全部快捷方式，VFS 也不再每秒对光驱发送阻塞式 `TEST UNIT READY`；Desktop 文件操作通过变更通知触发一次同步刷新，介质改为用户刷新时检查。
 - 修复桌面图标点击范围硬编码为 10 项的问题。CPU 检测器、Sysinfo 以及之后新增的所有桌面项目现在都会使用实时项目数量进行命中测试。
 - 新增共享显示模式目录，优先读取 Limine 从 **UEFI GOP / Legacy VBE+EDID** 获取的 EDID 1.3/1.4 时序，并解析 Established Timings、Standard Timings、DTD 与常见 CEA-861 HDMI 模式；EDID 缺失时回退到固件模式表。
-- 正常启动优先请求 `1920x1080x32`，由 Limine 的 GOP/VBE 模式选择器按显示器和显存自动回退；Safe Graphics 固定请求 `1024x768x16`，ATI Rage II 2MB 可稳定输出 `1024x768x16`。
+- Live、安装器、本机启动以及所有安全模式统一使用 `800x600x16` 作为 Limine 初始扫描输出，确保开机进度条和所有真机使用相同的兼容模式；桌面内仍可根据 EDID/固件模式目录切换更高逻辑分辨率。
 - NVIDIA G7x 与 ATI Mach64 不再把启动分辨率当作最大分辨率，而是按 EDID/固件模式列表过滤。ATI 2MB 可显示 `1024x768x16`，4MB 可继续使用其显存允许的更高模式；VMware SVGA 保持原有完整虚拟模式列表且不依赖 EDID。
 
 ### 3. 全栈 USB 架构与现代芯片组兼容

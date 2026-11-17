@@ -150,6 +150,7 @@ static char g_game_dir[40];
 static char g_layout_path[64];
 static bool g_mutable;
 static bool g_initialized;
+static volatile bool g_refresh_requested;
 
 static char lower_ascii(char value) {
     return value >= 'A' && value <= 'Z' ? (char)(value + 32) : value;
@@ -173,6 +174,36 @@ static bool text_starts_with_ci(const char* text, const char* prefix) {
         prefix++;
     }
     return true;
+}
+
+void desktop_notify_path_changed(const char* path) {
+    if (!g_initialized || !g_mutable || !path || !path[0]) return;
+    if (path[1] == ':' && g_desktop_path[0] &&
+        lower_ascii(path[0]) != lower_ascii(g_desktop_path[0])) {
+        return;
+    }
+
+    const char* cursor = path;
+    while (*cursor) {
+        while (*cursor == '\\' || *cursor == '/') cursor++;
+        const char* component = cursor;
+        while (*cursor && *cursor != '\\' && *cursor != '/') cursor++;
+        size_t length = (size_t)(cursor - component);
+        if (length == 7) {
+            bool match = true;
+            static const char k_desktop[] = "desktop";
+            for (size_t index = 0; index < length; index++) {
+                if (lower_ascii(component[index]) != k_desktop[index]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                g_refresh_requested = true;
+                return;
+            }
+        }
+    }
 }
 
 static bool ends_with_ci(const char* text, const char* suffix) {
@@ -729,6 +760,13 @@ void desktop_refresh(void) {
     if (layout_changed && g_mutable) save_layout();
 }
 
+bool desktop_poll(void) {
+    if (!g_initialized || !g_refresh_requested) return false;
+    g_refresh_requested = false;
+    desktop_refresh();
+    return true;
+}
+
 void desktop_on_resolution_change(int width, int height) {
     (void)width;
     (void)height;
@@ -754,6 +792,7 @@ void desktop_init(void) {
     g_layout_count = 0;
     g_initialized = false;
     g_mutable = false;
+    g_refresh_requested = false;
     g_desktop_path[0] = '\0';
     g_desktop_dir[0] = '\0';
     g_game_dir[0] = '\0';

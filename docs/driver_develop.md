@@ -146,7 +146,7 @@ pci = ven=0x8086, dev=0x0152
 # pci = ven=0x8086, class=0x03, subclass=*
 ```
 
-> 安全提示：保持 `safe_mode = false`，这样当新驱动调试异常时，用户可在 Limine 启动菜单选择 `Safe Mode (Skip PDEVICE Drivers)`（传递 `nopdv=1`）跳过所有 `.pdv` 加载并进入 `1024x768@16b` 回退桌面。
+> 安全提示：保持 `safe_mode = false`，这样当新驱动调试异常时，用户可在 Limine 启动菜单选择 `Safe Mode (Skip PDEVICE Drivers)`（传递 `nopdv=1`）跳过所有 `.pdv` 加载并进入 `800x600x16` 回退桌面。
 
 ### 步骤 2：编写驱动源码（`mygpu.c`）
 

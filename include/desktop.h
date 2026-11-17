@@ -37,6 +37,8 @@ typedef struct {
 
 void desktop_init(void);
 void desktop_refresh(void);
+void desktop_notify_path_changed(const char* path);
+bool desktop_poll(void);
 void desktop_on_resolution_change(int width, int height);
 int desktop_count(void);
 desktop_item_t* desktop_get(int index);
