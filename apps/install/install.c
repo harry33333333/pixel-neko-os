@@ -130,6 +130,17 @@ static int ends_with_ci(const char* s, const char* suf) {
     return strcasecmp(s + sl - tl, suf) == 0;
 }
 
+static int starts_with_ci(const char* s, const char* prefix) {
+    while (*prefix) {
+        char left = *s++;
+        char right = *prefix++;
+        if (left >= 'A' && left <= 'Z') left = (char)(left + 32);
+        if (right >= 'A' && right <= 'Z') right = (char)(right + 32);
+        if (!left || left != right) return 0;
+    }
+    return 1;
+}
+
 static void add_log(installer_t* inst, const char* msg) {
     if (inst->log_count >= MAX_LOG_LINES) {
         for (int i = 1; i < MAX_LOG_LINES; i++) {
@@ -1356,7 +1367,7 @@ static int run_installation(installer_t* inst) {
          * layout. Missing defaults are recreated by the desktop service.
          */
         pxe_dirent_t existing;
-        if (strncasecmp(files[i].rel, "Desktop\\", 8) == 0 &&
+        if (starts_with_ci(files[i].rel, "Desktop\\") &&
             pxe_stat(dst_file, &existing) == 0) {
             continue;
         }
