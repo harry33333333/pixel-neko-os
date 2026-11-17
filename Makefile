@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 235
+PIXEL_NEKO_BUILD_NUMBER ?= 250
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -109,6 +109,7 @@ C_SRCS   = kernel/core/main.c \
            drivers/acpi/acpi.c \
            drivers/acpi/uacpi_glue.c \
            drivers/video/boot_framebuffer.c \
+           drivers/video/display_modes.c \
            drivers/video/gfx_accel.c \
            drivers/audio/speaker.c \
            drivers/audio/wav_dec.c \

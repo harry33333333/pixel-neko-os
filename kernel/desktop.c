@@ -1,5 +1,4 @@
 #include "desktop.h"
-#include "apic.h"
 #include "heap.h"
 #include "log.h"
 #include "pxe.h"
@@ -151,9 +150,6 @@ static char g_game_dir[40];
 static char g_layout_path[64];
 static bool g_mutable;
 static bool g_initialized;
-static uint64_t g_last_poll_tick;
-static uint32_t g_directory_signature;
-static bool g_directory_changed;
 
 static char lower_ascii(char value) {
     return value >= 'A' && value <= 'Z' ? (char)(value + 32) : value;
@@ -631,24 +627,19 @@ static void collect_entry(const vfs_dirent_t* entry) {
 void desktop_refresh(void) {
     if (!g_initialized || !g_desktop_path[0]) return;
     desktop_scan_t* scan = (desktop_scan_t*)kmalloc(sizeof(*scan));
-    if (!scan) {
-        g_directory_changed = false;
-        return;
-    }
+    if (!scan) return;
     memset(scan, 0, sizeof(*scan));
     g_pending_scan = scan;
     int listing = vfs_list_dir(g_desktop_dir, collect_entry);
     g_pending_scan = NULL;
     if (listing != VFS_OK) {
         kfree(scan);
-        g_directory_changed = false;
         return;
     }
 
     desktop_item_t* next = (desktop_item_t*)kmalloc(sizeof(g_items));
     if (!next) {
         kfree(scan);
-        g_directory_changed = false;
         return;
     }
     memset(next, 0, sizeof(g_items));
@@ -735,31 +726,7 @@ void desktop_refresh(void) {
             layout_changed = true;
         }
     }
-    uint32_t signature = 2166136261u;
-    for (int index = 0; index < g_item_count; index++) {
-        for (const char* cursor = g_items[index].name; *cursor; cursor++) {
-            signature ^= (uint8_t)*cursor;
-            signature *= 16777619u;
-        }
-        for (const char* cursor = g_items[index].target; *cursor; cursor++) {
-            signature ^= (uint8_t)*cursor;
-            signature *= 16777619u;
-        }
-        signature ^= (uint8_t)g_items[index].kind;
-        signature *= 16777619u;
-    }
-    g_directory_changed = signature != g_directory_signature;
-    g_directory_signature = signature;
-    g_last_poll_tick = apic_get_ticks();
     if (layout_changed && g_mutable) save_layout();
-}
-
-bool desktop_poll(void) {
-    if (!g_initialized) return false;
-    uint64_t now = apic_get_ticks();
-    if (now - g_last_poll_tick < 100) return false;
-    desktop_refresh();
-    return g_directory_changed;
 }
 
 void desktop_on_resolution_change(int width, int height) {
@@ -785,8 +752,6 @@ void desktop_init(void) {
     memset(g_layout, 0, sizeof(g_layout));
     g_item_count = 0;
     g_layout_count = 0;
-    g_directory_signature = 0;
-    g_directory_changed = false;
     g_initialized = false;
     g_mutable = false;
     g_desktop_path[0] = '\0';

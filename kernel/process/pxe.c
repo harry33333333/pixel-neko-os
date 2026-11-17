@@ -36,6 +36,7 @@ extern int g_desktop_pattern;
 #include "image_dec.h"
 #include "wallpaper.h"
 #include "cpu.h"
+#include "display_modes.h"
 #include "wm.h"
 #include "fat.h"
 #include "gfx_accel.h"
@@ -379,7 +380,18 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
         strncpy(out->driver_name, gfx_accel_get_name(), sizeof(out->driver_name) - 1);
     }
     if (gfx_accel_get_status()) {
-        strncpy(out->driver_status, gfx_accel_get_status(), sizeof(out->driver_status) - 1);
+        strncpy(out->driver_status, gfx_accel_get_status(),
+                sizeof(out->driver_status) - 1);
+        size_t used = strlen(out->driver_status);
+        const char* source = display_modes_source();
+        if (source && used + 4 < sizeof(out->driver_status)) {
+            out->driver_status[used++] = ' ';
+            out->driver_status[used++] = '|';
+            out->driver_status[used++] = ' ';
+            out->driver_status[used] = '\0';
+            strncpy(out->driver_status + used, source,
+                    sizeof(out->driver_status) - used - 1);
+        }
     }
 
     int total = gfx_accel_get_mode_count();
@@ -641,6 +653,7 @@ int pxe_kern_fs_rename(const char* old_path, const char* new_path) {
 
 int pxe_kern_fs_get_drives(pxe_drive_info_t* out, int max_drives) {
     if (!out || max_drives <= 0) return -1;
+    (void)vfs_poll_media();
     int count = 0;
     for (int i = 0; i < 26 && count < max_drives; i++) {
         vfs_drive_t* d = &g_vfs_drives[i];

@@ -1844,11 +1844,6 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         key = keyboard_get_key();
     }
 
-    if (desktop_poll()) {
-        redraw = 1;
-        need_mr = 1;
-    }
-
     if (desktop_menu_mode && mb_press) {
         int rows = desktop_menu_mode == 1 ? 2 : 3;
         if (mx >= desktop_menu_x && mx < desktop_menu_x + 150 &&
@@ -1886,6 +1881,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     wm_notify_banner("Live Desktop is read-only");
                 }
             } else if (item == 2) {
+                if (vfs_poll_media()) wm_notify_media_changed();
                 desktop_refresh();
                 show_opened("Desktop Refreshed");
             }
@@ -2203,7 +2199,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
         // Clicked on desktop background (not inside any window)
         if (!ui_install_mode_requested()) {
-            int total_icons = 10;
+            int total_icons = desktop_count();
             int clicked_icon = -1;
             for (int i = total_icons - 1; i >= 0; i--) {
                 if (in_icon(mx, my, i)) {

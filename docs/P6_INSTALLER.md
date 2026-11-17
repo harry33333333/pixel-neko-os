@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A235a`
+Build version: `26A250a`
 
 ## Boot modes
 
@@ -10,9 +10,10 @@ The ISO exposes the following Limine entries:
 2. Graphical Installer
 3. Safe Graphics Live
 
-Normal live and installer boots request 1280x1024x16. Limine and the display
-backend automatically fall back to a smaller supported mode when that scanout
-is unavailable. Safe Graphics Live is the only advanced recovery entry.
+Normal live and installer boots request 1920x1080x32. Limine chooses the
+closest GOP/VBE mode supported by the GPU and monitor, then the kernel uses
+EDID or the firmware mode table to populate the settings list. Safe Graphics
+Live requests 1024x768x16 as a low-VRAM-compatible recovery entry.
 
 `mode=install` opens the installer in a near-full-screen classic window after
 the desktop and splash have initialized.

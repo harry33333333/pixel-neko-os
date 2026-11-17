@@ -19,7 +19,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define PCI_DEV_6600LE_NV43_B  0x0142
 #define PCI_CAP_ID_EXP         0x10
 
-#define NV_MAX_MODES           24
+#define NV_MAX_MODES           48
 
 static const pdv_pci_device_t* g_pci;
 static int g_active;
@@ -52,7 +52,7 @@ static int nvidia_framebuffer_in_bar(uint64_t framebuffer, uint64_t size) {
 static int nvidia_g7x_supports_bpp(int w, int h, int bpp) {
     if (!g_active) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
-    if (w > g_boot_w || h > g_boot_h) return 0;
+    if (w > 4096 || h > 2160) return 0;
     if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
     uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
                      (uint64_t)(unsigned int)(bpp / 8);
@@ -61,68 +61,75 @@ static int nvidia_g7x_supports_bpp(int w, int h, int bpp) {
     return 1;
 }
 
-static void nvidia_g7x_build_modes(void) {
-    static const int k_preset_w[] = {
-        640, 800, 1024, 1152, 1280, 1280, 1280, 1280,
-        1366, 1400, 1440, 1600, 1600, 1680, 1920, 1920,
-        2560, 2560, 3840
-    };
-    static const int k_preset_h[] = {
-        480, 600, 768, 864, 720, 800, 960, 1024,
-        768, 1050, 900, 900, 1200, 1050, 1080, 1200,
-        1440, 1600, 2160
-    };
-    static const int k_bpps[4] = { 8, 16, 24, 32 };
-    int cnt = 0;
-    int presets = (int)(sizeof(k_preset_w) / sizeof(k_preset_w[0]));
+static void nvidia_add_mode(int w, int h, uint8_t mask, int preferred) {
+    if (mask == 0 || g_nv_mode_count >= NV_MAX_MODES) return;
+    for (int index = 0; index < g_nv_mode_count; index++) {
+        if (g_nv_modes[index].width == (uint16_t)w &&
+            g_nv_modes[index].height == (uint16_t)h) {
+            g_nv_modes[index].bpp_mask |= mask;
+            g_nv_modes[index].preferred |= preferred ? 1U : 0U;
+            return;
+        }
+    }
+    pdv_display_mode_t* mode = &g_nv_modes[g_nv_mode_count++];
+    mode->width = (uint16_t)w;
+    mode->height = (uint16_t)h;
+    mode->bpp_mask = mask;
+    mode->preferred = preferred ? 1U : 0U;
+    mode->reserved = 0;
+}
 
-    for (int i = 0; i < presets && cnt < NV_MAX_MODES; i++) {
-        int w = k_preset_w[i];
-        int h = k_preset_h[i];
+static void nvidia_g7x_build_modes(void) {
+    static const int k_bpps[4] = { 8, 16, 24, 32 };
+    g_nv_mode_count = 0;
+    int catalog_count = g_kapi->display_get_mode_count
+                            ? g_kapi->display_get_mode_count() : 0;
+    for (int i = 0; i < catalog_count && g_nv_mode_count < NV_MAX_MODES; i++) {
+        pdv_display_mode_t catalog_mode;
+        if (!g_kapi->display_get_mode ||
+            !g_kapi->display_get_mode(i, &catalog_mode)) {
+            continue;
+        }
+        int w = catalog_mode.width;
+        int h = catalog_mode.height;
         uint8_t mask = 0;
         for (int b = 0; b < 4; b++) {
-            if (nvidia_g7x_supports_bpp(w, h, k_bpps[b])) {
+            if ((catalog_mode.bpp_mask & pdv_bpp_to_mask(k_bpps[b])) &&
+                nvidia_g7x_supports_bpp(w, h, k_bpps[b])) {
                 mask |= pdv_bpp_to_mask(k_bpps[b]);
             }
         }
-        if (mask != 0) {
-            g_nv_modes[cnt].width = (uint16_t)w;
-            g_nv_modes[cnt].height = (uint16_t)h;
-            g_nv_modes[cnt].bpp_mask = mask;
-            g_nv_modes[cnt].preferred = (w == g_boot_w && h == g_boot_h) ? 1U : 0U;
-            g_nv_modes[cnt].reserved = 0U;
-            cnt++;
-        }
+        nvidia_add_mode(w, h, mask, catalog_mode.preferred);
     }
 
-    if (g_boot_w >= PDV_DISPLAY_MIN_WIDTH && g_boot_h >= PDV_DISPLAY_MIN_HEIGHT &&
-        cnt < NV_MAX_MODES) {
-        int dup = 0;
-        for (int j = 0; j < cnt; j++) {
-            if ((int)g_nv_modes[j].width == g_boot_w &&
-                (int)g_nv_modes[j].height == g_boot_h) {
-                dup = 1;
-                break;
-            }
-        }
-        if (!dup) {
+    if (g_nv_mode_count == 0) {
+        static const uint16_t k_width[] = {
+            640, 800, 1024, 1280, 1366, 1600, 1920
+        };
+        static const uint16_t k_height[] = {
+            480, 600, 768, 720, 768, 900, 1080
+        };
+        for (size_t index = 0;
+             index < sizeof(k_width) / sizeof(k_width[0]) &&
+             g_nv_mode_count < NV_MAX_MODES; index++) {
             uint8_t mask = 0;
             for (int b = 0; b < 4; b++) {
-                if (nvidia_g7x_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
+                if (nvidia_g7x_supports_bpp(k_width[index],
+                                            k_height[index], k_bpps[b])) {
                     mask |= pdv_bpp_to_mask(k_bpps[b]);
                 }
             }
-            if (mask != 0) {
-                g_nv_modes[cnt].width = (uint16_t)g_boot_w;
-                g_nv_modes[cnt].height = (uint16_t)g_boot_h;
-                g_nv_modes[cnt].bpp_mask = mask;
-                g_nv_modes[cnt].preferred = 1U;
-                g_nv_modes[cnt].reserved = 0U;
-                cnt++;
-            }
+            nvidia_add_mode(k_width[index], k_height[index], mask, false);
         }
     }
-    g_nv_mode_count = cnt;
+
+    uint8_t boot_mask = 0;
+    for (int b = 0; b < 4; b++) {
+        if (nvidia_g7x_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
+            boot_mask |= pdv_bpp_to_mask(k_bpps[b]);
+        }
+    }
+    nvidia_add_mode(g_boot_w, g_boot_h, boot_mask, true);
 }
 
 static int nvidia_g7x_get_mode_count(void) {
@@ -138,11 +145,25 @@ static int nvidia_g7x_get_mode(int index, pdv_display_mode_t* out_mode) {
 }
 
 static int nvidia_g7x_get_max_width(void) {
-    return g_active ? g_boot_w : 0;
+    int maximum = 0;
+    for (int index = 0; index < g_nv_mode_count; index++) {
+        if (g_nv_modes[index].bpp_mask &&
+            (int)g_nv_modes[index].width > maximum) {
+            maximum = g_nv_modes[index].width;
+        }
+    }
+    return g_active ? maximum : 0;
 }
 
 static int nvidia_g7x_get_max_height(void) {
-    return g_active ? g_boot_h : 0;
+    int maximum = 0;
+    for (int index = 0; index < g_nv_mode_count; index++) {
+        if (g_nv_modes[index].bpp_mask &&
+            (int)g_nv_modes[index].height > maximum) {
+            maximum = g_nv_modes[index].height;
+        }
+    }
+    return g_active ? maximum : 0;
 }
 
 static int nvidia_g7x_set_mode(int w, int h, int bpp) {

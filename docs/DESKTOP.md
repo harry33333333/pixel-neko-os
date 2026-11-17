@@ -1,4 +1,4 @@
-# Pixel Neko OS 26A235a Desktop Storage
+# Pixel Neko OS 26A250a Desktop Storage
 
 The desktop uses ordinary files on the installed system volume:
 
@@ -58,6 +58,10 @@ manual absolute positions created by dragging an icon.
 resolution-aware layout. `Clean Up Desktop` no longer exists. Legacy
 `PNK_LAYOUT1` files are migrated automatically.
 
+The Desktop directory is scanned at startup and when the user selects
+`Refresh`; it is not polled every second. This keeps blocking FAT/ATA I/O out
+of the mouse, keyboard and audio hot path on older real-hardware chipsets.
+
 Automatic icons use a 72-pixel right margin, 96-pixel column spacing and
 72-pixel row spacing. Existing automatic `PNK_LAYOUT2` entries are normalized
 to these values on load.
@@ -92,6 +96,6 @@ The graphical installer's keep-filesystem mode copies missing versioned files
 into `GAME\`, `APPS\`, `PDEVICE\`, and related system folders, but preserves
 existing `Desktop\` files and `.desktop-layout`. Legacy `APPS\puzzle.pxe` and
 the `DEMO\` directory are migrated/removed on the first local boot of
-26A235a. Missing locked desktop shortcuts are recreated automatically, and
+26A250a. Missing locked desktop shortcuts are recreated automatically, and
 the new `Pixel CPU Detect.pnk` shortcut is added without overwriting user
 desktop files or manual icon positions.

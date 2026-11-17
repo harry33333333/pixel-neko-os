@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A235a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A250a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -55,6 +55,13 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - 桌面默认新增 `Pixel CPU Detect.pnk`，文件管理器管理入口与关于本机入口继续锁定；现有系统升级后也会自动补齐该快捷方式。
 - libcpuid 的 BSD-2-Clause 版权与许可证记录已加入 `THIRD_PARTY_LICENSES.md`。
 
+### 26A250a 真机输入/音频、桌面命中与显示模式修复
+- 修复 ASUS P7H55-M LE 等真实 ATA/ATAPI 平台上的周期性卡顿：桌面不再每秒遍历 FAT 并重读全部快捷方式，VFS 也不再每秒对光驱发送阻塞式 `TEST UNIT READY`；介质与桌面改为用户刷新时检查。
+- 修复桌面图标点击范围硬编码为 10 项的问题。CPU 检测器、Sysinfo 以及之后新增的所有桌面项目现在都会使用实时项目数量进行命中测试。
+- 新增共享显示模式目录，优先读取 Limine 从 **UEFI GOP / Legacy VBE+EDID** 获取的 EDID 1.3/1.4 时序，并解析 Established Timings、Standard Timings、DTD 与常见 CEA-861 HDMI 模式；EDID 缺失时回退到固件模式表。
+- 正常启动优先请求 `1920x1080x32`，由 Limine 的 GOP/VBE 模式选择器按显示器和显存自动回退；Safe Graphics 固定请求 `1024x768x16`，ATI Rage II 2MB 可稳定输出 `1024x768x16`。
+- NVIDIA G7x 与 ATI Mach64 不再把启动分辨率当作最大分辨率，而是按 EDID/固件模式列表过滤。ATI 2MB 可显示 `1024x768x16`，4MB 可继续使用其显存允许的更高模式；VMware SVGA 保持原有完整虚拟模式列表且不依赖 EDID。
+
 ### 3. 全栈 USB 架构与现代芯片组兼容
 - **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
 - **现代芯片组与实体机适配**：针对 Intel 600 系列（如铭瑄 H610M-D）等现代主板实施根集线器端口强制复位（PR），将 BIOS 已使能端口强拉回默认地址 0 态，彻底解决进系统后 USB 鼠标无法移动的难题；屏蔽旧版芯片组路由寄存器误写，并引入端口退避重试。
@@ -84,18 +91,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A235a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A250a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A235a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A250a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A235a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A250a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -110,7 +117,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A235a.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A235a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [26A250a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

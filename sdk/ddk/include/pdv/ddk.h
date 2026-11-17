@@ -394,6 +394,12 @@ typedef struct pdv_kernel_api {
     /* PCI Interrupts & IRQ-Driven Audio DMA Refill */
     int (*pci_register_irq)(const pdv_pci_device_t* dev, void (*handler)(void* ctx), void* ctx);
     int (*audio_handle_dma_half_irq)(int half_idx);
+
+    /* Boot firmware / EDID mode catalog (appended in DDK 1.0 rev ABI) */
+    int (*display_get_mode_count)(void);
+    int (*display_get_mode)(int index, pdv_display_mode_t* out_mode);
+    int (*display_has_edid)(void);
+    const char* (*display_get_mode_source)(void);
 } pdv_kernel_api_t;
 
 /* Convenience PCI byte/word helpers via kapi */

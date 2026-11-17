@@ -1,5 +1,6 @@
 #include "gfx_accel.h"
 #include "boot_framebuffer.h"
+#include "display_modes.h"
 #include "driver.h"
 #include "log.h"
 #include "pci.h"
@@ -24,7 +25,7 @@ static int g_pdv_display_count = 0;
 
 static int g_initialized = 0;
 static const pdv_display_driver_t* g_active_drv = NULL;
-static const char* g_fallback_reason = "Fallback LFB (max 1024x768, 8/16-bit)";
+static const char* g_fallback_reason = "Fallback LFB (firmware mode table)";
 static const char* g_generic_vga_name = "Limine Linear Framebuffer";
 static unsigned int g_generic_vram_bytes = 0;
 
@@ -51,42 +52,38 @@ static int gfx_mode_fits_vram(int w, int h, int bpp, unsigned int vram_bytes) {
 }
 
 static int gfx_fallback_max_w(void) {
+    int catalog = display_modes_max_width();
+    if (catalog >= GFX_MIN_WIDTH) return catalog;
     int hw = (int)g_main_surface.width;
     if (hw <= 0) return GFX_FALLBACK_MAX_WIDTH;
-    if (hw > GFX_FALLBACK_MAX_WIDTH) hw = GFX_FALLBACK_MAX_WIDTH;
     if (hw < GFX_MIN_WIDTH) hw = GFX_MIN_WIDTH;
     return hw;
 }
 
 static int gfx_fallback_max_h(void) {
+    int catalog = display_modes_max_height();
+    if (catalog >= GFX_MIN_HEIGHT) return catalog;
     int hh = (int)g_main_surface.height;
     if (hh <= 0) return GFX_FALLBACK_MAX_HEIGHT;
-    if (hh > GFX_FALLBACK_MAX_HEIGHT) hh = GFX_FALLBACK_MAX_HEIGHT;
     if (hh < GFX_MIN_HEIGHT) hh = GFX_MIN_HEIGHT;
     return hh;
 }
 
 static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count, int max_out) {
-    static const int k_preset_w[] = {
-        640, 800, 1024, 1152, 1280, 1280, 1280, 1280,
-        1366, 1400, 1440, 1600, 1600, 1680, 1920, 1920,
-        2560, 2560, 3840
-    };
-    static const int k_preset_h[] = {
-        480, 600, 768, 864, 720, 800, 960, 1024,
-        768, 1050, 900, 900, 1200, 1050, 1080, 1200,
-        1440, 1600, 2160
-    };
     static const int k_bpps[4] = { 8, 16, 24, 32 };
-    int preset_count = (int)(sizeof(k_preset_w) / sizeof(k_preset_w[0]));
     int cnt = 0;
-
-    for (int i = 0; i < preset_count && cnt < max_out; i++) {
-        int w = k_preset_w[i];
-        int h = k_preset_h[i];
+    int catalog_count = display_modes_count();
+    for (int i = 0; i < catalog_count && cnt < max_out; i++) {
+        display_mode_t catalog_mode;
+        memset(&catalog_mode, 0, sizeof(catalog_mode));
+        if (!display_modes_get(i, &catalog_mode)) continue;
+        int w = catalog_mode.width;
+        int h = catalog_mode.height;
         uint8_t mask = 0;
         for (int b = 0; b < 4; b++) {
-            if (gfx_accel_supports_bpp(w, h, k_bpps[b])) {
+            uint8_t catalog_bit = (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
+            if ((catalog_mode.bpp_mask & catalog_bit) &&
+                gfx_accel_supports_bpp(w, h, k_bpps[b])) {
                 mask |= (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
             }
         }
@@ -94,7 +91,7 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
             out_modes[cnt].width = (uint16_t)w;
             out_modes[cnt].height = (uint16_t)h;
             out_modes[cnt].bpp_mask = mask;
-            out_modes[cnt].preferred = (w == screen_w && h == screen_h) ? 1U : 0U;
+            out_modes[cnt].preferred = catalog_mode.preferred;
             out_modes[cnt].reserved = 0U;
             cnt++;
         }
@@ -102,10 +99,6 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
 
     int boot_w = (int)g_main_surface.width;
     int boot_h = (int)g_main_surface.height;
-    if (!g_active_drv) {
-        if (boot_w > GFX_FALLBACK_MAX_WIDTH) boot_w = GFX_FALLBACK_MAX_WIDTH;
-        if (boot_h > GFX_FALLBACK_MAX_HEIGHT) boot_h = GFX_FALLBACK_MAX_HEIGHT;
-    }
     if (boot_w >= GFX_MIN_WIDTH && boot_h >= GFX_MIN_HEIGHT && cnt < max_out) {
         int exists = 0;
         for (int j = 0; j < cnt; j++) {
@@ -190,10 +183,17 @@ static void detect_generic_vga_info(void) {
         }
         if (dev->vendor == 0x80EE && dev->device == 0xBEEF) {
             g_generic_vga_name = "VirtualBox Graphics Adapter (VBoxVGA)";
+            display_modes_set_virtual(true);
             return;
         }
         if (dev->vendor == 0x1234 && dev->device == 0x1111) {
             g_generic_vga_name = "QEMU/Bochs Standard VGA";
+            display_modes_set_virtual(true);
+            return;
+        }
+        if (dev->vendor == 0x15AD) {
+            g_generic_vga_name = "VMware SVGA II";
+            display_modes_set_virtual(true);
             return;
         }
         if (dev->vendor == 0x8086) {
@@ -226,7 +226,7 @@ void gfx_accel_init(void) {
 
     g_initialized = 1;
     if (!g_active_drv) {
-        g_fallback_reason = "No valid display driver (max 1024x768, 8/16-bit)";
+        g_fallback_reason = "No valid display driver (firmware/EDID mode table)";
         int fw = screen_w;
         int fh = screen_h;
         int fbpp = screen_bpp;
@@ -330,7 +330,7 @@ static int gfx_collect_modes(pdv_display_mode_t* out, int max_out) {
             m.bpp_mask = valid_mask;
             out[cnt++] = m;
         }
-        return cnt;
+        if (cnt > 0) return cnt;
     }
     gfx_build_synth_modes(out, &cnt, max_out);
     return cnt;

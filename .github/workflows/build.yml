@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A235a"
+          VERSION="26A250a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -99,6 +99,9 @@ jobs:
           - Native SDK (`sdk/pxe_app.mk`, `sdk/crt/`, `sdk/libpxe/`, `sdk/include/pxe/`) remains available for user applications without shipping the old Demo payload.
           - New Ring 0 **Pixel CPU Detect** (`APPS\cpuz.pxe`) powered by a trimmed libcpuid 0.8.2 port, with CPU/cache/PCI/memory/graphics tabs and a raw-CPUID diagnostic report saved to a user-selected `*.TXT` path.
           - Persistent Windows-style `Desktop\` storage with `.pnk` shortcuts, locked File Management/About shortcuts, protected `APPS\` system software, `.desktop-layout` icon positions, desktop folder creation/deletion, and a read-only Live Desktop.
+          - Real-hardware input/audio fix: removed blocking one-second Desktop FAT scans and ATAPI medium probes from the compositor hot path.
+          - Desktop hit testing now follows the live icon count, so CPU Detect, Sysinfo and other trailing shortcuts remain clickable.
+          - EDID/GOP/VBE mode discovery now feeds NVIDIA, ATI Mach64 and fallback framebuffer mode lists; ATI 2MB keeps `1024x768x16` and VMware retains its virtual mode catalog.
           - Offline installer upgrade payload now ships `GAME\` with Puzzle, Solitaire, Gomoku and Aero Chess while preserving an existing Desktop during upgrades.
 
           ### Release Assets
@@ -107,7 +110,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision adds Pixel CPU Detect, integrates libcpuid under BSD-2-Clause, adds the default desktop shortcut and upgrade path, and updates the release to `v26A235a`.
+          This revision removes blocking one-second FAT/ATAPI polling on real hardware, fixes desktop icon hit testing, adds EDID/GOP/VBE display mode discovery, and corrects NVIDIA/Mach64 mode limits for `v26A250a`.
         draft: false
         prerelease: true
         make_latest: false

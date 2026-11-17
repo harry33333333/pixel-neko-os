@@ -1,4 +1,5 @@
 #include "boot_framebuffer.h"
+#include "display_modes.h"
 #include "log.h"
 #include "mm.h"
 #include <stddef.h>
@@ -34,6 +35,8 @@ bool boot_framebuffer_init(struct limine_framebuffer* fb) {
     g_main_surface.green_mask_shift = fb->green_mask_shift;
     g_main_surface.blue_mask_size = fb->blue_mask_size;
     g_main_surface.blue_mask_shift = fb->blue_mask_shift;
+
+    (void)display_modes_init(fb);
 
     // Safe fallbacks if firmware provides 0 masks
     if (g_main_surface.red_mask_size == 0) {

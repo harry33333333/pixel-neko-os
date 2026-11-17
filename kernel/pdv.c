@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "blkdev.h"
 #include "boot_framebuffer.h"
+#include "display_modes.h"
 #include "dma.h"
 #include "driver.h"
 #include "heap.h"
@@ -224,6 +225,30 @@ static unsigned char* ddi_fb_get_lfb(void) {
     return lfb;
 }
 
+static int ddi_display_get_mode_count(void) {
+    return display_modes_count();
+}
+
+static int ddi_display_get_mode(int index, pdv_display_mode_t* out_mode) {
+    display_mode_t mode;
+    memset(&mode, 0, sizeof(mode));
+    if (!out_mode || !display_modes_get(index, &mode)) return 0;
+    memset(out_mode, 0, sizeof(*out_mode));
+    out_mode->width = mode.width;
+    out_mode->height = mode.height;
+    out_mode->bpp_mask = mode.bpp_mask;
+    out_mode->preferred = mode.preferred;
+    return 1;
+}
+
+static int ddi_display_has_edid(void) {
+    return display_modes_has_edid() ? 1 : 0;
+}
+
+static const char* ddi_display_get_mode_source(void) {
+    return display_modes_source();
+}
+
 static pdv_blkdev_t* ddi_block_register(
     const char* name, pdv_blk_type_t type, int unit,
     uint32_t sector_size, uint64_t total_sectors,
@@ -332,6 +357,10 @@ static const pdv_kernel_api_t g_pdv_kernel_api = {
     .register_driver_descriptor = ddi_register_driver_descriptor,
     .pci_register_irq           = ddi_pci_register_irq,
     .audio_handle_dma_half_irq  = audio_handle_dma_half_irq,
+    .display_get_mode_count     = ddi_display_get_mode_count,
+    .display_get_mode           = ddi_display_get_mode,
+    .display_has_edid           = ddi_display_has_edid,
+    .display_get_mode_source    = ddi_display_get_mode_source,
 };
 
 /* --------------------------------------------------------------------------

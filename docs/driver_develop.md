@@ -1,14 +1,14 @@
-# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A235a`）
+# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A250a`）
 
-在当前 `main` 主干（基准版本 **`v26A235a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
+在当前 `main` 主干（基准版本 **`v26A250a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
 
 本文档重点说明 Pixel Neko OS 的 PDV 驱动架构，包括：
-1. **显卡 `*.pdv` 规范**：动态分辨率、色深（`8/16/24/32-bit`）、真实显存（VRAM）精确探测（含 `16–32 MB` 显存支持 `1920x1080@32-bit` 的单缓冲计算说明、VMware SVGA II `SVGA_REG_MEMORY_SIZE` / SVGA3D Screen Target `STDU` 与 2D `BAR1` 阈值修正）与 `1024x768@16b` 无有效驱动回退规范；
+1. **显卡 `*.pdv` 规范**：EDID/GOP/VBE 动态分辨率、色深（`8/16/24/32-bit`）、真实显存（VRAM）精确探测（含 `16–32 MB` 显存支持 `1920x1080@32-bit` 的单缓冲计算说明、VMware SVGA II `SVGA_REG_MEMORY_SIZE` / SVGA3D Screen Target `STDU` 与 2D `BAR1` 阈值修正）与软件 LFB 的 `8/16-bit` 回退规范；
 2. **声卡 `*.pdv` 规范**：`PDV_CLASS_AUDIO` / `pdv_audio_driver_t` 接口契约、`64 KB` 双半区 DMA 环形缓冲、PCI IRQ 中断续传（`pci_register_irq` + `audio_handle_dma_half_irq`）、暂停/恢复时序同步与无卡顿轮询约束。
 
 ---
 
-## 一、 核心架构与规范（`v26A235a`）
+## 一、 核心架构与规范（`v26A250a`）
 
 ### 1.1 `*.pdv` 打包与按需自动加载（`PDEVICE\`）
 
@@ -29,7 +29,7 @@
   - **MMIO 与端口 I/O**：`mmio_map_uc`、`mmio_map_wc`、`inb`/`outb`、`inw`/`outw`、`inl`/`outl`（以及 DDK 内联函数 `pdv_mmio_read8/16/32`、`pdv_mmio_write8/16/32`、`pdv_outb/inb/outw/inw/outl/inl`）
   - **PCI 总线与中断**：`pci_get_device_count`、`pci_get_device`、`pci_find_by_id`、`pci_find_class`、`pci_config_read`、`pci_config_write`、`pci_enable_io`、`pci_enable_memory`、`pci_enable_bus_master`、`pci_get_bar_size`、`pci_get_bar_address`、`pci_find_capability`、`pci_register_irq`
   - **时序与定时器**：`sleep_ms`、`delay_ms`、`timer_get_ticks`、`boot_screen_tick`
-  - **帧缓冲与子系统注册**：`fb_get_surface`、`fb_set_surface`、`fb_get_desktop_mode`、`fb_get_lfb`、`fb_flush`、`register_display_driver`、`register_audio_driver`、`audio_set_probe_status`、`audio_handle_dma_half_irq`、`block_register`、`block_unregister`、`block_set_capacity`、`register_driver_descriptor`
+  - **帧缓冲与子系统注册**：`fb_get_surface`、`fb_set_surface`、`fb_get_desktop_mode`、`fb_get_lfb`、`fb_flush`、`display_get_mode_count`、`display_get_mode`、`display_has_edid`、`display_get_mode_source`、`register_display_driver`、`register_audio_driver`、`audio_set_probe_status`、`audio_handle_dma_half_irq`、`block_register`、`block_unregister`、`block_set_capacity`、`register_driver_descriptor`
   - 注：`fb_apply_ati_cap` 仅作历史 ABI 兼容保留（内核现为空实现），显卡显存容量与分辨率裁决已完全交由显卡驱动本身负责。
 
 ### 1.3 显示模式、色深、显存与回退强制规范
@@ -39,9 +39,9 @@
 | 规则维度 | 规范要求 |
 | :--- | :--- |
 | **最低分辨率** | 严格从 **`640x480`** 起步（`PDV_DISPLAY_MIN_WIDTH = 640`, `PDV_DISPLAY_MIN_HEIGHT = 480`）。`320x200` 及所有低于 `640x480` 的模式已彻底废弃。 |
-| **最高分辨率** | **不设人工分辨率上限**。只要显卡驱动激活且硬件上限、已探测显存（VRAM）及内核 PMM 后备缓冲内存均满足需求，即可支持 `1280x1024`、`1600x1200`、`1920x1080` 及更高分辨率。 |
+| **最高分辨率** | **不以 Limine 启动扫描输出尺寸作为上限**。驱动必须读取 `display_get_mode_count()` / `display_get_mode()` 提供的 EDID 或 GOP/VBE 模式目录，再结合芯片能力和真实显存裁剪；物理显示器未声明且固件未提供的模式不得上报。 |
 | **允许色深** | **仅限 `8`、`16`、`24`、`32` 位色**（对应掩码 `PDV_BPP_MASK_8`、`PDV_BPP_MASK_16`、`PDV_BPP_MASK_24`、`PDV_BPP_MASK_32`，标准组合掩码 `PDV_BPP_MASK_ALL_STD`）。**不得**暴露或接受 `15`-bit 模式。 |
-| **无有效驱动回退** | 若无任何 `.pdv` 显卡驱动激活（`gfx_accel_has_valid_driver() == 0`，如处于 `nopdv=1` 安全模式或未知显卡回退 Limine LFB），内核强制限制最高模式为 **`1024x768 @ 16-bit`**（`PDV_FALLBACK_MAX_WIDTH = 1024`, `PDV_FALLBACK_MAX_HEIGHT = 768`, `PDV_FALLBACK_MAX_BPP = 16`），色深仅允许 **`8` 位与 `16` 位**（**不支持 `24`/`32` 位**）。 |
+| **无有效驱动回退** | 若无任何 `.pdv` 显卡驱动激活（如 `nopdv=1` 或未知显卡），内核使用同一 EDID/GOP/VBE 模式目录，并限制为软件 LFB 支持的 `8/16-bit`；若 EDID 和固件模式表都不可用，才退回保守的 `800x600` / `1024x768`。 |
 | **显存容量校验** | 显卡驱动必须真实、准确探测物理/虚拟 VRAM 与 PCI Aperture 尺寸，`can_set_mode()` / `supports_bpp()` / `get_mode()` 必须对超出可用显存的模式返回拒绝，严禁让超出显存的分辨率/色深组合通过探测。 |
 
 ---
@@ -112,9 +112,10 @@ typedef struct {
 ### 2.3 内核侧协调流程（`gfx_accel.c`）
 
 1. `gfx_accel_init()` 按 `priority` 从高到低尝试已注册驱动的 `probe()`。若成功，设该驱动为当前有效显卡驱动；若失败或未注册，则停留在回退模式（`gfx_accel_has_valid_driver() == 0`）。
-2. 当驱动提供 `get_mode_count()` 与 `get_mode()` 时，内核直接采集驱动上报的模式表，过滤掉 `< 640x480` 或无合法 `8/16/24/32` 掩码的项，同时叠加系统物理内存预算检查（`ui_can_allocate_resolution(w, h, bpp)`）。
-3. 应用层（如控制面板 `cpanel.pxe`、系统信息 `sysinfo.pxe`）通过系统调用 `NEKO_SYSCALL_GET_DISP_CAPS` / `pxe_display_get_caps()` 获取**与当前驱动实时一致**的分辨率列表、每模式允许的 `bpp_mask`、VRAM 容量、最大分辨率上限与驱动激活状态。
-4. 在 `8-bit`（256 色）模式下，内核已统一 `6x6x6 + 16` 色系统调色板映射；若显卡具备硬件 CLUT/DAC（如 VMware `SVGA_PALETTE_BASE`），驱动需在 `set_mode(..., 8)` 时写入调色板；若仅工作在引导帧缓冲上（如 `boot_framebuffer` 软件转译路径），内核负责将系统 8-bit 索引缓冲精确 blit 至目标像素格式。
+2. 启动时 `display_modes.c` 缓存 Limine 的 EDID 与模式表，解析 EDID 1.3/1.4 Established Timings、Standard Timings、DTD 和常见 CEA-861 HDMI VIC；驱动通过新增 DDK 接口读取该目录。VMware/QEMU/VBox 会标记为虚拟显示并保留固件模式表全集，不应用物理 EDID 限制。
+3. 当驱动提供 `get_mode_count()` 与 `get_mode()` 时，内核采集驱动上报的模式表，过滤掉 `< 640x480` 或无合法 `8/16/24/32` 掩码的项，同时叠加系统物理内存预算检查（`ui_can_allocate_resolution(w, h, bpp)`）。
+4. 应用层（如控制面板 `cpanel.pxe`、系统信息 `sysinfo.pxe`）通过系统调用 `NEKO_SYSCALL_GET_DISP_CAPS` / `pxe_display_get_caps()` 获取**与当前驱动实时一致**的分辨率列表、每模式允许的 `bpp_mask`、VRAM 容量、最大分辨率上限与驱动激活状态。
+5. 在 `8-bit`（256 色）模式下，内核已统一 `6x6x6 + 16` 色系统调色板映射；若显卡具备硬件 CLUT/DAC（如 VMware `SVGA_PALETTE_BASE`），驱动需在 `set_mode(..., 8)` 时写入调色板；若仅工作在引导帧缓冲上（如 `boot_framebuffer` 软件转译路径），内核负责将系统 8-bit 索引缓冲精确 blit 至目标像素格式。
 
 ---
 
@@ -360,7 +361,7 @@ int pdv_driver_entry(const pdv_kernel_api_t* kapi) {
 
 - 设置 `.requires_hw_mode_set = 0`。
 - 通过显存 BAR / 设备 ID 表确定精确显存（如 `128MB` / `256MB`），使用 `kapi->mmio_map_wc()` 将显存重映射为 Write-Combining 显著加速写入。
-- 在 `get_mode()`、`can_set_mode()`、`get_max_width()`、`get_max_height()` 中声明基于引导分辨率上限与 VRAM 的动态支持矩阵，`supports_bpp()` 允许 `8/16/24/32`。
+- 在 `get_mode()`、`can_set_mode()`、`get_max_width()`、`get_max_height()` 中使用 EDID/固件模式目录并仅按芯片能力与 VRAM 过滤，不得再用 `g_boot_w/g_boot_h` 截断更高显示模式；`supports_bpp()` 允许 `8/16/24/32`。
 
 ### 4.4 显存容量需求与 `16–32 MB` 支持 `1080p @ 32-bit` 说明
 
@@ -488,8 +489,8 @@ PDV_DRIVERS = vmwgfx mach64 nvg7x fdc ac97 ct4810 cmi8738 hdaudio mygpu
 ### 6.3 桌面实测验证
 
 1. 正常启动（不启用 `nopdv=1`），打开 **控制面板（`cpanel.pxe`）**：查看 **Active Driver**、**VRAM**、**Limits** 以及分辨率下拉列表与 `8 / 16 / 24 / 32-bit` 色深按钮启用状态是否随当前显卡实时变化（`16–32 MB` 显存下可选择 `1920x1080 @ 32-bit`）。
-2. 切换不同分辨率（如 VMware 下从 `800x600` 切到 `1024x768` 或 `1920x1080`），确认宿主机/物理屏幕发生真实分辨率切换而非软件拉伸。
+2. 切换不同分辨率时，确认下拉列表只出现 EDID 或固件声明的模式；VMware 由 SVGA 寄存器执行真实扫描输出切换，Limine LFB 类驱动可切到更高逻辑工作区并由内核缩放到当前固件扫描输出。
 3. 打开 **系统信息（`sysinfo.pxe`）**，确认 `VRAM` 容量、`Max WxH`、`Drv: Active/Fallback` 与 **Drivers (`.pdv`)** 列表正确，且反复点击 **Rescan `PDEVICE\`** 不会产生重复驱动条目。
 4. 打开 **音乐播放器（`player.pxe`）**：验证 `.flac`/`.mp3` 连续播放时窗口无闪烁、音频无倒退回弹、执行 **Pause -> Play** 立即恢复不死机。
-5. 使用 Limine 菜单的 `Safe Mode (Skip PDEVICE Drivers)`（`nopdv=1`）启动，验证在无有效显卡驱动时最高仅允许 **`1024x768`**、色深仅可选 **`8-bit` / `16-bit`**（`24`/`32` 置灰禁用）。
+5. 使用 Limine 菜单的 `Safe Mode (Skip PDEVICE Drivers)`（`nopdv=1`）启动，验证无有效显卡驱动时色深仅可选 **`8-bit` / `16-bit`**（`24`/`32` 置灰禁用），分辨率列表来自 EDID/固件模式目录；目录完全缺失时才使用保守的 `800x600` / `1024x768`。
 
