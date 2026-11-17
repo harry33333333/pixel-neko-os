@@ -208,7 +208,8 @@ static int uninit_dialog_active=0;
 static int uninit_dialog_checked=0;
 static int uninit_ignore_pressed=0, uninit_init_pressed=0;
 
-static void icon(unsigned char* v, int x, int y, int app_idx, unsigned char bg, const char* lb, int sel);
+static void icon(unsigned char* v, int x, int y, int desktop_index,
+                 unsigned char bg, const char* lb, int sel, bool shortcut);
 
 static unsigned char cmos_read(unsigned char a){outb(0x70,a);return inb(0x71);}
 static int bcd_to_int(unsigned char b){return(b>>4)*10+(b&0x0F);}
