@@ -1,11 +1,11 @@
-PNK_LAYOUT1
-740,30,About This Machine.pnk
-740,88,Calculator.pnk
-740,146,Clock.pnk
-740,204,Control Panel.pnk
-740,262,File Management.pnk
-740,320,GAME.pnk
-740,378,Image Viewer.pnk
-740,436,Media Player.pnk
-668,30,Notepad.pnk
-668,88,System Information.pnk
+PNK_LAYOUT2
+r,104,30,About This Machine.pnk
+r,104,86,Calculator.pnk
+r,104,142,Clock.pnk
+r,104,198,Control Panel.pnk
+r,104,254,File Management.pnk
+r,104,310,GAME.pnk
+r,104,366,Image Viewer.pnk
+r,104,422,Media Player.pnk
+r,104,478,Notepad.pnk
+r,104,534,System Information.pnk

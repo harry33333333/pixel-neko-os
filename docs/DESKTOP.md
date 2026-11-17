@@ -41,13 +41,19 @@ through File Manager.
 `Desktop\.desktop-layout` stores every icon position as:
 
 ```text
-PNK_LAYOUT1
-740,30,File Management.pnk
-668,88,Clock.pnk
+PNK_LAYOUT2
+r,104,30,File Management.pnk
+a,640,86,Clock.pnk
 ```
 
-Dragging an icon updates this file. `View > Rearrange Desktop` resets the
-positions to the default grid. `Clean Up Desktop` no longer exists.
+`r` entries are automatically anchored to the top-right corner and are
+reflowed whenever the screen resolution changes. The first value is the
+right-side margin and the second is the vertical position. `a` entries are
+manual absolute positions created by dragging an icon.
+
+`View > Rearrange Desktop` switches every icon back to the top-right
+resolution-aware layout. `Clean Up Desktop` no longer exists. Legacy
+`PNK_LAYOUT1` files are migrated automatically.
 
 ## Live mode
 

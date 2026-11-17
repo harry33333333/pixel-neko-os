@@ -95,11 +95,17 @@ static int desktop_strcasecmp(const char* left, const char* right) {
 
 #define DESKTOP_LAYOUT_NAME ".desktop-layout"
 #define DESKTOP_LAYOUT_MAX 16384
+#define DESKTOP_LAYOUT_HEADER "PNK_LAYOUT2"
+#define DESKTOP_RIGHT_MARGIN 104
+#define DESKTOP_ROW_STEP 56
+#define DESKTOP_COLUMN_STEP 184
 
 typedef struct {
     char name[128];
     int x;
     int y;
+    int right_offset;
+    bool anchored_right;
     bool used;
 } desktop_layout_entry_t;
 
@@ -406,16 +412,31 @@ static desktop_item_t* old_item(const char* name) {
     return NULL;
 }
 
+static void clamp_position(int* x, int* y);
+
 static void default_position(int ordinal, int* x, int* y) {
-    int rows = (screen_h - 40) / 58;
+    int rows = (screen_h - 40) / DESKTOP_ROW_STEP;
     if (rows < 2) rows = 2;
-    if (rows > 7) rows = 7;
     int column = ordinal / rows;
     int row = ordinal % rows;
-    *x = screen_w - 60 - column * 72;
-    *y = 30 + row * 58;
+    *x = screen_w - DESKTOP_RIGHT_MARGIN - column * DESKTOP_COLUMN_STEP;
+    *y = 30 + row * DESKTOP_ROW_STEP;
     if (*x < 4) *x = 4;
     if (*y > screen_h - 52) *y = screen_h - 52;
+}
+
+static void apply_anchored_position(desktop_item_t* item, int ordinal) {
+    int rows = (screen_h - 40) / DESKTOP_ROW_STEP;
+    if (rows < 2) rows = 2;
+    int column = ordinal / rows;
+    int row = ordinal % rows;
+    if (item->right_offset <= 0) {
+        item->right_offset = DESKTOP_RIGHT_MARGIN;
+    }
+    item->x = screen_w - item->right_offset -
+              column * DESKTOP_COLUMN_STEP;
+    item->y = 30 + row * DESKTOP_ROW_STEP;
+    clamp_position(&item->x, &item->y);
 }
 
 static void clamp_position(int* x, int* y) {
@@ -459,9 +480,15 @@ static void parse_layout(const char* text, size_t length) {
             }
             memcpy(line_copy, line, line_length);
             line_copy[line_length] = '\0';
-            int x = 0;
+            bool anchored_right = line_copy[0] == 'r' &&
+                                  line_copy[1] == ',';
+            bool absolute = line_copy[0] == 'a' &&
+                            line_copy[1] == ',';
+            const char* field = line_copy +
+                                (anchored_right || absolute ? 2 : 0);
+            int first = 0;
             int y = 0;
-            const char* cursor = parse_decimal(line_copy, &x);
+            const char* cursor = parse_decimal(field, &first);
             if (cursor && *cursor == ',') {
                 cursor = parse_decimal(cursor + 1, &y);
             } else {
@@ -473,7 +500,10 @@ static void parse_layout(const char* text, size_t length) {
                     &g_layout[g_layout_count++];
                 memset(entry, 0, sizeof(*entry));
                 entry->used = true;
-                entry->x = x;
+                entry->anchored_right = anchored_right;
+                entry->right_offset = anchored_right ?
+                    first : DESKTOP_RIGHT_MARGIN;
+                entry->x = anchored_right ? 0 : first;
                 entry->y = y;
                 copy_text(entry->name, sizeof(entry->name),
                           cursor);
@@ -502,7 +532,21 @@ static void load_layout(void) {
     int length = vfs_read_file(g_layout_path, text, DESKTOP_LAYOUT_MAX - 1);
     if (length > 0) {
         text[length] = '\0';
-        parse_layout((const char*)text, (size_t)length);
+        size_t header_length = strlen(DESKTOP_LAYOUT_HEADER);
+        if ((size_t)length >= header_length &&
+            strncmp((const char*)text, DESKTOP_LAYOUT_HEADER,
+                    header_length) == 0) {
+            parse_layout((const char*)text, (size_t)length);
+        } else {
+            /*
+             * PNK_LAYOUT1 used absolute coordinates for the previous
+             * 800x600 auto layout.  Reflow it once into the new top-right
+             * anchored format instead of leaving icons in the middle of a
+             * larger display.
+             */
+            g_layout_count = 0;
+            log_printf("[DESK] Migrating legacy desktop layout to top-right\n");
+        }
     }
     kfree(text);
 }
@@ -514,12 +558,20 @@ static void save_layout(void) {
     memset(text, 0, DESKTOP_LAYOUT_MAX);
     size_t used = 0;
     used += (size_t)snprintf(text + used, DESKTOP_LAYOUT_MAX - used,
-                             "PNK_LAYOUT1\r\n");
+                             DESKTOP_LAYOUT_HEADER "\r\n");
     for (int index = 0; index < g_item_count && used < DESKTOP_LAYOUT_MAX;
          index++) {
-        int written = snprintf(text + used, DESKTOP_LAYOUT_MAX - used,
-                               "%d,%d,%s\r\n", g_items[index].x,
+        int written;
+        if (g_items[index].anchored_right) {
+            written = snprintf(text + used, DESKTOP_LAYOUT_MAX - used,
+                               "r,%d,%d,%s\r\n",
+                               g_items[index].right_offset,
                                g_items[index].y, g_items[index].name);
+        } else {
+            written = snprintf(text + used, DESKTOP_LAYOUT_MAX - used,
+                               "a,%d,%d,%s\r\n", g_items[index].x,
+                               g_items[index].y, g_items[index].name);
+        }
         if (written <= 0) break;
         used += (size_t)written;
     }
@@ -622,12 +674,20 @@ void desktop_refresh(void) {
         desktop_item_t* previous = old_item(item->name);
         desktop_layout_entry_t* saved = layout_entry(item->name);
         if (saved) {
-            item->x = saved->x;
+            item->anchored_right = saved->anchored_right;
+            item->right_offset = saved->anchored_right ?
+                saved->right_offset : 0;
+            item->x = saved->anchored_right ?
+                screen_w - saved->right_offset : saved->x;
             item->y = saved->y;
         } else if (previous) {
+            item->anchored_right = previous->anchored_right;
+            item->right_offset = previous->right_offset;
             item->x = previous->x;
             item->y = previous->y;
         } else {
+            item->anchored_right = true;
+            item->right_offset = DESKTOP_RIGHT_MARGIN;
             default_position(count, &item->x, &item->y);
             layout_changed = true;
         }
@@ -646,6 +706,15 @@ void desktop_refresh(void) {
     kfree(next);
     kfree(scan);
     sort_items();
+    for (int index = 0; index < g_item_count; index++) {
+        if (!g_items[index].anchored_right) continue;
+        int old_x = g_items[index].x;
+        int old_y = g_items[index].y;
+        apply_anchored_position(&g_items[index], index);
+        if (old_x != g_items[index].x || old_y != g_items[index].y) {
+            layout_changed = true;
+        }
+    }
     uint32_t signature = 2166136261u;
     for (int index = 0; index < g_item_count; index++) {
         for (const char* cursor = g_items[index].name; *cursor; cursor++) {
@@ -681,10 +750,11 @@ void desktop_on_resolution_change(int width, int height) {
         desktop_item_t* item = &g_items[index];
         int old_x = item->x;
         int old_y = item->y;
-        if (item->x < 4) item->x = 4;
-        if (item->x + 36 > screen_w) item->x = screen_w - 36;
-        if (item->y < 24) item->y = 24;
-        if (item->y + 52 > screen_h) item->y = screen_h - 52;
+        if (item->anchored_right) {
+            apply_anchored_position(item, index);
+        } else {
+            clamp_position(&item->x, &item->y);
+        }
         if (old_x != item->x || old_y != item->y) changed = true;
     }
     if (changed) save_layout();
@@ -802,7 +872,9 @@ void desktop_open_item(int index) {
 void desktop_rearrange(void) {
     if (!desktop_is_mutable()) return;
     for (int index = 0; index < g_item_count; index++) {
-        default_position(index, &g_items[index].x, &g_items[index].y);
+        g_items[index].anchored_right = true;
+        g_items[index].right_offset = DESKTOP_RIGHT_MARGIN;
+        apply_anchored_position(&g_items[index], index);
     }
     save_layout();
 }
@@ -814,6 +886,8 @@ bool desktop_set_position(int index, int x, int y) {
     if (x + 36 > screen_w) x = screen_w - 36;
     if (y < 24) y = 24;
     if (y + 52 > screen_h) y = screen_h - 52;
+    item->anchored_right = false;
+    item->right_offset = 0;
     item->x = x;
     item->y = y;
     save_layout();

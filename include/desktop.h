@@ -27,6 +27,8 @@ typedef struct {
     desktop_item_kind_t kind;
     desktop_target_kind_t target_kind;
     bool locked;
+    bool anchored_right;
+    int right_offset;
     int x;
     int y;
     int icon_state;
