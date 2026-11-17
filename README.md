@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A232b - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A232c - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -33,7 +33,9 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **经典内置应用程序（`APPS\*.pxe`）**：`files`（文件管理器）、`notepad`（文本编辑器）、`calc`（简易计算器）、`cpanel`（控制面板）、`player`（多媒体音乐播放器）、`viewer`（图片查看器）、`clock`（数字时钟）、`about`（关于）、`sysinfo`（系统与驱动诊断）、`taskmgr`（Ring 0 任务管理器）、`install`（图形化离线安装器）。Puzzle、Solitaire、Gomoku、Aero Chess、2048、Minesweeper 与 Reversi 统一位于根目录 `GAME\`。
 - **持久化 Windows 风格桌面（`Desktop\`）**：桌面文件直接存放在系统盘 `Desktop\` 中，应用默认以 `*.pnk` 快捷方式出现，桌面隐藏后缀并绘制右下角快捷箭头；`.desktop-layout` 保存全部图标位置。文件管理与关于本机快捷方式锁定，`APPS\`、`PDEVICE\`、`boot\`、`system\` 等系统文件禁止删除或重命名。Live 模式使用只读桌面，不会读取本地系统盘的桌面。
 
-### 26A232b H610 鼠标与桌面临界修复
+### 26A232c 桌面图标间距调整
+- 自动图标右边距由 104px 收紧到 72px，多列间距由 184px 收紧到 96px，贴近 Windows 桌面参考布局。
+- 已有 `PNK_LAYOUT2` 自动图标会在启动时自动迁移到新间距。
 - xHCI ERST 段表设置 Change 位，修复 Intel H610 上事件环首次回卷后 HID 中断事件不再被回收、鼠标约 15–30 秒后停止的问题。
 - 桌面图标缓存跨目录刷新保留；图标加载失败时按应用使用不同 fallback，不再全部显示为 Control Panel。
 - 桌面名称每行最多 7 个英文字符，超过两行时第二行以 `...` 省略。
@@ -74,18 +76,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A232b.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A232c.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A232b.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A232c.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A232b.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A232c.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -100,7 +102,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A232b.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A232b 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [26A232c 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

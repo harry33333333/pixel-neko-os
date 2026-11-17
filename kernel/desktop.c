@@ -96,9 +96,9 @@ static int desktop_strcasecmp(const char* left, const char* right) {
 #define DESKTOP_LAYOUT_NAME ".desktop-layout"
 #define DESKTOP_LAYOUT_MAX 16384
 #define DESKTOP_LAYOUT_HEADER "PNK_LAYOUT2"
-#define DESKTOP_RIGHT_MARGIN 104
+#define DESKTOP_RIGHT_MARGIN 72
 #define DESKTOP_ROW_STEP 72
-#define DESKTOP_COLUMN_STEP 184
+#define DESKTOP_COLUMN_STEP 96
 
 typedef struct {
     char name[128];
@@ -692,13 +692,14 @@ void desktop_refresh(void) {
         if (saved) {
             item->anchored_right = saved->anchored_right;
             item->right_offset = saved->anchored_right ?
-                saved->right_offset : 0;
+                DESKTOP_RIGHT_MARGIN : 0;
             item->x = saved->anchored_right ?
-                screen_w - saved->right_offset : saved->x;
+                screen_w - DESKTOP_RIGHT_MARGIN : saved->x;
             item->y = saved->y;
         } else if (previous) {
             item->anchored_right = previous->anchored_right;
-            item->right_offset = previous->right_offset;
+            item->right_offset = previous->anchored_right ?
+                DESKTOP_RIGHT_MARGIN : 0;
             item->x = previous->x;
             item->y = previous->y;
         } else {
