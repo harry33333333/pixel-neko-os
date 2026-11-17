@@ -1,4 +1,4 @@
-# Pixel Neko OS 26A231a Desktop Storage
+# Pixel Neko OS 26A232a Desktop Storage
 
 The desktop uses ordinary files on the installed system volume:
 
@@ -83,4 +83,4 @@ The graphical installer's keep-filesystem mode copies missing versioned files
 into `GAME\`, `APPS\`, `PDEVICE\`, and related system folders, but preserves
 existing `Desktop\` files and `.desktop-layout`. Legacy `APPS\puzzle.pxe` and
 the `DEMO\` directory are migrated/removed on the first local boot of
-26A231a. Missing locked desktop shortcuts are recreated automatically.
+26A232a. Missing locked desktop shortcuts are recreated automatically.

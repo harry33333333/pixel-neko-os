@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A231a"
+          VERSION="26A232a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -106,7 +106,7 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision stabilizes Live shortcut launching, adds Windows-style two-line desktop labels with ellipsis, configurable date/seconds in the top-bar clock, default wallpaper restoration, cut/move support in File Manager, and release version `v26A231a`.
+          This revision adds 2048, Minesweeper, and Reversi to the default GAME directory and bumps the release to `v26A232a`.
         draft: false
         prerelease: true
         make_latest: false

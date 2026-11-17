@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 231
+PIXEL_NEKO_BUILD_NUMBER ?= 232
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -160,7 +160,7 @@ APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
 # Default games live in GAME\ so system applications and user games have
 # separate, predictable storage.
 GAMES_OUT_DIR = build/games
-GAME_PXE_NAMES = puzzle solitaire gomoku aerochess
+GAME_PXE_NAMES = puzzle solitaire gomoku aerochess 2048 minesweeper othello
 GAME_PXE_TARGETS = $(patsubst %,$(GAMES_OUT_DIR)/%.pxe,$(GAME_PXE_NAMES))
 
 # Object Files
@@ -225,7 +225,7 @@ $$(GAMES_OUT_DIR)/$(1).pxe: $$(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
 		OUT_DIR="$$(abspath $$(GAMES_OUT_DIR))"
 endef
 
-$(foreach game,solitaire gomoku aerochess,$(eval $(call BUILD_GAME_APP,$(game))))
+$(foreach game,solitaire gomoku aerochess 2048 minesweeper othello,$(eval $(call BUILD_GAME_APP,$(game))))
 
 version:
 	@PIXEL_NEKO_BUILD_NUMBER=$(PIXEL_NEKO_BUILD_NUMBER) PIXEL_NEKO_BUILD_SUFFIX=$(PIXEL_NEKO_BUILD_SUFFIX) bash scripts/version_gen.sh

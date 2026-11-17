@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A231a"
+    BUILD_ID="26A232a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -117,7 +117,7 @@ Pixel Neko OS ${BUILD_ID} complete offline payload
 
 Static system executable: boot/kernel.elf
 Loadable hardware drivers: PDEVICE/*.pdv
-Default games: GAME/*.pxe (puzzle, solitaire, gomoku, aerochess)
+Default games: GAME/*.pxe (puzzle, solitaire, gomoku, aerochess, 2048, minesweeper, othello)
 Persistent desktop: Desktop/*.pnk and Desktop/.desktop-layout
 System PXE applications: APPS/*.pxe (about, clock, calc, notepad, cpanel, player, viewer, files, sysinfo, taskmgr, install)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
@@ -136,7 +136,7 @@ Built-in PXE applications in APPS/:
 - Ring 0: sysinfo.pxe, taskmgr.pxe, install.pxe
 
 Default games in GAME/:
-- puzzle.pxe, solitaire.pxe, gomoku.pxe, aerochess.pxe
+- puzzle.pxe, solitaire.pxe, gomoku.pxe, aerochess.pxe, 2048.pxe, minesweeper.pxe, othello.pxe
 
 Embedded in kernel.elf:
 - Core kernel, USB stack, boot storage and filesystems

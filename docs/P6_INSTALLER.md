@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A231a`
+Build version: `26A232a`
 
 ## Boot modes
 
@@ -58,7 +58,7 @@ partition start/end sectors and type GUIDs are preserved.
 - `EFI/BOOT/BOOTX64.EFI`
 - `APPS/*.pxe`
 - `PDEVICE/*.pdv`
-- `GAME/puzzle.pxe`, `solitaire.pxe`, `gomoku.pxe`, `aerochess.pxe`
+- `GAME/puzzle.pxe`, `solitaire.pxe`, `gomoku.pxe`, `aerochess.pxe`, `2048.pxe`, `minesweeper.pxe`, `othello.pxe`
 - `Desktop/*.pnk` and `Desktop/.desktop-layout`
 - `system/LICENSE.TXT`
 - `system/PAYLOAD.TXT`
