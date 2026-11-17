@@ -26,12 +26,15 @@
 #define MAX_PCI_DEVICES 64
 #define MAX_PDV_DRIVERS 32
 #define REPORT_CAPACITY 65536
+#define SAVE_PATH_MAX   192
 
 #define TAB_STRIP_Y     6
 #define TAB_STRIP_H     26
 #define CONTENT_X       12
 #define CONTENT_Y       36
 #define STATUS_H        22
+#define SAVE_DIALOG_W   430
+#define SAVE_DIALOG_H   146
 
 typedef struct {
     int win_id;
@@ -56,6 +59,11 @@ typedef struct {
     char feature_base[192];
     char feature_vector[192];
     char feature_security[192];
+
+    int save_modal;
+    char save_path[SAVE_PATH_MAX];
+    int save_path_len;
+    char save_error[128];
 
     char notice[128];
     int notice_is_error;
@@ -86,6 +94,24 @@ static void copy_text(char* target, size_t capacity, const char* source) {
 
 static const char* text_or(const char* value, const char* fallback) {
     return value && value[0] ? value : fallback;
+}
+
+static char ascii_lower(char value) {
+    return value >= 'A' && value <= 'Z' ? (char)(value + ('a' - 'A')) : value;
+}
+
+static bool text_ends_with_ci(const char* text, const char* suffix) {
+    if (!text || !suffix) return false;
+    size_t text_length = strlen(text);
+    size_t suffix_length = strlen(suffix);
+    if (suffix_length > text_length) return false;
+    const char* tail = text + text_length - suffix_length;
+    for (size_t index = 0; index < suffix_length; index++) {
+        if (ascii_lower(tail[index]) != ascii_lower(suffix[index])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void append_text(char* target, size_t capacity, const char* text) {
@@ -633,25 +659,115 @@ static void build_report(cpuz_app_t* app) {
     reportf("Distributed under BSD-2-Clause; see system\\THIRDPARTY.TXT.\n");
 }
 
-static void save_report(cpuz_app_t* app) {
-    build_report(app);
+static void set_default_save_path(cpuz_app_t* app) {
+    if (app->save_path[0]) return;
     char drive = app->basic.system_drive;
     if (!drive) drive = app->basic.cdrom_drive;
     if (!drive) drive = 'C';
-    char path[24];
-    snprintf(path, sizeof(path), "%c:\\CPU_DETECT.TXT", drive);
-    int result = pxe_write_file(path, g_report, g_report_length);
+    snprintf(app->save_path, sizeof(app->save_path),
+             "%c:\\CPU_DETECT.TXT", drive);
+    app->save_path_len = (int)strlen(app->save_path);
+}
+
+static void open_save_dialog(cpuz_app_t* app) {
+    set_default_save_path(app);
+    app->save_error[0] = '\0';
+    app->save_modal = 1;
+}
+
+static bool validate_save_path(cpuz_app_t* app) {
+    const char* path = app->save_path;
+    size_t length = strlen(path);
+    app->save_error[0] = '\0';
+    if (length < 7) {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "Enter a complete report path.");
+        return false;
+    }
+    if (path[0] >= 'a' && path[0] <= 'z') {
+        app->save_path[0] = (char)(path[0] - ('a' - 'A'));
+    }
+    if (path[0] < 'A' || path[0] > 'Z' ||
+        path[1] != ':' || (path[2] != '\\' && path[2] != '/')) {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "Use an absolute path such as C:\\CPU_DETECT.TXT.");
+        return false;
+    }
+    if (!text_ends_with_ci(path, ".TXT")) {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "The report filename must end in .TXT.");
+        return false;
+    }
+
+    int slash = -1;
+    for (int index = 2; path[index]; index++) {
+        if (path[index] == '\\' || path[index] == '/') slash = index;
+    }
+    if (slash < 2 || path[slash + 1] == '\0') {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "Enter a filename after the destination folder.");
+        return false;
+    }
+
+    char folder[SAVE_PATH_MAX];
+    copy_text(folder, sizeof(folder), path);
+    folder[slash == 2 ? 3 : (size_t)slash] = '\0';
+    pxe_dirent_t entry;
+    memset(&entry, 0, sizeof(entry));
+    if (pxe_stat(folder, &entry) != 0 || !entry.is_dir) {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "The destination folder does not exist.");
+        return false;
+    }
+    memset(&entry, 0, sizeof(entry));
+    if (pxe_stat(path, &entry) == 0 && entry.is_dir) {
+        copy_text(app->save_error, sizeof(app->save_error),
+                  "The report path points to a folder.");
+        return false;
+    }
+    return true;
+}
+
+static void submit_save_report(cpuz_app_t* app) {
+    if (!validate_save_path(app)) {
+        pxe_beep();
+        return;
+    }
+    build_report(app);
+    int result = pxe_write_file(app->save_path, g_report, g_report_length);
     if (result == 0) {
         (void)pxe_r0_sync_filesystems();
+        app->save_modal = 0;
+        app->save_error[0] = '\0';
         app->notice_is_error = 0;
         snprintf(app->notice, sizeof(app->notice), "Report saved to %s",
-                 path);
+                 app->save_path);
         pxe_notify_banner(app->notice);
     } else {
-        app->notice_is_error = 1;
-        snprintf(app->notice, sizeof(app->notice),
-                 "Could not save %s (read-only media?)", path);
+        snprintf(app->save_error, sizeof(app->save_error),
+                 "Could not write the report (read-only or full volume).");
         pxe_beep();
+    }
+}
+
+static void append_save_path_text(cpuz_app_t* app, const char* text) {
+    if (!text) return;
+    for (size_t index = 0; text[index]; index++) {
+        unsigned char value = (unsigned char)text[index];
+        if (value < 32 || value == 127 ||
+            app->save_path_len >= SAVE_PATH_MAX - 1) {
+            continue;
+        }
+        app->save_path[app->save_path_len++] = (char)value;
+        app->save_path[app->save_path_len] = '\0';
+    }
+}
+
+static void paste_save_path(cpuz_app_t* app) {
+    char clipboard[SAVE_PATH_MAX];
+    memset(clipboard, 0, sizeof(clipboard));
+    if (pxe_clipboard_get(clipboard, sizeof(clipboard) - 1) > 0) {
+        append_save_path_text(app, clipboard);
     }
 }
 
@@ -1014,6 +1130,65 @@ static void render_graphics(const pxe_win_surface_t* surf, cpuz_app_t* app) {
     }
 }
 
+static void save_dialog_origin(int width, int height, int* x, int* y) {
+    *x = (width - SAVE_DIALOG_W) / 2;
+    *y = (height - SAVE_DIALOG_H) / 2;
+    if (*x < 4) *x = 4;
+    if (*y < 28) *y = 28;
+}
+
+static void render_save_dialog(const pxe_win_surface_t* surf,
+                               cpuz_app_t* app) {
+    if (!app->save_modal) return;
+
+    int x, y;
+    save_dialog_origin(surf->width, surf->height, &x, &y);
+    pxe_draw_bevel_box(surf, x, y, SAVE_DIALOG_W, SAVE_DIALOG_H, 0,
+                       PXE_COL_LIGHT_GRAY);
+    pxe_fill_rect(surf, x + 2, y + 2, SAVE_DIALOG_W - 4, 18,
+                  PXE_COL_DARK_BLUE);
+    pxe_draw_text(surf, x + 8, y + 2, "Save Diagnostic Report",
+                  PXE_COL_WHITE);
+    pxe_draw_text_small(surf, x + 14, y + 27,
+                        "Choose an absolute path ending in .TXT:",
+                        PXE_COL_BLACK);
+
+    int field_x = x + 14;
+    int field_y = y + 43;
+    int field_w = SAVE_DIALOG_W - 28;
+    pxe_draw_bevel_box(surf, field_x, field_y, field_w, 26, 1,
+                       PXE_COL_WHITE);
+
+    int visible_chars = (field_w - 12) / 6;
+    if (visible_chars < 1) visible_chars = 1;
+    int start = app->save_path_len > visible_chars ?
+                app->save_path_len - visible_chars : 0;
+    pxe_draw_text_small(surf, field_x + 6, field_y + 9,
+                        app->save_path + start, PXE_COL_BLACK);
+    int caret_x = field_x + 6 +
+                  (app->save_path_len - start) * 6;
+    if (caret_x >= field_x + field_w - 5) {
+        caret_x = field_x + field_w - 5;
+    }
+    pxe_draw_vline(surf, caret_x, field_y + 8, 12, PXE_COL_BLACK);
+
+    pxe_draw_text_small(surf, x + 14, y + 75,
+                        "Examples: C:\\CPU_DETECT.TXT  E:\\Logs\\CPU.TXT",
+                        PXE_COL_DARK_GRAY);
+    if (app->save_error[0]) {
+        draw_clipped(surf, x + 14, y + 91, app->save_error,
+                     PXE_COL_DARK_RED, SAVE_DIALOG_W - 28);
+    } else {
+        pxe_draw_text_small(surf, x + 14, y + 91,
+                            "Enter saves. Ctrl+V pastes. Esc cancels.",
+                            PXE_COL_DARK_BLUE);
+    }
+    pxe_draw_button(surf, x + SAVE_DIALOG_W - 188, y + 113, 82, 24,
+                    "Save", 0, 1);
+    pxe_draw_button(surf, x + SAVE_DIALOG_W - 96, y + 113, 82, 24,
+                    "Cancel", 0, 1);
+}
+
 static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
     int width = surf->width - 24;
     draw_group(surf, CONTENT_X, CONTENT_Y, width, 176,
@@ -1046,12 +1221,13 @@ static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
                         PXE_COL_DARK_BLUE);
 
     pxe_draw_button(surf, surf->width - 198, surf->height - 58, 186, 26,
-                    "Save Report (.TXT)", 0, 1);
+                    "Save Report As...", 0, 1);
     char path[32];
     snprintf(path, sizeof(path), "%c:\\CPU_DETECT.TXT",
              app->basic.system_drive ? app->basic.system_drive : 'C');
     pxe_draw_text_small(surf, CONTENT_X + 2, surf->height - 82,
-                        "Writes a diagnostic report to:", PXE_COL_DARK_GRAY);
+                        "Default report path (editable):",
+                        PXE_COL_DARK_GRAY);
     pxe_draw_text_small(surf, CONTENT_X + 2, surf->height - 66,
                         path, PXE_COL_DARK_BLUE);
 }
@@ -1096,6 +1272,7 @@ static void render(cpuz_app_t* app, const pxe_win_surface_t* surf) {
         default:            render_cpu(surf, app); break;
     }
     render_status(surf, app);
+    render_save_dialog(surf, app);
 }
 
 static int hit_tab(int x, int y) {
@@ -1117,6 +1294,7 @@ int main(int argc, char** argv) {
     app->tab = TAB_CPU;
     app->hypervisor = HYPERVISOR_UNKNOWN;
     refresh_all(app);
+    set_default_save_path(app);
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -1157,6 +1335,25 @@ int main(int argc, char** argv) {
                     break;
                 case PXE_EV_MOUSE_DOWN: {
                     if (!(event.buttons & PXE_BTN_LEFT)) break;
+                    if (app->save_modal) {
+                        int dialog_x, dialog_y;
+                        save_dialog_origin(surface.width, surface.height,
+                                           &dialog_x, &dialog_y);
+                        if (pxe_point_in_rect(
+                                event.x, event.y,
+                                dialog_x + SAVE_DIALOG_W - 188,
+                                dialog_y + 113, 82, 24)) {
+                            submit_save_report(app);
+                        } else if (pxe_point_in_rect(
+                                       event.x, event.y,
+                                       dialog_x + SAVE_DIALOG_W - 96,
+                                       dialog_y + 113, 82, 24)) {
+                            app->save_modal = 0;
+                            app->save_error[0] = '\0';
+                        }
+                        dirty = 1;
+                        break;
+                    }
                     int tab = hit_tab(event.x, event.y);
                     if (tab >= 0) {
                         app->tab = tab;
@@ -1175,12 +1372,41 @@ int main(int argc, char** argv) {
                         pxe_point_in_rect(event.x, event.y,
                                           surface.width - 198,
                                           surface.height - 58, 186, 26)) {
-                        save_report(app);
+                        open_save_dialog(app);
                         dirty = 1;
                     }
                     break;
                 }
                 case PXE_EV_KEY_DOWN:
+                    if (app->save_modal) {
+                        if (event.key == PXE_KEY_ESC) {
+                            app->save_modal = 0;
+                            app->save_error[0] = '\0';
+                        } else if (event.key == PXE_KEY_ENTER) {
+                            submit_save_report(app);
+                        } else if (event.key == PXE_KEY_BACKSPACE) {
+                            if (app->save_path_len > 0) {
+                                app->save_path[--app->save_path_len] = '\0';
+                                app->save_error[0] = '\0';
+                            }
+                        } else if (event.modifiers & PXE_MOD_CTRL) {
+                            if (event.key == 'v' || event.key == 'V') {
+                                paste_save_path(app);
+                                app->save_error[0] = '\0';
+                            } else if (event.key == 's' || event.key == 'S') {
+                                submit_save_report(app);
+                            }
+                        } else if (event.key >= 32 && event.key <= 126 &&
+                                   app->save_path_len <
+                                   SAVE_PATH_MAX - 1) {
+                            app->save_path[app->save_path_len++] =
+                                (char)event.key;
+                            app->save_path[app->save_path_len] = '\0';
+                            app->save_error[0] = '\0';
+                        }
+                        dirty = 1;
+                        break;
+                    }
                     if (event.key == PXE_KEY_LEFT && app->tab > 0) {
                         app->tab--;
                         app->notice[0] = '\0';
@@ -1192,7 +1418,7 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     } else if ((event.modifiers & PXE_MOD_CTRL) &&
                                (event.key == 's' || event.key == 'S')) {
-                        save_report(app);
+                        open_save_dialog(app);
                         dirty = 1;
                     } else if (event.key == 'r' || event.key == 'R') {
                         refresh_all(app);

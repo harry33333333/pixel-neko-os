@@ -30,7 +30,7 @@
 
 > 注意：`SHM` 共享窗口画布槽步长在 `v26A220a` 中已扩展为 **`NEKO_SHM_STRIDE = 0x04000000ULL`（64 MB）**，足以支持 `4K+` 超高分辨率真彩色可调大小窗口表面映射。
 
-> Ring 0 移植示例：[`apps/cpuz`](../apps/cpuz) 将 libcpuid 的 x86 识别内核裁剪后静态链接进 `*.pxe`。该端口只保留 Intel/AMD/Centaur 数据库与 CPUID 逻辑，通过 `compat/` 映射 PXE 的字符串和堆接口；不加载 MSR 驱动、不读取本地 CPUID 转储文件，并在没有线程亲和 ABI 时按当前执行核心识别缓存与拓扑。libcpuid 的 BSD-2-Clause 原文保存在 [`apps/cpuz/libcpuid/COPYING`](../apps/cpuz/libcpuid/COPYING)。
+> Ring 0 移植示例：[`apps/cpuz`](../apps/cpuz) 将 libcpuid 的 x86 识别内核裁剪后静态链接进 `*.pxe`。该端口只保留 Intel/AMD/Centaur 数据库与 CPUID 逻辑，通过 `compat/` 映射 PXE 的字符串和堆接口；不加载 MSR 驱动、不读取本地 CPUID 转储文件，并在没有线程亲和 ABI 时按当前执行核心识别缓存与拓扑。libcpuid 的 BSD-2-Clause 原文保存在 [`apps/cpuz/libcpuid/COPYING`](../apps/cpuz/libcpuid/COPYING)。诊断报告通过 `Save Report As...` 对话框选择完整目标路径（必须是带盘符的绝对 `*.TXT` 路径），并支持键盘输入和 `Ctrl+V` 粘贴。
 
 ---
 

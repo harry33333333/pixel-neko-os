@@ -97,7 +97,7 @@ jobs:
             - **Ring 0 (`PXE_RING_0`)**: High-half PIE slot loading (`0xFFFFFFFFC0000000`–`0xFFFFFFFFEFFFFFFF`), `g_pxe_ring0_api` dispatch table, and untrusted Ring 0 desktop confirmation prompt.
           - Dynamic Window Compositor (`wm/wm.c`) supporting up to 32 PXE canvases (`PAL8` / `RGB32`), live resizing, top menu bar integration, and File Manager double-click `.pxe` launching.
           - Native SDK (`sdk/pxe_app.mk`, `sdk/crt/`, `sdk/libpxe/`, `sdk/include/pxe/`) remains available for user applications without shipping the old Demo payload.
-          - New Ring 0 **Pixel CPU Detect** (`APPS\cpuz.pxe`) powered by a trimmed libcpuid 0.8.2 port, with CPU/cache/PCI/memory/graphics tabs and a raw-CPUID diagnostic report.
+          - New Ring 0 **Pixel CPU Detect** (`APPS\cpuz.pxe`) powered by a trimmed libcpuid 0.8.2 port, with CPU/cache/PCI/memory/graphics tabs and a raw-CPUID diagnostic report saved to a user-selected `*.TXT` path.
           - Persistent Windows-style `Desktop\` storage with `.pnk` shortcuts, locked File Management/About shortcuts, protected `APPS\` system software, `.desktop-layout` icon positions, desktop folder creation/deletion, and a read-only Live Desktop.
           - Offline installer upgrade payload now ships `GAME\` with Puzzle, Solitaire, Gomoku and Aero Chess while preserving an existing Desktop during upgrades.
 

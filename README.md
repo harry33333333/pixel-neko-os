@@ -51,7 +51,7 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - 新增 Ring 0 系统应用 `APPS\cpuz.pxe`，窗口标题为 **Pixel CPU Detect**，提供 CPU、缓存、主板 PCI 拓扑、内存、显卡与关于六个页面。
 - CPU 型号、代号、Family/Model/Stepping、指令集、核心/线程与缓存拓扑来自裁剪后的 **libcpuid 0.8.2**；保留 Intel、AMD、Centaur 的 x86 识别数据库，不携带 Windows/Linux MSR 驱动、文件序列化器或 ARM 后端。
 - 新增 freestanding PXE 兼容层，将内存与字符串操作接到 `pxe/mem.h` / `pxe/str.h`；线程错误状态改为静态变量，CPU 亲和性接口在 Ring 0 构建中安全禁用。
-- `About` 页面可将完整解码信息、PCI/PDV/内存状态及原始 CPUID 叶数据导出为系统根目录的 `CPU_DETECT.TXT`，便于真机排障。
+- `About` 页面新增 **Save Report As...** 对话框，用户可输入或粘贴任意合法绝对路径，将完整解码信息、PCI/PDV/内存状态及原始 CPUID 叶数据保存为 `*.TXT`，便于真机排障。
 - 桌面默认新增 `Pixel CPU Detect.pnk`，文件管理器管理入口与关于本机入口继续锁定；现有系统升级后也会自动补齐该快捷方式。
 - libcpuid 的 BSD-2-Clause 版权与许可证记录已加入 `THIRD_PARTY_LICENSES.md`。
 
