@@ -1,0 +1,5 @@
+PNK1
+kind=app
+target=\APPS\cpuz.pxe
+title=Pixel CPU Detect
+locked=0

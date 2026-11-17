@@ -6,8 +6,8 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 232
-PIXEL_NEKO_BUILD_SUFFIX ?= c
+PIXEL_NEKO_BUILD_NUMBER ?= 235
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -154,7 +154,7 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
 
 # Built-in Modular PXE Applications (*.pxe in APPS\)
 APPS_OUT_DIR = build/apps
-APPS_PXE_NAMES = about clock calc notepad cpanel player viewer files sysinfo taskmgr install
+APPS_PXE_NAMES = about clock calc notepad cpanel player viewer files sysinfo cpuz taskmgr install
 APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
 
 # Default games live in GAME\ so system applications and user games have
@@ -200,7 +200,11 @@ $(PXE_OUT_DIR)/hello.pxe: $(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
 
 define BUILD_BUILTIN_APP
 $$(APPS_OUT_DIR)/$(1).pxe: $$(PXE_SDK_STAMP) sdk/tools/mkpxe.py \
-                           apps/$(1)/$(1).c apps/$(1)/$(1).pxi apps/$(1)/Makefile
+                           $$(wildcard apps/$(1)/*.c apps/$(1)/*.h \
+                           apps/$(1)/*.pxi apps/$(1)/compat/*.c \
+                           apps/$(1)/compat/*.h apps/$(1)/libcpuid/*.c \
+                           apps/$(1)/libcpuid/*.h apps/$(1)/libcpuid/COPYING) \
+                           apps/$(1)/Makefile
 	$$(MAKE) -C apps/$(1) \
 		OBJ_DIR="$$(abspath $$(APPS_OUT_DIR)/obj_$(1))" \
 		OUT_DIR="$$(abspath $$(APPS_OUT_DIR))"

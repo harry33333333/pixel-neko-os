@@ -122,12 +122,15 @@ static const desktop_default_t g_defaults[] = {
       DESKTOP_TARGET_APP, true },
     { "About This Machine.pnk", "About This Machine", "\\APPS\\about.pxe",
       DESKTOP_TARGET_APP, true },
-    { "Clock.pnk", "Clock", "\\APPS\\clock.pxe", DESKTOP_TARGET_APP, false },
+    { "Clock.pnk", "Clock", "\\APPS\\clock.pxe",
+      DESKTOP_TARGET_APP, false },
     { "Calculator.pnk", "Calculator", "\\APPS\\calc.pxe",
       DESKTOP_TARGET_APP, false },
     { "Control Panel.pnk", "Control Panel", "\\APPS\\cpanel.pxe",
       DESKTOP_TARGET_APP, false },
     { "System Information.pnk", "System Information", "\\APPS\\sysinfo.pxe",
+      DESKTOP_TARGET_APP, false },
+    { "Pixel CPU Detect.pnk", "Pixel CPU Detect", "\\APPS\\cpuz.pxe",
       DESKTOP_TARGET_APP, false },
     { "Notepad.pnk", "Notepad", "\\APPS\\notepad.pxe",
       DESKTOP_TARGET_APP, false },
@@ -873,6 +876,7 @@ static bool launch_system_app_path(const char* path) {
     char filename[64];
     if (apps_path_filename(path, filename, sizeof(filename))) {
         bool bypass = text_equal_ci(filename, "sysinfo.pxe") ||
+                      text_equal_ci(filename, "cpuz.pxe") ||
                       text_equal_ci(filename, "taskmgr.pxe") ||
                       text_equal_ci(filename, "install.pxe");
         log_printf("[DESK] Launch system app %s from %s\n", filename, path);

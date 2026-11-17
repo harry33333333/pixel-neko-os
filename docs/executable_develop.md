@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A232c`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A235a`）
 
-在当前 `main` 主干（基准版本 **`v26A232c`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 `main` 主干（基准版本 **`v26A235a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -13,7 +13,7 @@
   - **384 字节 `pxe_resource_t`**：内嵌 `16x16` 8-bit 索引色图标（`255` 为透明）、窗口标题 `title`、作者 `author`、文件扩展名关联 `ext_assoc`（如 `"txt,log,md"`）。
   - **4096 字节对齐的 ELF64 PIE 载荷**：单文件大小上限 `8 MB`（`PXE_MAX_FILE_BYTES`）。
 - **磁盘部署路径**：
-  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`taskmgr`、`install`）
+  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`cpuz`、`taskmgr`、`install`）
   - 默认游戏：`\GAME\*.pxe`（`puzzle`、`solitaire`、`gomoku`、`aerochess`、`2048`、`minesweeper`、`othello`）
   - 桌面快捷方式：`\Desktop\*.pnk`，图标位置保存在 `\Desktop\.desktop-layout`
   - 用户双击文件管理（`files.pxe`）中任意 `.pxe`（或关联扩展名的文件）即可由内核动态加载运行。
@@ -22,13 +22,15 @@
 
 | 特性 | Ring 3 用户态（`PXE_RING = 3`，默认） | Ring 0 特权态（`PXE_RING = 0`） |
 | :--- | :--- | :--- |
-| **适用场景** | 普通 GUI 应用、工具、媒体播放器、设置客户端 | 系统信息、磁盘分区/安装器、任务管理器（如 `sysinfo`、`taskmgr`、`install`、`mini_taskmon`） |
+| **适用场景** | 普通 GUI 应用、工具、媒体播放器、设置客户端 | 系统信息、CPU 检测、磁盘分区/安装器、任务管理器（如 `sysinfo`、`cpuz`、`taskmgr`、`install`、`mini_taskmon`） |
 | **编译参数** | `-fPIE -msse2` | `-fPIE -mgeneral-regs-only`（禁用 SSE/FPU） |
 | **入口与运行库** | `crt0_r3.asm` (`_start`) + `runtime_r3.c` | `crt0_r0.asm` (`_start_r0`) + `runtime_r0.c` |
 | **地址空间** | 独立进程页表（W^X 隔离）、`SYSCALL`/`SYSRET` 系统调用 | 高半区动态 PIE 槽位（`0xFFFFFFFFC0000000`~`0xFFFFFFFFEFFFFFFF`，`16 MB` 槽宽），通过 `g_pxe_ring0_api`（`PXE_R0_API_VERSION = 0x0101u`）直接调用内核函数 |
 | **安全与故障隔离** | 发生 `#PF`/`#GP` 异常仅终止当前应用并弹出 System Bomb 隔离窗，不影响系统稳定性 | 启动非内置路径需经桌面特权确认框；拥有硬件/进程底层能力 |
 
 > 注意：`SHM` 共享窗口画布槽步长在 `v26A220a` 中已扩展为 **`NEKO_SHM_STRIDE = 0x04000000ULL`（64 MB）**，足以支持 `4K+` 超高分辨率真彩色可调大小窗口表面映射。
+
+> Ring 0 移植示例：[`apps/cpuz`](../apps/cpuz) 将 libcpuid 的 x86 识别内核裁剪后静态链接进 `*.pxe`。该端口只保留 Intel/AMD/Centaur 数据库与 CPUID 逻辑，通过 `compat/` 映射 PXE 的字符串和堆接口；不加载 MSR 驱动、不读取本地 CPUID 转储文件，并在没有线程亲和 ABI 时按当前执行核心识别缓存与拓扑。libcpuid 的 BSD-2-Clause 原文保存在 [`apps/cpuz/libcpuid/COPYING`](../apps/cpuz/libcpuid/COPYING)。
 
 ---
 

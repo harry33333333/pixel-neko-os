@@ -9,6 +9,7 @@
 | 源文件路径 (本项目) | 上游项目 | 上游分支 / Commit | 原始文件路径 | 原始版权声明 | 许可证类型 | 修改概要 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `drivers/acpi/uacpi/*` | uACPI | `master (2024+)` | `source/*` | (c) 2023-2024 uACPI Authors | MIT | 轻量 ACPI 命名空间遍历与 _S5 提取 |
+| `apps/cpuz/libcpuid/*` | libcpuid | `master (0.8.2 snapshot, 2026-11-17)` | `libcpuid/*` | Copyright 2008 Veselin Georgiev and contributors | BSD-2-Clause | 裁剪 Windows/Linux 驱动、MSR 与 ARM 后端；增加 freestanding PXE libc shim、静态线程错误变量和无亲和性 Ring 0 构建 |
 
 ### 1.2 FreeBSD 设计与规范参考（非第三方源码）
 
