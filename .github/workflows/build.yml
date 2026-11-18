@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A260a"
+          VERSION="26A260b"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -112,7 +112,7 @@ jobs:
           - **Commit**: `${{ github.sha }}`
 
           - Fixes EDID 1.3/1.4 parsing, Limine rev-1 mode probing, and native fixed-LFB resolution handling without silent software scaling.
-          - Adds non-blocking, crash-resilient local disk logging (`log\YYYYMMDD-N.log`) on installed local systems matching serial output, with adaptive slow-disk throttling and clean shutdown flush for `v26A260a`.
+          - Adds active log file write/delete protection, 1000Hz+ USB mouse report deduplication, full 8-byte HID report dumps, urgent xHCI/USB sync flushing, and Full Logging Mode in Advanced Boot Options for `v26A260b`.
         draft: false
         prerelease: true
         make_latest: false

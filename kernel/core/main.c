@@ -631,6 +631,7 @@ static void __attribute__((unused)) draw_welcome_window(void) {
 void kmain(void) {
     // 1. Initialize serial port logger (COM1 @ 0x3F8)
     log_init();
+    log_set_full_mode(cmdline_contains("log_full=1"));
 
     if (cmdline_contains("verbose_boot=1") || cmdline_contains("boot_splash=classic")) {
         g_verbose_boot = true;
@@ -660,6 +661,9 @@ void kmain(void) {
         for (;;) { __asm__ volatile ("pause"); }
     }
     log_printf("[BOOT] Limine Base Revision 3 handshake verified.\n");
+    if (log_is_full_mode()) {
+        log_printf("[LOG  ] Full diagnostic logging mode enabled (log_full=1).\n");
+    }
 
     // 3. CPUID Feature Detection & Mandatory Feature Verification
     if (!cpu_detect_and_verify()) {

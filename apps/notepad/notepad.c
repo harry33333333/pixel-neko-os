@@ -106,7 +106,11 @@ static void ed_save_to(notepad_t* ed, const char* path) {
     int wr = pxe_write_file(path, ed->text, (size_t)ed->len);
     if (wr < 0) {
         ed->modal = MODAL_ERROR;
-        snprintf(ed->err_msg, sizeof(ed->err_msg), "Failed to save file!");
+        if (wr == -8) {
+            snprintf(ed->err_msg, sizeof(ed->err_msg), "Active log is read-only!");
+        } else {
+            snprintf(ed->err_msg, sizeof(ed->err_msg), "Failed to save file!");
+        }
         pxe_beep();
         return;
     }

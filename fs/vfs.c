@@ -80,6 +80,7 @@ static bool path_name_equals(const char* path, const char* name) {
 bool vfs_path_is_protected(const char* path) {
     const char* relative = path_relative(path);
     if (!relative || !*relative) return false;
+    if (log_disk_is_protected_path(path, true)) return true;
     if (path_has_prefix(path, "apps\\") ||
         path_has_prefix(path, "boot\\") ||
         path_has_prefix(path, "system\\") ||
@@ -838,6 +839,7 @@ int vfs_write_file(const char* path, const unsigned char* buffer,
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
     if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
+    if (log_disk_is_protected_path(path, false)) return VFS_ERR_PROTECTED;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
         return fat_write_file(path, buffer, size) == 0 ? VFS_OK : VFS_ERR_IO;
     }
@@ -1038,6 +1040,7 @@ int vfs_stream_create(const char* path, vfs_stream_t* stream) {
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted || drive->is_readonly) return -1;
     if (vfs_live_desktop_locked(path)) return -1;
+    if (log_disk_is_protected_path(path, false)) return VFS_ERR_PROTECTED;
     stream->fs_kind = g_filesystem_kind[drive->letter - 'A'];
     stream->is_write = 1;
     if (stream->fs_kind == VFS_FS_FAT) {

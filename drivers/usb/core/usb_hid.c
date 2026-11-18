@@ -59,6 +59,9 @@ typedef struct {
     int32_t last_y;
     bool have_absolute_position;
     uint32_t reports;
+    uint8_t last_report[8];
+    uint8_t last_report_len;
+    bool has_last_report;
     hid_descriptor_t descriptor;
 } hid_state_t;
 
@@ -827,6 +830,23 @@ void usb_hid_detach(usb_device_t* device) {
     }
 }
 
+static void log_hid_report_bytes(uint8_t address, const uint8_t* report,
+                                 int length) {
+    static const char hex[] = "0123456789abcdef";
+    char hex_buf[64];
+    int pos = 0;
+    int dump_len = length;
+    if (dump_len > 16) dump_len = 16;
+    for (int i = 0; i < dump_len && pos + 3 < (int)sizeof(hex_buf); i++) {
+        if (i > 0) hex_buf[pos++] = ' ';
+        hex_buf[pos++] = hex[(report[i] >> 4) & 0x0F];
+        hex_buf[pos++] = hex[report[i] & 0x0F];
+    }
+    hex_buf[pos] = '\0';
+    log_printf("[USBHID] report address=%u len=%d data=%s\n",
+               address, length, hex_buf);
+}
+
 void usb_hid_poll(void) {
     for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
         hid_state_t* hid = &g_hids[i];
@@ -841,11 +861,23 @@ void usb_hid_poll(void) {
                 hid->device->hci, hid->device, hid->endpoint, report,
                 hid->report_length);
             if (length <= 0) break;
-            hid->reports++;
-            if (hid->reports <= 8) {
-                log_printf("[USBHID] report address=%u len=%d data=%02x %02x %02x %02x\n",
-                           hid->device->address, length, report[0], report[1],
-                           report[2], report[3]);
+
+            int cmp_len = (length > 8) ? 8 : length;
+            bool full_log = log_is_full_mode();
+            bool report_changed = !hid->has_last_report ||
+                                  cmp_len != (int)hid->last_report_len ||
+                                  memcmp(report, hid->last_report,
+                                         (size_t)cmp_len) != 0;
+            if (cmp_len > 0) {
+                memcpy(hid->last_report, report, (size_t)cmp_len);
+                hid->last_report_len = (uint8_t)cmp_len;
+                hid->has_last_report = true;
+            }
+            if (full_log || report_changed) {
+                hid->reports++;
+                if (hid->reports <= 8) {
+                    log_hid_report_bytes(hid->device->address, report, length);
+                }
             }
 
             int payload_offset = 0;

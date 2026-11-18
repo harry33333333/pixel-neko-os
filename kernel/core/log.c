@@ -12,6 +12,7 @@
 
 static int g_initialized = 0;
 static int g_level = LOG_LEVEL_DEBUG;
+static bool g_full_log_mode = false;
 static char g_history[LOG_HISTORY_LINES][LOG_LINE_SIZE];
 static int g_history_count = 0;
 static int g_history_next = 0;
@@ -88,6 +89,66 @@ int log_get_level(void) {
     return g_level;
 }
 
+void log_set_full_mode(bool full) {
+    g_full_log_mode = full;
+}
+
+bool log_is_full_mode(void) {
+    return g_full_log_mode;
+}
+
+static char log_ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static bool log_starts_with_ci(const char* text, const char* prefix) {
+    if (!text || !prefix) return false;
+    while (*prefix) {
+        if (log_ascii_lower(*text++) != log_ascii_lower(*prefix++)) return false;
+    }
+    return true;
+}
+
+static bool log_contains_ci(const char* text, const char* needle) {
+    if (!text || !needle || !*needle) return false;
+    for (int i = 0; text[i]; i++) {
+        int j = 0;
+        while (needle[j] && text[i + j] &&
+               log_ascii_lower(text[i + j]) == log_ascii_lower(needle[j])) {
+            j++;
+        }
+        if (!needle[j]) return true;
+    }
+    return false;
+}
+
+static bool log_line_is_urgent(const char* line) {
+    if (!line || !line[0]) return false;
+    /* Never recurse on disk-logger messages or high-frequency HID move traffic */
+    if (log_starts_with_ci(line, "[LOG  ]")) return false;
+    if (log_starts_with_ci(line, "[USBHID] report") ||
+        log_starts_with_ci(line, "[USBHID] MOUSE") ||
+        log_starts_with_ci(line, "[USBHID] BUTTON") ||
+        log_starts_with_ci(line, "[INPUT]")) {
+        return false;
+    }
+    if (log_starts_with_ci(line, "[xHCI]") ||
+        log_starts_with_ci(line, "[USB ]") ||
+        log_starts_with_ci(line, "[USBHOT]") ||
+        log_starts_with_ci(line, "[USBHID]") ||
+        log_starts_with_ci(line, "[PANIC]") ||
+        log_starts_with_ci(line, "[TRAP ]") ||
+        log_starts_with_ci(line, "[FATAL]")) {
+        return true;
+    }
+    return log_contains_ci(line, "panic") ||
+           log_contains_ci(line, "fault") ||
+           log_contains_ci(line, "failed") ||
+           log_contains_ci(line, "error") ||
+           log_contains_ci(line, "timeout") ||
+           log_contains_ci(line, "breaker");
+}
+
 static int append_char(char* dst, int pos, int max, char c) {
     if (pos < max - 1) dst[pos++] = c;
     return pos;
@@ -145,6 +206,10 @@ static void log_commit(const char* line) {
     log_irq_restore(flags);
 
     serial_puts(line);
+
+    if (log_line_is_urgent(line)) {
+        log_disk_notify_urgent();
+    }
 }
 
 void log_printf(const char* format, ...) {

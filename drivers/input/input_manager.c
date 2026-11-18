@@ -78,6 +78,10 @@ uint64_t input_get_dropped_count(void) {
 }
 
 static void input_log_event(const input_event_t* event) {
+    if (!log_is_full_mode() && event->type == INPUT_MOUSE_MOVE &&
+        event->dx == 0 && event->dy == 0) {
+        return;
+    }
     if (g_logged_events >= 64) return;
     g_logged_events++;
     switch (event->type) {

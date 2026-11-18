@@ -45,6 +45,7 @@ static void hex64_to_str(uint64_t val, char* out) {
 
 static void sys_reboot_8042(void) {
     log_printf("[PANIC] User triggered reboot from bomb window. Resetting CPU...\n");
+    log_disk_shutdown();
     // Pulse reset line via keyboard controller
     uint8_t temp;
     do {
@@ -75,6 +76,7 @@ void panic_show_exception(struct trap_frame* frame, const char* name) {
         log_printf("  RBP: 0x%016llx, R8:  0x%016llx, R9:  0x%016llx\n", frame->rbp, frame->r8, frame->r9);
     }
     log_printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    log_disk_flush();
 
     if (!g_main_surface.framebuffer_virt) {
         for (;;) { __asm__ volatile ("pause"); }

@@ -1,6 +1,7 @@
 #ifndef LOG_H
 #define LOG_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define LOG_LEVEL_DEBUG 0
@@ -13,6 +14,8 @@ void log_write(const char* text);
 void log_printf(const char* format, ...);
 void log_set_level(int level);
 int log_get_level(void);
+void log_set_full_mode(bool full);
+bool log_is_full_mode(void);
 int log_get_count(void);
 const char* log_get_line(int index);
 
@@ -24,7 +27,9 @@ void log_ring_consume(uint32_t expected_head, uint32_t count);
 void log_disk_init(void);
 void log_disk_poll(void);
 void log_disk_flush(void);
+void log_disk_notify_urgent(void);
 void log_disk_shutdown(void);
+bool log_disk_is_protected_path(const char* path, bool include_dir);
 
 #ifndef klog_info
 #define klog_info(fmt, ...)  log_printf(fmt "\n", ##__VA_ARGS__)

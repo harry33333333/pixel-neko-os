@@ -8,6 +8,7 @@
 
 #define LOG_DISK_BATCH_NORMAL   4096u
 #define LOG_DISK_BATCH_DEGRADED 1024u
+#define LOG_DISK_FLUSH_BYTES    1536u  /* Batch 1.5 KB for high-frequency logs */
 #define LOG_DISK_FLUSH_TICKS    100u   /* 1.0s at 100 Hz */
 #define LOG_DISK_SYNC_TICKS     200u   /* 2.0s at 100 Hz */
 #define LOG_DISK_MAX_FILE_BYTES (16u * 1024u * 1024u)
@@ -15,6 +16,7 @@
 
 static bool g_log_disk_enabled = false;
 static bool g_log_flushing = false;
+static volatile bool g_urgent_pending = false;
 static char g_log_drive = 0;
 static blkdev_t* g_log_dev = NULL;
 static char g_log_path[64];
@@ -32,8 +34,28 @@ static uint32_t g_unsynced_bytes = 0;
 static int g_consec_errors = 0;
 static uint64_t g_backoff_until_tick = 0;
 
+static inline uint64_t read_rflags(void) {
+    uint64_t flags = 0;
+    __asm__ volatile("pushfq; popq %0" : "=r"(flags) :: "memory");
+    return flags;
+}
+
 static char ascii_lower(char c) {
     return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static char ascii_upper(char c) {
+    return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+}
+
+static bool ascii_ieq(const char* a, const char* b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (ascii_lower(*a) != ascii_lower(*b)) return false;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
 }
 
 static uint32_t append_uint_dec(char* dst, uint32_t pos, uint32_t cap,
@@ -137,6 +159,7 @@ static bool log_drive_healthy(void) {
 
 static void log_disk_abort_local(const char* reason) {
     g_log_disk_enabled = false;
+    g_urgent_pending = false;
     g_log_stream.is_open = 0;
     if (reason) {
         log_printf("[LOG  ] Disk log disabled: %s\n", reason);
@@ -263,6 +286,11 @@ void log_disk_poll(void) {
     uint64_t now = apic_get_ticks();
     if (now < g_backoff_until_tick) return;
 
+    if (g_urgent_pending) {
+        log_disk_flush();
+        return;
+    }
+
     uint32_t pending = log_ring_pending();
     if (pending == 0) {
         if (g_unsynced_bytes > 0 &&
@@ -293,7 +321,7 @@ void log_disk_poll(void) {
         return;
     }
 
-    bool enough_bytes = (pending >= (g_batch_limit / 2u));
+    bool enough_bytes = (pending >= LOG_DISK_FLUSH_BYTES);
     bool timer_due = (now - g_last_flush_tick) >= g_flush_interval_ticks;
     if (!enough_bytes && !timer_due) return;
 
@@ -356,19 +384,43 @@ void log_disk_flush(void) {
     }
 
     g_log_flushing = true;
+    g_urgent_pending = false;
+    bool io_failed = false;
     for (int iter = 0; iter < 40 && log_ring_pending() > 0; iter++) {
         bool wrote_any = false;
-        if (log_write_one_batch(LOG_DISK_BATCH_NORMAL, &wrote_any) <= 0 ||
-            !wrote_any) {
+        int wr = log_write_one_batch(LOG_DISK_BATCH_NORMAL, &wrote_any);
+        if (wr < 0) {
+            io_failed = true;
+            g_consec_errors++;
+            if (g_consec_errors >= LOG_DISK_MAX_ERRORS || !log_drive_healthy()) {
+                g_log_flushing = false;
+                log_disk_abort_local("write error (disk dropped or I/O fault)");
+                return;
+            }
+            g_backoff_until_tick = apic_get_ticks() + (uint64_t)g_consec_errors * 500u;
+            break;
+        }
+        if (wr == 0 || !wrote_any) {
             break;
         }
     }
-    if (vfs_stream_sync(&g_log_stream) == 0) {
+    if (!io_failed && vfs_stream_sync(&g_log_stream) == 0) {
         g_unsynced_bytes = 0;
         g_last_sync_tick = apic_get_ticks();
+        g_consec_errors = 0;
     }
     g_last_flush_tick = apic_get_ticks();
     g_log_flushing = false;
+}
+
+void log_disk_notify_urgent(void) {
+    if (!g_log_disk_enabled) return;
+    g_urgent_pending = true;
+    if (!g_log_flushing && (read_rflags() & (1ULL << 9)) != 0) {
+        if (apic_get_ticks() >= g_backoff_until_tick && log_drive_healthy()) {
+            log_disk_flush();
+        }
+    }
 }
 
 void log_disk_shutdown(void) {
@@ -384,4 +436,39 @@ void log_disk_shutdown(void) {
         g_log_stream.is_open = 0;
     }
     g_log_disk_enabled = false;
+}
+
+bool log_disk_is_protected_path(const char* path, bool include_dir) {
+    if (!g_log_disk_enabled || !g_log_drive || !g_log_path[0] || !path) {
+        return false;
+    }
+    char drv = ascii_upper(path[0]);
+    if (drv < 'A' || drv > 'Z' || path[1] != ':') return false;
+    if (drv != ascii_upper(g_log_drive)) return false;
+
+    const char* src = path + 2;
+    while (*src == '\\' || *src == '/') src++;
+
+    char norm[96];
+    size_t pos = 0;
+    bool prev_sep = false;
+    while (*src) {
+        char c = *src++;
+        if (c == '/' || c == '\\') {
+            if (!prev_sep) {
+                if (pos + 1 >= sizeof(norm)) return false;
+                norm[pos++] = '\\';
+                prev_sep = true;
+            }
+        } else {
+            if (pos + 1 >= sizeof(norm)) return false;
+            norm[pos++] = c;
+            prev_sep = false;
+        }
+    }
+    while (pos > 0 && norm[pos - 1] == '\\') pos--;
+    norm[pos] = '\0';
+
+    if (include_dir && ascii_ieq(norm, "log")) return true;
+    return ascii_ieq(norm, g_log_path + 3);
 }
