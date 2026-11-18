@@ -993,8 +993,8 @@ static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
                      usb_endpoint_t* endpoint, void* data, int length,
                      int direction) {
     xhci_controller_t* c = hci->priv;
-    if (!c || !device || !endpoint || !data || length <= 0 ||
-        c->bulk_staging.size < (size_t)length) {
+    if (!c || !device || !device->hci || !endpoint || !data || length <= 0 ||
+        c->bulk_staging.size < (size_t)length || xhci_port_is_fused(c, device)) {
         return -1;
     }
     xhci_slot_t* slot = xhci_slot_for_device(c, device);

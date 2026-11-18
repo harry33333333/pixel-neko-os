@@ -549,8 +549,8 @@ int audio_play_file(const char* filepath) {
                                g_audio_info.channels,
                                g_audio_info.bit_depth,
                                g_audio_info.is_float);
-        } else if (samples_read < 0) {
-            g_eof_reached = 1;
+        } else {
+            if (samples_read < 0) g_eof_reached = 1;
             break;
         }
     }
@@ -578,8 +578,8 @@ int audio_play_file(const char* filepath) {
                                g_audio_info.channels,
                                g_audio_info.bit_depth,
                                g_audio_info.is_float);
-        } else if (samples_read < 0) {
-            g_eof_reached = 1;
+        } else {
+            if (samples_read < 0) g_eof_reached = 1;
             break;
         }
     }
@@ -591,9 +591,10 @@ int audio_play_file(const char* filepath) {
 
     g_total_frames_played = 0;
 
-    /* Pre-decode into g_pcm_queue so DMA starts with plenty of cushion */
+    /* Pre-decode a short cushion (2 DMA halves) so track open returns promptly
+     * on slow optical/removable drives; audio_poll() tops up to target cache. */
     for (int pre = 0;
-         pre < 256 && g_queue_bytes < AUDIO_CACHE_TARGET_BYTES &&
+         pre < 32 && g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2U) &&
          !g_eof_reached;
          pre++) {
         int samples_read = 0;
@@ -611,8 +612,8 @@ int audio_play_file(const char* filepath) {
                                g_audio_info.channels,
                                g_audio_info.bit_depth,
                                g_audio_info.is_float);
-        } else if (samples_read < 0) {
-            g_eof_reached = 1;
+        } else {
+            if (samples_read < 0) g_eof_reached = 1;
             break;
         }
     }

@@ -13,6 +13,11 @@
 
 typedef struct {
     bool used;
+    bool io_fault;
+    uint8_t consec_io_errors;
+    uint8_t last_sense_key;
+    uint8_t last_asc;
+    uint8_t last_ascq;
     usb_device_t* device;
     usb_endpoint_t* bulk_in;
     usb_endpoint_t* bulk_out;
@@ -20,7 +25,7 @@ typedef struct {
     uint32_t sector_size;
     uint64_t sector_count;
     blkdev_t* block;
-    uint8_t buffer[4096] __attribute__((aligned(16)));
+    uint8_t buffer[32768] __attribute__((aligned(16)));
 } usb_bot_device_t;
 
 typedef struct {
@@ -96,8 +101,8 @@ static int bot_reset_recovery(usb_bot_device_t* bot) {
 static int bot_command_raw(usb_bot_device_t* bot, const uint8_t* command,
                            uint8_t command_length, void* data,
                            uint32_t data_length, int direction) {
-    if (!bot || !command || command_length > 16 ||
-        data_length > sizeof(bot->buffer)) {
+    if (!bot || !bot->device || !bot->device->hci ||
+        !command || command_length > 16 || data_length > sizeof(bot->buffer)) {
         return USB_BOT_CMD_ERROR;
     }
     bot_cbw_t cbw;
@@ -190,13 +195,40 @@ static int scsi_request_sense(usb_bot_device_t* bot, uint8_t* sense_key,
 static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
                        uint8_t command_length, void* data,
                        uint32_t data_length, int direction) {
+    if (!bot || !bot->device || !bot->device->hci || bot->io_fault) {
+        return -1;
+    }
+    bot->last_sense_key = 0;
+    bot->last_asc = 0;
+    bot->last_ascq = 0;
+
     for (int retry = 0; retry < 4; retry++) {
         int res = bot_command_raw(bot, command, command_length, data,
                                   data_length, direction);
-        if (res == USB_BOT_CMD_OK) return 0;
+        if (res == USB_BOT_CMD_OK) {
+            bot->consec_io_errors = 0;
+            return 0;
+        }
         if (res == USB_BOT_CMD_CHECK_COND) {
             uint8_t key = 0, asc = 0, ascq = 0;
             if (scsi_request_sense(bot, &key, &asc, &ascq) == 0) {
+                bot->last_sense_key = key;
+                bot->last_asc = asc;
+                bot->last_ascq = ascq;
+                if (key == 0x02 && asc == 0x3A) {
+                    if (bot->block && bot->block->media_state != MEDIA_ABSENT) {
+                        bot->block->media_state = MEDIA_ABSENT;
+                        bot->block->media_generation++;
+                    }
+                    log_printf("[USBMS] Medium not present on cmd=%02x\n",
+                               command[0]);
+                    return -1;
+                }
+                if (key == 0x03 || key == 0x05) {
+                    log_printf("[USBMS] SCSI sense key=%02x asc=%02x ascq=%02x cmd=%02x\n",
+                               key, asc, ascq, command[0]);
+                    return -1;
+                }
                 if (key == 0x00 || key == 0x01 || key == 0x06 ||
                     (key == 0x02 && asc == 0x04)) {
                     usb_delay_ms(key == 0x02 ? 40 : 5);
@@ -206,6 +238,17 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
                            key, asc, ascq, command[0]);
             }
             return -1;
+        }
+        if (bot->consec_io_errors < UINT8_MAX) bot->consec_io_errors++;
+        if (bot->consec_io_errors >= 3) {
+            bot->io_fault = true;
+            if (bot->block && bot->block->is_removable &&
+                bot->block->media_state != MEDIA_ABSENT) {
+                bot->block->media_state = MEDIA_ABSENT;
+                bot->block->media_generation++;
+            }
+            log_printf("[USBMS] Bulk I/O breaker open after %u transport errors\n",
+                       bot->consec_io_errors);
         }
         return -1;
     }
@@ -291,6 +334,47 @@ static int bot_write_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     return bot_read_write(block, lba, count, (void*)buffer, USB_DIR_OUT);
 }
 
+static media_state_t bot_check_media(blkdev_t* block) {
+    usb_bot_device_t* bot = block ? (usb_bot_device_t*)block->priv : NULL;
+    if (!bot || !bot->used || !bot->device || !bot->device->hci) {
+        return MEDIA_ABSENT;
+    }
+    bot->io_fault = false;
+    uint8_t tur[6] = { 0x00 };
+    bool unit_attention = false;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int res = bot_command_raw(bot, tur, sizeof(tur), NULL, 0, USB_DIR_IN);
+        if (res == USB_BOT_CMD_OK) {
+            bot->consec_io_errors = 0;
+            if (unit_attention || block->media_state != MEDIA_PRESENT ||
+                !block->total_sectors) {
+                if (scsi_capacity(bot) == 0) {
+                    block->total_sectors = bot->sector_count;
+                    block->sector_size = bot->sector_size;
+                }
+            }
+            return MEDIA_PRESENT;
+        }
+        if (res == USB_BOT_CMD_CHECK_COND) {
+            uint8_t key = 0, asc = 0, ascq = 0;
+            if (scsi_request_sense(bot, &key, &asc, &ascq) == 0) {
+                if (key == 0x06) {
+                    unit_attention = true;
+                    continue;
+                }
+                if (key == 0x02 && asc == 0x3A) {
+                    return MEDIA_ABSENT;
+                }
+                if (key == 0x02 && asc == 0x04) {
+                    return block->media_state;
+                }
+            }
+        }
+        break;
+    }
+    return MEDIA_ABSENT;
+}
+
 int usb_storage_attach(usb_device_t* device) {
     if (!device || g_bot_count >= USB_BOT_MAX_DEVICES) return -1;
     usb_endpoint_t* bulk_in = NULL;
@@ -353,7 +437,7 @@ int usb_storage_attach(usb_device_t* device) {
     bot->block = block_register(
         "usb-bot", BLK_TYPE_USB, g_next_bot_unit++, bot->sector_size,
         bot->sector_count, false, true, bot_read_blocks, bot_write_blocks,
-        NULL, bot);
+        bot_check_media, bot);
     if (!bot->block) {
         memset(bot, 0, sizeof(*bot));
         return -1;

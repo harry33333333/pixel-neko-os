@@ -24,5 +24,9 @@ int  iso_mount(blkdev_t* dev, iso_fs_t* fs);
 int  iso_list_dir(iso_fs_t* fs, const char* path, void (*callback)(const iso_file_info_t*));
 int  iso_find_file(iso_fs_t* fs, const char* path, iso_file_info_t* info);
 int  iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, uint64_t offset, unsigned char* buf, unsigned int size);
+int  iso_read_extent(iso_fs_t* fs, uint64_t extent_lba, uint64_t file_size,
+                     uint64_t offset, unsigned char* buf, unsigned int size,
+                     unsigned int* cached_lba, int* has_cached,
+                     unsigned char* sec_cache);
 
 #endif

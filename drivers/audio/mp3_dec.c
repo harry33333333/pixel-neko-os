@@ -62,8 +62,10 @@ static unsigned int parse_id3v2(void) {
 
     unsigned int pos = 10;
     unsigned char frame_hdr[10];
-    while (pos + 10 < tag_size) {
-        vfs_stream_seek(&g_mp3_stream, pos);
+    int frames_seen = 0;
+    while (pos + 10 < tag_size && frames_seen < 256) {
+        frames_seen++;
+        if (vfs_stream_seek(&g_mp3_stream, pos) != 0) break;
         if (vfs_stream_read(&g_mp3_stream, frame_hdr, 10) < 10) break;
         if (frame_hdr[0] == 0) break;
 
@@ -325,6 +327,7 @@ __attribute__((force_align_arg_pointer))
 int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
     if (!g_mp3_is_open) return -1;
 
+    int io_failed = 0;
     for (int retry = 0; retry < 16; retry++) {
         if (s_mp3_buf_pos > 16384) {
             int rem = s_mp3_buf_len - s_mp3_buf_pos;
@@ -341,7 +344,10 @@ int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
             if (space <= 0) break;
             int nread = vfs_stream_read(
                 &g_mp3_stream, s_mp3_buf + s_mp3_buf_len, (uint32_t)space);
-            if (nread <= 0) break;
+            if (nread <= 0) {
+                if (nread < 0) io_failed = 1;
+                break;
+            }
             s_mp3_buf_len += nread;
         }
 
@@ -389,13 +395,16 @@ int mp3_dec_read_samples(void* out_samples, unsigned int max_samples) {
             return (int)frames_to_copy;
         }
 
+        if (io_failed && (s_mp3_buf_len - s_mp3_buf_pos) < 4) {
+            return -1;
+        }
         if (g_mp3_stream.current_offset >= g_mp3_stream.size &&
             (s_mp3_buf_len - s_mp3_buf_pos) < 4) {
             return -1;
         }
     }
 
-    return 0;
+    return io_failed ? -1 : 0;
 }
 
 __attribute__((force_align_arg_pointer))

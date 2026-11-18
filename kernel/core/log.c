@@ -135,6 +135,7 @@ static bool log_line_is_urgent(const char* line) {
     if (log_starts_with_ci(line, "[xHCI]") ||
         log_starts_with_ci(line, "[USB ]") ||
         log_starts_with_ci(line, "[USBHOT]") ||
+        log_starts_with_ci(line, "[USBMS]") ||
         log_starts_with_ci(line, "[USBHID]") ||
         log_starts_with_ci(line, "[PANIC]") ||
         log_starts_with_ci(line, "[TRAP ]") ||

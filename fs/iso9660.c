@@ -116,7 +116,9 @@ typedef int (*iso_dirent_visitor_t)(const iso_file_info_t* item, void* user_data
 
 static int parse_directory(iso_fs_t* fs, unsigned int start_lba, unsigned int total_len, iso_dirent_visitor_t visitor, void* user_data) {
     unsigned char sec[2048];
+    if (total_len == 0) return 0;
     unsigned int sectors = (total_len + 2047) / 2048;
+    if (sectors > 1024u) sectors = 1024u;
 
     for (unsigned int s = 0; s < sectors; s++) {
         if (iso_read_sector(fs->dev, start_lba + s, sec) != 0) {
@@ -128,6 +130,9 @@ static int parse_directory(iso_fs_t* fs, unsigned int start_lba, unsigned int to
             unsigned char rec_len = sec[offset];
             if (rec_len == 0) {
                 // No more records in this sector; move to next sector
+                break;
+            }
+            if (rec_len < 33 || offset + rec_len > 2048) {
                 break;
             }
 
@@ -270,34 +275,100 @@ int iso_list_dir(iso_fs_t* fs, const char* path, void (*callback)(const iso_file
     return 0;
 }
 
-int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, uint64_t offset,
-                  unsigned char* buf, unsigned int size) {
-    if (!fs || !fs->mounted || !info || info->is_dir) return -1;
-    if (offset >= info->size) return 0;
-    if (offset + size > info->size) {
-        size = info->size - offset;
+static int iso_read_sectors_multi(blkdev_t* dev, uint64_t iso_lba,
+                                  uint32_t iso_count, unsigned char* buffer) {
+    if (!dev || !buffer || !dev->read_sectors || !dev->sector_size || !iso_count) {
+        return -1;
     }
+    if (dev->is_removable && dev->media_state != MEDIA_PRESENT) {
+        return -1;
+    }
+    if (dev->sector_size == 2048) {
+        return block_read(dev, iso_lba, iso_count, buffer);
+    }
+    if (dev->sector_size < 2048 && (2048u % dev->sector_size) == 0) {
+        uint32_t factor = 2048u / dev->sector_size;
+        return block_read(dev, iso_lba * factor, iso_count * factor, buffer);
+    }
+    for (uint32_t i = 0; i < iso_count; i++) {
+        if (iso_read_sector(dev, iso_lba + i, buffer + (size_t)i * 2048u) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int iso_read_extent(iso_fs_t* fs, uint64_t extent_lba, uint64_t file_size,
+                    uint64_t offset, unsigned char* buf, unsigned int size,
+                    unsigned int* cached_lba, int* has_cached,
+                    unsigned char* sec_cache) {
+    if (!fs || !fs->mounted || !fs->dev || !buf) return -1;
+    if (fs->dev->is_removable && fs->dev->media_state != MEDIA_PRESENT) {
+        return -1;
+    }
+    if (offset >= file_size) return 0;
+    if (size > file_size - offset) {
+        size = (unsigned int)(file_size - offset);
+    }
+    if (size == 0) return 0;
 
     unsigned int bytes_read = 0;
-    unsigned char sec[2048];
+    unsigned char local_sec[2048];
+    unsigned char* work_sec = sec_cache ? sec_cache : local_sec;
 
     while (bytes_read < size) {
         uint64_t cur_offset = offset + bytes_read;
-        unsigned int sec_idx = cur_offset / 2048;
-        unsigned int sec_off = cur_offset % 2048;
+        unsigned int sec_idx = (unsigned int)(cur_offset / 2048u);
+        unsigned int sec_off = (unsigned int)(cur_offset % 2048u);
+        uint64_t target_lba = extent_lba + sec_idx;
+        unsigned int rem = size - bytes_read;
 
-        if (iso_read_sector(fs->dev, info->extent_lba + sec_idx, sec) != 0) {
-            break;
+        /* Batch contiguous full-sector reads directly into caller buffer */
+        if (sec_off == 0 && rem >= 2048u) {
+            uint32_t sectors_want = rem / 2048u;
+            if (sectors_want > 16u) sectors_want = 16u;
+            if (iso_read_sectors_multi(fs->dev, target_lba, sectors_want,
+                                       buf + bytes_read) != 0) {
+                return bytes_read > 0 ? (int)bytes_read : -1;
+            }
+            if (sec_cache && cached_lba && has_cached) {
+                const unsigned char* last =
+                    buf + bytes_read + (size_t)(sectors_want - 1u) * 2048u;
+                for (unsigned int k = 0; k < 2048u; k++) sec_cache[k] = last[k];
+                *cached_lba = (unsigned int)(target_lba + sectors_want - 1u);
+                *has_cached = 1;
+            }
+            bytes_read += sectors_want * 2048u;
+            continue;
         }
 
-        unsigned int to_copy = 2048 - sec_off;
-        if (to_copy > size - bytes_read) to_copy = size - bytes_read;
+        bool cache_hit = (sec_cache && has_cached && *has_cached &&
+                          cached_lba && *cached_lba == (unsigned int)target_lba);
+        if (!cache_hit) {
+            if (has_cached) *has_cached = 0;
+            if (iso_read_sector(fs->dev, target_lba, work_sec) != 0) {
+                return bytes_read > 0 ? (int)bytes_read : -1;
+            }
+            if (sec_cache && cached_lba && has_cached) {
+                *cached_lba = (unsigned int)target_lba;
+                *has_cached = 1;
+            }
+        }
 
+        unsigned int to_copy = 2048u - sec_off;
+        if (to_copy > rem) to_copy = rem;
         for (unsigned int i = 0; i < to_copy; i++) {
-            buf[bytes_read + i] = sec[sec_off + i];
+            buf[bytes_read + i] = work_sec[sec_off + i];
         }
         bytes_read += to_copy;
     }
 
-    return bytes_read;
+    return (int)bytes_read;
+}
+
+int iso_read_file(iso_fs_t* fs, const iso_file_info_t* info, uint64_t offset,
+                  unsigned char* buf, unsigned int size) {
+    if (!fs || !fs->mounted || !info || info->is_dir) return -1;
+    return iso_read_extent(fs, info->extent_lba, info->size, offset, buf, size,
+                           NULL, NULL, NULL);
 }

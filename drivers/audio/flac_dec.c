@@ -30,21 +30,29 @@ static inline int sar64_to_32(long long val, unsigned char shift) {
 static unsigned char g_br_buf[BR_BUF_SIZE];
 static int g_br_buf_pos = 0;
 static int g_br_buf_len = 0;
+static int g_flac_io_err = 0;
 
 static inline void br_reset(void) {
     g_br.tag = 0;
     g_br.bitcount = 0;
     g_br_buf_pos = 0;
     g_br_buf_len = 0;
+    g_flac_io_err = 0;
 }
 
 static inline unsigned int br_read_bits(int num) {
     while (g_br.bitcount < num) {
         if (g_br_buf_pos >= g_br_buf_len) {
+            if (g_flac_io_err) {
+                g_br.bitcount += 8;
+                continue;
+            }
             g_br_buf_pos = 0;
             g_br_buf_len =
                 vfs_stream_read(&g_flac_stream, g_br_buf, BR_BUF_SIZE);
             if (g_br_buf_len <= 0) {
+                g_flac_io_err = 1;
+                g_br_buf_len = 0;
                 g_br.bitcount += 8;
                 continue;
             }
@@ -67,7 +75,7 @@ static inline int br_read_signed_bits(int num) {
 
 static inline unsigned int br_read_unary(void) {
     unsigned int count = 0;
-    while (br_read_bits(1) == 0) {
+    while (!g_flac_io_err && br_read_bits(1) == 0) {
         count++;
         if (count > 65536) break;
     }
@@ -112,8 +120,10 @@ int flac_dec_open(const char* path, flac_info_t* out_info) {
 
     int is_last = 0;
     int found_streaminfo = 0;
+    int meta_blocks = 0;
 
-    while (!is_last) {
+    while (!is_last && meta_blocks < 256) {
+        meta_blocks++;
         unsigned char header[4];
         if (vfs_stream_read(&g_flac_stream, header, 4) < 4) break;
 
@@ -391,8 +401,9 @@ int flac_dec_read_samples(void* out_samples, unsigned int max_samples) {
     int sample_size_code = 0;
 
     while (!sync_found) {
-        if (g_flac_stream.current_offset >= g_flac_stream.size &&
-            g_br_buf_pos >= g_br_buf_len && g_br.bitcount < 16) {
+        if (g_flac_io_err ||
+            (g_flac_stream.current_offset >= g_flac_stream.size &&
+             g_br_buf_pos >= g_br_buf_len && g_br.bitcount < 16)) {
             return -1;
         }
 
@@ -468,7 +479,7 @@ int flac_dec_read_samples(void* out_samples, unsigned int max_samples) {
         else if (channel_mode == 9 && ch == 0) subframe_bps++;
         else if (channel_mode == 10 && ch == 1) subframe_bps++;
         if (decode_subframe(ch, block_size, subframe_bps) != 0) {
-            return 0;
+            return g_flac_io_err ? -1 : 0;
         }
     }
 

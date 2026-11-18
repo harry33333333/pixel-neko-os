@@ -1073,11 +1073,12 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
         result = exfat_read((exfat_handle_t*)stream->exfat_handle, buffer, size);
     } else if (stream->fs_kind == VFS_FS_ISO) {
         iso_fs_t* iso = iso_for_drive(drive);
-        iso_file_info_t info;
-        if (iso && iso_find_file(iso, path_without_drive(stream->path),
-                                 &info) == 0) {
-            result = iso_read_file(iso, &info, stream->current_offset,
-                                   buffer, size);
+        if (iso) {
+            result = iso_read_extent(iso, stream->cdrom_extent_lba, stream->size,
+                                     stream->current_offset, buffer, size,
+                                     &stream->cached_sec_lba,
+                                     &stream->has_cached_sec,
+                                     stream->sec_cache);
         }
     }
     if (result > 0) stream->current_offset += (uint64_t)result;

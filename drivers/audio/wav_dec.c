@@ -43,7 +43,7 @@ int wav_dec_open(const char* path, wav_info_t* out_info) {
 
     while (cur_pos + 8 <= g_wav_stream.size) {
         unsigned char chunk_hdr[8];
-        vfs_stream_seek(&g_wav_stream, cur_pos);
+        if (vfs_stream_seek(&g_wav_stream, cur_pos) != 0) break;
         if (vfs_stream_read(&g_wav_stream, chunk_hdr, 8) < 8) break;
 
         unsigned int chunk_size = read_le32(chunk_hdr + 4);
@@ -124,7 +124,7 @@ int wav_dec_read_samples(void* out_samples, unsigned int max_samples) {
     if (bytes_to_read > remaining_bytes) bytes_to_read = remaining_bytes;
 
     int bytes_read = vfs_stream_read(&g_wav_stream, out_samples, bytes_to_read);
-    if (bytes_read <= 0) return 0;
+    if (bytes_read <= 0) return -1;
 
     unsigned int frames_read =
         (unsigned int)bytes_read / g_wav_bytes_per_frame;

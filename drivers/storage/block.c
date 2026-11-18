@@ -30,10 +30,21 @@ blkdev_t* block_register(const char* name, blk_type_t type, int unit,
                                              const void*),
                          media_state_t (*check_media)(blkdev_t*),
                          void* priv) {
-    if (g_block_count >= MAX_BLKDEV || !read_blocks) return NULL;
-    blkdev_t* dev = &g_blkdevs[g_block_count];
+    if (!read_blocks) return NULL;
+    int slot = -1;
+    for (int i = 0; i < g_block_count; i++) {
+        if (!g_blkdevs[i].read_sectors) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_block_count >= MAX_BLKDEV) return NULL;
+        slot = g_block_count++;
+    }
+    blkdev_t* dev = &g_blkdevs[slot];
     memset(dev, 0, sizeof(*dev));
-    dev->id = g_block_count++;
+    dev->id = slot;
     dev->type = type;
     dev->unit = unit;
     dev->sector_size = sector_size ? sector_size : 512;
@@ -58,17 +69,13 @@ void block_unregister(blkdev_t* dev) {
     if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) {
         return;
     }
-    int index = (int)(dev - g_blkdevs);
-    if (index != g_block_count - 1) {
-        g_blkdevs[index] = g_blkdevs[g_block_count - 1];
-        g_blkdevs[index].id = index;
-    }
-    memset(&g_blkdevs[g_block_count - 1], 0, sizeof(g_blkdevs[0]));
-    g_block_count--;
+    memset(dev, 0, sizeof(*dev));
 }
 
 blkdev_t* blkdev_get(int id) {
-    return id >= 0 && id < g_block_count ? &g_blkdevs[id] : NULL;
+    return (id >= 0 && id < g_block_count && g_blkdevs[id].read_sectors)
+               ? &g_blkdevs[id]
+               : NULL;
 }
 
 int blkdev_count(void) {
