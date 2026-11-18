@@ -120,7 +120,6 @@ void keyboard_handle_byte(uint8_t scancode) {
     }
 
     if (!translated) return;
-    if (!release) legacy_push((int)translated);
     input_emit_key(translated, !release);
 }
 

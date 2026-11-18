@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A260b"
+          VERSION="26A260c"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -112,7 +112,7 @@ jobs:
           - **Commit**: `${{ github.sha }}`
 
           - Fixes EDID 1.3/1.4 parsing, Limine rev-1 mode probing, and native fixed-LFB resolution handling without silent software scaling.
-          - Adds active log file write/delete protection, 1000Hz+ USB mouse report deduplication, full 8-byte HID report dumps, urgent xHCI/USB sync flushing, and Full Logging Mode in Advanced Boot Options for `v26A260b`.
+          - Fixes duplicate PS/2 key insertion (`legacy_push` + `input_emit_key`) causing double characters on single keypress for `v26A260c`.
         draft: false
         prerelease: true
         make_latest: false
