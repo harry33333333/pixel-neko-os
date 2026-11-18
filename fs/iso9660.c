@@ -1,5 +1,6 @@
 #include "iso9660.h"
 #include "log.h"
+#include <stddef.h>
 
 /*
  * ISO9660 extent numbers are always in 2048-byte logical sectors.  A USB
@@ -343,7 +344,8 @@ int iso_read_extent(iso_fs_t* fs, uint64_t extent_lba, uint64_t file_size,
         }
 
         bool cache_hit = (sec_cache && has_cached && *has_cached &&
-                          cached_lba && *cached_lba == (unsigned int)target_lba);
+                          cached_lba && target_lba < 0xFFFFFFFFULL &&
+                          *cached_lba == (unsigned int)target_lba);
         if (!cache_hit) {
             if (has_cached) *has_cached = 0;
             if (iso_read_sector(fs->dev, target_lba, work_sec) != 0) {
