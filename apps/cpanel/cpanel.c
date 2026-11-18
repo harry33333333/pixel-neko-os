@@ -258,11 +258,15 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     char vram_str[16];
     char cap_line[64];
     format_vram_str(cp->caps.vram_bytes, vram_str, sizeof(vram_str));
-    if (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) {
+    if (cp->caps.flags & PXE_DISP_FLAG_UNLIMITED_RES) {
         snprintf(cap_line, sizeof(cap_line), "VRAM:%s  Max:%dx%d  Min:640x480",
                  vram_str, cp->caps.max_w, cp->caps.max_h);
+    } else if (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) {
+        snprintf(cap_line, sizeof(cap_line), "Fixed Scanout (No Modeset): %dx%d",
+                 cp->caps.current_w, cp->caps.current_h);
     } else {
-        snprintf(cap_line, sizeof(cap_line), "Fallback(No Drv): Max 1024x768 @ 8/16b");
+        snprintf(cap_line, sizeof(cap_line), "Fixed GOP/VBE LFB: %dx%d",
+                 cp->caps.current_w, cp->caps.current_h);
     }
     pxe_draw_text_small(surf, 10, 220, "Limits:", PXE_COL_BLACK);
     pxe_draw_text_small(surf, 70, 220, cap_line,

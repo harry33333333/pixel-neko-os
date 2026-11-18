@@ -244,8 +244,8 @@ static void ati_mach64_sync(void) {
 
 static int ati_mach64_supports_bpp(int w, int h, int bpp) {
     if (!g_ati_active) return 0;
+    if (w != g_boot_w || h != g_boot_h) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
-    if (w > 2048 || h > 1536) return 0;
     if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
     uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
                      (uint64_t)(unsigned int)(bpp / 8);

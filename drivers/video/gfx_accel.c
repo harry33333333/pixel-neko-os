@@ -52,53 +52,51 @@ static int gfx_mode_fits_vram(int w, int h, int bpp, unsigned int vram_bytes) {
 }
 
 static int gfx_fallback_max_w(void) {
-    int catalog = display_modes_max_width();
-    if (catalog >= GFX_MIN_WIDTH) return catalog;
     int hw = (int)g_main_surface.width;
-    if (hw <= 0) return GFX_FALLBACK_MAX_WIDTH;
-    if (hw < GFX_MIN_WIDTH) hw = GFX_MIN_WIDTH;
-    return hw;
+    if (hw >= GFX_MIN_WIDTH) return hw;
+    return screen_w >= GFX_MIN_WIDTH ? screen_w : GFX_FALLBACK_MAX_WIDTH;
 }
 
 static int gfx_fallback_max_h(void) {
-    int catalog = display_modes_max_height();
-    if (catalog >= GFX_MIN_HEIGHT) return catalog;
     int hh = (int)g_main_surface.height;
-    if (hh <= 0) return GFX_FALLBACK_MAX_HEIGHT;
-    if (hh < GFX_MIN_HEIGHT) hh = GFX_MIN_HEIGHT;
-    return hh;
+    if (hh >= GFX_MIN_HEIGHT) return hh;
+    return screen_h >= GFX_MIN_HEIGHT ? screen_h : GFX_FALLBACK_MAX_HEIGHT;
 }
 
 static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count, int max_out) {
     static const int k_bpps[4] = { 8, 16, 24, 32 };
     int cnt = 0;
-    int catalog_count = display_modes_count();
-    for (int i = 0; i < catalog_count && cnt < max_out; i++) {
-        display_mode_t catalog_mode;
-        memset(&catalog_mode, 0, sizeof(catalog_mode));
-        if (!display_modes_get(i, &catalog_mode)) continue;
-        int w = catalog_mode.width;
-        int h = catalog_mode.height;
-        uint8_t mask = 0;
-        for (int b = 0; b < 4; b++) {
-            uint8_t catalog_bit = (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
-            if ((catalog_mode.bpp_mask & catalog_bit) &&
-                gfx_accel_supports_bpp(w, h, k_bpps[b])) {
-                mask |= (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
+    if (gfx_accel_can_modeset_hw()) {
+        int catalog_count = display_modes_count();
+        for (int i = 0; i < catalog_count && cnt < max_out; i++) {
+            display_mode_t catalog_mode;
+            memset(&catalog_mode, 0, sizeof(catalog_mode));
+            if (!display_modes_get(i, &catalog_mode)) continue;
+            int w = catalog_mode.width;
+            int h = catalog_mode.height;
+            uint8_t mask = 0;
+            for (int b = 0; b < 4; b++) {
+                uint8_t catalog_bit = (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
+                if ((catalog_mode.bpp_mask & catalog_bit) &&
+                    gfx_accel_supports_bpp(w, h, k_bpps[b])) {
+                    mask |= (uint8_t)gfx_bpp_to_mask_byte(k_bpps[b]);
+                }
             }
-        }
-        if (mask != 0) {
-            out_modes[cnt].width = (uint16_t)w;
-            out_modes[cnt].height = (uint16_t)h;
-            out_modes[cnt].bpp_mask = mask;
-            out_modes[cnt].preferred = catalog_mode.preferred;
-            out_modes[cnt].reserved = 0U;
-            cnt++;
+            if (mask != 0) {
+                out_modes[cnt].width = (uint16_t)w;
+                out_modes[cnt].height = (uint16_t)h;
+                out_modes[cnt].bpp_mask = mask;
+                out_modes[cnt].preferred = catalog_mode.preferred;
+                out_modes[cnt].reserved = 0U;
+                cnt++;
+            }
         }
     }
 
     int boot_w = (int)g_main_surface.width;
     int boot_h = (int)g_main_surface.height;
+    if (boot_w < GFX_MIN_WIDTH) boot_w = screen_w;
+    if (boot_h < GFX_MIN_HEIGHT) boot_h = screen_h;
     if (boot_w >= GFX_MIN_WIDTH && boot_h >= GFX_MIN_HEIGHT && cnt < max_out) {
         int exists = 0;
         for (int j = 0; j < cnt; j++) {
@@ -226,23 +224,22 @@ void gfx_accel_init(void) {
 
     g_initialized = 1;
     if (!g_active_drv) {
-        g_fallback_reason = "No valid display driver (firmware/EDID mode table)";
-        int fw = screen_w;
-        int fh = screen_h;
-        int fbpp = screen_bpp;
-        int max_w = gfx_fallback_max_w();
-        int max_h = gfx_fallback_max_h();
-        if (fw > max_w) fw = max_w;
-        if (fh > max_h) fh = max_h;
-        if (fw < GFX_MIN_WIDTH) fw = GFX_MIN_WIDTH;
-        if (fh < GFX_MIN_HEIGHT) fh = GFX_MIN_HEIGHT;
-        if (fbpp != 8 && fbpp != 16) fbpp = 16;
+        g_fallback_reason = "Fixed LFB (firmware GOP/VBE scanout)";
+        int fw = (int)g_main_surface.width;
+        int fh = (int)g_main_surface.height;
+        int fbpp = (int)g_main_surface.bpp;
+        if (fw < GFX_MIN_WIDTH) fw = screen_w;
+        if (fh < GFX_MIN_HEIGHT) fh = screen_h;
+        if (!gfx_is_valid_std_bpp(fbpp)) fbpp = screen_bpp;
+        if (!ui_can_allocate_resolution(fw, fh, fbpp)) {
+            if (ui_can_allocate_resolution(fw, fh, 16)) fbpp = 16;
+            else if (ui_can_allocate_resolution(fw, fh, 8)) fbpp = 8;
+        }
         if (fw != screen_w || fh != screen_h || fbpp != screen_bpp) {
             (void)set_resolution_ex(fw, fh, fbpp);
         }
-        klog_info("[GFX ] fallback LFB active (%s): mode %dx%dx%d (max %dx%dx16)",
-                  g_generic_vga_name, screen_w, screen_h, screen_bpp,
-                  max_w, max_h);
+        klog_info("[GFX ] fixed LFB active (%s): mode %dx%dx%d (no HW modeset)",
+                  g_generic_vga_name, screen_w, screen_h, screen_bpp);
     } else {
         if (!gfx_accel_can_change_mode(screen_w, screen_h, screen_bpp)) {
             int cnt = gfx_accel_get_mode_count();
@@ -281,6 +278,11 @@ int gfx_accel_has_valid_driver(void) {
     return g_active_drv != NULL ? 1 : 0;
 }
 
+int gfx_accel_can_modeset_hw(void) {
+    if (!g_initialized) gfx_accel_init();
+    return (g_active_drv && g_active_drv->requires_hw_mode_set) ? 1 : 0;
+}
+
 const char* gfx_accel_get_name(void) {
     if (!g_initialized) gfx_accel_init();
     if (g_active_drv && g_active_drv->get_name) {
@@ -317,6 +319,11 @@ static int gfx_collect_modes(pdv_display_mode_t* out, int max_out) {
             memset(&m, 0, sizeof(m));
             if (!g_active_drv->get_mode(i, &m)) continue;
             if (m.width < GFX_MIN_WIDTH || m.height < GFX_MIN_HEIGHT) continue;
+            if (!g_active_drv->requires_hw_mode_set &&
+                ((int)m.width != (int)g_main_surface.width ||
+                 (int)m.height != (int)g_main_surface.height)) {
+                continue;
+            }
             static const int k_bpps[4] = { 8, 16, 24, 32 };
             uint8_t valid_mask = 0;
             for (int b = 0; b < 4; b++) {
@@ -392,7 +399,16 @@ int gfx_accel_get_max_height(void) {
 int gfx_accel_get_supported_bpp_mask(void) {
     if (!g_initialized) gfx_accel_init();
     if (!g_active_drv) {
-        return (int)(PDV_BPP_MASK_8 | PDV_BPP_MASK_16);
+        int mask = 0;
+        int w = gfx_fallback_max_w();
+        int h = gfx_fallback_max_h();
+        static const int k_bpps[4] = { 8, 16, 24, 32 };
+        for (int b = 0; b < 4; b++) {
+            if (gfx_accel_can_change_mode(w, h, k_bpps[b])) {
+                mask |= (int)gfx_bpp_to_mask_byte(k_bpps[b]);
+            }
+        }
+        return mask ? mask : (int)(PDV_BPP_MASK_16 | PDV_BPP_MASK_32);
     }
     pdv_display_mode_t modes[MAX_SYNTH_MODES];
     int cnt = gfx_collect_modes(modes, MAX_SYNTH_MODES);
@@ -451,10 +467,14 @@ int gfx_accel_can_change_mode(int w, int h, int bpp) {
 
     if (!g_active_drv) {
         if (g_main_surface.framebuffer_virt == NULL) return 0;
-        if (bpp != 8 && bpp != 16) return 0;
-        if (w > gfx_fallback_max_w() || h > gfx_fallback_max_h()) return 0;
+        if (w != gfx_fallback_max_w() || h != gfx_fallback_max_h()) return 0;
         if (!gfx_mode_fits_vram(w, h, bpp, gfx_accel_get_vram_size())) return 0;
         return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+    }
+
+    if (!g_active_drv->requires_hw_mode_set &&
+        (w != gfx_fallback_max_w() || h != gfx_fallback_max_h())) {
+        return 0;
     }
 
     if (g_active_drv->can_set_mode) {

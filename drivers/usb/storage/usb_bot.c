@@ -6,7 +6,10 @@
 #define USB_BOT_MAX_DEVICES 4
 #define USB_BOT_CBW_SIGNATURE 0x43425355u
 #define USB_BOT_CSW_SIGNATURE 0x53425355u
-#define USB_BOT_DATA_CHUNK 1024u
+#define USB_BOT_DATA_CHUNK 4096u
+#define USB_BOT_CMD_OK             0
+#define USB_BOT_CMD_ERROR         -1
+#define USB_BOT_CMD_CHECK_COND    -2
 
 typedef struct {
     bool used;
@@ -39,6 +42,12 @@ typedef struct {
 
 static usb_bot_device_t g_bots[USB_BOT_MAX_DEVICES];
 static int g_bot_count;
+static int g_next_bot_unit;
+static uint32_t g_bot_generation = 1;
+
+uint32_t usb_storage_get_generation(void) {
+    return g_bot_generation;
+}
 
 static uint32_t be32(const uint8_t* data) {
     return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
@@ -75,17 +84,21 @@ static int bot_bulk(usb_bot_device_t* bot, usb_endpoint_t* endpoint,
 
 static int bot_reset_recovery(usb_bot_device_t* bot) {
     if (!bot || !bot->device) return -1;
-    return usb_control_msg(
+    int result = usb_control_msg(
         bot->device, USB_DIR_OUT | USB_RT_CLASS | USB_RT_INTERFACE,
         0xFF, 0, bot->device->interface_number, NULL, 0);
+    usb_delay_ms(10);
+    if (bot->bulk_in) (void)usb_clear_halt(bot->device, bot->bulk_in);
+    if (bot->bulk_out) (void)usb_clear_halt(bot->device, bot->bulk_out);
+    return result;
 }
 
-static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
-                       uint8_t command_length, void* data,
-                       uint32_t data_length, int direction) {
+static int bot_command_raw(usb_bot_device_t* bot, const uint8_t* command,
+                           uint8_t command_length, void* data,
+                           uint32_t data_length, int direction) {
     if (!bot || !command || command_length > 16 ||
         data_length > sizeof(bot->buffer)) {
-        return -1;
+        return USB_BOT_CMD_ERROR;
     }
     bot_cbw_t cbw;
     memset(&cbw, 0, sizeof(cbw));
@@ -98,51 +111,105 @@ static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
     if (bot_bulk(bot, bot->bulk_out, &cbw, sizeof(cbw), USB_DIR_OUT) !=
         (int)sizeof(cbw)) {
         log_printf("[USBMS] CBW send failed tag=%u\n", cbw.tag);
-        return -1;
+        (void)bot_reset_recovery(bot);
+        return USB_BOT_CMD_ERROR;
     }
 
     uint32_t transferred = 0;
+    bool data_stalled = false;
     if (data_length) {
         if (direction == USB_DIR_OUT) {
             memcpy(bot->buffer, data, data_length);
         } else {
             memset(bot->buffer, 0, data_length);
         }
+        usb_endpoint_t* data_ep =
+            (direction == USB_DIR_IN) ? bot->bulk_in : bot->bulk_out;
         int bulk_result = bot_bulk(
-            bot, direction == USB_DIR_IN ? bot->bulk_in : bot->bulk_out,
-            bot->buffer, data_length, direction);
+            bot, data_ep, bot->buffer, data_length, direction);
         if (bulk_result < 0) {
-            log_printf("[USBMS] data transfer failed tag=%u dir=%d length=%u\n",
-                       cbw.tag, direction, data_length);
-            (void)bot_reset_recovery(bot);
-            return -1;
+            /* Per USB BOT spec 6.7.2/6.7.3: clear STALL on data pipe then read CSW */
+            (void)usb_clear_halt(bot->device, data_ep);
+            data_stalled = true;
+        } else {
+            /*
+             * A short bulk transfer is legal for BOT.  The CSW carries the byte
+             * residue and must still be consumed before the next command.
+             */
+            transferred = (uint32_t)bulk_result;
+            if (transferred > data_length) transferred = data_length;
         }
-        /*
-         * A short bulk transfer is legal for BOT.  The CSW carries the byte
-         * residue and must still be consumed before the next command.
-         */
-        transferred = (uint32_t)bulk_result;
-        if (transferred > data_length) transferred = data_length;
     }
 
     bot_csw_t csw;
     memset(&csw, 0, sizeof(csw));
     int csw_result = bot_bulk(bot, bot->bulk_in, &csw, sizeof(csw),
                               USB_DIR_IN);
+    if (csw_result < 0) {
+        (void)usb_clear_halt(bot->device, bot->bulk_in);
+        csw_result = bot_bulk(bot, bot->bulk_in, &csw, sizeof(csw),
+                              USB_DIR_IN);
+    }
     if (csw_result != (int)sizeof(csw) ||
         csw.signature != USB_BOT_CSW_SIGNATURE || csw.tag != cbw.tag ||
-        csw.status != 0 || csw.residue > data_length) {
+        csw.status >= 2 || csw.residue > data_length) {
         log_printf("[USBMS] CSW failure tag=%u got_tag=%u signature=%08x status=%u\n",
                    cbw.tag, csw.tag, csw.signature, csw.status);
         (void)bot_reset_recovery(bot);
-        return -1;
+        return USB_BOT_CMD_ERROR;
+    }
+    if (csw.status == 1) {
+        return USB_BOT_CMD_CHECK_COND;
+    }
+    if (data_stalled) {
+        return USB_BOT_CMD_ERROR;
     }
     if (data_length && direction == USB_DIR_IN) {
         uint32_t actual = data_length - csw.residue;
         if (actual > transferred) actual = transferred;
         memcpy(data, bot->buffer, actual);
     }
+    return USB_BOT_CMD_OK;
+}
+
+static int scsi_request_sense(usb_bot_device_t* bot, uint8_t* sense_key,
+                              uint8_t* asc, uint8_t* ascq) {
+    uint8_t cmd[6] = { 0x03, 0, 0, 0, 18, 0 };
+    uint8_t sense[18];
+    memset(sense, 0, sizeof(sense));
+    if (bot_command_raw(bot, cmd, sizeof(cmd), sense,
+                        sizeof(sense), USB_DIR_IN) != USB_BOT_CMD_OK) {
+        return -1;
+    }
+    if (sense_key) *sense_key = sense[2] & 0x0Fu;
+    if (asc) *asc = sense[12];
+    if (ascq) *ascq = sense[13];
     return 0;
+}
+
+static int bot_command(usb_bot_device_t* bot, const uint8_t* command,
+                       uint8_t command_length, void* data,
+                       uint32_t data_length, int direction) {
+    for (int retry = 0; retry < 4; retry++) {
+        int res = bot_command_raw(bot, command, command_length, data,
+                                  data_length, direction);
+        if (res == USB_BOT_CMD_OK) return 0;
+        if (res == USB_BOT_CMD_CHECK_COND) {
+            uint8_t key = 0, asc = 0, ascq = 0;
+            if (scsi_request_sense(bot, &key, &asc, &ascq) == 0) {
+                if (key == 0x00 || key == 0x01 || key == 0x06 ||
+                    (key == 0x02 && asc == 0x04)) {
+                    usb_delay_ms(key == 0x02 ? 40 : 5);
+                    continue;
+                }
+                log_printf("[USBMS] SCSI sense key=%02x asc=%02x ascq=%02x cmd=%02x\n",
+                           key, asc, ascq, command[0]);
+            }
+            return -1;
+        }
+        return -1;
+    }
+    return -1;
 }
 
 static int scsi_inquiry(usb_bot_device_t* bot) {
@@ -181,9 +248,9 @@ static int scsi_test_ready(usb_bot_device_t* bot) {
 }
 
 static int scsi_wait_ready(usb_bot_device_t* bot) {
-    for (int attempt = 0; attempt < 20; attempt++) {
+    for (int attempt = 0; attempt < 25; attempt++) {
         if (scsi_test_ready(bot) == 0) return 0;
-        usb_delay_ms(25);
+        usb_delay_ms(40);
     }
     return -1;
 }
@@ -231,8 +298,22 @@ int usb_storage_attach(usb_device_t* device) {
     for (uint8_t index = 0; index < device->endpoint_count; index++) {
         usb_endpoint_t* endpoint = &device->endpoints[index];
         if (endpoint->type != USB_EP_TYPE_BULK) continue;
-        if (endpoint->direction == USB_DIR_IN) bulk_in = endpoint;
-        else bulk_out = endpoint;
+        if (endpoint->interface_class != USB_CLASS_MASS_STORAGE ||
+            endpoint->interface_protocol == 0x62) {
+            continue;
+        }
+        if (endpoint->direction == USB_DIR_IN && !bulk_in) bulk_in = endpoint;
+        else if (endpoint->direction == USB_DIR_OUT && !bulk_out) bulk_out = endpoint;
+    }
+    if (!bulk_in || !bulk_out) {
+        bulk_in = NULL;
+        bulk_out = NULL;
+        for (uint8_t index = 0; index < device->endpoint_count; index++) {
+            usb_endpoint_t* endpoint = &device->endpoints[index];
+            if (endpoint->type != USB_EP_TYPE_BULK) continue;
+            if (endpoint->direction == USB_DIR_IN && !bulk_in) bulk_in = endpoint;
+            else if (endpoint->direction == USB_DIR_OUT && !bulk_out) bulk_out = endpoint;
+        }
     }
     if (!bulk_in || !bulk_out) {
         log_printf("[USBMS] Missing bulk endpoints on device %u\n",
@@ -245,17 +326,23 @@ int usb_storage_attach(usb_device_t* device) {
     bot->device = device;
     bot->bulk_in = bulk_in;
     bot->bulk_out = bulk_out;
-    if (scsi_inquiry(bot) != 0 || scsi_wait_ready(bot) != 0) {
+    if (scsi_inquiry(bot) != 0) {
         log_printf("[USBMS] SCSI INQUIRY failed on device %u\n",
                    device->address);
         memset(bot, 0, sizeof(*bot));
         return -1;
     }
+    if (scsi_wait_ready(bot) != 0) {
+        log_printf("[USBMS] TEST UNIT READY failed on device %u\n",
+                   device->address);
+        memset(bot, 0, sizeof(*bot));
+        return -1;
+    }
     int capacity_result = -1;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < 6; attempt++) {
         capacity_result = scsi_capacity(bot);
         if (capacity_result == 0) break;
-        usb_delay_ms(25);
+        usb_delay_ms(40);
     }
     if (capacity_result != 0) {
         log_printf("[USBMS] READ CAPACITY failed on device %u\n",
@@ -264,7 +351,7 @@ int usb_storage_attach(usb_device_t* device) {
         return -1;
     }
     bot->block = block_register(
-        "usb-bot", BLK_TYPE_USB, g_bot_count, bot->sector_size,
+        "usb-bot", BLK_TYPE_USB, g_next_bot_unit++, bot->sector_size,
         bot->sector_count, false, true, bot_read_blocks, bot_write_blocks,
         NULL, bot);
     if (!bot->block) {
@@ -272,6 +359,7 @@ int usb_storage_attach(usb_device_t* device) {
         return -1;
     }
     g_bot_count++;
+    g_bot_generation++;
     log_printf("[USBMS] Attached BOT address=%u sectors=%llu size=%u\n",
                device->address, (unsigned long long)bot->sector_count,
                bot->sector_size);
@@ -285,6 +373,7 @@ void usb_storage_detach(usb_device_t* device) {
             g_bots[index] = g_bots[g_bot_count - 1];
             memset(&g_bots[g_bot_count - 1], 0, sizeof(g_bots[0]));
             g_bot_count--;
+            g_bot_generation++;
             return;
         }
     }

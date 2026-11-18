@@ -30,6 +30,8 @@ extern partition_entry_t g_partitions[MAX_PARTITIONS];
 extern int g_partition_count;
 
 void part_scan_all(void);
+void part_scan_device(blkdev_t* dev);
+void part_remove_device(blkdev_t* dev);
 partition_entry_t* part_get(int index);
 partition_entry_t* part_find_by_start(blkdev_t* dev, uint64_t start_lba);
 

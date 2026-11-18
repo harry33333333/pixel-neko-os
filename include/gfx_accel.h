@@ -19,6 +19,7 @@
 void         gfx_accel_init(void);
 int          gfx_accel_is_active(void);
 int          gfx_accel_has_valid_driver(void);
+int          gfx_accel_can_modeset_hw(void);
 const char*  gfx_accel_get_name(void);
 const char*  gfx_accel_get_status(void);
 const char*  gfx_accel_get_fallback_reason(void);

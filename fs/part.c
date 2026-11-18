@@ -234,7 +234,10 @@ static void write_le32_part(uint8_t* data, uint32_t value) {
 static blkdev_t* g_uninit_disk_dev = NULL;
 
 static void scan_device(blkdev_t* dev) {
-    if (!dev || dev->is_readonly || dev->sector_size != 512) return;
+    if (!dev || (dev->is_readonly && dev->type != BLK_TYPE_USB) ||
+        dev->sector_size != 512) {
+        return;
+    }
     uint8_t mbr[512];
     if (block_read(dev, 0, 1, mbr) != 0) {
         log_printf("[PART] %s failed to read sector 0\n", dev->name);
@@ -329,6 +332,23 @@ void part_initialize_disk(blkdev_t* dev) {
         (void)format_partition(dev, start_lba, part_sectors, fmt_type);
         add_partition(dev, start_lba, part_sectors, sys_id, NULL);
     }
+}
+
+void part_remove_device(blkdev_t* dev) {
+    if (!dev) return;
+    int out = 0;
+    for (int i = 0; i < g_partition_count; i++) {
+        if (g_partitions[i].dev == dev) continue;
+        if (out != i) g_partitions[out] = g_partitions[i];
+        out++;
+    }
+    g_partition_count = out;
+}
+
+void part_scan_device(blkdev_t* dev) {
+    if (!dev) return;
+    part_remove_device(dev);
+    scan_device(dev);
 }
 
 void part_scan_all(void) {

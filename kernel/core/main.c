@@ -69,7 +69,7 @@ volatile struct limine_stack_size_request stack_size_request = {
 __attribute__((used, section(".limine_requests")))
 volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
-    .revision = 0
+    .revision = 1
 };
 
 __attribute__((used, section(".limine_requests")))

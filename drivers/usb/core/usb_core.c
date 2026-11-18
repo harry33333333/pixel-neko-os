@@ -540,6 +540,20 @@ static int enumerate_device(usb_hci_t* hci, usb_device_t* parent_hub,
             log_printf("[USB ] USB Mass Storage attach failed for device %u\n",
                        dev->address);
         }
+    } else {
+        for (uint8_t ep = 0; ep < dev->endpoint_count; ep++) {
+            if (dev->endpoints[ep].interface_class == USB_CLASS_MASS_STORAGE &&
+                dev->endpoints[ep].interface_protocol != 0x62) {
+                dev->interface_number = dev->endpoints[ep].interface_number;
+                dev->interface_subclass = dev->endpoints[ep].interface_subclass;
+                dev->interface_protocol = dev->endpoints[ep].interface_protocol;
+                if (usb_storage_attach(dev) != 0) {
+                    log_printf("[USB ] Composite Mass Storage attach failed for device %u\n",
+                               dev->address);
+                }
+                break;
+            }
+        }
     }
     return 0;
 }
@@ -657,4 +671,16 @@ void usb_poll(void) {
     }
     usb_hub_poll();
     usb_hid_poll();
+}
+
+int usb_clear_halt(usb_device_t* dev, usb_endpoint_t* endpoint) {
+    if (!dev || !endpoint) return -1;
+    int result = usb_control_msg(
+        dev, USB_DIR_OUT | USB_RT_STANDARD | USB_RT_ENDPOINT,
+        USB_REQ_CLEAR_FEATURE, 0, endpoint->address, NULL, 0);
+    endpoint->toggle = 0;
+    if (dev->hci && dev->hci->clear_halt) {
+        (void)dev->hci->clear_halt(dev->hci, dev, endpoint);
+    }
+    return result;
 }

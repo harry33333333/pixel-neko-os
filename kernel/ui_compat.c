@@ -570,6 +570,9 @@ static void ui_update_pointer(input_event_t* event) {
 
 void ui_desktop_poll(void) {
     if (!g_started) return;
+    if (vfs_sync_usb_drives()) {
+        wm_notify_media_changed();
+    }
     timer_update();
 
     int prev_mx = g_cursor_saved_x;

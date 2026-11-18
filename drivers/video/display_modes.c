@@ -3,6 +3,8 @@
 #include "mm.h"
 #include "string.h"
 
+extern volatile struct limine_framebuffer_request framebuffer_request;
+
 static display_mode_t g_modes[DISPLAY_MODE_MAX];
 static int g_mode_count;
 static display_mode_t g_firmware_modes[DISPLAY_MODE_MAX];
@@ -121,6 +123,8 @@ static void edid_add_established(const uint8_t* edid) {
 
 static void edid_add_standard(const uint8_t* edid) {
     int major = edid[18];
+    int minor = edid[19];
+    bool has_16_10 = (major > 1) || (major == 1 && minor >= 3);
     for (int index = 0; index < 8; index++) {
         uint8_t first = edid[38 + index * 2];
         uint8_t second = edid[39 + index * 2];
@@ -131,7 +135,7 @@ static void edid_add_standard(const uint8_t* edid) {
         int width = ((int)first + 31) * 8;
         int aspect = (second >> 6) & 0x03;
         int height;
-        if (aspect == 0) height = major >= 4 ? (width * 10) / 16 : width;
+        if (aspect == 0) height = has_16_10 ? (width * 10) / 16 : width;
         else if (aspect == 1) height = (width * 3) / 4;
         else if (aspect == 2) height = (width * 4) / 5;
         else height = (width * 9) / 16;
@@ -172,22 +176,30 @@ static void edid_add_vic(uint8_t vic) {
 static void edid_add_extension(const uint8_t* block) {
     if (!block || block[0] != 0x02) return;
     int dtd_offset = block[2];
-    if (dtd_offset < 4 || dtd_offset > 127) dtd_offset = 127;
-    int cursor = 4;
-    while (cursor < dtd_offset) {
-        uint8_t header = block[cursor];
-        int length = header & 0x1FU;
-        int tag = (header >> 5) & 0x07;
-        if (length == 0 || cursor + length >= 128) break;
-        if (tag == 2) {
-            for (int index = 0; index < length; index++) {
-                edid_add_vic(block[cursor + 1 + index] & 0x7FU);
+    if (dtd_offset == 0) return;
+    if (dtd_offset > 127) dtd_offset = 127;
+    if (dtd_offset > 4) {
+        int cursor = 4;
+        while (cursor < dtd_offset) {
+            uint8_t header = block[cursor];
+            int length = header & 0x1FU;
+            int tag = (header >> 5) & 0x07;
+            if (cursor + 1 + length > dtd_offset ||
+                cursor + 1 + length > 127) {
+                break;
             }
+            if (tag == 2) {
+                for (int index = 0; index < length; index++) {
+                    edid_add_vic(block[cursor + 1 + index] & 0x7FU);
+                }
+            }
+            cursor += length + 1;
         }
-        cursor += length + 1;
     }
-    for (int offset = dtd_offset; offset + 18 <= 128; offset += 18) {
-        edid_add_dtd(block + offset, false);
+    if (dtd_offset >= 4) {
+        for (int offset = dtd_offset; offset + 18 <= 127; offset += 18) {
+            edid_add_dtd(block + offset, false);
+        }
     }
 }
 
@@ -210,8 +222,10 @@ static void display_parse_edid(const uint8_t* edid, size_t size) {
         edid_add_dtd(edid + offset, preferred);
         preferred = false;
     }
-    for (size_t offset = 128; offset + 128 <= size &&
-                           offset < DISPLAY_EDID_MAX_BYTES; offset += 128) {
+    size_t ext_limit = 128u + (size_t)edid[126] * 128u;
+    if (ext_limit > size) ext_limit = size;
+    if (ext_limit > DISPLAY_EDID_MAX_BYTES) ext_limit = DISPLAY_EDID_MAX_BYTES;
+    for (size_t offset = 128; offset + 128 <= ext_limit; offset += 128) {
         if (!edid_block_valid(edid + offset)) continue;
         edid_add_extension(edid + offset);
     }
@@ -245,7 +259,10 @@ static void display_add_conservative_presets(display_mode_t* modes, int* count) 
 static void display_capture_firmware_modes(const struct limine_framebuffer* fb) {
     g_firmware_mode_count = 0;
     if (!fb) return;
-    if (fb->modes) {
+    bool has_rev1_modes = framebuffer_request.response &&
+                          framebuffer_request.response->revision >= 1 &&
+                          fb->modes != NULL;
+    if (has_rev1_modes) {
         struct limine_video_mode* const* modes =
             (struct limine_video_mode* const*)display_limine_ptr(fb->modes);
         uint64_t count = fb->mode_count;

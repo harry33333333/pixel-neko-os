@@ -5,5 +5,6 @@
 
 int usb_storage_attach(usb_device_t* device);
 void usb_storage_detach(usb_device_t* device);
+uint32_t usb_storage_get_generation(void);
 
 #endif

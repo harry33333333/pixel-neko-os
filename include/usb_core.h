@@ -161,6 +161,8 @@ typedef struct usb_hci {
     int (*bulk)(struct usb_hci* hci, usb_device_t* dev,
                 usb_endpoint_t* endpoint, void* data, int length,
                 int direction);
+    int (*clear_halt)(struct usb_hci* hci, usb_device_t* dev,
+                      usb_endpoint_t* endpoint);
     int (*port_reset)(struct usb_hci* hci, uint8_t port);
     void (*device_release)(struct usb_hci* hci, usb_device_t* dev);
     void (*poll)(struct usb_hci* hci);
@@ -209,6 +211,7 @@ usb_device_t* usb_find_child(usb_device_t* hub, uint8_t port);
 
 int usb_control_msg(usb_device_t* dev, int direction, uint8_t request,
                     uint16_t value, uint16_t index, void* data, int length);
+int usb_clear_halt(usb_device_t* dev, usb_endpoint_t* endpoint);
 int usb_enumerate(usb_hci_t* hci, uint8_t port, uint8_t speed);
 int usb_enumerate_hub(usb_hci_t* hci, usb_device_t* hub,
                       uint8_t port, uint8_t speed);

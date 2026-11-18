@@ -5,7 +5,7 @@
 #include "log.h"
 #include "string.h"
 
-#define XHCI_MAX_CONTROLLERS 2
+#define XHCI_MAX_CONTROLLERS 4
 #define XHCI_MAX_SLOTS 32
 #define XHCI_MAX_PORTS 256
 #define XHCI_RING_SIZE 256
@@ -58,7 +58,9 @@
 #define XHCI_TRB_ADDRESS_DEVICE     11u
 #define XHCI_TRB_CONFIGURE_ENDPOINT 12u
 #define XHCI_TRB_EVALUATE_CONTEXT   13u
+#define XHCI_TRB_RESET_ENDPOINT     14u
 #define XHCI_TRB_STOP_ENDPOINT      15u
+#define XHCI_TRB_SET_TR_DEQUEUE     16u
 #define XHCI_TRB_TRANSFER_EVENT     32u
 #define XHCI_TRB_COMMAND_EVENT      33u
 #define XHCI_TRB_PORT_STATUS_EVENT  34u
@@ -191,6 +193,7 @@ static xhci_trb_t* xhci_ring_push(xhci_controller_t* c, xhci_ring_t* ring,
         xhci_trb_t* link = &trbs[XHCI_RING_SIZE - 1];
         memset((void*)link, 0, sizeof(*link));
         link->parameter = ring->physical_base;
+        __asm__ volatile("sfence" ::: "memory");
         link->control = (XHCI_TRB_LINK << 10) |
                         (ring->cycle ? 1u : 0u) | (1u << 1);
         ring->cycle ^= 1;
@@ -199,6 +202,7 @@ static xhci_trb_t* xhci_ring_push(xhci_controller_t* c, xhci_ring_t* ring,
     xhci_trb_t* trb = &trbs[ring->producer++];
     trb->parameter = parameter;
     trb->status = status;
+    __asm__ volatile("sfence" ::: "memory");
     trb->control = control | (ring->cycle ? 1u : 0u);
     dma_sync_for_device(&c->arena);
     (void)c;
@@ -210,8 +214,8 @@ static bool xhci_event_next(xhci_controller_t* c, xhci_trb_t* event) {
     xhci_trb_t* trb = &c->event_ring[c->event_index];
     uint32_t control = trb->control;
     if ((control & 1u) != c->event_cycle) return false;
+    __asm__ volatile("lfence" ::: "memory");
     *event = *trb;
-    memset(trb, 0, sizeof(*trb));
     c->event_index++;
     if (c->event_index >= XHCI_EVENT_RING_SIZE) {
         c->event_index = 0;
@@ -601,6 +605,37 @@ static void xhci_evaluate_ep0_if_needed(xhci_controller_t* c,
     }
 }
 
+static void xhci_reset_halted_endpoint(xhci_controller_t* c,
+                                       xhci_slot_t* slot,
+                                       uint8_t dci, xhci_ring_t* ring,
+                                       bool was_halted) {
+    if (!c || !slot || dci == 0 || dci >= 32) return;
+    if (was_halted) {
+        (void)xhci_command(
+            c, 0, 0,
+            (XHCI_TRB_RESET_ENDPOINT << 10) |
+            ((uint32_t)dci << 16) |
+            ((uint32_t)slot->slot_id << 24), NULL);
+    } else {
+        (void)xhci_command(
+            c, 0, 0,
+            (XHCI_TRB_STOP_ENDPOINT << 10) |
+            ((uint32_t)dci << 16) |
+            ((uint32_t)slot->slot_id << 24), NULL);
+    }
+    if (ring && ring->virtual_base) {
+        uint64_t deq = ring->physical_base +
+                       (uint64_t)ring->producer * sizeof(xhci_trb_t);
+        (void)xhci_command(
+            c, (deq & ~0xFULL) | (ring->cycle ? 1ULL : 0ULL), 0,
+            (XHCI_TRB_SET_TR_DEQUEUE << 10) |
+            ((uint32_t)dci << 16) |
+            ((uint32_t)slot->slot_id << 24), NULL);
+    }
+    slot->ep_complete[dci] = false;
+    slot->ep_pending[dci] = false;
+}
+
 static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
                                const uint8_t* setup, void* data, int length,
                                int direction) {
@@ -707,11 +742,16 @@ static int xhci_submit_control(xhci_controller_t* c, xhci_slot_t* slot,
     }
     uint8_t code = (uint8_t)(event.status >> 24);
     if (code != 1 && code != 13) {
-        xhci_note_control_failure(c, slot, code);
         log_printf("[xHCI] control completion=%u slot=%u type=%02x "
                    "req=%02x len=%d residual=%u\n",
                    code, slot->slot_id, setup[0], setup[1], length,
                    (unsigned)(event.status & 0xFFFFFFu));
+        if (code == 6) {
+            /* EP0 protocol STALL: reset EP0 dequeue pointer, keep the slot */
+            xhci_reset_halted_endpoint(c, slot, 1, &slot->ep0_ring, true);
+            return -1;
+        }
+        xhci_note_control_failure(c, slot, code);
         xhci_discard_slot(c, slot);
         return -1;
     }
@@ -772,8 +812,8 @@ static int xhci_configure_interrupt(xhci_controller_t* c, xhci_slot_t* slot,
                           c->context_size * (dci + 1);
     uint32_t* slot_dwords = (uint32_t*)slot_context;
     uint32_t* ep_dwords = (uint32_t*)ep_context;
-    memcpy(slot_context, slot->output_context + c->context_size,
-           c->context_size);
+    memcpy(slot_context, slot->output_context, c->context_size);
+    slot_dwords[3] = 0;
     uint32_t last_dci = (slot_dwords[0] >> 27) & 0x1F;
     if (dci > last_dci) last_dci = dci;
     slot_dwords[0] &= ~(0x1Fu << 27);
@@ -851,11 +891,15 @@ static int xhci_intr_in(usb_hci_t* hci, usb_device_t* device,
             if (code != 1 && code != 13) {
                 log_printf("[xHCI] intr_in completion code=%u for slot=%u dci=%u\n",
                            code, slot->slot_id, dci);
-                xhci_command(c, 0, 0, (XHCI_TRB_STOP_ENDPOINT << 10) |
-                               ((uint32_t)dci << 16) |
-                               ((uint32_t)slot->slot_id << 24), NULL);
-                slot->ep_configured[dci] = false;
-                endpoint->hcd_priv = NULL;
+                if (code == 6) {
+                    xhci_reset_halted_endpoint(c, slot, dci, &slot->ep_rings[dci],
+                                               true);
+                } else {
+                    xhci_reset_halted_endpoint(c, slot, dci, &slot->ep_rings[dci],
+                                               false);
+                    slot->ep_configured[dci] = false;
+                    endpoint->hcd_priv = NULL;
+                }
                 return -1;
             }
             int residual = (int)(event.status & 0xFFFFFF);
@@ -908,8 +952,8 @@ static int xhci_configure_bulk(xhci_controller_t* c, xhci_slot_t* slot,
     uint8_t* ep_context = c->input_context + c->context_size * (dci + 1);
     uint32_t* slot_dwords = (uint32_t*)slot_context;
     uint32_t* ep_dwords = (uint32_t*)ep_context;
-    memcpy(slot_context, slot->output_context + c->context_size,
-           c->context_size);
+    memcpy(slot_context, slot->output_context, c->context_size);
+    slot_dwords[3] = 0;
     uint32_t last_dci = (slot_dwords[0] >> 27) & 0x1F;
     if (dci > last_dci) last_dci = dci;
     slot_dwords[0] &= ~(0x1Fu << 27);
@@ -975,15 +1019,17 @@ static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
     *doorbell = dci;
 
     xhci_trb_t event;
-    if (xhci_wait_transfer(c, slot, dci, 0, &event, 500) != 0) {
+    if (xhci_wait_transfer(c, slot, dci, 0, &event, 3000) != 0) {
         log_printf("[xHCI] bulk timeout slot=%u dci=%u length=%d\n",
                    slot->slot_id, dci, length);
+        xhci_reset_halted_endpoint(c, slot, dci, &slot->ep_rings[dci], false);
         return -1;
     }
     uint8_t code = (uint8_t)(event.status >> 24);
     if (code != 1 && code != 13) {
         log_printf("[xHCI] bulk completion=%u slot=%u dci=%u\n",
                    code, slot->slot_id, dci);
+        xhci_reset_halted_endpoint(c, slot, dci, &slot->ep_rings[dci], true);
         return -1;
     }
     int residual = (int)(event.status & 0xFFFFFF);
@@ -996,6 +1042,19 @@ static int xhci_bulk(usb_hci_t* hci, usb_device_t* device,
     }
     endpoint->toggle ^= 1;
     return actual;
+}
+
+static int xhci_clear_halt(usb_hci_t* hci, usb_device_t* device,
+                           usb_endpoint_t* endpoint) {
+    xhci_controller_t* c = hci ? (xhci_controller_t*)hci->priv : NULL;
+    if (!c || !device || !endpoint || endpoint->number == 0) return -1;
+    xhci_slot_t* slot = xhci_slot_for_device(c, device);
+    if (!slot) return -1;
+    uint8_t dci = (uint8_t)(endpoint->number * 2 +
+                            (endpoint->direction == USB_DIR_IN ? 1 : 0));
+    if (dci >= 32 || !slot->ep_configured[dci]) return 0;
+    xhci_reset_halted_endpoint(c, slot, dci, &slot->ep_rings[dci], true);
+    return 0;
 }
 
 static void xhci_release(usb_hci_t* hci, usb_device_t* device) {
@@ -1127,7 +1186,8 @@ static int xhci_port_reset(usb_hci_t* hci, uint8_t port) {
                        "enumeration failure\n", port);
             value = xhci_port_reset_attempt(c, reg, false);
             attempted = true;
-        } else if (pls == 6 || pls == 8 || pls == 10) {
+        } else if (pls == 4 || pls == 6 || pls == 8 || pls == 10 ||
+                   pls == 15) {
             log_printf("[xHCI] port %u USB3 link recovery warm reset "
                        "(PLS=%u PORTSC=%08x)\n", port, pls, value);
             value = xhci_port_reset_attempt(c, reg, true);
@@ -1163,7 +1223,8 @@ static int xhci_port_reset(usb_hci_t* hci, uint8_t port) {
     if (usb3_port && attempted && !warm_attempted &&
         !(value & XHCI_PORT_PED)) {
         uint8_t pls = (uint8_t)XHCI_PORT_PLS_GET(value);
-        if (pls == 6 || pls == 8 || pls == 10) {
+        if (pls == 4 || pls == 6 || pls == 7 || pls == 8 ||
+            pls == 10 || pls == 15) {
             log_printf("[xHCI] port %u USB3 reset recovery fallback "
                        "(PLS=%u PORTSC=%08x)\n", port, pls, value);
             value = xhci_port_reset_attempt(c, reg, true);
@@ -1436,7 +1497,7 @@ int xhci_probe(const pci_device_t* device) {
     }
     if (usb_dma_alloc_zero(65536,
                            (hccparams1 & 1u) ? UINT64_MAX : UINT32_MAX,
-                           64, &c->bulk_staging) != 0) {
+                           PAGE_SIZE, &c->bulk_staging) != 0) {
         log_printf("[xHCI] Failed to allocate bulk staging\n");
         return -1;
     }
@@ -1460,13 +1521,8 @@ int xhci_probe(const pci_device_t* device) {
     uint64_t erst_phys = (uint64_t)((uint8_t*)erst - c->memory) +
                          c->memory_phys;
     erst[0] = c->event_ring_phys;
-    /*
-     * ERST Entry bit 31 is the Change (C) flag. Intel 600-series controllers
-     * use it to detect the end of a ring segment. Without it the event ring
-     * can appear to work until the first wrap, then silently stop retiring
-     * HID transfer events.
-     */
-    erst[1] = (uint64_t)XHCI_EVENT_RING_SIZE | (1ULL << 31);
+    /* ERST Entry DWORD 2 holds only Ring Segment Size (bits 15:0); bits 31:16 are RsvdZ. */
+    erst[1] = (uint64_t)XHCI_EVENT_RING_SIZE;
     c->dcbaa = xhci_arena_alloc(
         c, sizeof(uint64_t) * (XHCI_MAX_SLOTS + 1), 64, &c->dcbaa_phys);
     c->input_context = xhci_arena_alloc(c, c->context_size * 33, 64,
@@ -1485,8 +1541,8 @@ int xhci_probe(const pci_device_t* device) {
     }
 
     if (scratchpad_count) {
-        if (scratchpad_count > 64) {
-            log_printf("[xHCI] Scratchpad count %u exceeds 64\n", scratchpad_count);
+        if (scratchpad_count > 256) {
+            log_printf("[xHCI] Scratchpad count %u exceeds 256\n", scratchpad_count);
             return -1;
         }
         uint64_t* pointer_array = xhci_arena_alloc(
@@ -1588,6 +1644,7 @@ int xhci_probe(const pci_device_t* device) {
     c->hci.skips_set_address = true;
     c->hci.control = xhci_control;
     c->hci.bulk = xhci_bulk;
+    c->hci.clear_halt = xhci_clear_halt;
     c->hci.intr_in = xhci_intr_in;
     c->hci.port_reset = xhci_port_reset;
     c->hci.device_release = xhci_release;

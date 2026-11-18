@@ -8,12 +8,14 @@
 #include "log.h"
 #include "settings.h"
 #include "string.h"
+#include "usb_storage.h"
 
 vfs_drive_t g_vfs_drives[26];
 
 static iso_fs_t g_iso_filesystems[4];
 static exfat_fs_t g_exfat_filesystems[26];
 static uint64_t g_last_media_poll_tick;
+static uint32_t g_last_usb_storage_gen;
 
 typedef enum {
     VFS_FS_NONE = 0,
@@ -493,6 +495,7 @@ void vfs_init(void) {
         if (mount_raw_iso(dev, optical_cursor)) optical_cursor++;
     }
 
+    g_last_usb_storage_gen = usb_storage_get_generation();
     int mounted = 0;
     for (int index = 0; index < 26; index++) {
         if (g_vfs_drives[index].mounted) mounted++;
@@ -501,12 +504,117 @@ void vfs_init(void) {
                mounted);
 }
 
-bool vfs_poll_media(void) {
-    uint64_t now = apic_get_ticks();
-    if (now - g_last_media_poll_tick < 100) return false;
-    g_last_media_poll_tick = now;
+static bool vfs_blkdev_is_active_usb(const blkdev_t* dev) {
+    if (!dev || dev->type != BLK_TYPE_USB) return false;
+    int total = blkdev_count();
+    for (int i = 0; i < total; i++) {
+        if (blkdev_get(i) == dev) return true;
+    }
+    return false;
+}
+
+static bool vfs_dev_is_mounted(const blkdev_t* dev) {
+    if (!dev) return false;
+    for (int i = 0; i < 26; i++) {
+        if (g_vfs_drives[i].present && g_vfs_drives[i].dev == dev) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static char vfs_alloc_removable_letter(void) {
+    for (char letter = 'E'; letter <= 'Z'; letter++) {
+        if (!g_vfs_drives[letter - 'A'].present) return letter;
+    }
+    return 0;
+}
+
+bool vfs_sync_usb_drives(void) {
+    uint32_t gen = usb_storage_get_generation();
+    if (gen == g_last_usb_storage_gen) return false;
+    g_last_usb_storage_gen = gen;
 
     bool changed = false;
+    for (int i = 0; i < 26; i++) {
+        vfs_drive_t* drive = &g_vfs_drives[i];
+        if (!drive->present) continue;
+        bool is_usb = (drive->drv_type == VFS_DRV_USB);
+        if (!is_usb && drive->dev &&
+            drive->drv_type == VFS_DRV_CDROM &&
+            !vfs_blkdev_is_active_usb(drive->dev)) {
+            /* Keep non-USB optical drives (ATAPI/HDD raw ISO) untouched */
+            bool found = false;
+            for (int b = 0; b < blkdev_count(); b++) {
+                if (blkdev_get(b) == drive->dev) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) continue;
+            is_usb = true;
+        }
+        if (!is_usb) continue;
+        if (vfs_blkdev_is_active_usb(drive->dev)) continue;
+
+        char letter = drive->letter;
+        if (g_filesystem_kind[i] == VFS_FS_FAT) {
+            fat_unmount_dev(letter);
+        } else if (g_filesystem_kind[i] == VFS_FS_EXFAT) {
+            memset(&g_exfat_filesystems[i], 0, sizeof(g_exfat_filesystems[i]));
+        } else if (g_filesystem_kind[i] == VFS_FS_ISO) {
+            for (int iso_i = 0; iso_i < 4; iso_i++) {
+                if (g_iso_filesystems[iso_i].dev == drive->dev) {
+                    memset(&g_iso_filesystems[iso_i], 0,
+                           sizeof(g_iso_filesystems[iso_i]));
+                }
+            }
+        }
+        g_filesystem_kind[i] = VFS_FS_NONE;
+        part_remove_device(drive->dev);
+        memset(drive, 0, sizeof(*drive));
+        log_printf("[VFS ] %c: USB drive detached\n", letter);
+        changed = true;
+    }
+
+    int total_blk = blkdev_count();
+    for (int b = 0; b < total_blk; b++) {
+        blkdev_t* dev = blkdev_get(b);
+        if (!dev || dev->type != BLK_TYPE_USB || !dev->total_sectors) {
+            continue;
+        }
+        if (vfs_dev_is_mounted(dev)) continue;
+
+        part_scan_device(dev);
+        bool any_mounted = false;
+        for (int p = 0; p < g_partition_count; p++) {
+            partition_entry_t* part = &g_partitions[p];
+            if (part->dev != dev || part->is_efi_system) continue;
+            char letter = vfs_alloc_removable_letter();
+            if (!letter) break;
+            if (mount_partition(part, letter)) {
+                log_printf("[VFS ] %c: mounted USB volume %s (%llu sectors)\n",
+                           letter, dev->name,
+                           (unsigned long long)part->total_sectors);
+                any_mounted = true;
+                changed = true;
+            }
+        }
+        if (!any_mounted) {
+            char letter = vfs_alloc_removable_letter();
+            if (letter && mount_raw_iso(dev, letter)) {
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+bool vfs_poll_media(void) {
+    bool changed = vfs_sync_usb_drives();
+    uint64_t now = apic_get_ticks();
+    if (now - g_last_media_poll_tick < 100) return changed;
+    g_last_media_poll_tick = now;
     for (int index = 0; index < blkdev_count(); index++) {
         blkdev_t* dev = blkdev_get(index);
         if (dev && dev->type == BLK_TYPE_FLOPPY) {

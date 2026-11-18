@@ -55,6 +55,20 @@ static void hub_clear_changes(usb_device_t* hub, uint8_t port,
         hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
                     HUB_FEATURE_C_RESET, port, NULL, 0);
     }
+    if (hub && hub->speed == USB_SPEED_SUPER) {
+        if (changes & (1u << 5)) { /* C_PORT_LINK_STATE */
+            hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
+                        25, port, NULL, 0);
+        }
+        if (changes & (1u << 6)) { /* C_PORT_CONFIG_ERROR */
+            hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
+                        26, port, NULL, 0);
+        }
+        if (changes & (1u << 7)) { /* C_BH_PORT_RESET */
+            hub_request(hub, USB_DIR_OUT, USB_REQ_CLEAR_FEATURE,
+                        29, port, NULL, 0);
+        }
+    }
 }
 
 static uint8_t hub_port_speed(usb_device_t* hub, uint16_t status) {
@@ -188,6 +202,27 @@ int usb_hub_attach(usb_device_t* hub) {
     state->ports = ports;
     state->power_good_ms = power_good_ms;
     hub->hub_port_count = ports;
+
+    if (hub->speed == USB_SPEED_SUPER) {
+        /* USB 3.0 Spec 10.14.2.9: SuperSpeed hubs require SET_HUB_DEPTH */
+        (void)usb_control_msg(
+            hub, USB_DIR_OUT | USB_RT_CLASS | USB_RT_DEVICE,
+            12, hub->hub_depth, 0, NULL, 0);
+    }
+
+    if (state->status_endpoint && hub->hci && hub->hci->intr_in) {
+        /*
+         * Prime the hub interrupt endpoint so xHCI Configure Endpoint sets
+         * HUB=1 and Number of Ports in the Hub Slot Context before child
+         * devices are addressed.
+         */
+        uint8_t dummy[8];
+        memset(dummy, 0, sizeof(dummy));
+        int len = state->status_endpoint->max_packet;
+        if (len <= 0 || len > (int)sizeof(dummy)) len = (int)sizeof(dummy);
+        (void)hub->hci->intr_in(hub->hci, hub, state->status_endpoint,
+                                dummy, len);
+    }
 
     for (uint8_t port = 1; port <= ports; port++) {
         hub_request(hub, USB_DIR_OUT, USB_REQ_SET_FEATURE,

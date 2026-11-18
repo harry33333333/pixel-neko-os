@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A250a"
+          VERSION="26A255a"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -111,7 +111,8 @@ jobs:
           - **Source archive**: `pixel_neko_source_${{ env.VERSION }}.zip`
           - **Commit**: `${{ github.sha }}`
 
-          This revision removes blocking one-second FAT/ATAPI polling on real hardware, fixes desktop icon hit testing, adds EDID/GOP/VBE display mode discovery, and corrects NVIDIA/Mach64 mode limits for `v26A250a`.
+          - Fixes EDID 1.3/1.4 parsing, Limine rev-1 mode probing, and native fixed-LFB resolution handling without silent software scaling.
+          - Fixes xHCI Event Ring wraparound freeze / VMware USB3 mouse ungrab loss, Input Slot Context corruption, SuperSpeed hub initialization, BOT Check Condition/STALL recovery, and late/hotplug USB drive VFS mounting for `v26A255a`.
         draft: false
         prerelease: true
         make_latest: false

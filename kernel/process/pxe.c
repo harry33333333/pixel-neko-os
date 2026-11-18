@@ -361,7 +361,10 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
     int has_drv = gfx_accel_has_valid_driver();
     uint32_t flags = 0;
     if (has_drv) {
-        flags |= PXE_DISP_FLAG_DRIVER_ACTIVE | PXE_DISP_FLAG_UNLIMITED_RES;
+        flags |= PXE_DISP_FLAG_DRIVER_ACTIVE;
+    }
+    if (gfx_accel_can_modeset_hw()) {
+        flags |= PXE_DISP_FLAG_UNLIMITED_RES;
     }
     if (gfx_accel_is_hardware_2d_active()) {
         flags |= PXE_DISP_FLAG_HW_2D;

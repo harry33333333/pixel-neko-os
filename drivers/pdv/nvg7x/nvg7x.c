@@ -51,8 +51,8 @@ static int nvidia_framebuffer_in_bar(uint64_t framebuffer, uint64_t size) {
 
 static int nvidia_g7x_supports_bpp(int w, int h, int bpp) {
     if (!g_active) return 0;
+    if (w != g_boot_w || h != g_boot_h) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
-    if (w > 4096 || h > 2160) return 0;
     if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
     uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
                      (uint64_t)(unsigned int)(bpp / 8);

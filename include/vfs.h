@@ -67,6 +67,7 @@ void vfs_migrate_legacy_layout(void);
 const char* vfs_get_fs_name(part_fs_type_t type);
 int  vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb, int* is_known);
 bool vfs_poll_media(void);
+bool vfs_sync_usb_drives(void);
 int  vfs_eject_media(char letter);
 int  vfs_eject_optical(char letter);
 int  vfs_has_cdrom(void);
