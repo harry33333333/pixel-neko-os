@@ -13,8 +13,22 @@
 #include "wm.h"
 #include "speaker.h"
 #include "heap.h"
+#include "audio.h"
+#include "fpu.h"
+#include "vfs.h"
 
 static char g_user_write_buffer[192];
+
+static void syscall_pump_audio(thread_t* thread) {
+    if (!audio_is_playing()) return;
+    if (thread) {
+        fpu_save(thread->fpu_state);
+    }
+    audio_poll();
+    if (thread) {
+        fpu_restore(thread->fpu_state);
+    }
+}
 
 void syscall_init(void) {
     per_cpu_init(&per_cpu_block);
@@ -172,10 +186,11 @@ static int64_t syscall_fs_read(process_t* process, trap_frame_t* frame) {
         return -NEKO_EFAULT;
     }
 
-    size_t chunk_cap = (count > 65536U) ? 65536U : count;
+    size_t chunk_cap = (count > 32768U) ? 32768U : count;
     uint8_t* kbuf = (uint8_t*)kmalloc(chunk_cap);
     if (!kbuf) return -NEKO_ENOMEM;
 
+    thread_t* thread = scheduler_current_thread();
     size_t total = 0;
     while (total < count) {
         size_t want = count - total;
@@ -192,6 +207,9 @@ static int64_t syscall_fs_read(process_t* process, trap_frame_t* frame) {
         }
         total += (size_t)n;
         if ((size_t)n < want) break;
+        if (total < count) {
+            syscall_pump_audio(thread);
+        }
     }
 
     kfree(kbuf);
@@ -641,14 +659,63 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
                 result = -NEKO_EFAULT;
                 break;
             }
-            uint8_t* kbuf = (uint8_t*)kmalloc(alloc_sz);
-            if (!kbuf) { result = -NEKO_ENOMEM; break; }
-            int n = pxe_kern_fs_read_file(kpath, kbuf, alloc_sz);
-            if (n > 0 && !process_copy_to_user(process, ubuf, kbuf, (size_t)n)) {
-                n = -NEKO_EFAULT;
+            if (alloc_sz <= 32768U) {
+                uint8_t* kbuf = (uint8_t*)kmalloc(alloc_sz);
+                if (!kbuf) { result = -NEKO_ENOMEM; break; }
+                int n = pxe_kern_fs_read_file(kpath, kbuf, alloc_sz);
+                if (n > 0 && !process_copy_to_user(process, ubuf, kbuf, (size_t)n)) {
+                    n = -NEKO_EFAULT;
+                }
+                kfree(kbuf);
+                result = n;
+                break;
             }
+            vfs_stream_t* stream = (vfs_stream_t*)kmalloc(sizeof(vfs_stream_t));
+            uint8_t* kbuf = (uint8_t*)kmalloc(32768U);
+            if (!stream || !kbuf) {
+                if (stream) kfree(stream);
+                if (kbuf) kfree(kbuf);
+                result = -NEKO_ENOMEM;
+                break;
+            }
+            if (vfs_stream_open(kpath, stream) != 0) {
+                kfree(stream);
+                kfree(kbuf);
+                uint8_t* fbuf = (uint8_t*)kmalloc(alloc_sz);
+                if (!fbuf) { result = -NEKO_ENOMEM; break; }
+                int n = pxe_kern_fs_read_file(kpath, fbuf, alloc_sz);
+                if (n > 0 && !process_copy_to_user(process, ubuf, fbuf, (size_t)n)) {
+                    n = -NEKO_EFAULT;
+                }
+                kfree(fbuf);
+                result = n;
+                break;
+            }
+            size_t total = 0;
+            int n_err = 0;
+            while (total < alloc_sz) {
+                size_t want = alloc_sz - total;
+                if (want > 32768U) want = 32768U;
+                int r = vfs_stream_read(stream, kbuf, (unsigned int)want);
+                if (r < 0) {
+                    n_err = r;
+                    break;
+                }
+                if (r == 0) break;
+                if (!process_copy_to_user(process, ubuf + total, kbuf, (size_t)r)) {
+                    n_err = -NEKO_EFAULT;
+                    break;
+                }
+                total += (size_t)r;
+                if ((size_t)r < want) break;
+                if (total < alloc_sz) {
+                    syscall_pump_audio(thread);
+                }
+            }
+            vfs_stream_close(stream);
+            kfree(stream);
             kfree(kbuf);
-            result = n;
+            result = (n_err < 0 && total == 0) ? n_err : (int64_t)total;
             break;
         }
 

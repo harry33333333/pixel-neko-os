@@ -1,5 +1,6 @@
 #include "apic.h"
 #include "acpi.h"
+#include "audio.h"
 #include "mm.h"
 #include "vmm.h"
 #include "port.h"
@@ -105,6 +106,7 @@ static inline void wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
 static void apic_timer_handler(trap_frame_t* frame) {
     (void)frame;
     g_lapic_ticks++;
+    audio_service_dma_irq();
 }
 
 uint64_t apic_get_ticks(void) {

@@ -1,4 +1,5 @@
 #include "ahci.h"
+#include "audio.h"
 #include "blkdev.h"
 #include "dma.h"
 #include "log.h"
@@ -233,6 +234,7 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
             break;
         }
         usb_delay_ms(1);
+        audio_service_dma_irq();
     }
     dma_sync_for_cpu(&port->dma);
     port_write(port, AHCI_PX_IS, 0xFFFFFFFFu);

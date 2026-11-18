@@ -17,6 +17,13 @@ void audio_init(void) {
 void audio_poll(void) {
 }
 
+void audio_service_dma_irq(void) {
+}
+
+int audio_is_playing(void) {
+    return 0;
+}
+
 int audio_handle_dma_half_irq(int half_idx) {
     (void)half_idx;
     return -1;

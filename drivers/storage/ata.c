@@ -1,4 +1,5 @@
 #include "ata.h"
+#include "audio.h"
 #include "blkdev.h"
 #include "log.h"
 #include "port.h"
@@ -213,7 +214,11 @@ static int ata_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
             }
             ata_read_words(drive->base + ATA_REG_DATA, output, 256);
             output += 512;
+            if ((sector & 7u) == 7u) {
+                audio_service_dma_irq();
+            }
         }
+        audio_service_dma_irq();
         lba += batch;
         count -= batch;
     }

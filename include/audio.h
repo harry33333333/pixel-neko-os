@@ -29,6 +29,8 @@ typedef struct {
 
 void audio_init(void);
 void audio_poll(void); // Call in OS main loop to pump PCM to the active DMA backend
+void audio_service_dma_irq(void); // Refill active DMA half-buffer from RAM PCM queue without disk/FPU I/O
+int  audio_is_playing(void);
 int  audio_handle_dma_half_irq(int half_idx); // Fill next DMA half from pre-decoded PCM ring in IRQ
 void enable_fpu(void); // Initialize/re-enable x87 FPU and SSE
 

@@ -16,11 +16,11 @@
 #define DEC_FLAC 2
 #define DEC_MP3  3
 
-#define PCM_QUEUE_SIZE          262144
+#define PCM_QUEUE_SIZE          1048576
 #define PCM_QUEUE_SAMPLES       (PCM_QUEUE_SIZE / sizeof(short))
 #define AUDIO_DMA_HALF_BYTES    32768
 #define AUDIO_DMA_BUFFER_BYTES  65536
-#define AUDIO_CACHE_TARGET_BYTES (AUDIO_DMA_HALF_BYTES * 4U)
+#define AUDIO_CACHE_TARGET_BYTES (PCM_QUEUE_SIZE - 131072U)
 
 #define MAX_PDV_AUDIO_DRIVERS 8
 
@@ -96,6 +96,8 @@ static volatile unsigned int g_queue_bytes = 0;
 static volatile unsigned int g_total_frames_played = 0;
 static volatile int g_eof_reached = 0;
 static volatile int g_eof_stop_pending = 0;
+static volatile int g_audio_dma_servicing = 0;
+static volatile int g_audio_poll_active = 0;
 
 static inline uint64_t audio_irq_save(void) {
     uint64_t flags;
@@ -778,6 +780,44 @@ const audio_info_t* audio_get_info(void) {
     return &g_audio_info;
 }
 
+int audio_is_playing(void) {
+    return g_audio_state == AUDIO_STATE_PLAYING &&
+           g_active_driver != 0 &&
+           g_active_driver->is_present();
+}
+
+void audio_service_dma_irq(void) {
+    if (g_audio_state != AUDIO_STATE_PLAYING || !g_active_driver) return;
+    if (!g_active_driver->is_present()) return;
+
+    uint64_t irq_flags = audio_irq_save();
+    if (g_audio_dma_servicing || g_eof_stop_pending) {
+        audio_irq_restore(irq_flags);
+        return;
+    }
+    g_audio_dma_servicing = 1;
+    audio_irq_restore(irq_flags);
+
+    int half_needed = g_active_driver->poll_half_needed();
+    if (half_needed >= 0) {
+        static short irq_service_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)]
+            __attribute__((aligned(16)));
+        int fill_rc = audio_consume_queue_half(half_needed, irq_service_buf);
+        if (fill_rc < 0) {
+            g_active_driver->silence_half(1 - half_needed);
+            g_eof_stop_pending = 1;
+        } else {
+            int tr = g_audio_info.target_rate;
+            if (tr > 0) {
+                g_audio_info.current_time_s =
+                    (int)(g_total_frames_played / (unsigned int)tr);
+            }
+        }
+    }
+
+    g_audio_dma_servicing = 0;
+}
+
 int audio_handle_dma_half_irq(int half_idx) {
     if (g_audio_state != AUDIO_STATE_PLAYING || !g_active_driver) return -1;
     if (half_idx < 0 || half_idx > 1) return -1;
@@ -803,10 +843,19 @@ void audio_poll(void) {
     if (g_audio_state != AUDIO_STATE_PLAYING) return;
     if (!audio_has_hardware() || !g_active_driver) return;
 
+    uint64_t poll_flags = audio_irq_save();
+    if (g_audio_poll_active) {
+        audio_irq_restore(poll_flags);
+        return;
+    }
+    g_audio_poll_active = 1;
+    audio_irq_restore(poll_flags);
+
     if (g_eof_stop_pending) {
         g_active_driver->silence_half(0);
         g_active_driver->silence_half(1);
         audio_stop();
+        g_audio_poll_active = 0;
         return;
     }
 
@@ -814,10 +863,10 @@ void audio_poll(void) {
 
     int dec_count = 0;
     int max_dec = 0;
-    if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 2U)) {
-        max_dec = 8;
+    if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 8U)) {
+        max_dec = 16;
     } else if (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) {
-        max_dec = 4;
+        max_dec = 8;
     }
     static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
     while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
@@ -847,45 +896,13 @@ void audio_poll(void) {
         }
     }
 
-    int half_needed = g_active_driver->poll_half_needed();
-    if (half_needed >= 0) {
-        for (int fill_try = 0;
-             fill_try < 8 && !g_eof_reached && g_queue_bytes < AUDIO_DMA_HALF_BYTES;
-             fill_try++) {
-            int samples_read = 0;
-            if (g_active_dec == DEC_WAV) {
-                samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
-            } else if (g_active_dec == DEC_FLAC) {
-                samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
-            } else if (g_active_dec == DEC_MP3) {
-                samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
-            }
-            if (samples_read > 0) {
-                audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
-                                   g_audio_info.sample_rate,
-                                   g_audio_info.channels,
-                                   g_audio_info.bit_depth,
-                                   g_audio_info.is_float);
-            } else if (samples_read < 0) {
-                g_eof_reached = 1;
-                break;
-            } else {
-                break;
-            }
-        }
-        static short dma_copy_buf[AUDIO_DMA_HALF_BYTES / sizeof(short)] __attribute__((aligned(16)));
-        int fill_rc = audio_consume_queue_half(half_needed, dma_copy_buf);
-        if (fill_rc < 0) {
-            g_active_driver->silence_half(1 - half_needed);
-            audio_stop();
-            return;
-        }
-
-        int tr = g_audio_info.target_rate;
-        if (tr > 0) {
-            g_audio_info.current_time_s =
-                (int)(g_total_frames_played / (unsigned int)tr);
-        }
+    audio_service_dma_irq();
+    if (g_eof_stop_pending) {
+        g_active_driver->silence_half(0);
+        g_active_driver->silence_half(1);
+        audio_stop();
+        g_audio_poll_active = 0;
+        return;
     }
 
     unsigned int frame = g_active_driver->get_dma_frame_pos();
@@ -930,6 +947,7 @@ void audio_poll(void) {
             }
         }
     }
+    g_audio_poll_active = 0;
 }
 
 void audio_get_spectrum(unsigned char bands[10]) {

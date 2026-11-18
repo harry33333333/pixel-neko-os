@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A255a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A255b - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -22,7 +22,7 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **NMI 安全机制**：采用 System V ABI 高速系统调用流水线与三窗口 Paranoid NMI 安全判定。
 - **双特权环原生应用体系（`*.pxe`）**：提供统一 `sdk/` 工具链（Ring 3 W^X 隔离与 System Bomb 崩溃隔离窗；Ring 0 高半区 PIE 特权运行环境），全部系统工具打包于 `APPS\*.pxe`（含 `taskmgr.pxe` 任务管理器）。详情参阅 [`docs/executable_develop.md`](docs/executable_develop.md)。
 - **自包含可加载驱动体系（`*.pdv`）**：采用 DDK 隔离的独立可重定位 ELF64 驱动模块部署于 `PDEVICE\`，按硬件 PCI/类别按需加载与去重。详情参阅 [`docs/driver_develop.md`](docs/driver_develop.md)。
-- **现代中断体系**：支持 LAPIC、IOAPIC、MADT ISO 中断重定向、PCI shared IRQ 路由与 MSI/MSI-X 消息中断。
+- **现代中断体系**：支持 LAPIC、IOAPIC、MADT ISO 中断重定向、ACPI `_PIC`/`_PRT` INTx→GSI 与 PCI shared IRQ 路由（MSI/MSI-X 消息中断规划中）。
 
 ### 2. 视觉盛宴：开机动画、动态显示能力与复古像素 UI
 - **Windows XP 风格开机界面与滚动进度条**：纯黑背景开机画卷，居中呈现四色复古 Pixel Neko 徽标，搭配三段式微光高亮蓝色流动滑块进度条（Marquee Progress Bar）。
@@ -91,18 +91,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A255a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A255b.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A255a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A255b.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A255a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A255b.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

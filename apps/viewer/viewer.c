@@ -422,7 +422,7 @@ static int decode_bmp_stream(int fd, uint64_t file_size, const uint8_t hdr[64],
 
     uint32_t* pix = (uint32_t*)malloc((size_t)width * (size_t)height * 4u);
     uint8_t* row_buf = (uint8_t*)malloc((size_t)row_bytes);
-    uint8_t* io_buf = (uint8_t*)malloc(65536u);
+    uint8_t* io_buf = (uint8_t*)malloc(32768u);
     if (!pix || !row_buf || !io_buf) {
         free(pix);
         free(row_buf);
@@ -459,7 +459,7 @@ static int decode_bmp_stream(int fd, uint64_t file_size, const uint8_t hdr[64],
     size_t io_pos = 0, io_len = 0;
     uint8_t any_alpha = 0;
     for (int sy = 0; sy < height; sy++) {
-        if (stream_read_exact(fd, io_buf, 65536u, &io_pos, &io_len,
+        if (stream_read_exact(fd, io_buf, 32768u, &io_pos, &io_len,
                               row_buf, (size_t)row_bytes) != 0) {
             free(pix);
             free(row_buf);
@@ -1639,7 +1639,7 @@ static void viewer_open_file(viewer_t* vw, const char* path) {
         uint64_t got = (uint64_t)r0;
         while (got < st.size) {
             uint64_t rem = st.size - got;
-            size_t chunk = (rem > 1048576ull) ? 1048576u : (size_t)rem;
+            size_t chunk = (rem > 32768ull) ? 32768u : (size_t)rem;
             int r = pxe_read(fd, raw + got, chunk);
             if (r <= 0) break;
             got += (uint64_t)r;
