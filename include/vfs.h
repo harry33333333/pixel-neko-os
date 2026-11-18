@@ -95,6 +95,7 @@ int  vfs_stream_create(const char* path, vfs_stream_t* stream);
 int  vfs_stream_read(vfs_stream_t* stream, void* buf, unsigned int size);
 int  vfs_stream_write(vfs_stream_t* stream, const void* buf, unsigned int size);
 int  vfs_stream_seek(vfs_stream_t* stream, uint64_t offset);
+int  vfs_stream_sync(vfs_stream_t* stream);
 void vfs_stream_close(vfs_stream_t* stream);
 
 #endif

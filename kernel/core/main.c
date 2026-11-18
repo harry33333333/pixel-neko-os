@@ -777,6 +777,7 @@ void kmain(void) {
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
     settings_init();
+    log_disk_init();
     vfs_migrate_legacy_layout();
 
     boot_progress_notify("Pixel Neko OS :: [18b/23] Loading Hardware Drivers (PDEVICE)...");
@@ -860,6 +861,7 @@ void kmain(void) {
     }
 
     log_printf("[SYSTEM] P4b milestone reached: full USB host-controller matrix active.\n");
+    log_disk_flush();
 
     // 25. Hardware IRQs are enabled by the initial IRET to the selected thread.
     scheduler_start();

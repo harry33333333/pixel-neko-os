@@ -69,6 +69,7 @@ exfat_handle_t* exfat_open_write(exfat_fs_t* fs, const char* path);
 int exfat_read(exfat_handle_t* handle, void* buffer, uint32_t size);
 int exfat_write(exfat_handle_t* handle, const void* buffer, uint32_t size);
 int exfat_seek(exfat_handle_t* handle, uint64_t offset);
+int exfat_sync(exfat_handle_t* handle);
 void exfat_close(exfat_handle_t* handle);
 int exfat_read_file(exfat_fs_t* fs, const exfat_file_info_t* info,
                     uint64_t offset, void* buffer, uint32_t size);

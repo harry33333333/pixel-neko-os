@@ -5,6 +5,7 @@
 #include "gfx_accel.h"
 #include "input.h"
 #include "keyboard.h"
+#include "log.h"
 #include "mm.h"
 #include "pmm.h"
 #include "port.h"
@@ -573,6 +574,7 @@ void ui_desktop_poll(void) {
     if (vfs_sync_usb_drives()) {
         wm_notify_media_changed();
     }
+    log_disk_poll();
     timer_update();
 
     int prev_mx = g_cursor_saved_x;

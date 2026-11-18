@@ -6,8 +6,8 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 255
-PIXEL_NEKO_BUILD_SUFFIX ?= b
+PIXEL_NEKO_BUILD_NUMBER ?= 260
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -54,6 +54,7 @@ ASM_SRCS = arch/x86_64/entry.asm \
 
 C_SRCS   = kernel/core/main.c \
            kernel/core/log.c \
+           kernel/core/log_disk.c \
            kernel/core/string.c \
            kernel/core/panic.c \
            arch/x86_64/cpu.c \

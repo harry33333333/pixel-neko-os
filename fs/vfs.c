@@ -1120,6 +1120,17 @@ int vfs_stream_seek(vfs_stream_t* stream, uint64_t offset) {
     return 0;
 }
 
+int vfs_stream_sync(vfs_stream_t* stream) {
+    if (!stream || !stream->is_open || !stream->is_write) return -1;
+    if (stream->fat_handle) {
+        return fat_sync((file_handle_t*)stream->fat_handle);
+    }
+    if (stream->exfat_handle) {
+        return exfat_sync((exfat_handle_t*)stream->exfat_handle);
+    }
+    return -1;
+}
+
 void vfs_stream_close(vfs_stream_t* stream) {
     if (!stream) return;
     if (stream->fat_handle) {

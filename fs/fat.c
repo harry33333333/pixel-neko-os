@@ -998,22 +998,35 @@ int fat_seek(file_handle_t* handle, uint64_t offset) {
     return 0;
 }
 
+int fat_sync(file_handle_t* handle) {
+    if (!handle || !handle->is_open || !handle->write_mode ||
+        handle->dir_sector == 0) {
+        return -1;
+    }
+    int v_idx = handle->volume_idx;
+    if (v_idx < 0 || v_idx >= MAX_VOLUMES || g_volumes[v_idx].type == 0) {
+        return -1;
+    }
+    fat_fs_t* vol = &g_volumes[v_idx];
+    unsigned char sec_buf[512];
+    if (vol_read_sec(vol, handle->dir_sector, sec_buf) != 0) {
+        return -1;
+    }
+    dir_entry_t* de = (dir_entry_t*)(sec_buf + handle->dir_offset);
+    set_first_cluster(vol, de, handle->first_cluster);
+    de->file_size = (unsigned int)(handle->size <= FAT_MAX_FILE_SIZE
+                                       ? handle->size : FAT_MAX_FILE_SIZE);
+    if (vol_write_sec(vol, handle->dir_sector, sec_buf) != 0) {
+        return -1;
+    }
+    fat_sync_fsinfo(vol);
+    return 0;
+}
+
 void fat_close(file_handle_t* handle) {
     if (!handle) return;
     if (handle->is_open && handle->write_mode && handle->dir_sector != 0) {
-        int v_idx = handle->volume_idx;
-        if (v_idx >= 0 && v_idx < MAX_VOLUMES && g_volumes[v_idx].type != 0) {
-            fat_fs_t* vol = &g_volumes[v_idx];
-            unsigned char sec_buf[512];
-            if (vol_read_sec(vol, handle->dir_sector, sec_buf) == 0) {
-                dir_entry_t* de = (dir_entry_t*)(sec_buf + handle->dir_offset);
-                set_first_cluster(vol, de, handle->first_cluster);
-                de->file_size = (unsigned int)(handle->size <= FAT_MAX_FILE_SIZE
-                                                   ? handle->size : FAT_MAX_FILE_SIZE);
-                vol_write_sec(vol, handle->dir_sector, sec_buf);
-            }
-            fat_sync_fsinfo(vol);
-        }
+        (void)fat_sync(handle);
     }
     handle->is_open = 0;
     handle->write_mode = 0;

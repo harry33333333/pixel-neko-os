@@ -5,8 +5,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define LOG_LINE_SIZE     160
-#define LOG_HISTORY_LINES 64
+#define LOG_LINE_SIZE      160
+#define LOG_HISTORY_LINES  64
+#define LOG_DISK_RING_SIZE 131072u
+#define LOG_DISK_RING_MASK (LOG_DISK_RING_SIZE - 1u)
 
 static int g_initialized = 0;
 static int g_level = LOG_LEVEL_DEBUG;
@@ -14,7 +16,33 @@ static char g_history[LOG_HISTORY_LINES][LOG_LINE_SIZE];
 static int g_history_count = 0;
 static int g_history_next = 0;
 
+static uint8_t g_disk_ring[LOG_DISK_RING_SIZE];
+static volatile uint32_t g_disk_head = 0;
+static volatile uint32_t g_disk_tail = 0;
+static volatile uint32_t g_disk_dropped = 0;
+
 static bool g_serial_present = true;
+
+static inline uint64_t log_irq_save(void) {
+    uint64_t flags = 0;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void log_irq_restore(uint64_t flags) {
+    if (flags & (1ULL << 9)) {
+        __asm__ volatile("sti" ::: "memory");
+    }
+}
+
+static void log_ring_push_byte(uint8_t ch) {
+    if ((uint32_t)(g_disk_tail - g_disk_head) >= LOG_DISK_RING_SIZE) {
+        g_disk_head++;
+        g_disk_dropped++;
+    }
+    g_disk_ring[g_disk_tail & LOG_DISK_RING_MASK] = ch;
+    g_disk_tail++;
+}
 
 static void serial_init(void) {
     outb(0x3F8 + 1, 0x00); // Disable all interrupts
@@ -108,6 +136,14 @@ static void log_commit(const char* line) {
     g_history[slot][length] = '\0';
     g_history_next = (g_history_next + 1) % LOG_HISTORY_LINES;
     if (g_history_count < LOG_HISTORY_LINES) g_history_count++;
+
+    uint64_t flags = log_irq_save();
+    for (int i = 0; line[i]; i++) {
+        if (line[i] == '\n') log_ring_push_byte('\r');
+        log_ring_push_byte((uint8_t)line[i]);
+    }
+    log_irq_restore(flags);
+
     serial_puts(line);
 }
 
@@ -245,4 +281,46 @@ const char* log_get_line(int index) {
     if (index < 0 || index >= g_history_count) return "";
     int first = (g_history_next - g_history_count + LOG_HISTORY_LINES) % LOG_HISTORY_LINES;
     return g_history[(first + index) % LOG_HISTORY_LINES];
+}
+
+uint32_t log_ring_pending(void) {
+    uint64_t flags = log_irq_save();
+    uint32_t pending = g_disk_tail - g_disk_head;
+    if (pending > LOG_DISK_RING_SIZE) pending = LOG_DISK_RING_SIZE;
+    log_irq_restore(flags);
+    return pending;
+}
+
+uint32_t log_ring_peek(uint8_t* dst, uint32_t max_bytes,
+                       uint32_t* out_head, uint32_t* out_dropped) {
+    if (!dst || max_bytes == 0) return 0;
+    uint64_t flags = log_irq_save();
+    uint32_t avail = g_disk_tail - g_disk_head;
+    if (avail > LOG_DISK_RING_SIZE) {
+        g_disk_head = g_disk_tail - LOG_DISK_RING_SIZE;
+        avail = LOG_DISK_RING_SIZE;
+    }
+    uint32_t count = avail < max_bytes ? avail : max_bytes;
+    uint32_t head = g_disk_head;
+    for (uint32_t i = 0; i < count; i++) {
+        dst[i] = g_disk_ring[(head + i) & LOG_DISK_RING_MASK];
+    }
+    if (out_head) *out_head = head;
+    if (out_dropped) *out_dropped = g_disk_dropped;
+    log_irq_restore(flags);
+    return count;
+}
+
+void log_ring_consume(uint32_t expected_head, uint32_t count) {
+    uint64_t flags = log_irq_save();
+    uint32_t target = expected_head + count;
+    if ((int32_t)(g_disk_head - expected_head) >= 0 &&
+        (int32_t)(target - g_disk_head) > 0) {
+        if ((int32_t)(g_disk_tail - target) < 0) {
+            target = g_disk_tail;
+        }
+        g_disk_head = target;
+    }
+    g_disk_dropped = 0;
+    log_irq_restore(flags);
 }

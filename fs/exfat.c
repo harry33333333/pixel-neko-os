@@ -1107,26 +1107,33 @@ int exfat_seek(exfat_handle_t* h, uint64_t offset) {
     return 0;
 }
 
+int exfat_sync(exfat_handle_t* h) {
+    if (!h || !h->is_open || !h->write_mode || !h->fs) return -1;
+    exfat_dir_cur_t cur;
+    dir_cur_init(&cur, h->fs, h->dir_cluster, h->dir_no_fat_chain, 0);
+    uint8_t raw[19 * 32];
+    if (dir_read_slots(&cur, h->entry_slot, 2, raw) != 0 ||
+        raw[0] != EXFAT_ENTRY_FILE || raw[32] != EXFAT_ENTRY_STREAM) {
+        return -1;
+    }
+    uint8_t sec_cnt = raw[1] & 0x1Fu;
+    if (sec_cnt + 1 > 19 ||
+        dir_read_slots(&cur, h->entry_slot, sec_cnt + 1, raw) != 0) {
+        return -1;
+    }
+    raw[33] = (uint8_t)(0x01u | (h->no_fat_chain ? 0x02u : 0x00u));
+    put_le64(raw + 40, h->valid_size);
+    put_le32(raw + 52, (uint32_t)h->first_cluster);
+    put_le64(raw + 56, h->size);
+    uint16_t csum = exfat_entry_set_checksum(raw, sec_cnt + 1);
+    put_le16(raw + 2, csum);
+    return dir_write_slots(&cur, h->entry_slot, sec_cnt + 1, raw) == 0 ? 0 : -1;
+}
+
 void exfat_close(exfat_handle_t* h) {
     if (!h) return;
     if (h->is_open && h->write_mode && h->fs) {
-        exfat_dir_cur_t cur;
-        dir_cur_init(&cur, h->fs, h->dir_cluster, h->dir_no_fat_chain, 0);
-        uint8_t raw[19 * 32];
-        if (dir_read_slots(&cur, h->entry_slot, 2, raw) == 0 &&
-            raw[0] == EXFAT_ENTRY_FILE && raw[32] == EXFAT_ENTRY_STREAM) {
-            uint8_t sec_cnt = raw[1] & 0x1Fu;
-            if (sec_cnt + 1 <= 19 &&
-                dir_read_slots(&cur, h->entry_slot, sec_cnt + 1, raw) == 0) {
-                raw[33] = (uint8_t)(0x01u | (h->no_fat_chain ? 0x02u : 0x00u));
-                put_le64(raw + 40, h->valid_size);
-                put_le32(raw + 52, (uint32_t)h->first_cluster);
-                put_le64(raw + 56, h->size);
-                uint16_t csum = exfat_entry_set_checksum(raw, sec_cnt + 1);
-                put_le16(raw + 2, csum);
-                dir_write_slots(&cur, h->entry_slot, sec_cnt + 1, raw);
-            }
-        }
+        (void)exfat_sync(h);
     }
     h->is_open = false;
     h->write_mode = false;

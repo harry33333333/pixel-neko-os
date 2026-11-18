@@ -12,6 +12,7 @@ void sys_reboot(void) {
     log_printf("[POWER] Preparing system reboot...\n");
     audio_stop();
     speaker_reboot_chord();
+    log_disk_shutdown();
     fat_flush_all();
 
     acpi_reboot();
@@ -26,6 +27,7 @@ void sys_reboot(void) {
 void sys_shutdown(void) {
     log_printf("[POWER] Preparing ACPI S5 shutdown...\n");
     audio_stop();
+    log_disk_flush();
     fat_flush_all();
     speaker_shutdown_chord();
 
@@ -33,6 +35,8 @@ void sys_shutdown(void) {
 
     /* If hardware did not power off, display the classic safe power-off screen */
     log_printf("[POWER] Safe shutdown fallback screen active\n");
+    log_disk_shutdown();
+    fat_flush_all();
     for (int y = 0; y < screen_h; y++) {
         for (int x = 0; x < screen_w; x++) {
             PUT_PIXEL(backbuffer, x, y, 0);

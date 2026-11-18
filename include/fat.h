@@ -92,6 +92,7 @@ file_handle_t* fat_open_write(const char* name);
 int fat_read(file_handle_t* handle, unsigned char* buf, unsigned int size);
 int fat_write(file_handle_t* handle, const unsigned char* buf, unsigned int size);
 int fat_seek(file_handle_t* handle, uint64_t offset);
+int fat_sync(file_handle_t* handle);
 void fat_close(file_handle_t* handle);
 int fat_delete(const char* name);
 int fat_rename(const char* old_name, const char* new_name);
