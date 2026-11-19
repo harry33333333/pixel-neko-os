@@ -319,11 +319,6 @@ static int gfx_collect_modes(pdv_display_mode_t* out, int max_out) {
             memset(&m, 0, sizeof(m));
             if (!g_active_drv->get_mode(i, &m)) continue;
             if (m.width < GFX_MIN_WIDTH || m.height < GFX_MIN_HEIGHT) continue;
-            if (!g_active_drv->requires_hw_mode_set &&
-                ((int)m.width != (int)g_main_surface.width ||
-                 (int)m.height != (int)g_main_surface.height)) {
-                continue;
-            }
             static const int k_bpps[4] = { 8, 16, 24, 32 };
             uint8_t valid_mask = 0;
             for (int b = 0; b < 4; b++) {
@@ -470,11 +465,6 @@ int gfx_accel_can_change_mode(int w, int h, int bpp) {
         if (w != gfx_fallback_max_w() || h != gfx_fallback_max_h()) return 0;
         if (!gfx_mode_fits_vram(w, h, bpp, gfx_accel_get_vram_size())) return 0;
         return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
-    }
-
-    if (!g_active_drv->requires_hw_mode_set &&
-        (w != gfx_fallback_max_w() || h != gfx_fallback_max_h())) {
-        return 0;
     }
 
     if (g_active_drv->can_set_mode) {

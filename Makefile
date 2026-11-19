@@ -7,7 +7,7 @@ NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
 PIXEL_NEKO_BUILD_NUMBER ?= 260
-PIXEL_NEKO_BUILD_SUFFIX ?= d
+PIXEL_NEKO_BUILD_SUFFIX ?= e
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
