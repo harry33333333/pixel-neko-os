@@ -2,7 +2,7 @@
 name           = cpanel
 title          = "Control Panel"
 author         = "Pixel Neko OS"
-version        = "1.0.0"
+version        = "1.1.0"
 ring           = 3
 subsystem      = GUI
 flags          = SINGLE_INST | SYS_SETTINGS

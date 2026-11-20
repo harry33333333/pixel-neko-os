@@ -17,18 +17,38 @@
                                  DISPLAY_BPP_MASK_24 | DISPLAY_BPP_MASK_32)
 
 typedef struct {
+    uint16_t h_display;
+    uint16_t h_total;
+    uint16_t h_sync_start;
+    uint16_t h_sync_end;
+    uint16_t v_display;
+    uint16_t v_total;
+    uint16_t v_sync_start;
+    uint16_t v_sync_end;
+    uint32_t pixel_clock_khz;
+    uint16_t refresh_hz;
+    uint8_t  h_sync_positive;
+    uint8_t  v_sync_positive;
+    uint8_t  flags;
+    uint8_t  reserved[3];
+} display_timing_t;
+
+typedef struct {
     uint16_t width;
     uint16_t height;
     uint8_t  bpp_mask;
     uint8_t  preferred;
     uint8_t  from_edid;
-    uint8_t  reserved;
+    uint8_t  timing_valid;
+    uint16_t reserved;
+    display_timing_t timing;
 } display_mode_t;
 
 bool display_modes_init(const struct limine_framebuffer* fb);
 void display_modes_set_virtual(bool virtual_display);
 int display_modes_count(void);
 bool display_modes_get(int index, display_mode_t* out_mode);
+bool display_modes_timing(int width, int height, display_timing_t* out_timing);
 bool display_modes_has_edid(void);
 const uint8_t* display_modes_edid(size_t* out_size);
 bool display_modes_is_virtual(void);

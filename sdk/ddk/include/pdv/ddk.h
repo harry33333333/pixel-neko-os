@@ -267,6 +267,28 @@ typedef struct {
     uint16_t reserved;
 } pdv_display_mode_t;
 
+/*
+ * Complete progressive-scan timing for a display mode.  Horizontal values
+ * are pixels and vertical values are lines.  pixel_clock_khz is rounded to
+ * the nearest kHz.
+ */
+typedef struct {
+    uint16_t h_display;
+    uint16_t h_total;
+    uint16_t h_sync_start;
+    uint16_t h_sync_end;
+    uint16_t v_display;
+    uint16_t v_total;
+    uint16_t v_sync_start;
+    uint16_t v_sync_end;
+    uint32_t pixel_clock_khz;
+    uint16_t refresh_hz;
+    uint8_t  h_sync_positive;
+    uint8_t  v_sync_positive;
+    uint8_t  flags;
+    uint8_t  reserved[3];
+} pdv_display_timing_t;
+
 typedef struct {
     const char*  name;
     int          priority;
@@ -400,6 +422,8 @@ typedef struct pdv_kernel_api {
     int (*display_get_mode)(int index, pdv_display_mode_t* out_mode);
     int (*display_has_edid)(void);
     const char* (*display_get_mode_source)(void);
+    int (*display_get_mode_timing)(int width, int height,
+                                   pdv_display_timing_t* out_timing);
 } pdv_kernel_api_t;
 
 /* Convenience PCI byte/word helpers via kapi */

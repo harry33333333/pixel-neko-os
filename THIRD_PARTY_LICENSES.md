@@ -27,3 +27,58 @@ FreeBSD 源代码衍生；这些文件不应作为 FreeBSD 移植代码或 BSD-2
 - **GCC / Clang**：GPLv3 / Apache 2.0 with LLVM Exception。仅作为交叉构建工具，生成的目标代码不具传染性。
 - **NASM**：BSD-2-Clause。
 - **xorriso**：GPLv3。仅用于宿主制作 ISO 镜像，工具源码不进入系统运行时。
+
+## 4. Display timing reference implementations
+
+The ATI Mach64 CRTC/PLL and NVIDIA G7x PCRTC/VPLL register sequences were
+implemented against the X.Org `xf86-video-mach64` and `xf86-video-nv` reference
+drivers. The Pixel Neko implementations are reduced freestanding code and do
+not link either X.Org driver.
+
+- `xf86-video-mach64`: Copyright 1997-2004 Marc Aurele La France; Copyright
+  1999-2000 ATI Technologies Inc., Precision Insight, Inc. and VA Linux
+  Systems Inc.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files, to deal in the
+  Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.
+
+- `xf86-video-nv`: Copyright 1993-2003, 2007-2010 NVIDIA Corporation and
+  contributors.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files, to deal in the
+  Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.
+
+Reference sources:
+
+- `https://github.com/X11Libre/xf86-video-mach64`
+- `https://github.com/X11Libre/xf86-video-nv`

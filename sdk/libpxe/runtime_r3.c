@@ -141,6 +141,11 @@ int pxe_display_apply_mode(int width, int height, int bpp) {
                               (long)wh, (long)bpp, 0);
 }
 
+int pxe_system_reboot(void) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SYSTEM_REBOOT,
+                              0, 0, 0);
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_PATTERN,
                               (long)pattern, 0, 0);

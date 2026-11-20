@@ -20,6 +20,23 @@ static const pdv_kernel_api_t* g_kapi;
 #define PCI_CAP_ID_EXP         0x10
 
 #define NV_MAX_MODES           48
+#define NV_PCRTC_BASE          0x00600000U
+#define NV_PRAMDAC_BASE        0x00680000U
+#define NV_HEAD_STRIDE         0x00000800U
+#define NV_CRTC_PITCH_REG      0x00000820U
+#define NV_CRTC_START_REG      0x00000800U
+#define NV_HEAD_CONTROL_REG    0x00000860U
+#define NV_SECOND_HEAD_REG     0x00002860U
+#define NV_RAMDAC_PLL_REG      0x00000500U
+#define NV_RAMDAC_PLL_SEL_REG  0x0000050CU
+#define NV_RAMDAC_PLL_B_REG    0x00000578U
+#define NV_RAMDAC_GENERAL_REG  0x00000600U
+
+static const unsigned char g_nv_crtc_state_regs[] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09,
+    0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x19, 0x1A, 0x1B,
+    0x1C, 0x20, 0x25, 0x28, 0x2D, 0x39, 0x41, 0x47
+};
 
 static const pdv_pci_device_t* g_pci;
 static int g_active;
@@ -30,6 +47,13 @@ static uint64_t g_bar1_size;
 static int g_primary_7300gt;
 static int g_boot_w = 1024;
 static int g_boot_h = 768;
+static int g_boot_bpp = 16;
+static int g_cur_w = 1024;
+static int g_cur_h = 768;
+static int g_cur_bpp = 16;
+static int g_cur_pitch = 2048;
+static int g_head;
+static volatile unsigned char* g_regs;
 static pdv_display_mode_t g_nv_modes[NV_MAX_MODES];
 static int g_nv_mode_count;
 static const char* g_name = "NVIDIA PCIe";
@@ -49,15 +73,86 @@ static int nvidia_framebuffer_in_bar(uint64_t framebuffer, uint64_t size) {
     return 1;
 }
 
+static volatile unsigned char* nvidia_pcrtc(void) {
+    return g_regs ? g_regs + NV_PCRTC_BASE + (unsigned int)g_head * NV_HEAD_STRIDE
+                  : 0;
+}
+
+static volatile unsigned char* nvidia_ramdac(void) {
+    return g_regs ? g_regs + NV_PRAMDAC_BASE +
+                    (unsigned int)g_head * NV_HEAD_STRIDE : 0;
+}
+
+static unsigned int nvidia_pcrtc_read(unsigned int reg) {
+    volatile unsigned char* pcrtc = nvidia_pcrtc();
+    return pcrtc ? pdv_mmio_read32(pcrtc + reg) : 0xFFFFFFFFU;
+}
+
+static void nvidia_pcrtc_write(unsigned int reg, unsigned int value) {
+    volatile unsigned char* pcrtc = nvidia_pcrtc();
+    if (pcrtc) pdv_mmio_write32(pcrtc + reg, value);
+}
+
+static unsigned int nvidia_ramdac_read(unsigned int reg) {
+    volatile unsigned char* dac = nvidia_ramdac();
+    return dac ? pdv_mmio_read32(dac + reg) : 0xFFFFFFFFU;
+}
+
+static void nvidia_ramdac_write(unsigned int reg, unsigned int value) {
+    volatile unsigned char* dac = nvidia_ramdac();
+    if (dac) pdv_mmio_write32(dac + reg, value);
+}
+
+static unsigned int nvidia_ramdac0_read(unsigned int reg) {
+    return g_regs ? pdv_mmio_read32(g_regs + NV_PRAMDAC_BASE + reg)
+                  : 0xFFFFFFFFU;
+}
+
+static void nvidia_ramdac0_write(unsigned int reg, unsigned int value) {
+    if (g_regs) pdv_mmio_write32(g_regs + NV_PRAMDAC_BASE + reg, value);
+}
+
+static unsigned char nv_vga_read(unsigned char index) {
+    pdv_outb(0x3D4, 0x44);
+    pdv_outb(0x3D5, (unsigned char)(g_head * 3));
+    pdv_outb(0x3D4, index);
+    return pdv_inb(0x3D5);
+}
+
+static void nv_vga_write(unsigned char index, unsigned char value) {
+    pdv_outb(0x3D4, 0x44);
+    pdv_outb(0x3D5, (unsigned char)(g_head * 3));
+    pdv_outb(0x3D4, index);
+    pdv_outb(0x3D5, value);
+}
+
+typedef struct {
+    unsigned int pcrtc[7];
+    unsigned int dac[4];
+    unsigned int dac0[8];
+    unsigned char crtc[sizeof(g_nv_crtc_state_regs)];
+    unsigned char crtc_select;
+    unsigned int head_control;
+    unsigned int second_head_control;
+} nvidia_mode_state_t;
+
 static int nvidia_g7x_supports_bpp(int w, int h, int bpp) {
     if (!g_active) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
     if (w > 4096 || h > 2160) return 0;
-    if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
-    uint64_t bytes = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)h *
-                     (uint64_t)(unsigned int)(bpp / 8);
+    if (bpp != 16 && bpp != 32) return 0;
+    if ((w & 7) != 0) return 0;
+    uint64_t pitch = ((uint64_t)(unsigned int)w *
+                      (uint64_t)(unsigned int)(bpp / 8) + 63ULL) & ~63ULL;
+    uint64_t bytes = pitch * (uint64_t)(unsigned int)h;
     if (g_vram_size > 0 && bytes > (uint64_t)g_vram_size) return 0;
     if (g_bar1_size > 0 && bytes > g_bar1_size) return 0;
+    pdv_display_timing_t timing;
+    if (!g_kapi->display_get_mode_timing ||
+        !g_kapi->display_get_mode_timing(w, h, &timing) ||
+        timing.pixel_clock_khz == 0 || timing.pixel_clock_khz > 400000U) {
+        return 0;
+    }
     return 1;
 }
 
@@ -80,7 +175,7 @@ static void nvidia_add_mode(int w, int h, uint8_t mask, int preferred) {
 }
 
 static void nvidia_g7x_build_modes(void) {
-    static const int k_bpps[4] = { 8, 16, 24, 32 };
+    static const int k_bpps[2] = { 16, 32 };
     g_nv_mode_count = 0;
     int catalog_count = g_kapi->display_get_mode_count
                             ? g_kapi->display_get_mode_count() : 0;
@@ -93,7 +188,7 @@ static void nvidia_g7x_build_modes(void) {
         int w = catalog_mode.width;
         int h = catalog_mode.height;
         uint8_t mask = 0;
-        for (int b = 0; b < 4; b++) {
+        for (int b = 0; b < 2; b++) {
             if ((catalog_mode.bpp_mask & pdv_bpp_to_mask(k_bpps[b])) &&
                 nvidia_g7x_supports_bpp(w, h, k_bpps[b])) {
                 mask |= pdv_bpp_to_mask(k_bpps[b]);
@@ -113,7 +208,7 @@ static void nvidia_g7x_build_modes(void) {
              index < sizeof(k_width) / sizeof(k_width[0]) &&
              g_nv_mode_count < NV_MAX_MODES; index++) {
             uint8_t mask = 0;
-            for (int b = 0; b < 4; b++) {
+            for (int b = 0; b < 2; b++) {
                 if (nvidia_g7x_supports_bpp(k_width[index],
                                             k_height[index], k_bpps[b])) {
                     mask |= pdv_bpp_to_mask(k_bpps[b]);
@@ -124,7 +219,7 @@ static void nvidia_g7x_build_modes(void) {
     }
 
     uint8_t boot_mask = 0;
-    for (int b = 0; b < 4; b++) {
+    for (int b = 0; b < 2; b++) {
         if (nvidia_g7x_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
             boot_mask |= pdv_bpp_to_mask(k_bpps[b]);
         }
@@ -166,8 +261,305 @@ static int nvidia_g7x_get_max_height(void) {
     return g_active ? maximum : 0;
 }
 
+static void nvidia_save_mode_state(nvidia_mode_state_t* state) {
+    static const unsigned int pcrtc_regs[7] = {
+        0x00000100U, 0x00000140U, 0x00000800U, 0x00000810U,
+        0x00000820U, 0x00000830U, 0x00000834U
+    };
+    static const unsigned int dac_regs[4] = {
+        0x00000404U, 0x00000600U, 0x00000608U, 0x00000848U
+    };
+    for (int index = 0; index < 7; index++) {
+        state->pcrtc[index] = nvidia_pcrtc_read(pcrtc_regs[index]);
+    }
+    for (int index = 0; index < 4; index++) {
+        state->dac[index] = nvidia_ramdac_read(dac_regs[index]);
+    }
+    static const unsigned int dac0_regs[8] = {
+        0x00000500U, 0x00000504U, 0x00000508U, 0x0000050CU,
+        0x00000520U, 0x00000578U, 0x0000057CU, 0x00000580U
+    };
+    for (int index = 0; index < 8; index++) {
+        state->dac0[index] = nvidia_ramdac0_read(dac0_regs[index]);
+    }
+    pdv_outb(0x3D4, 0x44);
+    state->crtc_select = pdv_inb(0x3D5);
+    state->head_control =
+        g_regs ? pdv_mmio_read32(g_regs + NV_PCRTC_BASE +
+                                 NV_HEAD_CONTROL_REG) : 0xFFFFFFFFU;
+    state->second_head_control =
+        g_regs ? pdv_mmio_read32(g_regs + NV_PCRTC_BASE +
+                                 NV_SECOND_HEAD_REG) : 0xFFFFFFFFU;
+    for (size_t index = 0;
+         index < sizeof(g_nv_crtc_state_regs); index++) {
+        state->crtc[index] = nv_vga_read(g_nv_crtc_state_regs[index]);
+    }
+}
+
+static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
+    static const unsigned int pcrtc_regs[7] = {
+        0x00000100U, 0x00000140U, 0x00000800U, 0x00000810U,
+        0x00000820U, 0x00000830U, 0x00000834U
+    };
+    static const unsigned int dac_regs[4] = {
+        0x00000404U, 0x00000600U, 0x00000608U, 0x00000848U
+    };
+    unsigned char protected_crtc = 0;
+    for (size_t index = 0;
+         index < sizeof(g_nv_crtc_state_regs); index++) {
+        if (g_nv_crtc_state_regs[index] == 0x11) {
+            protected_crtc = state->crtc[index];
+            break;
+        }
+    }
+    nv_vga_write(0x11, (unsigned char)(protected_crtc & 0x7F));
+    for (size_t index = 0;
+         index < sizeof(g_nv_crtc_state_regs); index++) {
+        if (g_nv_crtc_state_regs[index] != 0x11) {
+            nv_vga_write(g_nv_crtc_state_regs[index], state->crtc[index]);
+        }
+    }
+    nv_vga_write(0x11, protected_crtc);
+    for (int index = 0; index < 7; index++) {
+        nvidia_pcrtc_write(pcrtc_regs[index], state->pcrtc[index]);
+    }
+    for (int index = 0; index < 4; index++) {
+        nvidia_ramdac_write(dac_regs[index], state->dac[index]);
+    }
+    static const unsigned int dac0_regs[8] = {
+        0x00000500U, 0x00000504U, 0x00000508U, 0x0000050CU,
+        0x00000520U, 0x00000578U, 0x0000057CU, 0x00000580U
+    };
+    for (int index = 0; index < 8; index++) {
+        nvidia_ramdac0_write(dac0_regs[index], state->dac0[index]);
+    }
+    if (g_regs) {
+        pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_HEAD_CONTROL_REG,
+                         state->head_control);
+        pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_SECOND_HEAD_REG,
+                         state->second_head_control);
+    }
+    pdv_outb(0x3D4, 0x44);
+    pdv_outb(0x3D5, state->crtc_select);
+}
+
+static int nvidia_calc_vpll(uint32_t target_khz, uint32_t crystal_khz,
+                            uint32_t* out_pll) {
+    if (!target_khz || !crystal_khz || !out_pll || target_khz > 400000U) {
+        return 0;
+    }
+    uint32_t best_error = 0xFFFFFFFFU;
+    for (unsigned int p = 0; p <= 6; p++) {
+        uint64_t scaled = (uint64_t)target_khz << p;
+        if (scaled < 400000ULL || scaled > 1000000ULL) continue;
+        for (unsigned int m = 1; m <= 13; m++) {
+            uint64_t n64 = (scaled * m + (crystal_khz * 2ULL)) /
+                           ((uint64_t)crystal_khz * 4ULL);
+            if (n64 < 5ULL || n64 > 255ULL) continue;
+            unsigned int n = (unsigned int)n64;
+            uint32_t actual = (uint32_t)((((uint64_t)crystal_khz * 4ULL) *
+                                          n / m) >> p);
+            uint32_t error = actual > target_khz
+                ? actual - target_khz : target_khz - actual;
+            if (error < best_error) {
+                best_error = error;
+                *out_pll = (p << 16) | (n << 8) | m;
+            }
+        }
+    }
+    return best_error != 0xFFFFFFFFU &&
+           best_error <= target_khz / 100U + 500U;
+}
+
 static int nvidia_g7x_set_mode(int w, int h, int bpp) {
-    return nvidia_g7x_supports_bpp(w, h, bpp);
+    if (!nvidia_g7x_supports_bpp(w, h, bpp) || !g_regs) return 0;
+    pdv_display_timing_t timing;
+    if (!g_kapi->display_get_mode_timing ||
+        !g_kapi->display_get_mode_timing(w, h, &timing)) {
+        return 0;
+    }
+    if (timing.h_display != (uint16_t)w ||
+        timing.v_display != (uint16_t)h ||
+        timing.pixel_clock_khz == 0 ||
+        timing.h_total <= timing.h_display ||
+        timing.v_total <= timing.v_display) {
+        return 0;
+    }
+    int pitch = (w * (bpp / 8) + 63) & ~63;
+    uint64_t frame_bytes = (uint64_t)(unsigned int)pitch *
+                           (uint64_t)(unsigned int)h;
+    pdv_fb_surface_t surface;
+    g_kapi->fb_get_surface(&surface);
+    if (!surface.framebuffer_phys || !g_bar1 ||
+        surface.framebuffer_phys < g_bar1 ||
+        surface.framebuffer_phys - g_bar1 + frame_bytes > g_bar1_size) {
+        return 0;
+    }
+    unsigned char* mapped =
+        (unsigned char*)g_kapi->mmio_map_wc(surface.framebuffer_phys,
+                                            (size_t)frame_bytes);
+    if (!mapped) return 0;
+
+    uint32_t crystal_khz =
+        (pdv_mmio_read32(g_regs + 0x00101000U) & 0x40U) ? 14318U : 13500U;
+    uint32_t vpll;
+    if (!nvidia_calc_vpll(timing.pixel_clock_khz, crystal_khz, &vpll)) {
+        return 0;
+    }
+
+    int horiz_display = (w / 8) - 1;
+    int horiz_start = ((int)timing.h_sync_start / 8) - 1;
+    int horiz_end = ((int)timing.h_sync_end / 8) - 1;
+    int horiz_total = ((int)timing.h_total / 8) - 5;
+    int horiz_blank_start = horiz_display;
+    int horiz_blank_end = ((int)timing.h_total / 8) - 1;
+    int vert_display = h - 1;
+    int vert_start = (int)timing.v_sync_start - 1;
+    int vert_end = (int)timing.v_sync_end - 1;
+    int vert_total = (int)timing.v_total - 2;
+    int vert_blank_start = vert_display;
+    int vert_blank_end = (int)timing.v_total - 1;
+    if (horiz_display < 0 || horiz_start < 0 || horiz_end < 0 ||
+        horiz_total < 0 || vert_display < 0 || vert_start < 0 ||
+        vert_end < 0 || vert_total < 0 ||
+        horiz_start >= horiz_end || vert_start >= vert_end) {
+        return 0;
+    }
+
+    nvidia_mode_state_t saved;
+    nvidia_save_mode_state(&saved);
+    unsigned char saved_protect = nv_vga_read(0x11);
+    nv_vga_write(0x11, (unsigned char)(saved_protect & 0x7F));
+    g_kapi->sleep_ms(20);
+
+    nv_vga_write(0x00, (unsigned char)horiz_total);
+    nv_vga_write(0x01, (unsigned char)horiz_display);
+    nv_vga_write(0x02, (unsigned char)horiz_blank_start);
+    nv_vga_write(0x03, (unsigned char)((horiz_blank_end & 0x1F) | 0x80));
+    nv_vga_write(0x04, (unsigned char)horiz_start);
+    nv_vga_write(0x05, (unsigned char)(((horiz_blank_end >> 5) & 1) << 7) |
+                              (unsigned char)(horiz_end & 0x1F));
+    nv_vga_write(0x06, (unsigned char)vert_total);
+    nv_vga_write(0x07,
+        (unsigned char)(((vert_total >> 8) & 1) |
+                        (((vert_display >> 8) & 1) << 1) |
+                        (((vert_start >> 8) & 1) << 2) |
+                        (((vert_blank_start >> 8) & 1) << 3) | 0x10 |
+                        (((vert_total >> 9) & 1) << 5) |
+                        (((vert_display >> 9) & 1) << 6) |
+                        (((vert_start >> 9) & 1) << 7)));
+    nv_vga_write(0x09, (unsigned char)((((vert_blank_start >> 9) & 1) << 5) |
+                                        0x40));
+    nv_vga_write(0x10, (unsigned char)vert_start);
+    nv_vga_write(0x11, (unsigned char)((vert_end & 0x0F) | 0x20));
+    nv_vga_write(0x12, (unsigned char)vert_display);
+    nv_vga_write(0x13, (unsigned char)(pitch / 8));
+    nv_vga_write(0x15, (unsigned char)vert_blank_start);
+    nv_vga_write(0x16, (unsigned char)vert_blank_end);
+
+    unsigned int pixel_depth = (unsigned int)(bpp / 8);
+    unsigned int screen_value =
+        (((unsigned int)horiz_blank_end >> 6) & 1U) << 4 |
+        (((unsigned int)vert_blank_start >> 10) & 1U) << 3 |
+        (((unsigned int)vert_start >> 10) & 1U) << 2 |
+        (((unsigned int)vert_display >> 10) & 1U) << 1 |
+        (((unsigned int)vert_total >> 10) & 1U);
+    unsigned int horiz_value =
+        (((unsigned int)horiz_total >> 8) & 1U) |
+        ((((unsigned int)horiz_display >> 8) & 1U) << 1) |
+        ((((unsigned int)horiz_blank_start >> 8) & 1U) << 2) |
+        ((((unsigned int)horiz_start >> 8) & 1U) << 3);
+    unsigned int extra_value =
+        (((unsigned int)vert_total >> 11) & 1U) |
+        ((((unsigned int)vert_display >> 11) & 1U) << 2) |
+        ((((unsigned int)vert_start >> 11) & 1U) << 4) |
+        ((((unsigned int)vert_blank_start >> 11) & 1U) << 6);
+    unsigned int repaint0 = ((((unsigned int)w / 8U) * pixel_depth) &
+                             0x700U) >> 3;
+    unsigned int repaint1 = w < 1280 ? 0x04U : 0x00U;
+    unsigned int pixel_mode = pixel_depth > 2U ? 3U : pixel_depth;
+
+    nv_vga_write(0x19, (unsigned char)repaint0);
+    nv_vga_write(0x1a, (unsigned char)repaint1);
+    nv_vga_write(0x1b, 128U);
+    nv_vga_write(0x1c, (unsigned char)(nv_vga_read(0x1c) & ~0x20U));
+    nv_vga_write(0x20, (unsigned char)0x80U);
+    nv_vga_write(0x25, (unsigned char)screen_value);
+    nv_vga_write(0x28, (unsigned char)pixel_mode);
+    nv_vga_write(0x2d, (unsigned char)horiz_value);
+    nv_vga_write(0x39, 0xFFU);
+    nv_vga_write(0x41, (unsigned char)extra_value);
+    nv_vga_write(0x47, 0x04U);
+    nv_vga_write(0x11, (unsigned char)((vert_end & 0x0F) | 0xA0U));
+
+    nvidia_pcrtc_write(NV_CRTC_PITCH_REG, (unsigned int)pitch);
+    nvidia_pcrtc_write(NV_CRTC_START_REG,
+        (unsigned int)(surface.framebuffer_phys - g_bar1));
+    nvidia_pcrtc_write(0x00000810U, 0x00000100U);
+    nvidia_pcrtc_write(0x00000830U, (unsigned int)(h - 3));
+    nvidia_pcrtc_write(0x00000834U, (unsigned int)(h - 1));
+
+    if (g_regs) {
+        uint32_t head_control =
+            pdv_mmio_read32(g_regs + NV_PCRTC_BASE + NV_HEAD_CONTROL_REG);
+        uint32_t second =
+            pdv_mmio_read32(g_regs + NV_PCRTC_BASE + NV_SECOND_HEAD_REG);
+        if (g_head == 0) {
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_HEAD_CONTROL_REG,
+                             head_control | 0x00001000U);
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_SECOND_HEAD_REG,
+                             second & ~0x00001000U);
+        } else {
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_HEAD_CONTROL_REG,
+                             head_control & ~0x00001000U);
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_SECOND_HEAD_REG,
+                             second | 0x00001000U);
+        }
+    }
+
+    unsigned int dac_control =
+        nvidia_ramdac_read(0x00000404U) | (1U << 25);
+    nvidia_ramdac_write(0x00000404U, dac_control);
+    nvidia_ramdac_write(0x00000608U,
+        nvidia_ramdac_read(0x00000608U) | (1U << 20));
+    nvidia_ramdac0_write(NV_RAMDAC_PLL_SEL_REG, 0x10000700U);
+    nvidia_ramdac0_write(0x00000508U, vpll);
+    nvidia_ramdac0_write(0x00000520U, vpll);
+    nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, 0x80000401U);
+    nvidia_ramdac0_write(0x0000057CU, 0x80000401U);
+    unsigned int general = bpp == 16 ? 0x00101100U : 0x00100100U;
+    nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, general | 0x30U);
+    nvidia_pcrtc_write(0x00000140U, 0);
+    nvidia_pcrtc_write(0x00000100U, 1);
+    g_kapi->sleep_ms(20);
+
+    if (nv_vga_read(0x00) != (unsigned char)horiz_total ||
+        (nv_vga_read(0x2d) & 0x0F) != (unsigned char)(horiz_value & 0x0F)) {
+        nvidia_restore_mode_state(&saved);
+        return 0;
+    }
+
+    pdv_fb_surface_t new_surface = surface;
+    new_surface.width = (uint32_t)w;
+    new_surface.height = (uint32_t)h;
+    new_surface.pitch = (uint32_t)pitch;
+    new_surface.bpp = (uint32_t)bpp;
+    new_surface.format = bpp == 16 ? PDV_PIXEL_FORMAT_RGB565 :
+                         bpp == 32 ? PDV_PIXEL_FORMAT_BGRA8888 :
+                                     PDV_PIXEL_FORMAT_BGR888;
+    new_surface.red_mask_size = bpp == 16 ? 5 : 8;
+    new_surface.red_mask_shift = bpp == 16 ? 11 : 16;
+    new_surface.green_mask_size = bpp == 16 ? 6 : 8;
+    new_surface.green_mask_shift = bpp == 16 ? 5 : 8;
+    new_surface.blue_mask_size = bpp == 16 ? 5 : 8;
+    new_surface.blue_mask_shift = 0;
+    g_kapi->fb_set_surface(&new_surface, mapped);
+    g_cur_w = w;
+    g_cur_h = h;
+    g_cur_bpp = bpp;
+    g_cur_pitch = pitch;
+    g_status = "G7x CRTC/VPLL hardware modeset active";
+    return 1;
 }
 
 static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys) {
@@ -191,6 +583,8 @@ static int nvidia_g7x_probe(void) {
     g_bar0 = 0;
     g_bar1 = 0;
     g_bar1_size = 0;
+    g_regs = 0;
+    g_head = 0;
     g_primary_7300gt = 0;
     g_status = "NVIDIA G7x PCIe device not found";
 
@@ -274,24 +668,49 @@ static int nvidia_g7x_probe(void) {
                      : 0;
         g_bar1_size = bar_size;
 
+        if (g_bar0 && dev->bar[0].size >= 0x00700000ULL) {
+            g_regs = (volatile unsigned char*)g_kapi->mmio_map_uc(
+                g_bar0, 0x00700000U);
+        }
+        if (!g_regs) {
+            g_status = "NVIDIA MMIO aperture unavailable";
+            continue;
+        }
+        if (g_bar1 && surf.framebuffer_phys >= g_bar1) {
+            uint32_t start_offset =
+                (uint32_t)(surf.framebuffer_phys - g_bar1);
+            uint32_t head0 = pdv_mmio_read32(
+                g_regs + NV_PCRTC_BASE + NV_CRTC_START_REG);
+            uint32_t head1 = pdv_mmio_read32(
+                g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE +
+                NV_CRTC_START_REG);
+            if (head1 == start_offset && head0 != start_offset) g_head = 1;
+        }
+
         unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0);
         g_vram_size = hw_vram ? hw_vram : (vram ? vram : (unsigned int)bar_size);
         g_boot_w = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
         g_boot_h = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
         if (g_boot_w < PDV_DISPLAY_MIN_WIDTH) g_boot_w = PDV_DISPLAY_MIN_WIDTH;
         if (g_boot_h < PDV_DISPLAY_MIN_HEIGHT) g_boot_h = PDV_DISPLAY_MIN_HEIGHT;
+        g_boot_bpp = (surf.bpp == 16 || surf.bpp == 24 || surf.bpp == 32)
+                         ? (int)surf.bpp : 32;
+        g_cur_w = g_boot_w;
+        g_cur_h = g_boot_h;
+        g_cur_bpp = g_boot_bpp;
+        g_cur_pitch = (int)surf.pitch;
         g_active = 1;
         nvidia_g7x_build_modes();
 
         if (g_bar1 && nvidia_framebuffer_in_bar(
                           surf.framebuffer_phys, bar_size)) {
-            g_status = "PCIe BAR1 WC LFB active";
+            g_status = "G7x CRTC/VPLL hardware modeset ready (BAR1)";
         } else {
-            g_status = "Linear WC aperture active";
+            g_status = "G7x CRTC/VPLL hardware modeset ready";
         }
-        klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB modes=%d",
+        klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x head=%d BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB modes=%d",
                   g_name, dev->vendor, dev->device, dev->revision, pcie,
-                  (unsigned long long)g_bar0, (unsigned long long)g_bar1,
+                  g_head, (unsigned long long)g_bar0, (unsigned long long)g_bar1,
                   (unsigned long long)surf.framebuffer_phys,
                   g_vram_size / (1024U * 1024U), g_nv_mode_count);
         return 1;
@@ -401,7 +820,7 @@ static void nvidia_g7x_sync(void) {
 static const pdv_display_driver_t g_nvg7x_drv = {
     .name                 = "NVIDIA G7x PCIe",
     .priority             = 80,
-    .requires_hw_mode_set = 0,
+    .requires_hw_mode_set = 1,
     .probe                = nvidia_g7x_probe,
     .start                = 0,
     .stop                 = 0,

@@ -29,6 +29,8 @@ _Static_assert(sizeof(pdv_dma_buffer_t) == sizeof(dma_buffer_t), "pdv_dma_buffer
 _Static_assert(sizeof(pdv_fb_surface_t) == sizeof(gfx_surface_t), "pdv_fb_surface_t ABI mismatch");
 _Static_assert(sizeof(pdv_blkdev_t) == sizeof(blkdev_t), "pdv_blkdev_t ABI mismatch");
 _Static_assert(sizeof(pdv_driver_descriptor_t) == sizeof(driver_descriptor_t), "pdv_driver_descriptor_t ABI mismatch");
+_Static_assert(sizeof(pdv_display_timing_t) == sizeof(display_timing_t),
+               "pdv_display_timing_t ABI mismatch");
 
 extern unsigned char* lfb;
 extern int screen_w;
@@ -249,6 +251,17 @@ static const char* ddi_display_get_mode_source(void) {
     return display_modes_source();
 }
 
+static int ddi_display_get_mode_timing(int width, int height,
+                                       pdv_display_timing_t* out_timing) {
+    display_timing_t timing;
+    memset(&timing, 0, sizeof(timing));
+    if (!out_timing || !display_modes_timing(width, height, &timing)) {
+        return 0;
+    }
+    memcpy(out_timing, &timing, sizeof(*out_timing));
+    return 1;
+}
+
 static pdv_blkdev_t* ddi_block_register(
     const char* name, pdv_blk_type_t type, int unit,
     uint32_t sector_size, uint64_t total_sectors,
@@ -361,6 +374,7 @@ static const pdv_kernel_api_t g_pdv_kernel_api = {
     .display_get_mode           = ddi_display_get_mode,
     .display_has_edid           = ddi_display_has_edid,
     .display_get_mode_source    = ddi_display_get_mode_source,
+    .display_get_mode_timing    = ddi_display_get_mode_timing,
 };
 
 /* --------------------------------------------------------------------------

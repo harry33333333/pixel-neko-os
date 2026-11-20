@@ -250,6 +250,7 @@ typedef struct {
 #define PXE_CFG_SET_WALLPAPER_MODE 8
 #define PXE_CFG_SET_CLOCK_OPTIONS  9
 #define PXE_CFG_RESTORE_DEFAULT    10
+#define PXE_CFG_SYSTEM_REBOOT      11
 
 /* Filesystem directory & drive structures */
 typedef struct {

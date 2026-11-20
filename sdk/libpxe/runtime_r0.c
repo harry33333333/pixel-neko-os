@@ -78,6 +78,12 @@ int pxe_display_apply_mode(int width, int height, int bpp) {
     return __pxe_r0_api->sys_config(PXE_CFG_APPLY_RESOLUTION, wh, bpp, (const char*)0);
 }
 
+int pxe_system_reboot(void) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SYSTEM_REBOOT, 0, 0,
+                                   (const char*)0) : -1;
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_PATTERN, pattern, 0, (const char*)0) : -1;

@@ -27,6 +27,7 @@ int      pxe_desktop_restore_default_wallpaper(void);
 int      pxe_clock_set_options(int show_date, int show_seconds);
 int      pxe_mouse_set_speed(int speed);
 int      pxe_settings_save(void);
+int      pxe_system_reboot(void);
 
 #endif /* _PXE_SYS_H */
 

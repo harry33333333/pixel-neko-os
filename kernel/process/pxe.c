@@ -419,12 +419,6 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
     return 0;
 }
 
-static int g_pending_display_width;
-static int g_pending_display_height;
-static int g_pending_display_bpp;
-static bool g_pending_display_valid;
-static uint64_t g_pending_display_until;
-
 static int pxe_display_mode_request(int width, int height, int bpp,
                                     bool commit) {
     if (!gfx_accel_can_change_mode(width, height, bpp)) {
@@ -434,7 +428,6 @@ static int pxe_display_mode_request(int width, int height, int bpp,
         if (!gfx_accel_try_set_mode(width, height, bpp)) {
             return -NEKO_EINVAL;
         }
-        g_pending_display_valid = false;
         settings_set_resolution(width, height, bpp);
         wm_request_desktop_redraw();
         return 0;
@@ -442,31 +435,17 @@ static int pxe_display_mode_request(int width, int height, int bpp,
 
     if (!commit) {
         if (width == screen_w && height == screen_h && bpp == screen_bpp) {
-            g_pending_display_valid = false;
             return 0;
         }
         if (settings_get_boot_mode() != SETTINGS_BOOT_LOCAL) {
             return -NEKO_EINVAL;
         }
-        g_pending_display_width = width;
-        g_pending_display_height = height;
-        g_pending_display_bpp = bpp;
-        g_pending_display_valid = true;
-        g_pending_display_until = scheduler_get_ticks() + 1800;
         return 1;
     }
 
     int target_w = width;
     int target_h = height;
     int target_bpp = bpp;
-    if (g_pending_display_valid &&
-        scheduler_get_ticks() <= g_pending_display_until &&
-        width == screen_w && height == screen_h && bpp == screen_bpp) {
-        target_w = g_pending_display_width;
-        target_h = g_pending_display_height;
-        target_bpp = g_pending_display_bpp;
-    }
-    g_pending_display_valid = false;
     if (target_w == screen_w && target_h == screen_h &&
         target_bpp == screen_bpp) {
         settings_set_resolution(target_w, target_h, target_bpp);
@@ -478,9 +457,8 @@ static int pxe_display_mode_request(int width, int height, int bpp,
         return -NEKO_EINVAL;
     }
 
-    wm_notify_banner("Display mode saved; restarting for real scanout...");
-    sleep_ms(500);
-    sys_reboot();
+    wm_notify_banner("Display mode staged; restart confirmation required.");
+    return 0;
 }
 
 int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char* str_arg) {
@@ -502,6 +480,8 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT) return -NEKO_EINVAL;
             return pxe_display_mode_request(w, h, bpp, false);
         }
+        case PXE_CFG_SYSTEM_REBOOT:
+            sys_reboot();
         case PXE_CFG_SET_PATTERN:
             settings_set_pattern(arg0);
             wm_request_desktop_redraw();

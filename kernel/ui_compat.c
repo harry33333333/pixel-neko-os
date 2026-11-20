@@ -122,7 +122,10 @@ void ui_compat_init(void) {
     }
     screen_bpp = bpp;
     int bytes_per_pixel = screen_bpp / 8;
-    screen_pitch = screen_w * bytes_per_pixel;
+    screen_pitch = (int)g_main_surface.pitch;
+    if (screen_pitch < screen_w * bytes_per_pixel) {
+        screen_pitch = screen_w * bytes_per_pixel;
+    }
     lfb = (unsigned char*)g_main_surface.framebuffer_virt;
     ui_build_palette();
 
@@ -462,7 +465,10 @@ bool set_resolution_ex(int width, int height, int bpp) {
     screen_h = height;
     screen_bpp = bpp;
     int bytes_per_pixel = screen_bpp / 8;
-    screen_pitch = screen_w * bytes_per_pixel;
+    screen_pitch = (int)g_main_surface.pitch;
+    if (screen_pitch < screen_w * bytes_per_pixel) {
+        screen_pitch = screen_w * bytes_per_pixel;
+    }
     lfb = (unsigned char*)g_main_surface.framebuffer_virt;
 
     if (!reuse_existing && old_phys != 0 && old_phys != new_phys) {

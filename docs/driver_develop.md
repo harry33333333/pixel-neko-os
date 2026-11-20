@@ -1,6 +1,6 @@
-# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A261a`）
+# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A262a`）
 
-在当前 `main` 主干（基准版本 **`v26A261a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
+在当前 `main` 主干（基准版本 **`v26A262a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
 
 本文档重点说明 Pixel Neko OS 的 PDV 驱动架构，包括：
 1. **显卡 `*.pdv` 规范**：EDID/GOP/VBE 动态分辨率、色深（`8/16/24/32-bit`）、真实显存（VRAM）精确探测（含 `16–32 MB` 显存支持 `1920x1080@32-bit` 的单缓冲计算说明、VMware SVGA II `SVGA_REG_MEMORY_SIZE` / SVGA3D Screen Target `STDU` 与 2D `BAR1` 阈值修正）与软件 LFB 的 `8/16-bit` 回退规范；
@@ -8,7 +8,7 @@
 
 ---
 
-## 一、 核心架构与规范（`v26A261a`）
+## 一、 核心架构与规范（`v26A262a`）
 
 ### 1.1 `*.pdv` 打包与按需自动加载（`PDEVICE\`）
 
@@ -29,7 +29,7 @@
   - **MMIO 与端口 I/O**：`mmio_map_uc`、`mmio_map_wc`、`inb`/`outb`、`inw`/`outw`、`inl`/`outl`（以及 DDK 内联函数 `pdv_mmio_read8/16/32`、`pdv_mmio_write8/16/32`、`pdv_outb/inb/outw/inw/outl/inl`）
   - **PCI 总线与中断**：`pci_get_device_count`、`pci_get_device`、`pci_find_by_id`、`pci_find_class`、`pci_config_read`、`pci_config_write`、`pci_enable_io`、`pci_enable_memory`、`pci_enable_bus_master`、`pci_get_bar_size`、`pci_get_bar_address`、`pci_find_capability`、`pci_register_irq`
   - **时序与定时器**：`sleep_ms`、`delay_ms`、`timer_get_ticks`、`boot_screen_tick`
-  - **帧缓冲与子系统注册**：`fb_get_surface`、`fb_set_surface`、`fb_get_desktop_mode`、`fb_get_lfb`、`fb_flush`、`display_get_mode_count`、`display_get_mode`、`display_has_edid`、`display_get_mode_source`、`register_display_driver`、`register_audio_driver`、`audio_set_probe_status`、`audio_handle_dma_half_irq`、`block_register`、`block_unregister`、`block_set_capacity`、`register_driver_descriptor`
+  - **帧缓冲与子系统注册**：`fb_get_surface`、`fb_set_surface`、`fb_get_desktop_mode`、`fb_get_lfb`、`fb_flush`、`display_get_mode_count`、`display_get_mode`、`display_get_mode_timing`、`display_has_edid`、`display_get_mode_source`、`register_display_driver`、`register_audio_driver`、`audio_set_probe_status`、`audio_handle_dma_half_irq`、`block_register`、`block_unregister`、`block_set_capacity`、`register_driver_descriptor`
   - 注：`fb_apply_ati_cap` 仅作历史 ABI 兼容保留（内核现为空实现），显卡显存容量与分辨率裁决已完全交由显卡驱动本身负责。
 
 ### 1.3 显示模式、色深、显存与回退强制规范

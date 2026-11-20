@@ -39,6 +39,11 @@ typedef struct {
     int prev_w;
     int prev_h;
     int prev_bpp;
+    int pending_reboot;
+    int pending_w;
+    int pending_h;
+    int pending_bpp;
+    int restart_confirm;
 
     int wp_modal;
     char wp_path[128];
@@ -373,6 +378,26 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         pxe_draw_button(surf, dx + 54, dy + 66, 72, 22, "Apply", 0, 1);
         pxe_draw_button(surf, dx + 154, dy + 66, 72, 22, "Cancel", 0, 1);
     }
+
+    if (cp->restart_confirm) {
+        int dw = 300, dh = 104;
+        int dx = (surf->width - dw) / 2;
+        int dy = (surf->height - dh) / 2;
+        pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
+        pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
+        pxe_draw_text(surf, dx + 8, dy + 3, "Restart Required", PXE_COL_WHITE);
+        pxe_draw_text_small(surf, dx + 12, dy + 28,
+                            "The selected display mode needs a restart.", PXE_COL_BLACK);
+        char mode_line[48];
+        snprintf(mode_line, sizeof(mode_line), "%d x %d, %d-bit",
+                 cp->pending_w, cp->pending_h, cp->pending_bpp);
+        pxe_draw_text_small(surf, dx + 12, dy + 44, mode_line, PXE_COL_DARK_BLUE);
+        pxe_draw_text_small(surf, dx + 12, dy + 58,
+                            "Restart now? Cancel keeps the current mode.",
+                            PXE_COL_DARK_GRAY);
+        pxe_draw_button(surf, dx + 50, dy + 76, 86, 22, "Restart", 0, 1);
+        pxe_draw_button(surf, dx + 164, dy + 76, 86, 22, "Cancel", 0, 1);
+    }
 }
 
 static void start_apply_mode(cpanel_t* cp) {
@@ -396,6 +421,7 @@ static void start_apply_mode(cpanel_t* cp) {
     cp->prev_w = cp->info.screen_w;
     cp->prev_h = cp->info.screen_h;
     cp->prev_bpp = cp->info.screen_bpp;
+    cp->pending_reboot = 0;
     int mode_result = pxe_display_apply_mode(tw, th, tb);
     if (mode_result == 0) {
         pxe_rtc_time_t rtc;
@@ -405,15 +431,45 @@ static void start_apply_mode(cpanel_t* cp) {
         sync_from_sysinfo(cp);
         snprintf(cp->notice, sizeof(cp->notice), "Click Keep (OK) to confirm mode.");
     } else if (mode_result > 0) {
+        cp->pending_reboot = 1;
+        cp->pending_w = tw;
+        cp->pending_h = th;
+        cp->pending_bpp = tb;
         pxe_rtc_time_t rtc;
         pxe_get_rtc_time(&rtc);
         cp->revert_sec = 15;
         cp->last_rtc_sec = (int)rtc.second;
         snprintf(cp->notice, sizeof(cp->notice),
-                 "Click Keep to apply and restart with real scanout.");
+                 "Restart required. Click Keep to confirm.");
     } else {
         pxe_beep();
         snprintf(cp->notice, sizeof(cp->notice), "Display mode switch rejected.");
+    }
+}
+
+static void discard_display_change(cpanel_t* cp) {
+    if (!cp) return;
+    cp->restart_confirm = 0;
+    cp->pending_reboot = 0;
+    cp->revert_sec = 0;
+    if (cp->prev_w >= 640 && cp->prev_h >= 480) {
+        (void)pxe_display_apply_mode(cp->prev_w, cp->prev_h, cp->prev_bpp);
+    }
+    sync_from_sysinfo(cp);
+}
+
+static void confirm_restart_mode(cpanel_t* cp) {
+    if (!cp || !cp->pending_reboot) return;
+    int width = cp->pending_w;
+    int height = cp->pending_h;
+    int bpp = cp->pending_bpp;
+    cp->restart_confirm = 0;
+    if (pxe_display_set_mode(width, height, bpp) != 0 ||
+        pxe_system_reboot() != 0) {
+        pxe_beep();
+        discard_display_change(cp);
+        snprintf(cp->notice, sizeof(cp->notice),
+                 "Restart failed; current display mode was restored.");
     }
 }
 
@@ -452,8 +508,9 @@ int main(int argc, char** argv) {
         int rc;
         while ((rc = pxe_win_poll_event(win_id, &ev)) > 0) {
             if (ev.type == PXE_EV_CLOSE) {
-                if (cp.revert_sec > 0) {
-                    pxe_display_apply_mode(cp.prev_w, cp.prev_h, cp.prev_bpp);
+                if (cp.revert_sec > 0 || cp.pending_reboot ||
+                    cp.restart_confirm) {
+                    discard_display_change(&cp);
                 }
                 running = 0;
                 break;
@@ -507,6 +564,15 @@ int main(int argc, char** argv) {
                 }
                 cp.drag_vol = 0;
                 cp.drag_res_sb = 0;
+            } else if (ev.type == PXE_EV_KEY_DOWN && cp.restart_confirm) {
+                if (ev.key == PXE_KEY_ENTER) {
+                    confirm_restart_mode(&cp);
+                } else if (ev.key == PXE_KEY_ESC) {
+                    discard_display_change(&cp);
+                    snprintf(cp.notice, sizeof(cp.notice),
+                             "Restart cancelled; display mode unchanged.");
+                }
+                dirty = 1;
             } else if (ev.type == PXE_EV_KEY_DOWN && cp.wp_modal) {
                 if (ev.key == PXE_KEY_ESC) {
                     cp.wp_modal = 0;
@@ -585,6 +651,22 @@ int main(int argc, char** argv) {
                 }
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
                 int mx = ev.x, my = ev.y;
+
+                if (cp.restart_confirm) {
+                    int dw = 300, dh = 104;
+                    int dx = (surf.width - dw) / 2;
+                    int dy = (surf.height - dh) / 2;
+                    if (pxe_point_in_rect(mx, my, dx + 50, dy + 76, 86, 22)) {
+                        confirm_restart_mode(&cp);
+                    } else if (pxe_point_in_rect(mx, my,
+                                                 dx + 164, dy + 76, 86, 22)) {
+                        discard_display_change(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice),
+                                 "Restart cancelled; display mode unchanged.");
+                    }
+                    dirty = 1;
+                    continue;
+                }
 
                 if (cp.wp_modal) {
                     int dw = 280, dh = 96;
@@ -808,17 +890,21 @@ int main(int argc, char** argv) {
                 if (cp.revert_sec > 0) {
                     if (pxe_point_in_rect(mx, my, 188, 286, 156, 24)) {
                         cp.revert_sec = 0;
-                        if (pxe_display_set_mode(cp.info.screen_w,
-                                                 cp.info.screen_h,
-                                                 cp.info.screen_bpp) == 0) {
-                            pxe_settings_save();
-                            sync_from_sysinfo(&cp);
-                            snprintf(cp.notice, sizeof(cp.notice),
-                                     "Display mode confirmed.");
+                        if (cp.pending_reboot) {
+                            cp.restart_confirm = 1;
                         } else {
-                            pxe_beep();
-                            snprintf(cp.notice, sizeof(cp.notice),
-                                     "Could not persist the real display mode.");
+                            if (pxe_display_set_mode(cp.info.screen_w,
+                                                     cp.info.screen_h,
+                                                     cp.info.screen_bpp) == 0) {
+                                pxe_settings_save();
+                                sync_from_sysinfo(&cp);
+                                snprintf(cp.notice, sizeof(cp.notice),
+                                         "Display mode confirmed.");
+                            } else {
+                                pxe_beep();
+                                snprintf(cp.notice, sizeof(cp.notice),
+                                         "Could not persist the display mode.");
+                            }
                         }
                         dirty = 1;
                     }
@@ -862,6 +948,8 @@ int main(int argc, char** argv) {
                 cp.revert_sec--;
                 if (cp.revert_sec <= 0) {
                     cp.revert_sec = 0;
+                    cp.pending_reboot = 0;
+                    cp.restart_confirm = 0;
                     pxe_display_apply_mode(cp.prev_w, cp.prev_h, cp.prev_bpp);
                     sync_from_sysinfo(&cp);
                     snprintf(cp.notice, sizeof(cp.notice), "Reverted display mode.");

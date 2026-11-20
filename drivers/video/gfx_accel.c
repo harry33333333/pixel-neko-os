@@ -63,6 +63,11 @@ static int gfx_fallback_max_h(void) {
     return screen_h >= GFX_MIN_HEIGHT ? screen_h : GFX_FALLBACK_MAX_HEIGHT;
 }
 
+static int gfx_compat_reboot_mode(int w, int h, int bpp) {
+    return bpp == 16 &&
+           ((w == 800 && h == 600) || (w == 1024 && h == 768));
+}
+
 static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count, int max_out) {
     static const int k_bpps[4] = { 8, 16, 24, 32 };
     int cnt = 0;
@@ -90,6 +95,29 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
                 out_modes[cnt].reserved = 0U;
                 cnt++;
             }
+        }
+    } else {
+        static const uint16_t k_width[] = { 800, 1024 };
+        static const uint16_t k_height[] = { 600, 768 };
+        for (size_t index = 0;
+             index < sizeof(k_width) / sizeof(k_width[0]) && cnt < max_out;
+             index++) {
+            int exists = 0;
+            for (int mode = 0; mode < cnt; mode++) {
+                if (out_modes[mode].width == k_width[index] &&
+                    out_modes[mode].height == k_height[index]) {
+                    out_modes[mode].bpp_mask |= PDV_BPP_MASK_16;
+                    exists = 1;
+                    break;
+                }
+            }
+            if (exists) continue;
+            out_modes[cnt].width = k_width[index];
+            out_modes[cnt].height = k_height[index];
+            out_modes[cnt].bpp_mask = PDV_BPP_MASK_16;
+            out_modes[cnt].preferred = 0U;
+            out_modes[cnt].reserved = 0U;
+            cnt++;
         }
     }
 
@@ -462,8 +490,16 @@ int gfx_accel_can_change_mode(int w, int h, int bpp) {
 
     if (!g_active_drv) {
         if (g_main_surface.framebuffer_virt == NULL) return 0;
+        if (gfx_compat_reboot_mode(w, h, bpp)) {
+            return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+        }
         if (w != gfx_fallback_max_w() || h != gfx_fallback_max_h()) return 0;
         if (!gfx_mode_fits_vram(w, h, bpp, gfx_accel_get_vram_size())) return 0;
+        return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+    }
+
+    if (!g_active_drv->requires_hw_mode_set &&
+        gfx_compat_reboot_mode(w, h, bpp)) {
         return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
     }
 

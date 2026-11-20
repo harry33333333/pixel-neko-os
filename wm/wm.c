@@ -205,6 +205,8 @@ static int resizing=0, rs_win_id=-1;
 static int rs_active=0, rs_bx=0, rs_by=0, rs_bw=0, rs_bh=0;
 static int power_confirm=0;
 static int power_cancel_pressed=0, power_ok_pressed=0;
+static int volume_popup_open=0;
+static int volume_drag_active=0;
 static int uninit_dialog_active=0;
 static int uninit_dialog_checked=0;
 static int uninit_ignore_pressed=0, uninit_init_pressed=0;
@@ -297,44 +299,170 @@ static int format_clock_text(char* out, int capacity) {
     return used;
 }
 
-static int format_volume_text(char* out, int capacity) {
-    if (!out || capacity < 9) return 0;
-    if (audio_is_muted()) {
-        strcpy(out, "MUTE");
-        return 4;
-    }
-    int volume = audio_get_volume();
-    if (volume < 0) volume = 0;
-    if (volume > 100) volume = 100;
-    out[0] = 'V';
-    out[1] = 'O';
-    out[2] = 'L';
-    out[3] = ' ';
-    if (volume == 100) {
-        out[4] = '1';
-        out[5] = '0';
-        out[6] = '0';
-        out[7] = '%';
-        out[8] = '\0';
-        return 8;
-    }
-    out[4] = (char)('0' + volume / 10);
-    out[5] = (char)('0' + volume % 10);
-    out[6] = '%';
-    out[7] = '\0';
-    return 7;
-}
-
 static void notification_volume_span(int* out_x, int* out_width) {
     char clock_text[32];
     int clock_length = format_clock_text(clock_text, sizeof(clock_text));
     int clock_x = screen_w - clock_length * 8 - 10;
     if (clock_x < 24) clock_x = 24;
-    int x = clock_x - 68;
-    if (x < 24) x = 24;
+    int x = clock_x - 28;
+    if (x < 18) x = 18;
     if (out_x) *out_x = x;
-    if (out_width) *out_width = clock_x - x - 4;
-    if (out_width && *out_width < 40) *out_width = 40;
+    if (out_width) *out_width = 24;
+}
+
+static void notification_volume_panel(int* out_x, int* out_y,
+                                      int* out_width, int* out_height) {
+    int icon_x = 0, icon_width = 0;
+    notification_volume_span(&icon_x, &icon_width);
+    int x = icon_x - 16;
+    if (x + 56 > screen_w) x = screen_w - 56;
+    if (x < 2) x = 2;
+    if (out_x) *out_x = x;
+    if (out_y) *out_y = 22;
+    if (out_width) *out_width = 56;
+    if (out_height) *out_height = 144;
+}
+
+static void draw_volume_icon(unsigned char* v, int x, int y) {
+    int muted = audio_is_muted();
+    int volume = audio_get_volume();
+    for (int row = 0; row < 5; row++) {
+        for (int column = 0; column <= row; column++) {
+            PUT_PIXEL(v, x + 2 + column, y + 7 + row, 0);
+            PUT_PIXEL(v, x + 2 + column, y + 7 - row, 0);
+        }
+    }
+    for (int row = 3; row < 14; row++) {
+        PUT_PIXEL(v, x + 5, y + row, 0);
+        PUT_PIXEL(v, x + 6, y + row, 0);
+    }
+    if (!muted && volume > 0) {
+        PUT_PIXEL(v, x + 9, y + 7, 0);
+        PUT_PIXEL(v, x + 10, y + 8, 0);
+        PUT_PIXEL(v, x + 10, y + 9, 0);
+        PUT_PIXEL(v, x + 9, y + 10, 0);
+    }
+    if (!muted && volume > 35) {
+        PUT_PIXEL(v, x + 12, y + 5, 0);
+        PUT_PIXEL(v, x + 13, y + 6, 0);
+        PUT_PIXEL(v, x + 14, y + 7, 0);
+        PUT_PIXEL(v, x + 14, y + 8, 0);
+        PUT_PIXEL(v, x + 14, y + 9, 0);
+        PUT_PIXEL(v, x + 13, y + 10, 0);
+        PUT_PIXEL(v, x + 12, y + 11, 0);
+    }
+    if (muted) {
+        for (int offset = 0; offset < 8; offset++) {
+            PUT_PIXEL(v, x + 9 + offset, y + 6 + offset, 4);
+            PUT_PIXEL(v, x + 16 - offset, y + 6 + offset, 4);
+        }
+    }
+}
+
+static void volume_set_from_y(int y) {
+    int panel_x = 0, panel_y = 0, panel_w = 0, panel_h = 0;
+    notification_volume_panel(&panel_x, &panel_y, &panel_w, &panel_h);
+    (void)panel_x;
+    (void)panel_w;
+    (void)panel_h;
+    int track_top = panel_y + 28;
+    int track_height = 78;
+    int volume = ((track_top + track_height - 1 - y) * 100) /
+                 (track_height - 1);
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    audio_set_volume(volume);
+    redraw = 1;
+    need_mr = 1;
+}
+
+static void draw_volume_popup(unsigned char* v) {
+    if (!volume_popup_open) return;
+    int x = 0, y = 0, w = 0, h = 0;
+    notification_volume_panel(&x, &y, &w, &h);
+    for (int py = y; py < y + h && py < screen_h; py++) {
+        for (int px = x; px < x + w && px < screen_w; px++) {
+            PUT_PIXEL(v, px, py, 15);
+        }
+    }
+    for (int px = x; px < x + w; px++) {
+        PUT_PIXEL(v, px, y, 0);
+        PUT_PIXEL(v, px, y + h - 1, 0);
+    }
+    for (int py = y; py < y + h; py++) {
+        PUT_PIXEL(v, x, py, 0);
+        PUT_PIXEL(v, x + w - 1, py, 0);
+    }
+
+    char volume_text[12];
+    int volume = audio_get_volume();
+    if (audio_is_muted()) {
+        volume_text[0] = 'M';
+        volume_text[1] = 'U';
+        volume_text[2] = 'T';
+        volume_text[3] = 'E';
+        volume_text[4] = '\0';
+    } else if (volume == 100) {
+        volume_text[0] = '1';
+        volume_text[1] = '0';
+        volume_text[2] = '0';
+        volume_text[3] = '%';
+        volume_text[4] = '\0';
+    } else {
+        volume_text[0] = (char)('0' + volume / 10);
+        volume_text[1] = (char)('0' + volume % 10);
+        volume_text[2] = '%';
+        volume_text[3] = '\0';
+    }
+    font_draw_text(v, x + 13, y + 6, volume_text, 0);
+
+    int track_x = x + 24;
+    int track_y = y + 28;
+    int track_w = 8;
+    int track_h = 78;
+    for (int py = track_y; py < track_y + track_h; py++) {
+        for (int px = track_x; px < track_x + track_w; px++) {
+            PUT_PIXEL(v, px, py, 8);
+        }
+    }
+    int fill_h = (volume * (track_h - 2)) / 100;
+    if (!audio_is_muted() && fill_h > 0) {
+        for (int py = track_y + track_h - 1 - fill_h;
+             py < track_y + track_h - 1; py++) {
+            for (int px = track_x + 1; px < track_x + track_w - 1; px++) {
+                PUT_PIXEL(v, px, py, 1);
+            }
+        }
+    }
+    int thumb_y = track_y + track_h - 1 -
+                  ((audio_is_muted() ? 0 : volume) * (track_h - 1)) / 100;
+    for (int py = thumb_y - 4; py <= thumb_y + 4; py++) {
+        for (int px = track_x - 5; px < track_x + track_w + 5; px++) {
+            if (py >= track_y && py < track_y + track_h) {
+                PUT_PIXEL(v, px, py, (py == thumb_y || px == track_x - 5 ||
+                                      px == track_x + track_w + 4) ? 0 : 7);
+            }
+        }
+    }
+
+    int button_x = x + 5;
+    int button_y = y + 114;
+    for (int py = button_y; py < button_y + 22; py++) {
+        for (int px = button_x; px < button_x + 46; px++) {
+            PUT_PIXEL(v, px, py,
+                      audio_is_muted() ? 1 : 7);
+        }
+    }
+    for (int px = button_x; px < button_x + 46; px++) {
+        PUT_PIXEL(v, px, button_y, 0);
+        PUT_PIXEL(v, px, button_y + 21, 0);
+    }
+    for (int py = button_y; py < button_y + 22; py++) {
+        PUT_PIXEL(v, button_x, py, 0);
+        PUT_PIXEL(v, button_x + 45, py, 0);
+    }
+    font_draw_text(v, button_x + 7, button_y + 3, "Mute",
+                   audio_is_muted() ? 15 : 0);
 }
 
 static void cl_btn(unsigned char* v, int cx, int cy, int p)
@@ -1176,11 +1304,9 @@ static void draw_menubar(unsigned char* v)
     int clock_length = format_clock_text(clock_text, sizeof(clock_text));
     int clock_x = screen_w - clock_length * 8 - 10;
     if (clock_x < 24) clock_x = 24;
-    int volume_x = 0, volume_width = 0;
-    notification_volume_span(&volume_x, &volume_width);
-    char volume_text[12];
-    format_volume_text(volume_text, sizeof(volume_text));
-    font_draw_text(v, volume_x, 2, volume_text, 0);
+    int volume_x = 0;
+    notification_volume_span(&volume_x, NULL);
+    draw_volume_icon(v, volume_x, 2);
     font_draw_text(v, clock_x, 2, clock_text, 0);
 
     if (opened_msg[0]) {
@@ -1188,6 +1314,7 @@ static void draw_menubar(unsigned char* v)
         if (ox < 10) ox = 10;
         font_draw_text(v, ox, 22, opened_msg, 0);
     }
+    draw_volume_popup(v);
 }
 
 extern int g_desktop_pattern;
@@ -1258,6 +1385,8 @@ static void wm_dyn_push_simple(wm_dyn_win_t* dw, uint32_t type) {
 void wm_on_resolution_change(int w, int h) {
     (void)w;
     (void)h;
+    volume_popup_open = 0;
+    volume_drag_active = 0;
     desktop_on_resolution_change(w, h);
     for (int s = 0; s < WM_DYN_MAX; s++) {
         wm_dyn_win_t* dw = &g_dyn_wins[s];
@@ -1471,8 +1600,14 @@ void wm_mouse_wheel(int mx, int my, int wheel) {
 
     int volume_x = 0, volume_width = 0;
     notification_volume_span(&volume_x, &volume_width);
-    if (my >= 0 && my < 20 &&
-        mx >= volume_x && mx < volume_x + volume_width) {
+    int panel_x = 0, panel_y = 0, panel_w = 0, panel_h = 0;
+    notification_volume_panel(&panel_x, &panel_y, &panel_w, &panel_h);
+    int over_volume = (my >= 0 && my < 20 &&
+                       mx >= volume_x && mx < volume_x + volume_width) ||
+                      (volume_popup_open && mx >= panel_x &&
+                       mx < panel_x + panel_w && my >= panel_y &&
+                       my < panel_y + panel_h);
+    if (over_volume) {
         if (audio_is_muted()) {
             if (wheel > 0) audio_toggle_mute();
             else return;
@@ -1540,6 +1675,47 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         need_mr = 1;
     }
 
+    int volume_x = 0, volume_width = 0;
+    notification_volume_span(&volume_x, &volume_width);
+    int panel_x = 0, panel_y = 0, panel_w = 0, panel_h = 0;
+    notification_volume_panel(&panel_x, &panel_y, &panel_w, &panel_h);
+    int volume_icon_hit =
+        mx >= volume_x && mx < volume_x + volume_width && my >= 0 && my < 20;
+    int volume_slider_hit =
+        mx >= panel_x + 14 && mx < panel_x + 43 &&
+        my >= panel_y + 24 && my < panel_y + 108;
+    int volume_mute_hit =
+        mx >= panel_x + 5 && mx < panel_x + 51 &&
+        my >= panel_y + 114 && my < panel_y + 136;
+
+    if (volume_drag_active) {
+        if (mb & INPUT_MOUSE_LEFT) {
+            volume_set_from_y(my);
+            return;
+        }
+        volume_drag_active = 0;
+        if (mb_release) {
+            redraw = 1;
+            need_mr = 1;
+            return;
+        }
+    }
+    if (volume_popup_open && mb_press) {
+        if (volume_icon_hit) {
+            volume_popup_open = 0;
+        } else if (volume_mute_hit) {
+            audio_toggle_mute();
+        } else if (volume_slider_hit) {
+            volume_drag_active = 1;
+            volume_set_from_y(my);
+        } else {
+            volume_popup_open = 0;
+        }
+        redraw = 1;
+        need_mr = 1;
+        return;
+    }
+
     static int last_volume_state = -1;
     static int last_mute_state = -1;
     int current_volume = audio_get_volume();
@@ -1556,7 +1732,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         g_pxe_present_dirty = 0;
         if (redraw || !v || power_confirm || crash_dialog_active ||
             r0_confirm_active || uninit_dialog_active || menu_open ||
-            icon_dragging != -1 || opened_msg[0] != 0) {
+            volume_popup_open || icon_dragging != -1 || opened_msg[0] != 0) {
             redraw = 1;
             need_mr = 1;
         } else {
@@ -1627,7 +1803,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (!dragging) {
                 if (!redraw && v && !power_confirm && !crash_dialog_active &&
                     !r0_confirm_active && !uninit_dialog_active && !menu_open &&
-                    icon_dragging == -1) {
+                    !volume_popup_open && icon_dragging == -1) {
                     int old_width = (int)strlen(last_clock_text) * 8;
                     int new_width = (int)strlen(next_clock) * 8;
                     int width = old_width > new_width ? old_width : new_width;
@@ -1643,9 +1819,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     }
                     int tx = screen_w - new_width - 10;
                     if (tx < 24) tx = 24;
-                    char volume_text[12];
-                    format_volume_text(volume_text, sizeof(volume_text));
-                    font_draw_text(v, volume_x, 2, volume_text, 0);
+                    draw_volume_icon(v, volume_x, 2);
                     font_draw_text(v, tx, 2, next_clock, 0);
                     wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
                 } else {
@@ -1851,7 +2025,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         int volume_x = 0, volume_width = 0;
         notification_volume_span(&volume_x, &volume_width);
         if (mx >= volume_x && mx < volume_x + volume_width) {
-            audio_toggle_mute();
+            volume_popup_open = !volume_popup_open;
+            volume_drag_active = 0;
             redraw = 1;
             need_mr = 1;
         } else if (mx >= 4 && mx < 24) {

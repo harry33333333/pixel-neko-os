@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A261a`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A262a`）
 
-在当前 `main` 主干（基准版本 **`v26A261a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 `main` 主干（基准版本 **`v26A262a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -100,7 +100,8 @@ row15 = ................
     - `bpp_mask`：全局支持的色深掩码（`PXE_DISP_BPP_8` | `16` | `24` | `32`；无有效驱动回退时仅有 `8 | 16`）
     - `mode_count` 与 `modes[0..PXE_DISP_MAX_MODES-1]`：每个条目 `pxe_display_mode_t` 包含 `{ width, height, bpp_mask, preferred }`
     - `driver_name[48]`、`driver_status[48]`、`fallback_reason[64]`
-  - `int pxe_display_set_mode(int width, int height, int bpp)` / `int pxe_display_apply_mode(int width, int height, int bpp)`：动态设置（并可选持久化保存）分辨率与色深（需要 `.pxi` 携带 `SYS_SETTINGS` 标志或以 Ring 0 运行）。
+  - `int pxe_display_set_mode(int width, int height, int bpp)` / `int pxe_display_apply_mode(int width, int height, int bpp)`：动态设置（并可选持久化保存）分辨率与色深（需要 `.pxi` 携带 `SYS_SETTINGS` 标志或以 Ring 0 运行）。固定 LFB 模式仅登记待切换目标，应用应先请求用户确认，再调用 `pxe_display_set_mode()` 与 `pxe_system_reboot()`。
+  - `int pxe_system_reboot(void)`：在用户明确确认后重启系统（需要 `SYS_SETTINGS` 权限）。
 
 ### 3.2 窗口合成与图形界面（`<pxe/gui.h>`, `<pxe/gfx.h>`）
 

@@ -1,4 +1,4 @@
-# Pixel Neko OS 26A261a Desktop Storage
+# Pixel Neko OS 26A262a Desktop Storage
 
 The desktop uses ordinary files on the installed system volume:
 
@@ -98,6 +98,6 @@ The graphical installer's keep-filesystem mode copies missing versioned files
 into `GAME\`, `APPS\`, `PDEVICE\`, and related system folders, but preserves
 existing `Desktop\` files and `.desktop-layout`. Legacy `APPS\puzzle.pxe` and
 the `DEMO\` directory are migrated/removed on the first local boot of
-26A261a. Missing locked desktop shortcuts are recreated automatically, and
+26A262a. Missing locked desktop shortcuts are recreated automatically, and
 the new `Pixel CPU Detect.pnk` shortcut is added without overwriting user
 desktop files or manual icon positions.
