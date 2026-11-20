@@ -1,6 +1,6 @@
-# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A250a`）
+# Pixel Neko OS 显卡与声卡 `*.pdv` 硬件驱动开发指南（PDV v1.0 / `v26A261a`）
 
-在当前 `main` 主干（基准版本 **`v26A250a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
+在当前 `main` 主干（基准版本 **`v26A261a`**）中，Pixel Neko OS 采用**原生自包含可加载驱动体系（`*.pdv`, Pixel Driver v1.0）**。所有可插拔硬件驱动（显卡、音频、磁盘控制器等）均以独立模块封装，并在内核启动阶段或运行时按硬件匹配表动态重定位加载。
 
 本文档重点说明 Pixel Neko OS 的 PDV 驱动架构，包括：
 1. **显卡 `*.pdv` 规范**：EDID/GOP/VBE 动态分辨率、色深（`8/16/24/32-bit`）、真实显存（VRAM）精确探测（含 `16–32 MB` 显存支持 `1920x1080@32-bit` 的单缓冲计算说明、VMware SVGA II `SVGA_REG_MEMORY_SIZE` / SVGA3D Screen Target `STDU` 与 2D `BAR1` 阈值修正）与软件 LFB 的 `8/16-bit` 回退规范；
@@ -8,7 +8,7 @@
 
 ---
 
-## 一、 核心架构与规范（`v26A250a`）
+## 一、 核心架构与规范（`v26A261a`）
 
 ### 1.1 `*.pdv` 打包与按需自动加载（`PDEVICE\`）
 
@@ -489,7 +489,7 @@ PDV_DRIVERS = vmwgfx mach64 nvg7x fdc ac97 ct4810 cmi8738 hdaudio mygpu
 ### 6.3 桌面实测验证
 
 1. 正常启动（不启用 `nopdv=1`），打开 **控制面板（`cpanel.pxe`）**：查看 **Active Driver**、**VRAM**、**Limits** 以及分辨率下拉列表与 `8 / 16 / 24 / 32-bit` 色深按钮启用状态是否随当前显卡实时变化（`16–32 MB` 显存下可选择 `1920x1080 @ 32-bit`）。
-2. 切换不同分辨率时，确认下拉列表只出现 EDID 或固件声明的模式；VMware 由 SVGA 寄存器执行真实扫描输出切换，Limine LFB 类驱动可切到更高逻辑工作区并由内核缩放到当前固件扫描输出。
+2. 切换不同分辨率时，确认下拉列表只出现 EDID 或固件声明的模式；VMware 由 SVGA 寄存器执行真实扫描输出切换。NVIDIA G7x、ATI Mach64 和普通 Limine LFB 在点击 Keep 后会把模式写入 Limine 配置并重启，以真实 GOP/VBE 扫描输出应用，不再把大画布缩放到旧帧缓冲。
 3. 打开 **系统信息（`sysinfo.pxe`）**，确认 `VRAM` 容量、`Max WxH`、`Drv: Active/Fallback` 与 **Drivers (`.pdv`)** 列表正确，且反复点击 **Rescan `PDEVICE\`** 不会产生重复驱动条目。
 4. 打开 **音乐播放器（`player.pxe`）**：验证 `.flac`/`.mp3` 连续播放时窗口无闪烁、音频无倒退回弹、执行 **Pause -> Play** 立即恢复不死机。
 5. 使用 Limine 菜单的 `Safe Mode (Skip PDEVICE Drivers)`（`nopdv=1`）启动，验证无有效显卡驱动时色深仅可选 **`8-bit` / `16-bit`**（`24`/`32` 置灰禁用），分辨率列表来自 EDID/固件模式目录；目录完全缺失时才使用保守的 `800x600` / `1024x768`。

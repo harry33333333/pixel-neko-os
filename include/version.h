@@ -4,10 +4,10 @@
 #define OS_NAME         "Pixel Neko OS"
 #define OS_CODENAME     "Snow Neko"
 #define OS_TRAIN        "26A"
-#define OS_BUILD        "26A260e"
+#define OS_BUILD        "26A261a"
 #define OS_VERSION      "2.0-alpha"
-#define OS_BUILD_DATE   "2026-11-19 01:43:00 UTC"
-#define OS_FULL_STRING  "Pixel Neko OS (Darwin 26A260e - Codename Snow Neko)"
+#define OS_BUILD_DATE   "2026-11-20 13:22:41 UTC"
+#define OS_FULL_STRING  "Pixel Neko OS (Darwin 26A261a - Codename Snow Neko)"
 #define KERNEL_BUILD    OS_BUILD
 
 #endif /* _VERSION_H */

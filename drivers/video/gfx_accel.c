@@ -506,11 +506,18 @@ int gfx_accel_try_set_mode(int w, int h, int bpp) {
         return 1;
     }
 
-    if (!set_resolution_ex(w, h, bpp)) return 0;
-    if (g_active_drv && g_active_drv->set_mode) {
-        (void)g_active_drv->set_mode(w, h, bpp);
+    /*
+     * Limine framebuffer and the non-PLL display drivers cannot program a new
+     * physical scanout at runtime. Changing only the software canvas would
+     * produce a scaled image, so such modes must go through the boot-mode
+     * staging path and a real reboot instead.
+     */
+    if (w == (int)g_main_surface.width &&
+        h == (int)g_main_surface.height &&
+        bpp == (int)g_main_surface.bpp) {
+        return set_resolution_ex(w, h, bpp) ? 1 : 0;
     }
-    return 1;
+    return 0;
 }
 
 void gfx_accel_set_mode(int w, int h, int bpp) {

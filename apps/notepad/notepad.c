@@ -609,6 +609,19 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
                 break;
+            case PXE_EV_MOUSE_WHEEL:
+                if (ed->modal == MODAL_NONE && ev.arg0 != 0) {
+                    int vis_lines = text_h / 16;
+                    if (vis_lines < 1) vis_lines = 1;
+                    int total_lines = count_total_lines(ed);
+                    int max_scr = (total_lines > vis_lines) ?
+                                  (total_lines - vis_lines) : 0;
+                    ed->scroll_y -= ev.arg0 * 3;
+                    if (ed->scroll_y < 0) ed->scroll_y = 0;
+                    if (ed->scroll_y > max_scr) ed->scroll_y = max_scr;
+                    dirty = 1;
+                }
+                break;
             case PXE_EV_KEY_DOWN:
                 if (ed->modal == MODAL_ERROR) {
                     if (ev.key == PXE_KEY_ESC || ev.key == PXE_KEY_ENTER || ev.key == ' ') {

@@ -14,6 +14,7 @@
 #define PSE_WALLPAPER_PATH_MAX 256
 #define PSE_CLOCK_HIDE_DATE     0x01u
 #define PSE_CLOCK_HIDE_SECONDS  0x02u
+#define PSE_BOOT_CONFIG_MAX     32768
 
 typedef struct {
     uint32_t magic;
@@ -213,6 +214,134 @@ static bool pse_resolution_known(int width, int height, int bpp) {
     if (width < GFX_MIN_WIDTH || height < GFX_MIN_HEIGHT) return false;
     if (width > 16384 || height > 16384) return false;
     return (bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32);
+}
+
+static char* append_unsigned(char* out, unsigned int value) {
+    char digits[12];
+    int count = 0;
+    do {
+        digits[count++] = (char)('0' + value % 10U);
+        value /= 10U;
+    } while (value && count < (int)sizeof(digits));
+    while (count > 0) *out++ = digits[--count];
+    return out;
+}
+
+static void format_boot_resolution(char* out, size_t capacity,
+                                   int width, int height, int bpp) {
+    if (!out || capacity < 12) return;
+    char* cursor = out;
+    cursor = append_unsigned(cursor, (unsigned int)width);
+    *cursor++ = 'x';
+    cursor = append_unsigned(cursor, (unsigned int)height);
+    *cursor++ = 'x';
+    cursor = append_unsigned(cursor, (unsigned int)bpp);
+    *cursor = '\0';
+}
+
+static bool replace_first_resolution(char* text, int length,
+                                     size_t capacity,
+                                     const char* resolution,
+                                     int* out_length) {
+    if (!text || !resolution || length <= 0 || (size_t)length >= capacity) {
+        return false;
+    }
+    size_t new_length = strlen(resolution);
+    int cursor = 0;
+    while (cursor < length) {
+        int line_start = cursor;
+        while (line_start < length &&
+               (text[line_start] == ' ' || text[line_start] == '\t')) {
+            line_start++;
+        }
+        static const char key[] = "resolution:";
+        bool match = line_start + (int)sizeof(key) - 1 <= length;
+        for (size_t index = 0; match && index < sizeof(key) - 1; index++) {
+            if (text[line_start + (int)index] != key[index]) match = false;
+        }
+        int line_end = cursor;
+        while (line_end < length && text[line_end] != '\r' &&
+               text[line_end] != '\n') {
+            line_end++;
+        }
+        if (match) {
+            int value_start = line_start + (int)sizeof(key) - 1;
+            while (value_start < line_end &&
+                   (text[value_start] == ' ' || text[value_start] == '\t')) {
+                value_start++;
+            }
+            int old_length = line_end - value_start;
+            int delta = (int)new_length - old_length;
+            if ((size_t)(length + delta) >= capacity) return false;
+            memmove(text + line_end + delta, text + line_end,
+                    (size_t)(length - line_end + 1));
+            memcpy(text + value_start, resolution, new_length);
+            if (out_length) *out_length = length + delta;
+            return true;
+        }
+        cursor = line_end;
+        while (cursor < length &&
+               (text[cursor] == '\r' || text[cursor] == '\n')) {
+            cursor++;
+        }
+    }
+    return false;
+}
+
+bool settings_stage_boot_resolution(int width, int height, int bpp) {
+    if (!pse_resolution_known(width, height, bpp) ||
+        settings_get_boot_mode() != SETTINGS_BOOT_LOCAL) {
+        return false;
+    }
+    char drive = settings_get_system_drive();
+    if (!drive) return false;
+
+    char resolution[24];
+    format_boot_resolution(resolution, sizeof(resolution),
+                           width, height, bpp);
+    static char source[PSE_BOOT_CONFIG_MAX];
+    static char updated[PSE_BOOT_CONFIG_MAX];
+    static const char* const suffixes[] = {
+        "\\boot\\limine.conf",
+        "\\limine.conf",
+        "\\boot\\limine\\limine.conf"
+    };
+    int updated_files = 0;
+    for (size_t index = 0;
+         index < sizeof(suffixes) / sizeof(suffixes[0]); index++) {
+        char path[64];
+        path[0] = drive;
+        path[1] = ':';
+        strcpy(path + 2, suffixes[index]);
+        memset(source, 0, sizeof(source));
+        int length = vfs_read_file(path, (unsigned char*)source,
+                                   sizeof(source) - 1);
+        if (length <= 0) continue;
+        memcpy(updated, source, (size_t)length + 1);
+        int updated_length = 0;
+        if (!replace_first_resolution(updated, length, sizeof(updated),
+                                      resolution, &updated_length)) {
+            continue;
+        }
+        if (vfs_write_file(path, (const unsigned char*)updated,
+                           (unsigned int)updated_length) == 0) {
+            updated_files++;
+        }
+    }
+    if (updated_files == 0) {
+        log_printf("[SETTINGS] Could not update a writable Limine config.\n");
+        return false;
+    }
+
+    settings_set_resolution(width, height, bpp);
+    if (!settings_save()) {
+        log_printf("[SETTINGS] Mode config written, but .pse save failed.\n");
+        return false;
+    }
+    (void)vfs_sync_usb_drives();
+    log_printf("[SETTINGS] Staged real boot mode %dx%dx%d in %d config file(s)\n",
+               width, height, bpp, updated_files);
+    return true;
 }
 
 static void apply_resolution(const pse_config_t* config) {

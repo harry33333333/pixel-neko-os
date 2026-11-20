@@ -15,14 +15,16 @@ extern int screen_h;
 #define PS2_STATUS_PORT  0x64
 #define PS2_COMMAND_PORT 0x64
 
-static uint8_t g_packet[3];
+static uint8_t g_packet[4];
 static uint32_t g_packet_index = 0;
+static uint32_t g_packet_size = 3;
 static int g_mouse_x = 0;
 static int g_mouse_y = 0;
 static uint32_t g_buttons = 0;
 static int g_mouse_speed = 2;
 static bool g_mouse_ready = false;
 static bool g_controller_ready = false;
+static bool g_wheel_enabled = false;
 static mouse_button_event_t g_legacy_events[32];
 static volatile uint32_t g_legacy_head = 0;
 static volatile uint32_t g_legacy_tail = 0;
@@ -75,6 +77,29 @@ static bool ps2_mouse_command(uint8_t command) {
     return response == 0xFA;
 }
 
+static bool ps2_mouse_set_rate(uint8_t rate) {
+    uint8_t response = 0;
+    if (!ps2_command(0xD4) || !ps2_write_data(0xF3) ||
+        !ps2_read_data(&response) || response != 0xFA) {
+        return false;
+    }
+    if (!ps2_command(0xD4) || !ps2_write_data(rate) ||
+        !ps2_read_data(&response)) {
+        return false;
+    }
+    return response == 0xFA;
+}
+
+static bool ps2_mouse_identify(uint8_t* device_id) {
+    uint8_t response = 0;
+    if (!device_id || !ps2_command(0xD4) || !ps2_write_data(0xF2) ||
+        !ps2_read_data(&response) || response != 0xFA ||
+        !ps2_read_data(device_id)) {
+        return false;
+    }
+    return true;
+}
+
 static void legacy_push_button(uint32_t old_buttons, uint32_t new_buttons) {
     uint32_t difference = old_buttons ^ new_buttons;
     if (!difference) return;
@@ -94,7 +119,9 @@ void mouse_init(void) {
     g_mouse_x = (int)g_main_surface.width / 2;
     g_mouse_y = (int)g_main_surface.height / 2;
     g_packet_index = 0;
+    g_packet_size = 3;
     g_buttons = 0;
+    g_wheel_enabled = false;
     g_mouse_speed = 2;
 
     ps2_drain();
@@ -117,6 +144,15 @@ void mouse_init(void) {
     }
 
     if (ps2_mouse_command(0xF6)) {
+        uint8_t device_id = 0;
+        if (ps2_mouse_set_rate(200) &&
+            ps2_mouse_set_rate(100) &&
+            ps2_mouse_set_rate(80) &&
+            ps2_mouse_identify(&device_id) &&
+            (device_id == 0x03u || device_id == 0x04u)) {
+            g_wheel_enabled = true;
+            g_packet_size = 4;
+        }
         if (!ps2_mouse_command(0xF4)) {
             log_printf("[PS2 ] Mouse rejected streaming enable.\n");
         } else {
@@ -127,7 +163,8 @@ void mouse_init(void) {
     }
 
     g_controller_ready = true;
-    log_printf("[PS2 ] Controller ready: IRQ1 keyboard, IRQ12 mouse, translation=%s.\n",
+    log_printf("[PS2 ] Controller ready: IRQ1 keyboard, IRQ12 mouse, wheel=%s, translation=%s.\n",
+               g_wheel_enabled ? "on" : "off",
                (wanted & 0x40u) ? "on" : "off");
 }
 
@@ -138,15 +175,17 @@ void mouse_handle_byte(uint8_t byte) {
     }
 
     g_packet[g_packet_index++] = byte;
-    if (g_packet_index < 3) return;
+    if (g_packet_index < g_packet_size) return;
     g_packet_index = 0;
 
     uint32_t old_buttons = g_buttons;
     g_buttons = g_packet[0] & 0x07u;
     int dx = g_packet[1];
     int dy = g_packet[2];
+    int wheel = 0;
     if (g_packet[0] & 0x10u) dx -= 256;
     if (g_packet[0] & 0x20u) dy -= 256;
+    if (g_wheel_enabled) wheel = (int)(int8_t)g_packet[3];
 
     dx = dx * g_mouse_speed / 2;
     dy = -(dy * g_mouse_speed / 2);
@@ -161,7 +200,7 @@ void mouse_handle_byte(uint8_t byte) {
     if (g_mouse_x >= max_w) g_mouse_x = max_w - 1;
     if (g_mouse_y >= max_h) g_mouse_y = max_h - 1;
 
-    input_emit_mouse_move(dx, dy, g_buttons, 0);
+    input_emit_mouse_move(dx, dy, g_buttons, wheel);
     if (old_buttons != g_buttons) {
         input_emit_mouse_button(g_buttons);
         legacy_push_button(old_buttons, g_buttons);

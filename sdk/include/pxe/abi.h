@@ -64,6 +64,7 @@
 #define PXE_EV_MOUSE_MOVE    7u
 #define PXE_EV_KEY_DOWN      8u
 #define PXE_EV_MENU          9u
+#define PXE_EV_MOUSE_WHEEL   10u
 
 /* Mouse button masks */
 #define PXE_BTN_LEFT         (1u << 0)
@@ -83,7 +84,7 @@ typedef struct {
     uint32_t buttons;    /* PXE_BTN_* mask */
     int32_t  key;        /* Keycode for PXE_EV_KEY_DOWN */
     uint32_t modifiers;  /* PXE_MOD_* mask */
-    int32_t  arg0;       /* Menu index for PXE_EV_MENU */
+    int32_t  arg0;       /* Menu index; wheel delta for PXE_EV_MOUSE_WHEEL */
     int32_t  arg1;       /* Menu item index for PXE_EV_MENU */
     char     text[64];   /* Optional payload (e.g. argv[1] on PXE_EV_ACTIVATE) */
 } pxe_event_t;

@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A250a`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A261a`）
 
-在当前 `main` 主干（基准版本 **`v26A250a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 `main` 主干（基准版本 **`v26A261a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -112,6 +112,7 @@ row15 = ................
   - `int pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface)`（收到 `PXE_EV_RESIZE` 后**务必调用**以刷新 `width`/`height`/`stride`）
   - `int pxe_win_present(int win_id)` / `int pxe_win_present_rect(int win_id, int x, int y, int w, int h)`
   - `int pxe_win_poll_event(int win_id, pxe_event_t* out_ev)` / `int pxe_win_wait_event(int win_id, pxe_event_t* out_ev)`
+  - **鼠标滚轮事件**：`PXE_EV_MOUSE_WHEEL`（`10`）仅在鼠标位于窗口客户区时发送；`ev.x`/`ev.y` 为客户区坐标，`ev.arg0` 为有符号滚轮增量，正值向上、负值向下。复用既有字段以保持 `pxe_event_t` ABI 大小不变。
   - `int pxe_clipboard_get(char* buf, size_t max_len)` / `int pxe_clipboard_set(const char* text)`、`void pxe_notify_banner(const char* message)`、`void pxe_beep(void)`
 - **基础与控件绘图（同时兼容 `PXE_CANVAS_PAL8` 与 `PXE_CANVAS_RGB32`）**：
   - 像素与几何：`pxe_palette_to_rgb32`、`pxe_put_pixel`、`pxe_put_rgb32`、`pxe_fill_rect`、`pxe_draw_rect`、`pxe_draw_hline`、`pxe_draw_vline`

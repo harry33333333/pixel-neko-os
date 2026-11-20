@@ -617,6 +617,8 @@ void ui_desktop_poll(void) {
                       (int)g_mouse_buttons,
                       (int)(g_mouse_buttons & ~old_buttons),
                       (int)(old_buttons & ~g_mouse_buttons));
+        } else if (event.type == INPUT_MOUSE_SCROLL) {
+            wm_mouse_wheel(g_mouse_x, g_mouse_y, event.wheel);
         }
     }
     wm_set_input_event_tick((int)apic_get_ticks());

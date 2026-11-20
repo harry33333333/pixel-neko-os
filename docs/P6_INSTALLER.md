@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A250a`
+Build version: `26A261a`
 
 ## Boot modes
 
@@ -14,6 +14,10 @@ Live, installer, installed-system and Safe Graphics boots all request
 `800x600x16` so the boot progress screen and initial scanout follow one
 compatible path. The kernel still uses EDID or the GOP/VBE firmware mode table
 to populate higher resolutions available inside the Desktop settings.
+For fixed-LFB NVIDIA and ATI hardware, confirming a new mode updates the
+installed `boot\limine.conf` and root fallback configuration, then restarts so
+Limine programs the selected real GOP/VBE scanout. VMware remains an immediate
+runtime modeset.
 
 `mode=install` opens the installer in a near-full-screen classic window after
 the desktop and splash have initialized.

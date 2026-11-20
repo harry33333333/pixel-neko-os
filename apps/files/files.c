@@ -983,6 +983,15 @@ int main(int argc, char** argv) {
                 }
                 dirty = 1;
                 break;
+            case PXE_EV_MOUSE_WHEEL:
+                if (fm->modal == MODAL_NONE && fm->ctx_kind == CTX_NONE &&
+                    ev.arg0 != 0) {
+                    fm->scroll -= ev.arg0 * 3;
+                    if (fm->scroll < 0) fm->scroll = 0;
+                    if (fm->scroll > max_scr) fm->scroll = max_scr;
+                    dirty = 1;
+                }
+                break;
             case PXE_EV_MENU:
                 fm->ctx_kind = CTX_NONE;
                 if (ev.arg0 == 0) {

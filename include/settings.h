@@ -17,6 +17,7 @@ char settings_get_system_drive(void);
 bool settings_load(void);
 bool settings_save(void);
 bool settings_storage_available(void);
+bool settings_stage_boot_resolution(int width, int height, int bpp);
 void settings_set_mouse_speed(int speed);
 void settings_set_resolution(int w, int h, int bpp);
 void settings_set_pattern(int pattern);

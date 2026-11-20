@@ -396,13 +396,21 @@ static void start_apply_mode(cpanel_t* cp) {
     cp->prev_w = cp->info.screen_w;
     cp->prev_h = cp->info.screen_h;
     cp->prev_bpp = cp->info.screen_bpp;
-    if (pxe_display_apply_mode(tw, th, tb) == 0) {
+    int mode_result = pxe_display_apply_mode(tw, th, tb);
+    if (mode_result == 0) {
         pxe_rtc_time_t rtc;
         pxe_get_rtc_time(&rtc);
         cp->revert_sec = 15;
         cp->last_rtc_sec = (int)rtc.second;
         sync_from_sysinfo(cp);
         snprintf(cp->notice, sizeof(cp->notice), "Click Keep (OK) to confirm mode.");
+    } else if (mode_result > 0) {
+        pxe_rtc_time_t rtc;
+        pxe_get_rtc_time(&rtc);
+        cp->revert_sec = 15;
+        cp->last_rtc_sec = (int)rtc.second;
+        snprintf(cp->notice, sizeof(cp->notice),
+                 "Click Keep to apply and restart with real scanout.");
     } else {
         pxe_beep();
         snprintf(cp->notice, sizeof(cp->notice), "Display mode switch rejected.");
@@ -554,6 +562,24 @@ int main(int argc, char** argv) {
                                 break;
                             }
                         }
+                    }
+                    dirty = 1;
+                }
+            } else if (ev.type == PXE_EV_MOUSE_WHEEL && ev.arg0 != 0) {
+                if (cp.res_open && cp.caps.mode_count > 0) {
+                    cp.res_scroll -= ev.arg0;
+                    int max_scroll = cp.caps.mode_count -
+                                     CPANEL_DROPDOWN_VIS;
+                    if (max_scroll < 0) max_scroll = 0;
+                    if (cp.res_scroll < 0) cp.res_scroll = 0;
+                    if (cp.res_scroll > max_scroll) cp.res_scroll = max_scroll;
+                    dirty = 1;
+                } else if (pxe_point_in_rect(ev.x, ev.y, 126, 58, 204, 20) &&
+                           cp.caps.mode_count > 0) {
+                    cp.sel_res -= ev.arg0;
+                    if (cp.sel_res < 0) cp.sel_res = 0;
+                    if (cp.sel_res >= cp.caps.mode_count) {
+                        cp.sel_res = cp.caps.mode_count - 1;
                     }
                     dirty = 1;
                 }
@@ -782,10 +808,18 @@ int main(int argc, char** argv) {
                 if (cp.revert_sec > 0) {
                     if (pxe_point_in_rect(mx, my, 188, 286, 156, 24)) {
                         cp.revert_sec = 0;
-                        pxe_display_set_mode(cp.info.screen_w, cp.info.screen_h, cp.info.screen_bpp);
-                        pxe_settings_save();
-                        sync_from_sysinfo(&cp);
-                        snprintf(cp.notice, sizeof(cp.notice), "Display mode confirmed.");
+                        if (pxe_display_set_mode(cp.info.screen_w,
+                                                 cp.info.screen_h,
+                                                 cp.info.screen_bpp) == 0) {
+                            pxe_settings_save();
+                            sync_from_sysinfo(&cp);
+                            snprintf(cp.notice, sizeof(cp.notice),
+                                     "Display mode confirmed.");
+                        } else {
+                            pxe_beep();
+                            snprintf(cp.notice, sizeof(cp.notice),
+                                     "Could not persist the real display mode.");
+                        }
                         dirty = 1;
                     }
                 } else {

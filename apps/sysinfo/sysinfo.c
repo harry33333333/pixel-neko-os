@@ -672,6 +672,25 @@ int main(int argc, char** argv) {
                     }
                     break;
                 }
+                case PXE_EV_MOUSE_WHEEL: {
+                    if (s->load_modal || s->tab == TAB_OVERVIEW ||
+                        ev.arg0 == 0) {
+                        break;
+                    }
+                    int lx, ly, lw, lh, vis;
+                    get_list_geom(&surf, s->tab, &lx, &ly, &lw, &lh, &vis);
+                    (void)lx; (void)ly; (void)lw; (void)lh;
+                    int count = tab_item_count(s, s->tab);
+                    int max_scr = count - vis;
+                    if (max_scr < 0) max_scr = 0;
+                    s->scroll[s->tab] -= ev.arg0 * 2;
+                    if (s->scroll[s->tab] < 0) s->scroll[s->tab] = 0;
+                    if (s->scroll[s->tab] > max_scr) {
+                        s->scroll[s->tab] = max_scr;
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_KEY_DOWN: {
                     if (s->load_modal) {
                         if (ev.key == PXE_KEY_ESC) {

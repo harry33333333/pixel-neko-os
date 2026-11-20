@@ -297,6 +297,46 @@ static int format_clock_text(char* out, int capacity) {
     return used;
 }
 
+static int format_volume_text(char* out, int capacity) {
+    if (!out || capacity < 9) return 0;
+    if (audio_is_muted()) {
+        strcpy(out, "MUTE");
+        return 4;
+    }
+    int volume = audio_get_volume();
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    out[0] = 'V';
+    out[1] = 'O';
+    out[2] = 'L';
+    out[3] = ' ';
+    if (volume == 100) {
+        out[4] = '1';
+        out[5] = '0';
+        out[6] = '0';
+        out[7] = '%';
+        out[8] = '\0';
+        return 8;
+    }
+    out[4] = (char)('0' + volume / 10);
+    out[5] = (char)('0' + volume % 10);
+    out[6] = '%';
+    out[7] = '\0';
+    return 7;
+}
+
+static void notification_volume_span(int* out_x, int* out_width) {
+    char clock_text[32];
+    int clock_length = format_clock_text(clock_text, sizeof(clock_text));
+    int clock_x = screen_w - clock_length * 8 - 10;
+    if (clock_x < 24) clock_x = 24;
+    int x = clock_x - 68;
+    if (x < 24) x = 24;
+    if (out_x) *out_x = x;
+    if (out_width) *out_width = clock_x - x - 4;
+    if (out_width && *out_width < 40) *out_width = 40;
+}
+
 static void cl_btn(unsigned char* v, int cx, int cy, int p)
 {
     for(int y=cy;y<cy+11;y++)for(int x=cx;x<cx+11;x++)PUT_PIXEL(v, x, y, 15);
@@ -1136,6 +1176,11 @@ static void draw_menubar(unsigned char* v)
     int clock_length = format_clock_text(clock_text, sizeof(clock_text));
     int clock_x = screen_w - clock_length * 8 - 10;
     if (clock_x < 24) clock_x = 24;
+    int volume_x = 0, volume_width = 0;
+    notification_volume_span(&volume_x, &volume_width);
+    char volume_text[12];
+    format_volume_text(volume_text, sizeof(volume_text));
+    font_draw_text(v, volume_x, 2, volume_text, 0);
     font_draw_text(v, clock_x, 2, clock_text, 0);
 
     if (opened_msg[0]) {
@@ -1421,6 +1466,56 @@ static void get_win_geom(int id, int* rx, int* ry, int* rw, int* rh, int* vis, i
     }
 }
 
+void wm_mouse_wheel(int mx, int my, int wheel) {
+    if (!wheel) return;
+
+    int volume_x = 0, volume_width = 0;
+    notification_volume_span(&volume_x, &volume_width);
+    if (my >= 0 && my < 20 &&
+        mx >= volume_x && mx < volume_x + volume_width) {
+        if (audio_is_muted()) {
+            if (wheel > 0) audio_toggle_mute();
+            else return;
+        }
+        int volume = audio_get_volume() + (wheel > 0 ? 5 : -5);
+        if (volume < 0) volume = 0;
+        if (volume > 100) volume = 100;
+        audio_set_volume(volume);
+        redraw = 1;
+        need_mr = 1;
+        return;
+    }
+
+    for (int z = WM_Z_COUNT - 1; z >= 0; z--) {
+        int id = z_order[z];
+        int x = 0, y = 0, w = 0, h = 0, visible = 0, minimized = 0;
+        get_win_geom(id, &x, &y, &w, &h, &visible, &minimized);
+        if (!visible) continue;
+        if (mx < x || mx >= x + w || my < y || my >= y + h) continue;
+        if (minimized || id < WM_DYN_BASE ||
+            id >= WM_DYN_BASE + WM_DYN_MAX) {
+            return;
+        }
+        wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
+        if (!dw->used) return;
+        int client_x = mx - (x + 1);
+        int client_y = my - (y + 19);
+        if (client_x < 0 || client_x >= dw->client_w ||
+            client_y < 0 || client_y >= dw->client_h) {
+            return;
+        }
+        pxe_event_t event;
+        memset(&event, 0, sizeof(event));
+        event.type = PXE_EV_MOUSE_WHEEL;
+        event.win_id = dw->win_id;
+        event.x = client_x;
+        event.y = client_y;
+        event.arg0 = wheel;
+        wm_dyn_push_event(dw, &event);
+        return;
+    }
+}
+
 void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_release)
 {
     static int last_processed_tick = 0;
@@ -1441,6 +1536,18 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     if (g_pxe_layout_dirty) {
         g_pxe_layout_dirty = 0;
+        redraw = 1;
+        need_mr = 1;
+    }
+
+    static int last_volume_state = -1;
+    static int last_mute_state = -1;
+    int current_volume = audio_get_volume();
+    int current_mute = audio_is_muted() ? 1 : 0;
+    if (current_volume != last_volume_state ||
+        current_mute != last_mute_state) {
+        last_volume_state = current_volume;
+        last_mute_state = current_mute;
         redraw = 1;
         need_mr = 1;
     }
@@ -1524,7 +1631,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     int old_width = (int)strlen(last_clock_text) * 8;
                     int new_width = (int)strlen(next_clock) * 8;
                     int width = old_width > new_width ? old_width : new_width;
-                    int cx0 = screen_w - width - 12;
+                    int volume_x = 0, volume_width = 0;
+                    notification_volume_span(&volume_x, &volume_width);
+                    int cx0 = screen_w - width - 84;
+                    if (volume_x - 4 < cx0) cx0 = volume_x - 4;
                     if (cx0 < 24) cx0 = 24;
                     for (int cy = 0; cy < 20; cy++) {
                         for (int cx = cx0; cx < screen_w; cx++) {
@@ -1533,6 +1643,9 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     }
                     int tx = screen_w - new_width - 10;
                     if (tx < 24) tx = 24;
+                    char volume_text[12];
+                    format_volume_text(volume_text, sizeof(volume_text));
+                    font_draw_text(v, volume_x, 2, volume_text, 0);
                     font_draw_text(v, tx, 2, next_clock, 0);
                     wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
                 } else {
@@ -1735,7 +1848,13 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     if(mb_press && my < 20) {
         bool inst_mode = ui_install_mode_requested();
-        if (mx >= 4 && mx < 24) {
+        int volume_x = 0, volume_width = 0;
+        notification_volume_span(&volume_x, &volume_width);
+        if (mx >= volume_x && mx < volume_x + volume_width) {
+            audio_toggle_mute();
+            redraw = 1;
+            need_mr = 1;
+        } else if (mx >= 4 && mx < 24) {
             menu_open = (menu_open && menu_index == 4) ? 0 : 1;
             menu_index = 4;
             redraw = 1;
