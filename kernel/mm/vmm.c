@@ -401,7 +401,7 @@ bool vmm_remap_framebuffer_wc(void) {
 
     g_main_surface.framebuffer_virt = (void*)(wc_base + page_offset);
     __asm__ volatile ("mfence" : : : "memory");
-    log_printf("[VMM] Boot Framebuffer (%llu KB, %llu pages) mapped to dedicated PAT Write-Combining window @ %p!\n",
+    log_printf("[VMM] Framebuffer (%llu KB, %llu pages) mapped to dedicated PAT Write-Combining window @ %p!\n",
                fb_size / 1024, fb_pages, g_main_surface.framebuffer_virt);
     return true;
 }

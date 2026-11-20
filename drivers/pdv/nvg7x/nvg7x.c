@@ -22,7 +22,9 @@ static const pdv_kernel_api_t* g_kapi;
 #define NV_MAX_MODES           48
 #define NV_PCRTC_BASE          0x00600000U
 #define NV_PRAMDAC_BASE        0x00680000U
+#define NV_PCIO_BASE           0x00601000U
 #define NV_HEAD_STRIDE         0x00000800U
+#define NV_PCIO_HEAD_STRIDE    0x00002000U
 #define NV_CRTC_PITCH_REG      0x00000820U
 #define NV_CRTC_START_REG      0x00000800U
 #define NV_HEAD_CONTROL_REG    0x00000860U
@@ -35,7 +37,7 @@ static const pdv_kernel_api_t* g_kapi;
 static const unsigned char g_nv_crtc_state_regs[] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09,
     0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x19, 0x1A, 0x1B,
-    0x1C, 0x20, 0x25, 0x28, 0x2D, 0x39, 0x41, 0x47
+    0x1C, 0x1F, 0x20, 0x25, 0x28, 0x2D, 0x39, 0x41, 0x44, 0x47
 };
 
 static const pdv_pci_device_t* g_pci;
@@ -112,18 +114,34 @@ static void nvidia_ramdac0_write(unsigned int reg, unsigned int value) {
     if (g_regs) pdv_mmio_write32(g_regs + NV_PRAMDAC_BASE + reg, value);
 }
 
+static volatile unsigned char* nvidia_pcio(void) {
+    return g_regs ? g_regs + NV_PCIO_BASE +
+                    (unsigned int)g_head * NV_PCIO_HEAD_STRIDE : 0;
+}
+
 static unsigned char nv_vga_read(unsigned char index) {
-    pdv_outb(0x3D4, 0x44);
-    pdv_outb(0x3D5, (unsigned char)(g_head * 3));
-    pdv_outb(0x3D4, index);
-    return pdv_inb(0x3D5);
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return 0xFFU;
+    pdv_mmio_write8(pcio + 0x03D4U, index);
+    return pdv_mmio_read8(pcio + 0x03D5U);
 }
 
 static void nv_vga_write(unsigned char index, unsigned char value) {
-    pdv_outb(0x3D4, 0x44);
-    pdv_outb(0x3D5, (unsigned char)(g_head * 3));
-    pdv_outb(0x3D4, index);
-    pdv_outb(0x3D5, value);
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return;
+    pdv_mmio_write8(pcio + 0x03D4U, index);
+    pdv_mmio_write8(pcio + 0x03D5U, value);
+}
+
+static void nvidia_wait_vblank(void) {
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return;
+    int timeout = 200000;
+    while (!(pdv_mmio_read8(pcio + 0x03DAU) & 0x08U) && --timeout) {
+    }
+    timeout = 200000;
+    while ((pdv_mmio_read8(pcio + 0x03DAU) & 0x08U) && --timeout) {
+    }
 }
 
 typedef struct {
@@ -282,8 +300,12 @@ static void nvidia_save_mode_state(nvidia_mode_state_t* state) {
     for (int index = 0; index < 8; index++) {
         state->dac0[index] = nvidia_ramdac0_read(dac0_regs[index]);
     }
-    pdv_outb(0x3D4, 0x44);
-    state->crtc_select = pdv_inb(0x3D5);
+    volatile unsigned char* pcio = nvidia_pcio();
+    state->crtc_select = 0;
+    if (pcio) {
+        pdv_mmio_write8(pcio + 0x03D4U, 0x44U);
+        state->crtc_select = pdv_mmio_read8(pcio + 0x03D5U);
+    }
     state->head_control =
         g_regs ? pdv_mmio_read32(g_regs + NV_PCRTC_BASE +
                                  NV_HEAD_CONTROL_REG) : 0xFFFFFFFFU;
@@ -305,21 +327,26 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
         0x00000404U, 0x00000600U, 0x00000608U, 0x00000848U
     };
     unsigned char protected_crtc = 0;
+    unsigned char extended_lock = 0;
     for (size_t index = 0;
          index < sizeof(g_nv_crtc_state_regs); index++) {
         if (g_nv_crtc_state_regs[index] == 0x11) {
             protected_crtc = state->crtc[index];
-            break;
+        } else if (g_nv_crtc_state_regs[index] == 0x1F) {
+            extended_lock = state->crtc[index];
         }
     }
+    nv_vga_write(0x1F, 0x57U);
     nv_vga_write(0x11, (unsigned char)(protected_crtc & 0x7F));
     for (size_t index = 0;
          index < sizeof(g_nv_crtc_state_regs); index++) {
-        if (g_nv_crtc_state_regs[index] != 0x11) {
+        if (g_nv_crtc_state_regs[index] != 0x11 &&
+            g_nv_crtc_state_regs[index] != 0x1F) {
             nv_vga_write(g_nv_crtc_state_regs[index], state->crtc[index]);
         }
     }
     nv_vga_write(0x11, protected_crtc);
+    nv_vga_write(0x1F, extended_lock);
     for (int index = 0; index < 7; index++) {
         nvidia_pcrtc_write(pcrtc_regs[index], state->pcrtc[index]);
     }
@@ -339,8 +366,11 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
         pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_SECOND_HEAD_REG,
                          state->second_head_control);
     }
-    pdv_outb(0x3D4, 0x44);
-    pdv_outb(0x3D5, state->crtc_select);
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (pcio) {
+        pdv_mmio_write8(pcio + 0x03D4U, 0x44U);
+        pdv_mmio_write8(pcio + 0x03D5U, state->crtc_select);
+    }
 }
 
 static int nvidia_calc_vpll(uint32_t target_khz, uint32_t crystal_khz,
@@ -406,6 +436,11 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     if (!nvidia_calc_vpll(timing.pixel_clock_khz, crystal_khz, &vpll)) {
         return 0;
     }
+    klog_info("[NV  ] modeset %dx%dx%d pclk=%ukHz h=%u/%u/%u/%u v=%u/%u/%u/%u vpll=0x%08x",
+              w, h, bpp, timing.pixel_clock_khz,
+              timing.h_display, timing.h_sync_start, timing.h_sync_end,
+              timing.h_total, timing.v_display, timing.v_sync_start,
+              timing.v_sync_end, timing.v_total, vpll);
 
     int horiz_display = (w / 8) - 1;
     int horiz_start = ((int)timing.h_sync_start / 8) - 1;
@@ -429,8 +464,12 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     nvidia_mode_state_t saved;
     nvidia_save_mode_state(&saved);
     unsigned char saved_protect = nv_vga_read(0x11);
+    nv_vga_write(0x1F, 0x57U);
     nv_vga_write(0x11, (unsigned char)(saved_protect & 0x7F));
+    nv_vga_write(0x44, (unsigned char)(g_head ? 0x03U : 0x00U));
+    nv_vga_write(0x1F, 0x57U);
     g_kapi->sleep_ms(20);
+    nvidia_wait_vblank();
 
     nv_vga_write(0x00, (unsigned char)horiz_total);
     nv_vga_write(0x01, (unsigned char)horiz_display);
@@ -534,7 +573,10 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     g_kapi->sleep_ms(20);
 
     if (nv_vga_read(0x00) != (unsigned char)horiz_total ||
-        (nv_vga_read(0x2d) & 0x0F) != (unsigned char)(horiz_value & 0x0F)) {
+        (nv_vga_read(0x2d) & 0x0F) !=
+            (unsigned char)(horiz_value & 0x0F) ||
+        nv_vga_read(0x13) != (unsigned char)(pitch / 8) ||
+        nv_vga_read(0x28) != (unsigned char)pixel_mode) {
         nvidia_restore_mode_state(&saved);
         return 0;
     }

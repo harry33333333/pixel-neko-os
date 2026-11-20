@@ -212,9 +212,15 @@ static void ddi_fb_set_surface(const pdv_fb_surface_t* surface, unsigned char* n
     if (surface) {
         memcpy(&g_main_surface, surface, sizeof(gfx_surface_t));
     }
-    if (new_lfb) {
-        lfb = new_lfb;
+    /*
+     * Runtime modeset changes pitch and height.  The dedicated WC window was
+     * initially sized for the boot mode, so it must be resized before the
+     * compositor starts drawing into the new surface.
+     */
+    if (!vmm_remap_framebuffer_wc() && new_lfb) {
+        g_main_surface.framebuffer_virt = new_lfb;
     }
+    lfb = (unsigned char*)g_main_surface.framebuffer_virt;
 }
 
 static void ddi_fb_get_desktop_mode(int* out_w, int* out_h, int* out_bpp) {

@@ -2,7 +2,7 @@
 name        = nvg7x
 provider    = Pixel Neko OS
 class       = DISPLAY
-version     = 1.1.0
+version     = 1.1.1
 ddk_version = 0x0100
 start       = BOOT
 safe_mode   = false

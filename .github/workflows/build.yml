@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A262a"
+          VERSION="26A262b"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -114,7 +114,9 @@ jobs:
           - Physical fixed-LFB GPUs no longer silently scale larger canvases: confirmed modes are persisted to Limine and applied as real scanout after restart, while hardware-modeset drivers remain immediate.
           - ATI Mach64/Rage II and NVIDIA G72/G73 now program CRTC/PLL timings for real runtime resolution and color-depth switching using EDID detailed timings.
           - Fixed-LFB and Intel fallback modes remain `800x600x16` / `1024x768x16`; any restart-required change now asks for confirmation and cancellation keeps the current mode.
-          - The notification-area speaker icon opens a Windows XP-style volume panel with a draggable slider and a separate mute button for `v26A262a`.
+          - NVIDIA G7x now accesses the VGA CRTC through the BAR0 `0x601000` MMIO mirror, matching the PLL update and preventing out-of-range scanout on real hardware.
+          - Runtime modeset now resizes the dedicated PAT write-combining framebuffer window before compositor drawing, preventing post-switch page faults and panic resets.
+          - The notification-area speaker icon opens a Windows XP-style volume panel with a draggable slider and a separate mute button for `v26A262b`.
         draft: false
         prerelease: true
         make_latest: false
