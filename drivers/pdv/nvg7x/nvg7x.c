@@ -23,6 +23,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define NV_PCRTC_BASE          0x00600000U
 #define NV_PRAMDAC_BASE        0x00680000U
 #define NV_PCIO_BASE           0x00601000U
+#define NV_PVIO_BASE           0x000C0000U
 #define NV_HEAD_STRIDE         0x00000800U
 #define NV_PCIO_HEAD_STRIDE    0x00002000U
 #define NV_CRTC_PITCH_REG      0x00000820U
@@ -119,29 +120,96 @@ static volatile unsigned char* nvidia_pcio(void) {
                     (unsigned int)g_head * NV_PCIO_HEAD_STRIDE : 0;
 }
 
+static volatile unsigned char* nvidia_pvio(void) {
+    return g_regs ? g_regs + NV_PVIO_BASE : 0;
+}
+
+static unsigned char nvidia_read_misc(void);
+
+static unsigned char nvidia_crtc_index_port(void) {
+    return (nvidia_read_misc() & 0x01U) ? 0x03D4U : 0x03B4U;
+}
+
+static unsigned char nvidia_vga_status_port(void) {
+    return (nvidia_read_misc() & 0x01U) ? 0x03DAU : 0x03BAU;
+}
+
 static unsigned char nv_vga_read(unsigned char index) {
     volatile unsigned char* pcio = nvidia_pcio();
     if (!pcio) return 0xFFU;
-    pdv_mmio_write8(pcio + 0x03D4U, index);
-    return pdv_mmio_read8(pcio + 0x03D5U);
+    unsigned char index_port = nvidia_crtc_index_port();
+    pdv_mmio_write8(pcio + index_port, index);
+    return pdv_mmio_read8(pcio + index_port + 1U);
 }
 
 static void nv_vga_write(unsigned char index, unsigned char value) {
     volatile unsigned char* pcio = nvidia_pcio();
     if (!pcio) return;
-    pdv_mmio_write8(pcio + 0x03D4U, index);
-    pdv_mmio_write8(pcio + 0x03D5U, value);
+    unsigned char index_port = nvidia_crtc_index_port();
+    pdv_mmio_write8(pcio + index_port, index);
+    pdv_mmio_write8(pcio + index_port + 1U, value);
 }
 
 static void nvidia_wait_vblank(void) {
     volatile unsigned char* pcio = nvidia_pcio();
     if (!pcio) return;
+    unsigned char status_port = nvidia_vga_status_port();
     int timeout = 200000;
-    while (!(pdv_mmio_read8(pcio + 0x03DAU) & 0x08U) && --timeout) {
+    while (!(pdv_mmio_read8(pcio + status_port) & 0x08U) && --timeout) {
     }
     timeout = 200000;
-    while ((pdv_mmio_read8(pcio + 0x03DAU) & 0x08U) && --timeout) {
+    while ((pdv_mmio_read8(pcio + status_port) & 0x08U) && --timeout) {
     }
+}
+
+static unsigned char nvidia_read_misc(void) {
+    volatile unsigned char* pvio = nvidia_pvio();
+    return pvio ? pdv_mmio_read8(pvio + 0x03CCU) : 0xFFU;
+}
+
+static void nvidia_write_misc(unsigned char value) {
+    volatile unsigned char* pvio = nvidia_pvio();
+    if (pvio) pdv_mmio_write8(pvio + 0x03C2U, value);
+}
+
+static void nvidia_write_seq(unsigned char index, unsigned char value) {
+    volatile unsigned char* pvio = nvidia_pvio();
+    if (!pvio) return;
+    pdv_mmio_write8(pvio + 0x03C4U, index);
+    pdv_mmio_write8(pvio + 0x03C5U, value);
+}
+
+static void nvidia_write_graphics(unsigned char index, unsigned char value) {
+    volatile unsigned char* pvio = nvidia_pvio();
+    if (!pvio) return;
+    pdv_mmio_write8(pvio + 0x03CEU, index);
+    pdv_mmio_write8(pvio + 0x03CFU, value);
+}
+
+static void nvidia_write_attribute(unsigned char index, unsigned char value) {
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return;
+    unsigned char status_port = nvidia_vga_status_port();
+    (void)pdv_mmio_read8(pcio + status_port);
+    pdv_mmio_write8(pcio + 0x03C0U, index);
+    pdv_mmio_write8(pcio + 0x03C1U, value);
+}
+
+static void nvidia_disable_attribute_palette(void) {
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return;
+    unsigned char status_port = nvidia_vga_status_port();
+    (void)pdv_mmio_read8(pcio + status_port);
+    pdv_mmio_write8(pcio + 0x03C0U, 0x20U);
+}
+
+static unsigned char nvidia_read_attribute(unsigned char index) {
+    volatile unsigned char* pcio = nvidia_pcio();
+    if (!pcio) return 0xFFU;
+    unsigned char status_port = nvidia_vga_status_port();
+    (void)pdv_mmio_read8(pcio + status_port);
+    pdv_mmio_write8(pcio + 0x03C0U, index);
+    return pdv_mmio_read8(pcio + 0x03C1U);
 }
 
 typedef struct {
@@ -150,6 +218,10 @@ typedef struct {
     unsigned int dac0[8];
     unsigned char crtc[sizeof(g_nv_crtc_state_regs)];
     unsigned char crtc_select;
+    unsigned char misc_out;
+    unsigned char sequencer[5];
+    unsigned char graphics[9];
+    unsigned char attribute[21];
     unsigned int head_control;
     unsigned int second_head_control;
 } nvidia_mode_state_t;
@@ -303,8 +375,9 @@ static void nvidia_save_mode_state(nvidia_mode_state_t* state) {
     volatile unsigned char* pcio = nvidia_pcio();
     state->crtc_select = 0;
     if (pcio) {
-        pdv_mmio_write8(pcio + 0x03D4U, 0x44U);
-        state->crtc_select = pdv_mmio_read8(pcio + 0x03D5U);
+        unsigned char index_port = nvidia_crtc_index_port();
+        pdv_mmio_write8(pcio + index_port, 0x44U);
+        state->crtc_select = pdv_mmio_read8(pcio + index_port + 1U);
     }
     state->head_control =
         g_regs ? pdv_mmio_read32(g_regs + NV_PCRTC_BASE +
@@ -316,6 +389,22 @@ static void nvidia_save_mode_state(nvidia_mode_state_t* state) {
          index < sizeof(g_nv_crtc_state_regs); index++) {
         state->crtc[index] = nv_vga_read(g_nv_crtc_state_regs[index]);
     }
+    state->misc_out = nvidia_read_misc();
+    volatile unsigned char* pvio = nvidia_pvio();
+    for (unsigned char index = 0; index < 5; index++) {
+        if (pvio) pdv_mmio_write8(pvio + 0x03C4U, index);
+        state->sequencer[index] =
+            pvio ? pdv_mmio_read8(pvio + 0x03C5U) : 0xFFU;
+    }
+    for (unsigned char index = 0; index < 9; index++) {
+        if (pvio) pdv_mmio_write8(pvio + 0x03CEU, index);
+        state->graphics[index] =
+            pvio ? pdv_mmio_read8(pvio + 0x03CFU) : 0xFFU;
+    }
+    for (unsigned char index = 0; index < 21; index++) {
+        state->attribute[index] = nvidia_read_attribute(index);
+    }
+    nvidia_disable_attribute_palette();
 }
 
 static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
@@ -368,9 +457,21 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
     }
     volatile unsigned char* pcio = nvidia_pcio();
     if (pcio) {
-        pdv_mmio_write8(pcio + 0x03D4U, 0x44U);
-        pdv_mmio_write8(pcio + 0x03D5U, state->crtc_select);
+        unsigned char index_port = nvidia_crtc_index_port();
+        pdv_mmio_write8(pcio + index_port, 0x44U);
+        pdv_mmio_write8(pcio + index_port + 1U, state->crtc_select);
     }
+    nvidia_write_misc(state->misc_out);
+    for (unsigned char index = 0; index < 5; index++) {
+        nvidia_write_seq(index, state->sequencer[index]);
+    }
+    for (unsigned char index = 0; index < 9; index++) {
+        nvidia_write_graphics(index, state->graphics[index]);
+    }
+    for (unsigned char index = 0; index < 21; index++) {
+        nvidia_write_attribute(index, state->attribute[index]);
+    }
+    nvidia_disable_attribute_palette();
 }
 
 static int nvidia_calc_vpll(uint32_t target_khz, uint32_t crystal_khz,
@@ -471,6 +572,22 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     g_kapi->sleep_ms(20);
     nvidia_wait_vblank();
 
+    unsigned char misc_out = nvidia_read_misc();
+    unsigned char old_misc_out = misc_out;
+    misc_out &= (unsigned char)~(0x40U | 0x80U);
+    if (!timing.h_sync_positive) misc_out |= 0x40U;
+    if (!timing.v_sync_positive) misc_out |= 0x80U;
+    nvidia_write_misc(misc_out);
+    klog_info("[NV  ] VGA misc output 0x%02x -> 0x%02x (hsync=%s vsync=%s)",
+              old_misc_out, misc_out,
+              timing.h_sync_positive ? "+" : "-",
+              timing.v_sync_positive ? "+" : "-");
+    nvidia_write_seq(0, 0x00U);
+    nvidia_write_seq(1, 0x01U);
+    nvidia_write_seq(2, 0x0FU);
+    nvidia_write_seq(3, 0x00U);
+    nvidia_write_seq(4, 0x0EU);
+
     nv_vga_write(0x00, (unsigned char)horiz_total);
     nv_vga_write(0x01, (unsigned char)horiz_display);
     nv_vga_write(0x02, (unsigned char)horiz_blank_start);
@@ -562,12 +679,32 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     nvidia_ramdac_write(0x00000608U,
         nvidia_ramdac_read(0x00000608U) | (1U << 20));
     nvidia_ramdac0_write(NV_RAMDAC_PLL_SEL_REG, 0x10000700U);
+    nvidia_ramdac0_write(0x00000580U,
+        nvidia_ramdac0_read(0x00000580U) & 0xEFFFFEFFU);
     nvidia_ramdac0_write(0x00000508U, vpll);
     nvidia_ramdac0_write(0x00000520U, vpll);
     nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, 0x80000401U);
     nvidia_ramdac0_write(0x0000057CU, 0x80000401U);
     unsigned int general = bpp == 16 ? 0x00101100U : 0x00100100U;
     nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, general | 0x30U);
+    nvidia_write_graphics(0, 0x00U);
+    nvidia_write_graphics(1, 0x00U);
+    nvidia_write_graphics(2, 0x00U);
+    nvidia_write_graphics(3, 0x00U);
+    nvidia_write_graphics(4, 0x00U);
+    nvidia_write_graphics(5, 0x40U);
+    nvidia_write_graphics(6, 0x05U);
+    nvidia_write_graphics(7, 0x0FU);
+    nvidia_write_graphics(8, 0xFFU);
+    for (unsigned char index = 0; index < 16; index++) {
+        nvidia_write_attribute(index, index);
+    }
+    nvidia_write_attribute(0x10U, 0x01U);
+    nvidia_write_attribute(0x11U, 0x00U);
+    nvidia_write_attribute(0x12U, 0x0FU);
+    nvidia_write_attribute(0x13U, 0x00U);
+    nvidia_write_attribute(0x14U, 0x00U);
+    nvidia_disable_attribute_palette();
     nvidia_pcrtc_write(0x00000140U, 0);
     nvidia_pcrtc_write(0x00000100U, 1);
     g_kapi->sleep_ms(20);
@@ -727,6 +864,13 @@ static int nvidia_g7x_probe(void) {
                 g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE +
                 NV_CRTC_START_REG);
             if (head1 == start_offset && head0 != start_offset) g_head = 1;
+        }
+        {
+            unsigned char cr28 = nv_vga_read(0x28);
+            unsigned char cr33 = nv_vga_read(0x33);
+            klog_info("[NV  ] output CRTC head=%d slaved=%d tv=%d",
+                      g_head, (cr28 & 0x80U) ? 1 : 0,
+                      (cr28 & 0x80U) && !(cr33 & 0x01U) ? 1 : 0);
         }
 
         unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0);
