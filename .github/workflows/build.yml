@@ -74,6 +74,18 @@ jobs:
           kernel-symbols.txt
         if-no-files-found: error
 
+    - name: Remove existing release and tag if re-publishing same version
+      if: >-
+        success() && github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' ||
+         github.ref == 'refs/heads/master' ||
+         github.ref == 'refs/heads/beta')
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release delete "${{ env.TAG_NAME }}" --cleanup-tag --yes 2>/dev/null || true
+        git push origin ":refs/tags/${{ env.TAG_NAME }}" 2>/dev/null || true
+
     - name: Publish GitHub Pre-release
       if: >-
         success() && github.event_name == 'push' &&
