@@ -1,6 +1,7 @@
 #include "pxe.h"
 #include "audio.h"
 #include "blkdev.h"
+#include "boot_framebuffer.h"
 #include "cpu.h"
 #include "format.h"
 #include "gfx_accel.h"
