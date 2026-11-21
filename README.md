@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A263a - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A270a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -104,6 +104,12 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - 统一 USB HID 与 PS/2 IntelliMouse 鼠标滚轮方向为 Windows 标准方向（向上滚动向上翻页/增加音量，向下滚动向下翻页/减小音量）。
 - 在正常硬盘启动（`mode=local`）与 Live 桌面模式（`mode=live`）下禁止启动 `INSTALL` (`install.pxe`)，仅允许在图形化安装引导模式（`mode=install`）下运行。
 
+### 26A270a 壁纸置中模式、Ctrl+Shift+Esc 任务管理器与 NVIDIA GTX 1060 3GB 驱动
+- 系统壁纸设置新增**置中（不缩放，`WP_MODE_CENTER`）**模式：控制面板（`cpanel.pxe`）新增 `Cntr` 按钮，壁纸以 1:1 原始像素居中显示，并同步写入 `.pse` 持久化配置。
+- 新增 **`Ctrl+Shift+Esc`** 全局快捷键（兼容 PS/2 与 USB HID 键盘），随时呼出或聚焦任务管理器（`taskmgr.pxe`）。
+- 任务管理器（`taskmgr.pxe`）支持终止 `idle`（`PID 0`）与 `kwm_compositor` 等系统核心进程（与 Windows XP 一致，终止前弹出风险警告弹窗，确认终止 `idle` 后触发 `STOP: 0x000000F4 CRITICAL_OBJECT_TERMINATION` 蓝屏停机）。
+- `nvg7x`（v1.2.0）新增对 **NVIDIA GeForce GTX 1060 3GB (`10DE:1C02`, GP106-300-A1, Subvendor `Colorful` `7377:0000`, 3072 MB GDDR5 192-bit)** 及 GP106 Pascal 显卡的驱动支持，兼容传统 Legacy BIOS (VBE) 与 UEFI (GOP) 双引导环境，自动识别 NVDisplay 架构与 3072 MB 显存，且完全不影响现有 G72/G73、ATI Mach64 与 VMware SVGA 驱动。
+
 ### 3. 全栈 USB 架构与现代芯片组兼容
 - **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
 - **现代芯片组与实体机适配**：针对 Intel 600 系列（如铭瑄 H610M-D）等现代主板实施根集线器端口强制复位（PR），将 BIOS 已使能端口强拉回默认地址 0 态，彻底解决进系统后 USB 鼠标无法移动的难题；屏蔽旧版芯片组路由寄存器误写，并引入端口退避重试。
@@ -133,18 +139,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A263a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A270a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A263a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A270a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A263a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A270a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -159,7 +165,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A263a.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A263a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [26A270a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

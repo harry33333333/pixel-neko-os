@@ -26,6 +26,7 @@ bool settings_get_clock_show_date(void);
 bool settings_get_clock_show_seconds(void);
 void settings_restore_default_wallpaper(void);
 void settings_set_wallpaper(const char* path, wallpaper_mode_t mode);
+void settings_set_wallpaper_mode(wallpaper_mode_t mode);
 void settings_clear_wallpaper(void);
 
 #endif // SETTINGS_H

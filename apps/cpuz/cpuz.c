@@ -202,6 +202,14 @@ static const char* pci_vendor_name(uint16_t vendor) {
         case 0x1022: return "AMD";
         case 0x1002: return "ATI / AMD";
         case 0x10DE: return "NVIDIA";
+        case 0x7377: return "Colorful";
+        case 0x1458: return "Gigabyte";
+        case 0x1043: return "ASUS";
+        case 0x1462: return "MSI";
+        case 0x3842: return "EVGA";
+        case 0x19DA: return "Zotac";
+        case 0x1569: return "Palit";
+        case 0x10B0: return "Gainward";
         case 0x1106: return "VIA";
         case 0x10B9: return "ALi";
         case 0x1039: return "SiS";
@@ -211,6 +219,37 @@ static const char* pci_vendor_name(uint16_t vendor) {
         case 0x1B21: return "ASMedia";
         default:     return "Unknown";
     }
+}
+
+static const char* pci_gpu_chip_summary(const pxe_r0_pci_info_t* pci) {
+    if (!pci) return NULL;
+    if (pci->vendor_id == 0x10DE) {
+        switch (pci->device_id) {
+            case 0x1C02:
+                return "GP106-300-A1 (16nm Pascal, 1152 Shaders, 3072MB GDDR5 192-bit)";
+            case 0x1C03:
+                return "GP106-400-A1 (16nm Pascal, 1280 Shaders, 6144MB GDDR5 192-bit)";
+            case 0x1C06:
+                return "GP106-350-K1-A1 (16nm Pascal, 1280 Shaders, 5120MB GDDR5 160-bit)";
+            case 0x0393:
+            case 0x0395:
+            case 0x02E2:
+                return "G73 (90nm GeForce 7300 GT, 256MB DDR2/GDDR3 128-bit)";
+            case 0x0391:
+                return "G73 (90nm GeForce 7600 GT, 256MB GDDR3 128-bit)";
+            case 0x0392:
+                return "G73 (90nm GeForce 7600 GS, 256MB DDR2 128-bit)";
+            case 0x01DF:
+            case 0x01D1:
+            case 0x01D3:
+                return "G72 (90nm GeForce 7300 Series, 64-bit)";
+            default:
+                break;
+        }
+    } else if (pci->vendor_id == 0x1002 && pci->device_id == 0x4755) {
+        return "Mach64 GT-B (3D Rage II+DVD, 64-bit SGRAM/EDO)";
+    }
+    return NULL;
 }
 
 static void format_bytes(uint64_t bytes, char* out, size_t capacity) {
@@ -623,7 +662,12 @@ static void build_report(cpuz_app_t* app) {
     reportf("\n");
 
     reportf("[Graphics]\n");
-    report_pci(find_graphics(app));
+    const pxe_r0_pci_info_t* gpu_pci = find_graphics(app);
+    report_pci(gpu_pci);
+    const char* gpu_spec = pci_gpu_chip_summary(gpu_pci);
+    if (gpu_spec) {
+        reportf("  GPU spec: %s\n", gpu_spec);
+    }
     reportf("  Active driver: %s\n",
             text_or(app->display.driver_name, "Boot framebuffer"));
     reportf("  Driver status: %s\n",
@@ -972,17 +1016,25 @@ static void render_pci_identity(const pxe_win_surface_t* surf, int x, int y,
              (unsigned)pci->device_id);
     draw_kv(surf, x + 10, y + 22, 70, width - 90, "Device",
             value, PXE_COL_BLACK);
-    snprintf(value, sizeof(value), "%02X:%02X.%X  Subsystem %04X:%04X",
+    snprintf(value, sizeof(value), "%02X:%02X.%X  Subsystem %04X:%04X (%s)",
              (unsigned)pci->bus, (unsigned)pci->slot,
              (unsigned)pci->function, (unsigned)pci->subsys_vendor,
-             (unsigned)pci->subsys_device);
+             (unsigned)pci->subsys_device,
+             pci_vendor_name(pci->subsys_vendor));
     draw_kv(surf, x + 10, y + 38, 70, width - 90, "Address",
             value, PXE_COL_DARK_BLUE);
-    snprintf(value, sizeof(value), "%s  rev %02X  IRQ %u",
-             text_or(pci->class_name, "PCI Device"),
-             (unsigned)pci->revision, (unsigned)pci->irq_line);
-    draw_kv(surf, x + 10, y + 54, 70, width - 90, "Class",
-            value, PXE_COL_BLACK);
+    const char* gpu_spec = (pci->class_code == 0x03) ? pci_gpu_chip_summary(pci) : NULL;
+    if (gpu_spec) {
+        snprintf(value, sizeof(value), "%s (rev %02X)", gpu_spec, (unsigned)pci->revision);
+        draw_kv(surf, x + 10, y + 54, 70, width - 90, "GPU Spec",
+                value, PXE_COL_DARK_GREEN);
+    } else {
+        snprintf(value, sizeof(value), "%s  rev %02X  IRQ %u",
+                 text_or(pci->class_name, "PCI Device"),
+                 (unsigned)pci->revision, (unsigned)pci->irq_line);
+        draw_kv(surf, x + 10, y + 54, 70, width - 90, "Class",
+                value, PXE_COL_BLACK);
+    }
 }
 
 static void render_mainboard(const pxe_win_surface_t* surf, cpuz_app_t* app) {

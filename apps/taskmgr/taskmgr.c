@@ -37,6 +37,9 @@ typedef struct {
     int scroll_offset;
     int press_btn;   /* 0=none, 1=refresh, 2=switch, 3=end_task, 4=live/pause */
     int hover_btn;
+    int warn_modal;
+    uint32_t warn_target_pid;
+    char warn_target_name[32];
     uint64_t last_click_ticks;
     int last_click_row;
     char status_msg[48];
@@ -67,9 +70,16 @@ static const char* sort_label(int sort_mode) {
 static int is_proc_killable(const taskmgr_state_t* st, const pxe_r0_proc_info_t* p) {
     (void)st;
     if (!p) return 0;
-    if (p->pid == 0) return 0; /* System Idle Process cannot be terminated */
     if (p->state == PXE_PROC_ZOMBIE) return 0;
     return 1;
+}
+
+static int is_critical_system_proc(const taskmgr_state_t* st, const pxe_r0_proc_info_t* p) {
+    if (!p) return 0;
+    if (p->pid == 0 || p->pid == 1) return 1;
+    if (st && p->pid == (uint32_t)st->self_pid) return 0;
+    if (strcmp(p->name, "idle") == 0 || strcmp(p->name, "kwm_compositor") == 0) return 1;
+    return 0;
 }
 
 static void get_table_rect(const pxe_win_surface_t* surf,
@@ -380,6 +390,45 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     if (surf->width >= 480 && st->status_msg[0]) {
         pxe_draw_text_small(surf, b4x + b4w + 10, by + 8, st->status_msg, PXE_COL_DARK_BLUE);
     }
+
+    if (st->warn_modal) {
+        int dw = 360, dh = 132;
+        int dx = (surf->width - dw) / 2;
+        int dy = (surf->height - dh) / 2;
+        if (dx < 4) dx = 4;
+        if (dy < 4) dy = 4;
+        pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
+        pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_RED);
+        pxe_draw_text(surf, dx + 8, dy + 3, "Task Manager Warning", PXE_COL_WHITE);
+
+        /* Yellow warning triangle */
+        for (int r = 0; r < 20; r++) {
+            int half = r / 2;
+            for (int c = -half; c <= half; c++) {
+                uint8_t col = (r == 19 || c == -half || c == half) ? PXE_COL_BLACK : PXE_COL_YELLOW;
+                pxe_put_pixel(surf, dx + 24 + c, dy + 30 + r, col);
+            }
+        }
+        pxe_fill_rect(surf, dx + 24, dy + 36, 2, 7, PXE_COL_BLACK);
+        pxe_fill_rect(surf, dx + 24, dy + 45, 2, 2, PXE_COL_BLACK);
+
+        char tline[64];
+        snprintf(tline, sizeof(tline), "Terminate '%s' (PID %u)?",
+                 st->warn_target_name[0] ? st->warn_target_name : "System Process",
+                 (unsigned)st->warn_target_pid);
+        pxe_draw_text_small(surf, dx + 44, dy + 28, tline, PXE_COL_DARK_RED);
+        pxe_draw_text_small(surf, dx + 44, dy + 44,
+                            "WARNING: Terminating a system process", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 44, dy + 58,
+                            "causes undesired results including loss of", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 44, dy + 72,
+                            "data and system instability or freeze.", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 44, dy + 86,
+                            "Are you sure you want to terminate it?", PXE_COL_DARK_BLUE);
+
+        pxe_draw_button(surf, dx + 74,  dy + 102, 92, 22, "Yes (End)", 0, 1);
+        pxe_draw_button(surf, dx + 194, dy + 102, 92, 22, "No (Cancel)", 0, 1);
+    }
 }
 
 static void render_taskmgr(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
@@ -426,14 +475,7 @@ static void perform_focus(taskmgr_state_t* st) {
     }
 }
 
-static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
-    const pxe_r0_proc_info_t* sel = get_selected_proc(st);
-    if (!is_proc_killable(st, sel)) {
-        strcpy(st->status_msg, "Protected task");
-        pxe_beep();
-        return;
-    }
-    uint32_t target_pid = sel->pid;
+static void execute_kill_pid(taskmgr_state_t* st, uint32_t target_pid, const pxe_win_surface_t* surf) {
     if (target_pid == (uint32_t)st->self_pid) {
         int wid = st->win_id;
         uint8_t* bp = st->back_pixels;
@@ -451,6 +493,24 @@ static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
     } else {
         strcpy(st->status_msg, "End failed");
     }
+}
+
+static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
+    const pxe_r0_proc_info_t* sel = get_selected_proc(st);
+    if (!is_proc_killable(st, sel)) {
+        strcpy(st->status_msg, "Protected task");
+        pxe_beep();
+        return;
+    }
+    if (is_critical_system_proc(st, sel)) {
+        st->warn_modal = 1;
+        st->warn_target_pid = sel->pid;
+        strncpy(st->warn_target_name, sel->name, sizeof(st->warn_target_name) - 1);
+        st->warn_target_name[sizeof(st->warn_target_name) - 1] = '\0';
+        pxe_beep();
+        return;
+    }
+    execute_kill_pid(st, sel->pid, surf);
 }
 
 static void toggle_pause(taskmgr_state_t* st) {
@@ -576,6 +636,23 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
+                if (st->warn_modal) {
+                    int dw = 360, dh = 132;
+                    int dx = (surf.width - dw) / 2;
+                    int dy = (surf.height - dh) / 2;
+                    if (dx < 4) dx = 4;
+                    if (dy < 4) dy = 4;
+                    if (pxe_point_in_rect(ev.x, ev.y, dx + 74, dy + 102, 92, 22)) {
+                        uint32_t pid = st->warn_target_pid;
+                        st->warn_modal = 0;
+                        execute_kill_pid(st, pid, &surf);
+                    } else if (pxe_point_in_rect(ev.x, ev.y, dx + 194, dy + 102, 92, 22)) {
+                        st->warn_modal = 0;
+                        strcpy(st->status_msg, "Cancelled");
+                    }
+                    dirty = 1;
+                    continue;
+                }
                 int hit = hit_test_button(&surf, ev.x, ev.y);
                 if (hit != 0) {
                     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
@@ -686,6 +763,19 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if (ev.type == PXE_EV_KEY_DOWN) {
+                if (st->warn_modal) {
+                    if (ev.key == PXE_KEY_ENTER || ev.key == 'y' || ev.key == 'Y') {
+                        uint32_t pid = st->warn_target_pid;
+                        st->warn_modal = 0;
+                        execute_kill_pid(st, pid, &surf);
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_ESC || ev.key == 'n' || ev.key == 'N') {
+                        st->warn_modal = 0;
+                        strcpy(st->status_msg, "Cancelled");
+                        dirty = 1;
+                    }
+                    continue;
+                }
                 if (ev.key == PXE_KEY_UP && st->proc_count > 0) {
                     if (st->selected_idx > 0) st->selected_idx--;
                     st->selected_pid = st->procs[st->selected_idx].pid;

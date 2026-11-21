@@ -1,4 +1,4 @@
-# Pixel Neko OS 26A263a Desktop Storage
+# Pixel Neko OS 26A270a Desktop Storage
 
 The desktop uses ordinary files on the installed system volume:
 

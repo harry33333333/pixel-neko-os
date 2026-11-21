@@ -6,6 +6,9 @@ static const pdv_kernel_api_t* g_kapi;
 #define mmio_read32         pdv_mmio_read32
 
 #define NVIDIA_VENDOR_ID       0x10DE
+#define PCI_DEV_GTX1060_3GB    0x1C02
+#define PCI_DEV_GTX1060_6GB    0x1C03
+#define PCI_DEV_GTX1060_5GB    0x1C06
 #define PCI_DEV_7600GT_G73     0x0391
 #define PCI_DEV_7600GS_G73     0x0392
 #define PCI_DEV_7300GT_G73     0x0393
@@ -17,7 +20,11 @@ static const pdv_kernel_api_t* g_kapi;
 #define PCI_DEV_6200LE_NV44    0x0163
 #define PCI_DEV_6600LE_NV43_A  0x00F4
 #define PCI_DEV_6600LE_NV43_B  0x0142
+#define PCI_SUBVEN_COLORFUL    0x7377
 #define PCI_CAP_ID_EXP         0x10
+
+#define NV_MC_BOOT_0_REG              0x00000000U
+#define NV_GP100_MEM_CTRLR_RAM_AMOUNT 0x0090020CU
 
 #define NV_MAX_MODES           48
 #define NV_PCRTC_BASE          0x00600000U
@@ -43,11 +50,14 @@ static const unsigned char g_nv_crtc_state_regs[] = {
 
 static const pdv_pci_device_t* g_pci;
 static int g_active;
+static int g_is_pascal_nvdisplay;
+static uint32_t g_chip_arch;
 static unsigned int g_vram_size;
 static uint64_t g_bar0;
 static uint64_t g_bar1;
 static uint64_t g_bar1_size;
 static int g_primary_7300gt;
+static pdv_display_driver_t g_nvg7x_drv;
 static int g_boot_w = 1024;
 static int g_boot_h = 768;
 static int g_boot_bpp = 16;
@@ -295,12 +305,12 @@ static void nvidia_g7x_build_modes(void) {
         nvidia_add_mode(w, h, mask, catalog_mode.preferred);
     }
 
-    if (g_nv_mode_count == 0) {
+    if (g_nv_mode_count == 0 || g_is_pascal_nvdisplay) {
         static const uint16_t k_width[] = {
-            640, 800, 1024, 1280, 1366, 1600, 1920
+            640, 800, 1024, 1280, 1280, 1366, 1440, 1600, 1680, 1920
         };
         static const uint16_t k_height[] = {
-            480, 600, 768, 720, 768, 900, 1080
+            480, 600, 768, 720, 1024, 768, 900, 900, 1050, 1080
         };
         for (size_t index = 0;
              index < sizeof(k_width) / sizeof(k_width[0]) &&
@@ -312,7 +322,8 @@ static void nvidia_g7x_build_modes(void) {
                     mask |= pdv_bpp_to_mask(k_bpps[b]);
                 }
             }
-            nvidia_add_mode(k_width[index], k_height[index], mask, false);
+            nvidia_add_mode(k_width[index], k_height[index], mask,
+                            (k_width[index] == g_boot_w && k_height[index] == g_boot_h));
         }
     }
 
@@ -524,7 +535,20 @@ static int nvidia_calc_vpll(uint32_t target_khz, uint32_t ref_khz,
 }
 
 static int nvidia_g7x_set_mode(int w, int h, int bpp) {
-    if (!nvidia_g7x_supports_bpp(w, h, bpp) || !g_regs) return 0;
+    if (!nvidia_g7x_supports_bpp(w, h, bpp)) return 0;
+    if (g_is_pascal_nvdisplay) {
+        pdv_fb_surface_t surf;
+        g_kapi->fb_get_surface(&surf);
+        if (w == (int)surf.width && h == (int)surf.height && bpp == (int)surf.bpp) {
+            g_cur_w = w;
+            g_cur_h = h;
+            g_cur_bpp = bpp;
+            g_cur_pitch = (int)surf.pitch;
+            return 1;
+        }
+        return 0;
+    }
+    if (!g_regs) return 0;
     pdv_display_timing_t timing;
     if (!g_kapi->display_get_mode_timing ||
         !g_kapi->display_get_mode_timing(w, h, &timing)) {
@@ -802,22 +826,57 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     return 1;
 }
 
-static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys) {
-    if (!bar0_phys) return 0;
+static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys, int is_pascal,
+                                         unsigned int default_vram) {
+    if (!bar0_phys) return default_vram;
+    if (is_pascal) {
+        volatile uint8_t* mc_ram =
+            (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x900000ULL, 0x1000);
+        if (mc_ram) {
+            uint32_t ram_amount = mmio_read32(mc_ram + 0x20C);
+            if (ram_amount != 0 && ram_amount != 0xFFFFFFFFU) {
+                /* GP100+ NV_MEM_CTRLR_RAM_AMOUNT (0x90020C) reports size in MB or shifted pages */
+                if (ram_amount >= 512U && ram_amount <= 32768U) {
+                    uint64_t bytes = (uint64_t)ram_amount * 1024ULL * 1024ULL;
+                    if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
+                    return (unsigned int)bytes;
+                }
+                uint64_t shifted = (uint64_t)ram_amount << 12;
+                if (shifted >= (512ULL * 1024ULL * 1024ULL) &&
+                    shifted <= (4096ULL * 1024ULL * 1024ULL)) {
+                    if (shifted > 0xFFF00000ULL) shifted = 0xC0000000ULL;
+                    return (unsigned int)shifted;
+                }
+            }
+        }
+    }
     volatile uint8_t* pfb =
         (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x100000ULL, 0x1000);
-    if (!pfb) return 0;
+    if (!pfb) return default_vram;
     uint32_t cstatus = mmio_read32(pfb + 0x20C);
-    if (cstatus == 0 || cstatus == 0xFFFFFFFFU) return 0;
+    if (cstatus == 0 || cstatus == 0xFFFFFFFFU) return default_vram;
+    if (is_pascal) {
+        /* GF100+ 0x10020C reports total VRAM in units of MB (bits 31:0 or >>20) */
+        uint64_t mb = cstatus;
+        if (mb > 32768ULL) mb = (cstatus >> 20);
+        if (mb >= 512ULL && mb <= 32768ULL) {
+            uint64_t bytes = mb * 1024ULL * 1024ULL;
+            if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
+            return (unsigned int)bytes;
+        }
+        return default_vram;
+    }
     uint32_t bytes = cstatus & 0xFFF00000U;
     if (bytes >= (16U * 1024U * 1024U) && bytes <= (1024U * 1024U * 1024U)) {
         return bytes;
     }
-    return 0;
+    return default_vram;
 }
 
 static int nvidia_g7x_probe(void) {
     g_active = 0;
+    g_is_pascal_nvdisplay = 0;
+    g_chip_arch = 0;
     g_pci = 0;
     g_vram_size = 0;
     g_bar0 = 0;
@@ -826,7 +885,7 @@ static int nvidia_g7x_probe(void) {
     g_regs = 0;
     g_head = 0;
     g_primary_7300gt = 0;
-    g_status = "NVIDIA G7x PCIe device not found";
+    g_status = "NVIDIA PCIe device not found";
 
     unsigned char* cur_lfb = g_kapi->fb_get_lfb();
     int sw = 0, sh = 0, sbpp = 0;
@@ -839,7 +898,23 @@ static int nvidia_g7x_probe(void) {
         if (!dev || dev->vendor != NVIDIA_VENDOR_ID) continue;
 
         unsigned int vram = 0;
+        int is_pascal = 0;
         switch (dev->device) {
+            case PCI_DEV_GTX1060_3GB:
+                if (dev->subsystem_vendor == PCI_SUBVEN_COLORFUL) {
+                    g_name = "NVIDIA GeForce GTX 1060 3GB (GP106 Colorful)";
+                } else {
+                    g_name = "NVIDIA GeForce GTX 1060 3GB (GP106)";
+                }
+                vram = 3072U * 1024U * 1024U;
+                is_pascal = 1;
+                break;
+            case PCI_DEV_GTX1060_6GB:
+            case PCI_DEV_GTX1060_5GB:
+                g_name = "NVIDIA GeForce GTX 1060 (GP106)";
+                vram = 3072U * 1024U * 1024U;
+                is_pascal = 1;
+                break;
             case PCI_DEV_7300GT_G73:
             case PCI_DEV_7300GT_G73_B:
             case PCI_DEV_7300GT_AGP:
@@ -875,9 +950,15 @@ static int nvidia_g7x_probe(void) {
                 break;
             default:
                 if (dev->class_code == 0x03) {
-                    g_name = "NVIDIA GeForce PCIe Graphics";
-                    vram = 256U * 1024U * 1024U;
-                    g_primary_7300gt = 1;
+                    if (dev->device >= 0x1B00U && dev->device <= 0x1D9FU) {
+                        g_name = "NVIDIA GeForce GTX 10-Series (Pascal)";
+                        vram = 3072U * 1024U * 1024U;
+                        is_pascal = 1;
+                    } else {
+                        g_name = "NVIDIA GeForce PCIe Graphics";
+                        vram = 256U * 1024U * 1024U;
+                        g_primary_7300gt = 1;
+                    }
                     break;
                 }
                 continue;
@@ -912,71 +993,96 @@ static int nvidia_g7x_probe(void) {
             g_regs = (volatile unsigned char*)g_kapi->mmio_map_uc(
                 g_bar0, 0x00700000U);
         }
-        if (!g_regs) {
+        if (g_regs) {
+            uint32_t pmc_boot0 = pdv_mmio_read32(g_regs + NV_MC_BOOT_0_REG);
+            g_chip_arch = (pmc_boot0 >> 20) & 0x1FFU;
+            if (g_chip_arch >= 0x050U && g_chip_arch != 0x1FFU) {
+                /* NV50/Tesla through GP10x/Pascal use NVDisplay/EVO rather than NV4x PCRTC */
+                if (g_chip_arch >= 0x130U || is_pascal) {
+                    is_pascal = 1;
+                }
+            }
+        }
+
+        g_is_pascal_nvdisplay = is_pascal;
+        if (!g_regs && !g_is_pascal_nvdisplay) {
             g_status = "NVIDIA MMIO aperture unavailable";
             continue;
         }
-        if (g_bar1 && surf.framebuffer_phys >= g_bar1) {
-            uint32_t start_offset =
-                (uint32_t)(surf.framebuffer_phys - g_bar1);
-            uint32_t head0 = pdv_mmio_read32(
-                g_regs + NV_PCRTC_BASE + NV_CRTC_START_REG);
-            uint32_t head1 = pdv_mmio_read32(
-                g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE +
-                NV_CRTC_START_REG);
-            if (head1 == start_offset && head0 != start_offset) g_head = 1;
-        }
-        {
-            nv_vga_write(0x1F, 0x57U);
-            nv_vga_write(0x44, (unsigned char)(g_head ? 0x03U : 0x00U));
-            nv_vga_write(0x1F, 0x57U);
-            unsigned char cr28 = nv_vga_read(0x28);
-            unsigned char cr33 = nv_vga_read(0x33);
-            uint32_t boot0 = pdv_mmio_read32(g_regs + 0x00101000U);
-            g_crystal_khz = (boot0 & 0x40U) ? 14318U : 13500U;
-            if (boot0 & (1U << 22)) {
-                g_crystal_khz = 27000U;
+
+        if (g_is_pascal_nvdisplay) {
+            g_nvg7x_drv.requires_hw_mode_set = 0;
+            uint32_t pmc_boot0 = g_regs ? pdv_mmio_read32(g_regs + NV_MC_BOOT_0_REG) : 0;
+            uint32_t boot0_straps = g_regs ? pdv_mmio_read32(g_regs + 0x00101000U) : 0;
+            g_crystal_khz = (boot0_straps & (1U << 22)) ? 27000U : 27000U;
+            klog_info("[NV  ] Pascal GP106 detected: id=%04x:%04x subsys=%04x:%04x rev=%02x PMC_BOOT_0=0x%08x arch=0x%03x straps=0x%08x",
+                      dev->vendor, dev->device, dev->subsystem_vendor,
+                      dev->subsystem_device, dev->revision,
+                      pmc_boot0, g_chip_arch, boot0_straps);
+        } else {
+            g_nvg7x_drv.requires_hw_mode_set = 1;
+            if (g_bar1 && surf.framebuffer_phys >= g_bar1) {
+                uint32_t start_offset =
+                    (uint32_t)(surf.framebuffer_phys - g_bar1);
+                uint32_t head0 = pdv_mmio_read32(
+                    g_regs + NV_PCRTC_BASE + NV_CRTC_START_REG);
+                uint32_t head1 = pdv_mmio_read32(
+                    g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE +
+                    NV_CRTC_START_REG);
+                if (head1 == start_offset && head0 != start_offset) g_head = 1;
             }
-            uint32_t boot_vpll =
-                nvidia_ramdac0_read(g_head ? 0x0520U : 0x0508U);
-            uint32_t boot_vpllb = nvidia_ramdac0_read(0x0578U);
-            uint32_t boot_vpll2b = nvidia_ramdac0_read(0x057CU);
-            uint32_t boot_pllsel =
-                nvidia_ramdac0_read(NV_RAMDAC_PLL_SEL_REG);
-            uint32_t boot_0580 = nvidia_ramdac0_read(0x0580U);
-            g_has_boot_vpll = 0;
-            g_vpll_ref_khz = g_crystal_khz * 4U;
-            int bw = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
-            int bh = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
-            pdv_display_timing_t boot_timing;
-            uint32_t bm = boot_vpll & 0xFFU;
-            uint32_t bn = (boot_vpll >> 8) & 0xFFU;
-            uint32_t bp = (boot_vpll >> 16) & 0x07U;
-            if (bm >= 1U && bm <= 32U && bn >= 4U &&
-                g_kapi->display_get_mode_timing &&
-                g_kapi->display_get_mode_timing(bw, bh, &boot_timing) &&
-                boot_timing.pixel_clock_khz >= 20000U) {
-                uint64_t bvco = (uint64_t)boot_timing.pixel_clock_khz << bp;
-                uint32_t bref = (uint32_t)((bvco * bm + (bn / 2U)) / bn);
-                if (bref >= 12000U && bref <= 250000U) {
-                    g_boot_vpll = boot_vpll;
-                    g_boot_vpllb = boot_vpllb;
-                    g_boot_vpll2b = boot_vpll2b;
-                    g_boot_0580 = boot_0580;
-                    g_boot_vco_khz = (uint32_t)bvco;
-                    g_vpll_ref_khz = bref;
-                    g_has_boot_vpll = 1;
+            {
+                nv_vga_write(0x1F, 0x57U);
+                nv_vga_write(0x44, (unsigned char)(g_head ? 0x03U : 0x00U));
+                nv_vga_write(0x1F, 0x57U);
+                unsigned char cr28 = nv_vga_read(0x28);
+                unsigned char cr33 = nv_vga_read(0x33);
+                uint32_t boot0 = pdv_mmio_read32(g_regs + 0x00101000U);
+                g_crystal_khz = (boot0 & 0x40U) ? 14318U : 13500U;
+                if (boot0 & (1U << 22)) {
+                    g_crystal_khz = 27000U;
                 }
+                uint32_t boot_vpll =
+                    nvidia_ramdac0_read(g_head ? 0x0520U : 0x0508U);
+                uint32_t boot_vpllb = nvidia_ramdac0_read(0x0578U);
+                uint32_t boot_vpll2b = nvidia_ramdac0_read(0x057CU);
+                uint32_t boot_pllsel =
+                    nvidia_ramdac0_read(NV_RAMDAC_PLL_SEL_REG);
+                uint32_t boot_0580 = nvidia_ramdac0_read(0x0580U);
+                g_has_boot_vpll = 0;
+                g_vpll_ref_khz = g_crystal_khz * 4U;
+                int bw = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
+                int bh = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
+                pdv_display_timing_t boot_timing;
+                uint32_t bm = boot_vpll & 0xFFU;
+                uint32_t bn = (boot_vpll >> 8) & 0xFFU;
+                uint32_t bp = (boot_vpll >> 16) & 0x07U;
+                if (bm >= 1U && bm <= 32U && bn >= 4U &&
+                    g_kapi->display_get_mode_timing &&
+                    g_kapi->display_get_mode_timing(bw, bh, &boot_timing) &&
+                    boot_timing.pixel_clock_khz >= 20000U) {
+                    uint64_t bvco = (uint64_t)boot_timing.pixel_clock_khz << bp;
+                    uint32_t bref = (uint32_t)((bvco * bm + (bn / 2U)) / bn);
+                    if (bref >= 12000U && bref <= 250000U) {
+                        g_boot_vpll = boot_vpll;
+                        g_boot_vpllb = boot_vpllb;
+                        g_boot_vpll2b = boot_vpll2b;
+                        g_boot_0580 = boot_0580;
+                        g_boot_vco_khz = (uint32_t)bvco;
+                        g_vpll_ref_khz = bref;
+                        g_has_boot_vpll = 1;
+                    }
+                }
+                klog_info("[NV  ] output CRTC head=%d slaved=%d tv=%d straps=0x%08x xtal=%ukHz ref=%ukHz vpll=0x%08x vpllb=0x%08x pllsel=0x%08x ctrl=0x%08x",
+                          g_head, (cr28 & 0x80U) ? 1 : 0,
+                          (cr28 & 0x80U) && !(cr33 & 0x01U) ? 1 : 0,
+                          boot0, g_crystal_khz, g_vpll_ref_khz, boot_vpll,
+                          g_head ? boot_vpll2b : boot_vpllb,
+                          boot_pllsel, boot_0580);
             }
-            klog_info("[NV  ] output CRTC head=%d slaved=%d tv=%d straps=0x%08x xtal=%ukHz ref=%ukHz vpll=0x%08x vpllb=0x%08x pllsel=0x%08x ctrl=0x%08x",
-                      g_head, (cr28 & 0x80U) ? 1 : 0,
-                      (cr28 & 0x80U) && !(cr33 & 0x01U) ? 1 : 0,
-                      boot0, g_crystal_khz, g_vpll_ref_khz, boot_vpll,
-                      g_head ? boot_vpll2b : boot_vpllb,
-                      boot_pllsel, boot_0580);
         }
 
-        unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0);
+        unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0, g_is_pascal_nvdisplay, vram);
         g_vram_size = hw_vram ? hw_vram : (vram ? vram : (unsigned int)bar_size);
         g_boot_w = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
         g_boot_h = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
@@ -991,15 +1097,24 @@ static int nvidia_g7x_probe(void) {
         g_active = 1;
         nvidia_g7x_build_modes();
 
-        if (g_bar1 && nvidia_framebuffer_in_bar(
+        if (g_is_pascal_nvdisplay) {
+            if (g_bar1 && nvidia_framebuffer_in_bar(
+                              surf.framebuffer_phys, bar_size)) {
+                g_status = "GP106 Pascal UEFI GOP/VBE BAR1 scanout active";
+            } else {
+                g_status = "GP106 Pascal UEFI GOP/VBE scanout active";
+            }
+        } else if (g_bar1 && nvidia_framebuffer_in_bar(
                           surf.framebuffer_phys, bar_size)) {
             g_status = "G7x CRTC/VPLL hardware modeset ready (BAR1)";
         } else {
             g_status = "G7x CRTC/VPLL hardware modeset ready";
         }
-        klog_info("[NV  ] active %s id=%04x:%04x rev=%02x pcie=%02x head=%d BAR0=0x%llx BAR1=0x%llx lfb=0x%llx vram=%uMB modes=%d",
-                  g_name, dev->vendor, dev->device, dev->revision, pcie,
+        klog_info("[NV  ] active %s id=%04x:%04x subsys=%04x:%04x rev=%02x pcie=%02x head=%d BAR0=0x%llx BAR1=0x%llx(size=%lluMB) lfb=0x%llx vram=%uMB modes=%d",
+                  g_name, dev->vendor, dev->device, dev->subsystem_vendor,
+                  dev->subsystem_device, dev->revision, pcie,
                   g_head, (unsigned long long)g_bar0, (unsigned long long)g_bar1,
+                  (unsigned long long)(g_bar1_size / (1024ULL * 1024ULL)),
                   (unsigned long long)surf.framebuffer_phys,
                   g_vram_size / (1024U * 1024U), g_nv_mode_count);
         return 1;
@@ -1106,7 +1221,7 @@ static void nvidia_g7x_sync(void) {
     g_kapi->fb_flush();
 }
 
-static const pdv_display_driver_t g_nvg7x_drv = {
+static pdv_display_driver_t g_nvg7x_drv = {
     .name                 = "NVIDIA G7x PCIe",
     .priority             = 80,
     .requires_hw_mode_set = 1,

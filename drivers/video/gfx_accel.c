@@ -498,9 +498,13 @@ int gfx_accel_can_change_mode(int w, int h, int bpp) {
         return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
     }
 
-    if (!g_active_drv->requires_hw_mode_set &&
-        gfx_compat_reboot_mode(w, h, bpp)) {
-        return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+    if (!g_active_drv->requires_hw_mode_set) {
+        if (g_active_drv->can_set_mode && g_active_drv->can_set_mode(w, h, bpp)) {
+            return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+        }
+        if (gfx_compat_reboot_mode(w, h, bpp)) {
+            return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+        }
     }
 
     if (g_active_drv->can_set_mode) {

@@ -7,7 +7,8 @@ typedef enum {
     WP_MODE_FILL = 0,    // 填充
     WP_MODE_FIT = 1,     // 适应
     WP_MODE_STRETCH = 2, // 拉伸
-    WP_MODE_TILE = 3     // 平铺
+    WP_MODE_TILE = 3,    // 平铺
+    WP_MODE_CENTER = 4   // 置中（不缩放）
 } wallpaper_mode_t;
 
 void wallpaper_init(void);

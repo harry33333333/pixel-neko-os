@@ -191,7 +191,7 @@ static bool pse_valid(const pse_config_t* config) {
         config->size != sizeof(*config) ||
         config->sequence == 0 ||
         config->mouse_speed < 1 || config->mouse_speed > 5 ||
-        config->pattern > 5 || config->wallpaper_mode > WP_MODE_TILE ||
+        config->pattern > 5 || config->wallpaper_mode > WP_MODE_CENTER ||
         config->wallpaper_active > 1 ||
         !text_has_terminator(config->wallpaper_path,
                              sizeof(config->wallpaper_path))) {
@@ -579,6 +579,10 @@ void settings_set_wallpaper(const char* path, wallpaper_mode_t mode) {
     } else {
         copy_text(g_wallpaper_path, sizeof(g_wallpaper_path), path);
     }
+}
+
+void settings_set_wallpaper_mode(wallpaper_mode_t mode) {
+    wallpaper_set_mode(mode);
 }
 
 void settings_clear_wallpaper(void) {

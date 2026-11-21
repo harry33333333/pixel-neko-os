@@ -276,12 +276,13 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     pxe_draw_text(surf, 10, 142, "Wallpaper:", PXE_COL_BLACK);
     if (cp->info.wallpaper_active) {
         int m = (int)cp->info.wallpaper_mode;
-        draw_mode_btn(surf, 96,  140, 38, 20, "Fill",  m == 0);
-        draw_mode_btn(surf, 136, 140, 36, 20, "Fit",   m == 1);
-        draw_mode_btn(surf, 174, 140, 48, 20, "Stret", m == 2);
-        draw_mode_btn(surf, 224, 140, 38, 20, "Tile",  m == 3);
-        draw_mode_btn(surf, 264, 140, 36, 20, "Off",   0);
-        draw_mode_btn(surf, 302, 140, 48, 20, "Path..", 0);
+        draw_mode_btn(surf, 96,  140, 34, 20, "Fill", m == 0);
+        draw_mode_btn(surf, 132, 140, 32, 20, "Fit",  m == 1);
+        draw_mode_btn(surf, 166, 140, 40, 20, "Strt", m == 2);
+        draw_mode_btn(surf, 208, 140, 34, 20, "Tile", m == 3);
+        draw_mode_btn(surf, 244, 140, 40, 20, "Cntr", m == 4);
+        draw_mode_btn(surf, 286, 140, 30, 20, "Off",  0);
+        draw_mode_btn(surf, 318, 140, 34, 20, "Path", 0);
     } else {
         pxe_draw_text_small(surf, 96, 146, "None (Pattern Active)", PXE_COL_DARK_GRAY);
         draw_mode_btn(surf, 270, 140, 80, 20, "Set File..", 0);
@@ -886,29 +887,43 @@ int main(int argc, char** argv) {
 
                 /* Wallpaper row */
                 if (cp.info.wallpaper_active) {
-                    if (pxe_point_in_rect(mx, my, 96, 140, 38, 20)) {
+                    if (pxe_point_in_rect(mx, my, 96, 140, 34, 20)) {
                         pxe_desktop_set_wallpaper_mode(0);
+                        pxe_settings_save();
                         sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Fill.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 136, 140, 36, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 132, 140, 32, 20)) {
                         pxe_desktop_set_wallpaper_mode(1);
+                        pxe_settings_save();
                         sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Fit.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 174, 140, 48, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 166, 140, 40, 20)) {
                         pxe_desktop_set_wallpaper_mode(2);
+                        pxe_settings_save();
                         sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Stretch.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 224, 140, 38, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 208, 140, 34, 20)) {
                         pxe_desktop_set_wallpaper_mode(3);
+                        pxe_settings_save();
                         sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Tile.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 264, 140, 36, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 244, 140, 40, 20)) {
+                        pxe_desktop_set_wallpaper_mode(4);
+                        pxe_settings_save();
+                        sync_from_sysinfo(&cp);
+                        snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Center.");
+                        dirty = 1;
+                    } else if (pxe_point_in_rect(mx, my, 286, 140, 30, 20)) {
                         pxe_desktop_clear_wallpaper();
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper cleared.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 302, 140, 48, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 318, 140, 34, 20)) {
                         cp.wp_modal = 1;
                         dirty = 1;
                     }

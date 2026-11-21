@@ -33,6 +33,7 @@ const char* wallpaper_get_mode_name(wallpaper_mode_t mode) {
         case WP_MODE_FIT: return "Fit";
         case WP_MODE_STRETCH: return "Stretch";
         case WP_MODE_TILE: return "Tile";
+        case WP_MODE_CENTER: return "Center";
         default: return "Unknown";
     }
 }
@@ -191,6 +192,28 @@ void wallpaper_render(unsigned char* backbuf, int sw, int sh, int sbpp, int spit
                         put_wp_pixel(backbuf, x, y, 0xFF000000, sbpp, spitch);
                     } else {
                         int sx = ((x - dx) * iw) / dw;
+                        put_wp_pixel(backbuf, x, y, src_row[sx], sbpp, spitch);
+                    }
+                }
+            }
+        }
+    } else if (g_wp_mode == WP_MODE_CENTER) {
+        // Center: unscaled 1:1 original dimensions centered on screen
+        int dx = (sw - iw) / 2;
+        int dy = (sh - ih) / 2;
+        for (int y = 0; y < sh; y++) {
+            int sy = y - dy;
+            if (sy < 0 || sy >= ih) {
+                for (int x = 0; x < sw; x++) {
+                    put_wp_pixel(backbuf, x, y, 0xFF000000, sbpp, spitch);
+                }
+            } else {
+                const unsigned int* src_row = &g_wp_pixels[sy * iw];
+                for (int x = 0; x < sw; x++) {
+                    int sx = x - dx;
+                    if (sx < 0 || sx >= iw) {
+                        put_wp_pixel(backbuf, x, y, 0xFF000000, sbpp, spitch);
+                    } else {
                         put_wp_pixel(backbuf, x, y, src_row[sx], sbpp, spitch);
                     }
                 }

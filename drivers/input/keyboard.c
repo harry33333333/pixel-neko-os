@@ -1,11 +1,14 @@
 #include "keyboard.h"
 #include "input.h"
 
-static bool g_shift = false;
-static bool g_ctrl = false;
+static bool g_ps2_shift = false;
+static bool g_ps2_ctrl = false;
+static bool g_usb_shift = false;
+static bool g_usb_ctrl = false;
 static bool g_caps = false;
 static bool g_extended = false;
 static uint8_t g_e1_remaining = 0;
+static volatile int g_taskmgr_hotkey = 0;
 
 static int g_key_queue[64];
 static volatile uint32_t g_key_head = 0;
@@ -45,22 +48,26 @@ static const uint8_t shift_map[128] = {
 };
 
 static uint32_t translate(uint8_t scancode) {
+    bool shift = g_ps2_shift || g_usb_shift;
     uint8_t base = normal_map[scancode & 0x7F];
     if (base >= 'a' && base <= 'z') {
-        return (g_shift ^ g_caps) ? (uint32_t)(base - 32) : base;
+        return (shift ^ g_caps) ? (uint32_t)(base - 32) : base;
     }
-    if (g_shift && shift_map[scancode & 0x7F]) {
+    if (shift && shift_map[scancode & 0x7F]) {
         return shift_map[scancode & 0x7F];
     }
     return base;
 }
 
 void keyboard_init(void) {
-    g_shift = false;
-    g_ctrl = false;
+    g_ps2_shift = false;
+    g_ps2_ctrl = false;
+    g_usb_shift = false;
+    g_usb_ctrl = false;
     g_caps = false;
     g_extended = false;
     g_e1_remaining = 0;
+    g_taskmgr_hotkey = 0;
     g_key_head = 0;
     g_key_tail = 0;
 }
@@ -85,7 +92,7 @@ void keyboard_handle_byte(uint8_t scancode) {
 
     if (g_extended) {
         switch (code) {
-            case 0x1D: g_ctrl = !release; break;
+            case 0x1D: g_ps2_ctrl = !release; break;
             case 0x38: break;
             case 0x48: translated = INPUT_CODE_UP; break;
             case 0x50: translated = INPUT_CODE_DOWN; break;
@@ -103,10 +110,10 @@ void keyboard_handle_byte(uint8_t scancode) {
         switch (code) {
             case 0x2A:
             case 0x36:
-                g_shift = !release;
+                g_ps2_shift = !release;
                 break;
             case 0x1D:
-                g_ctrl = !release;
+                g_ps2_ctrl = !release;
                 break;
             case 0x38:
                 break;
@@ -120,6 +127,11 @@ void keyboard_handle_byte(uint8_t scancode) {
     }
 
     if (!translated) return;
+    if (!release && translated == INPUT_CODE_ESCAPE &&
+        keyboard_get_ctrl() && keyboard_get_shift()) {
+        g_taskmgr_hotkey = 1;
+        return;
+    }
     input_emit_key(translated, !release);
 }
 
@@ -131,11 +143,26 @@ int keyboard_get_key(void) {
 }
 
 int keyboard_get_ctrl(void) {
-    return g_ctrl ? 1 : 0;
+    return (g_ps2_ctrl || g_usb_ctrl) ? 1 : 0;
 }
 
 int keyboard_get_shift(void) {
-    return g_shift ? 1 : 0;
+    return (g_ps2_shift || g_usb_shift) ? 1 : 0;
+}
+
+void keyboard_set_usb_modifiers(int ctrl, int shift) {
+    g_usb_ctrl = (ctrl != 0);
+    g_usb_shift = (shift != 0);
+}
+
+void keyboard_notify_taskmgr_hotkey(void) {
+    g_taskmgr_hotkey = 1;
+}
+
+int keyboard_consume_taskmgr_hotkey(void) {
+    int v = g_taskmgr_hotkey;
+    g_taskmgr_hotkey = 0;
+    return v;
 }
 
 void keyboard_push_virtual(int key) {

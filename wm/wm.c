@@ -2149,6 +2149,14 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
 
     // Keyboard input to active window (plus global shortcuts)
+    if (keyboard_consume_taskmgr_hotkey() && !ui_install_mode_requested()) {
+        if (menu_open) {
+            menu_open = 0;
+            redraw = 1;
+            need_mr = 1;
+        }
+        pxe_launch_builtin_app("taskmgr.pxe", NULL, true);
+    }
     int key = keyboard_get_key();
     while (key != 0) {
         if (key == 27 && keyboard_get_ctrl() && keyboard_get_shift() &&

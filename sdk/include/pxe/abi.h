@@ -181,7 +181,7 @@ typedef struct {
     /* Extended Phase 3 fields (appended for ABI backward compatibility) */
     char     cdrom_drive;       /* 'C'..'Z' or 0 */
     uint8_t  wallpaper_active;  /* 1 if custom wallpaper active */
-    uint8_t  wallpaper_mode;    /* 0=Center, 1=Tile, 2=Stretch, 3=Fill */
+    uint8_t  wallpaper_mode;    /* 0=Fill, 1=Fit, 2=Stretch, 3=Tile, 4=Center */
     uint8_t  settings_writable; /* 1 if persistent .pse write supported */
     uint8_t  has_audio_hw;      /* 1 if real audio device active */
     uint8_t  audio_muted;       /* 1 if audio muted */

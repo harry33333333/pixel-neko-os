@@ -1,5 +1,6 @@
 #include "usb_hid.h"
 #include "input.h"
+#include "keyboard.h"
 #include "log.h"
 #include "string.h"
 #include "wm.h"
@@ -461,7 +462,9 @@ static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
             report, length, layout->modifiers_offset,
             layout->modifiers_count > 32 ? 32 : layout->modifiers_count);
     }
+    bool ctrl = (modifiers & 0x11u) != 0;
     bool shift = (modifiers & 0x22u) != 0;
+    keyboard_set_usb_modifiers(ctrl ? 1 : 0, shift ? 1 : 0);
     uint8_t current_keys[HID_MAX_KEYS];
     uint32_t current_codes[HID_MAX_KEYS];
     memset(current_keys, 0, sizeof(current_keys));
@@ -494,6 +497,11 @@ static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
     for (int i = 0; i < key_count; i++) {
         uint8_t usage = current_keys[i];
         if (key_usage_present(hid->previous_keys, previous_count, usage)) {
+            continue;
+        }
+        if (usage == 0x29 && keyboard_get_ctrl() && keyboard_get_shift()) {
+            keyboard_notify_taskmgr_hotkey();
+            current_codes[i] = 0;
             continue;
         }
         if (usage == 0x39) hid->caps_lock = !hid->caps_lock;

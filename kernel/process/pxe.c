@@ -431,6 +431,14 @@ static int pxe_display_mode_request(int width, int height, int bpp,
             (int)g_main_surface.height != height ||
             (int)g_main_surface.bpp != bpp) {
             if (!gfx_accel_try_set_mode(width, height, bpp)) {
+                if (settings_get_boot_mode() == SETTINGS_BOOT_LOCAL) {
+                    if (!commit) return 1;
+                    if (!settings_stage_boot_resolution(width, height, bpp)) {
+                        return -NEKO_EINVAL;
+                    }
+                    wm_notify_banner("Display mode staged; restart confirmation required.");
+                    return 0;
+                }
                 return -NEKO_EINVAL;
             }
         }
@@ -503,7 +511,7 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             if (image_load_from_file(str_arg, &img, err_msg, sizeof(err_msg)) != 0) {
                 return -NEKO_EINVAL;
             }
-            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_TILE)
+            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_CENTER)
                 ? (wallpaper_mode_t)arg0 : WP_MODE_FILL;
             int rc = wallpaper_set_image(&img, mode);
             image_free(&img);
@@ -513,9 +521,9 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             return 0;
         }
         case PXE_CFG_SET_WALLPAPER_MODE: {
-            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_TILE)
+            wallpaper_mode_t mode = (arg0 >= 0 && arg0 <= WP_MODE_CENTER)
                 ? (wallpaper_mode_t)arg0 : WP_MODE_FILL;
-            wallpaper_set_mode(mode);
+            settings_set_wallpaper_mode(mode);
             wm_request_desktop_redraw();
             return 0;
         }

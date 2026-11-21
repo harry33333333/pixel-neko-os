@@ -1,4 +1,5 @@
 #include "process.h"
+#include "boot_framebuffer.h"
 #include "scheduler.h"
 #include "elf.h"
 #include "pmm.h"
@@ -593,8 +594,31 @@ void process_exit_current(int status) {
 
 int process_kill(uint32_t pid, int exit_code) {
     process_t* target = process_find_by_pid(pid);
-    if (!target || target->pid == 0) {
+    if (!target) {
         return -1;
+    }
+    if (target->pid == 0) {
+        log_printf("[PROC] WARNING: Critical system process PID 0 (idle) terminated via process_kill (code %d)!\n",
+                   exit_code);
+        target->state = PROCESS_ZOMBIE;
+        target->exit_status = exit_code;
+        if (target->main_thread) {
+            target->main_thread->state = THREAD_ZOMBIE;
+        }
+        boot_framebuffer_fill_rect(0, 0, (int)g_main_surface.width, (int)g_main_surface.height,
+                                   boot_framebuffer_make_color(0, 0, 128));
+        uint32_t fg = boot_framebuffer_make_color(255, 255, 255);
+        uint32_t bg = boot_framebuffer_make_color(0, 0, 128);
+        boot_framebuffer_draw_string(32, 32,
+            "*** STOP: 0x000000F4 (CRITICAL_OBJECT_TERMINATION)\n\n"
+            "A process or thread crucial to system operation (System Idle Process, PID 0)\n"
+            "has unexpectedly exited or been terminated.\n\n"
+            "The system has been halted to prevent damage to your computer.",
+            fg, bg);
+        boot_framebuffer_flush();
+        for (;;) {
+            __asm__ volatile ("cli; hlt");
+        }
     }
     if (target == g_current_process) {
         if (target->is_system_daemon) return -1;
