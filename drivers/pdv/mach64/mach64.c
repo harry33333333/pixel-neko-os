@@ -23,9 +23,12 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_CRTC_H_SYNC_STRT_WID 0x0004
 #define MACH64_CRTC_V_TOTAL_DISP    0x0008
 #define MACH64_CRTC_V_SYNC_STRT_WID 0x000C
+#define MACH64_CRTC_VLINE_CRNT_VLINE 0x0010
 #define MACH64_CRTC_OFF_PITCH       0x0014
 #define MACH64_CRTC_INT_CNTL        0x0018
 #define MACH64_CRTC_GEN_CNTL        0x001C
+#define MACH64_DSP_CONFIG           0x0020
+#define MACH64_DSP_ON_OFF           0x0024
 #define MACH64_MEM_CNTL             0x00B0
 #define MACH64_CLOCK_CNTL           0x0090
 #define MACH64_DAC_CNTL             0x00C4
@@ -64,18 +67,22 @@ static const pdv_kernel_api_t* g_kapi;
 
 #define MACH64_PLL_WR_EN            0x02U
 #define MACH64_PLL_ADDR_MASK        0xFCU
+#define MACH64_PLL_REF_DIV          0x02U
+#define MACH64_PLL_MCLK_FB_DIV      0x04U
 #define MACH64_PLL_VCLK_CNTL        0x05U
 #define MACH64_PLL_VCLK_RESET       0x04U
 #define MACH64_PLL_VCLK_POST_DIV    0x06U
 #define MACH64_PLL_VCLK_FB_DIV0     0x07U
 #define MACH64_PLL_XCLK_CNTL        0x0BU
 #define MACH64_PLL_VCLK_CLOCK       3U
-#define MACH64_CLOCK_CNTL_PROGRAMMED 0x73U
+#define MACH64_CLOCK_STROBE         0x40U
 
 static int g_ati_active = 0;
+static unsigned short g_ati_device_id = 0;
 static const char* g_ati_chip_name = "None";
 static const char* g_ati_status = "Not detected";
 static unsigned int g_ati_vram_bytes = 2U * 1024U * 1024U;
+static unsigned int g_ati_xtal_khz = 14318U;
 static volatile unsigned char* g_ati_regs = 0;
 static unsigned short g_ati_io_base = 0;
 static uint64_t g_ati_bar0_phys;
@@ -88,6 +95,19 @@ static int g_ati_hw_modeset_capable;
 static const char* g_ati_hw_modeset_last_status = "Mach64 CRTC/PLL unavailable";
 static pdv_display_mode_t g_ati_modes[MACH64_MAX_MODES];
 static int g_ati_mode_count = 0;
+
+static int g_boot_regs_saved = 0;
+static unsigned int g_boot_crtc[5];
+static unsigned int g_boot_dsp_config = 0;
+static unsigned int g_boot_dsp_on_off = 0;
+static unsigned int g_boot_gen = 0;
+static unsigned int g_boot_dac = 0;
+static unsigned int g_boot_test = 0;
+static unsigned char g_boot_clock_cntl = 0;
+static unsigned char g_boot_vclk = 0;
+static unsigned char g_boot_post = 0;
+static unsigned char g_boot_xclk = 0;
+static unsigned char g_boot_fb = 0;
 
 static inline unsigned int mach64_read32(unsigned int reg) {
     if (g_ati_regs) {
@@ -322,24 +342,177 @@ static void ati_mach64_sync(void) {
 }
 
 static void mach64_restore_mode(const unsigned int crtc[5],
+                                unsigned int dsp_config,
+                                unsigned int dsp_on_off,
                                 unsigned int gen, unsigned int dac,
-                                unsigned int test, unsigned int clock,
+                                unsigned int test, unsigned char clock_cntl,
                                 unsigned char vclk, unsigned char post,
-                                unsigned char xclk, unsigned char fb_div) {
+                                unsigned char xclk, unsigned char fb_div,
+                                unsigned char fb_clk_idx) {
+    mach64_write32(MACH64_CRTC_GEN_CNTL, gen & ~MACH64_CRTC_EN);
     mach64_write32(MACH64_CRTC_H_TOTAL_DISP, crtc[0]);
     mach64_write32(MACH64_CRTC_H_SYNC_STRT_WID, crtc[1]);
     mach64_write32(MACH64_CRTC_V_TOTAL_DISP, crtc[2]);
     mach64_write32(MACH64_CRTC_V_SYNC_STRT_WID, crtc[3]);
+    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
     mach64_write32(MACH64_CRTC_OFF_PITCH, crtc[4]);
-    mach64_pll_write(MACH64_PLL_VCLK_CNTL, vclk);
+    if (dsp_config || dsp_on_off) {
+        mach64_write32(MACH64_DSP_ON_OFF, dsp_on_off);
+        mach64_write32(MACH64_DSP_CONFIG, dsp_config);
+    }
+    mach64_pll_write(MACH64_PLL_VCLK_CNTL,
+                     (unsigned char)(vclk | MACH64_PLL_VCLK_RESET));
     mach64_pll_write(MACH64_PLL_VCLK_POST_DIV, post);
     mach64_pll_write(MACH64_PLL_XCLK_CNTL, xclk);
     mach64_pll_write((unsigned char)(MACH64_PLL_VCLK_FB_DIV0 +
-                                     MACH64_PLL_VCLK_CLOCK), fb_div);
-    mach64_write32(MACH64_CLOCK_CNTL, clock);
-    mach64_write32(MACH64_GEN_TEST_CNTL, test);
+                                     (fb_clk_idx & 0x03U)), fb_div);
+    mach64_pll_write(MACH64_PLL_VCLK_CNTL,
+                     (unsigned char)(vclk & ~MACH64_PLL_VCLK_RESET));
+    mach64_write8(MACH64_CLOCK_CNTL,
+                  (unsigned char)((clock_cntl & 0x0FU) | MACH64_CLOCK_STROBE));
+    mach64_write32(MACH64_GEN_TEST_CNTL, test | MACH64_GEN_GUI_EN);
     mach64_write32(MACH64_DAC_CNTL, dac);
     mach64_write32(MACH64_CRTC_GEN_CNTL, gen);
+}
+
+/*
+ * Calculate Mach64 VT/GT/GT-B Display FIFO watermarks (DSP_CONFIG & DSP_ON_OFF)
+ * following the Linux kernel atyfb driver (drivers/video/fbdev/aty/mach64_ct.c).
+ * Without programming DSP_CONFIG/DSP_ON_OFF on 3D Rage II+DVD (Mach64 GT-B),
+ * the 32-qword (256-byte = 128-pixel at 16bpp) internal display FIFO drains
+ * and wraps 8 times across a 1024-pixel scanline.
+ */
+static int mach64_calc_dsp_gt(unsigned char ref_div,
+                              unsigned int vclk_fb_div,
+                              unsigned int vclk_post_div,
+                              int bpp,
+                              unsigned int* out_dsp_config,
+                              unsigned int* out_dsp_on_off) {
+    static const unsigned int k_xclk_post_div[8] = { 1, 2, 4, 8, 3, 1, 3, 12 };
+    unsigned char mclk_fb_div = mach64_pll_read(MACH64_PLL_MCLK_FB_DIV);
+    unsigned char pll_ext_cntl = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
+    unsigned int mem_cntl = mach64_read32(MACH64_MEM_CNTL);
+    if (ref_div == 0 || mclk_fb_div == 0 || mclk_fb_div == 0xFFU ||
+        vclk_fb_div == 0 || vclk_post_div == 0 || bpp <= 0) {
+        return 0;
+    }
+
+    unsigned int mclk_fb_mult = (pll_ext_cntl & 0x04U) ? 4U : 2U;
+    unsigned int xclk_post_div = k_xclk_post_div[pll_ext_cntl & 0x07U];
+    if (xclk_post_div == 0) xclk_post_div = 1U;
+
+    unsigned int mem_type = (mem_cntl >> 16) & 0x07U;
+    unsigned int trcd = ((mem_cntl >> 10) & 0x03U) + 1U;
+    unsigned int trp = ((mem_cntl >> 8) & 0x03U) + 1U;
+    unsigned int tras = ((mem_cntl >> 12) & 0x07U) + 1U;
+
+    unsigned int fifo_depth = 32U;
+    unsigned int default_loop_latency = 10U;
+    unsigned int xras = (tras + 3U) * 2U;
+    unsigned int rloop = ((11U + 3U + xras) / 2U + 1U) & ~1U;
+
+    if (g_ati_device_id == PCI_DEVICE_ATI_RAGE_GT ||
+        g_ati_device_id == PCI_DEVICE_ATI_MACH64_VT) {
+        fifo_depth = 24U;
+        rloop = 12U;
+        default_loop_latency = 10U;
+    } else if (mem_type >= 5U) {
+        /* SDRAM / SGRAM */
+        if (mem_type == 6U) {
+            xras = tras + 1U;
+        } else {
+            xras = trcd + ((mem_cntl & (1U << 18)) ? 2U : 1U);
+        }
+        rloop = (11U + 2U + xras + trp + 1U) & ~1U;
+        default_loop_latency = (g_ati_vram_bytes <= 1024U * 1024U) ? 9U : 8U;
+    }
+
+    unsigned int dsp_loop_latency = default_loop_latency;
+    if (g_boot_dsp_config & 0x000F0000U) {
+        dsp_loop_latency = (g_boot_dsp_config >> 16) & 0x0FU;
+    }
+
+    unsigned int m = (unsigned int)mclk_fb_div * mclk_fb_mult * vclk_post_div * 16U;
+    unsigned int n = 2U * xclk_post_div * vclk_fb_div * (unsigned int)bpp;
+    if (m == 0 || n == 0) return 0;
+
+    const unsigned int s_shift = 5U;
+    uint32_t multiplier = (uint32_t)(((uint64_t)n << s_shift) / (uint64_t)m);
+    uint32_t divider = (uint32_t)(((uint64_t)m << 2) / (uint64_t)n);
+    if (multiplier == 0) multiplier = 1U;
+    if (divider == 0) divider = 1U;
+
+    uint32_t ras_multiplier = (xras << s_shift) / xclk_post_div;
+    uint32_t ras_divider = (xclk_post_div << 2) / (xras ? xras : 1U);
+    if (ras_divider == 0) ras_divider = 1U;
+
+    uint32_t t_page = trp * 2U;
+    uint32_t c_overhead = (g_ati_vram_bytes > 4U * 1024U * 1024U) ? 2U : 1U;
+
+    uint32_t max_off = 0;
+    unsigned int dsp_precision = 0;
+    for (dsp_precision = 0; dsp_precision < 8U; dsp_precision++) {
+        uint32_t p_shift = dsp_precision + s_shift;
+        max_off = (((fifo_depth - 1U) << p_shift) - ((uint32_t)1U << (p_shift - 2U))) /
+                  multiplier;
+        if (max_off > (1U << (11U - 1U))) {
+            break;
+        }
+    }
+    if (dsp_precision == 0) dsp_precision = 1U;
+    dsp_precision--;
+
+    uint32_t p_shift = dsp_precision + s_shift;
+    uint32_t dsp_off = (((fifo_depth - 1U) << p_shift) / multiplier) -
+                       ((1U << (p_shift - 2U)) / multiplier);
+
+    uint32_t dsp_on = 0;
+    if (dsp_precision < 5U) {
+        uint32_t shift = 5U - dsp_precision;
+        uint32_t tmp_on = ((((rloop + c_overhead) >> shift) + 1U) << 2) / divider;
+        uint32_t tmp_off = ((dsp_off >> shift) << 2) / divider -
+                           ((t_page + c_overhead) >> shift);
+        while (tmp_on < tmp_off) {
+            if (ras_multiplier > (1U << p_shift)) {
+                tmp_on += (((ras_multiplier >> p_shift) + 1U) << 2) / divider;
+                tmp_off -= (xras >> shift);
+            } else {
+                tmp_on += ((1U << 2) / divider) + 1U;
+                tmp_off -= ((ras_divider >> 2) >> shift);
+            }
+        }
+        dsp_on = ((tmp_on - tmp_off) << shift) +
+                 (ras_multiplier >> s_shift) +
+                 ((((t_page + (1U << (shift - 1U))) >> shift) << p_shift) / multiplier);
+    } else {
+        uint32_t shift = dsp_precision - 5U;
+        uint32_t tmp_on = (((rloop + c_overhead) << shift) << 2) / divider;
+        uint32_t tmp_off = ((dsp_off << 2) / divider) -
+                           ((t_page + c_overhead) << shift);
+        while (tmp_on < tmp_off) {
+            if (ras_multiplier > (1U << p_shift)) {
+                tmp_on += (((ras_multiplier >> p_shift) + 1U) << 2) / divider;
+                tmp_off -= (xras << shift);
+            } else {
+                tmp_on += ((1U << 2) / divider) + 1U;
+                tmp_off -= ((ras_divider << shift) >> 2);
+            }
+        }
+        dsp_on = ((tmp_on - tmp_off) >> shift) +
+                 (ras_multiplier >> s_shift) +
+                 (((t_page << p_shift) + (multiplier >> 1)) / multiplier);
+    }
+
+    uint32_t dsp_xclks = ((1U << (p_shift + 5U)) + (multiplier >> 1)) / multiplier;
+    if (dsp_off > 0x7FFU) dsp_off = 0x7FFU;
+    if (dsp_on > 0x7FFU) dsp_on = 0x7FFU;
+    if (dsp_xclks > 0x3FFFU) dsp_xclks = 0x3FFFU;
+
+    *out_dsp_config = (dsp_xclks & 0x3FFFU) |
+                      ((dsp_loop_latency & 0x0FU) << 16) |
+                      ((dsp_precision & 0x07U) << 20);
+    *out_dsp_on_off = (dsp_off & 0x7FFU) | ((dsp_on & 0x7FFU) << 16);
+    return 1;
 }
 
 static int ati_mach64_supports_bpp(int w, int h, int bpp) {
@@ -357,8 +530,7 @@ static int ati_mach64_supports_bpp(int w, int h, int bpp) {
         timing.pixel_clock_khz == 0 || timing.pixel_clock_khz > 300000U) {
         return 0;
     }
-    uint64_t pitch = ((uint64_t)(unsigned int)w *
-                      (uint64_t)(unsigned int)(bpp / 8) + 63ULL) & ~63ULL;
+    uint64_t pitch = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)(bpp / 8);
     uint64_t bytes = pitch * (uint64_t)(unsigned int)h;
     return (bytes <= (uint64_t)g_ati_vram_bytes) ? 1 : 0;
 }
@@ -478,6 +650,7 @@ static int ati_mach64_probe_hw(void) {
             g_ati_io_base = (unsigned short)pci->bar[1].address;
         }
 
+        g_ati_device_id = device;
         g_ati_chip_name = name;
         g_ati_regs = mach64_find_register_base(pci, bar0_phys, bar2_phys, device);
         g_ati_bar0_phys = bar0_phys;
@@ -503,10 +676,68 @@ static int ati_mach64_probe_hw(void) {
         g_cur_pitch = (int)surf.pitch;
 
         unsigned char ref_div = has_regs
-            ? mach64_pll_read(0x02U) : 0U;
+            ? mach64_pll_read(MACH64_PLL_REF_DIV) : 0U;
         g_ati_hw_modeset_capable =
             has_regs &&
             ref_div != 0 && ref_div != 0xFFU;
+        g_boot_regs_saved = 0;
+        if (g_ati_hw_modeset_capable) {
+            g_boot_crtc[0] = mach64_read32(MACH64_CRTC_H_TOTAL_DISP);
+            g_boot_crtc[1] = mach64_read32(MACH64_CRTC_H_SYNC_STRT_WID);
+            g_boot_crtc[2] = mach64_read32(MACH64_CRTC_V_TOTAL_DISP);
+            g_boot_crtc[3] = mach64_read32(MACH64_CRTC_V_SYNC_STRT_WID);
+            g_boot_crtc[4] = mach64_read32(MACH64_CRTC_OFF_PITCH);
+            g_boot_dsp_config = mach64_read32(MACH64_DSP_CONFIG);
+            g_boot_dsp_on_off = mach64_read32(MACH64_DSP_ON_OFF);
+            g_boot_gen = mach64_read32(MACH64_CRTC_GEN_CNTL);
+            g_boot_dac = mach64_read32(MACH64_DAC_CNTL);
+            g_boot_test = mach64_read32(MACH64_GEN_TEST_CNTL);
+            g_boot_clock_cntl = mach64_read8(MACH64_CLOCK_CNTL);
+            g_boot_vclk = mach64_pll_read(MACH64_PLL_VCLK_CNTL);
+            g_boot_post = mach64_pll_read(MACH64_PLL_VCLK_POST_DIV);
+            g_boot_xclk = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
+            unsigned char boot_clk_idx = (unsigned char)(g_boot_clock_cntl & 0x03U);
+            g_boot_fb = mach64_pll_read(
+                (unsigned char)(MACH64_PLL_VCLK_FB_DIV0 + boot_clk_idx));
+            g_boot_regs_saved = 1;
+
+            /*
+             * Calibrate reference crystal frequency (14.318 MHz vs 29.498928 MHz
+             * vs 28.636 MHz) from the active VBIOS boot VCLK dividers and
+             *PLL_REF_DIV, with Linux atyfb_base.c ref_div heuristic fallback.
+             */
+            g_ati_xtal_khz = (ref_div > 48U) ? 29499U : 14318U;
+            static const uint16_t k_post_div[8] = { 1, 2, 4, 8, 3, 0, 6, 12 };
+            unsigned int post_code =
+                ((g_boot_post >> (boot_clk_idx * 2U)) & 0x03U) |
+                (((g_boot_xclk >> (4U + boot_clk_idx)) & 0x01U) << 2);
+            unsigned int post_div = k_post_div[post_code & 7U];
+            pdv_display_timing_t boot_timing;
+            if (g_boot_fb > 0 && g_boot_fb != 0xFFU && post_div > 0 &&
+                g_kapi->display_get_mode_timing &&
+                g_kapi->display_get_mode_timing(g_boot_w, g_boot_h, &boot_timing) &&
+                boot_timing.pixel_clock_khz > 0) {
+                static const unsigned int k_xtals[3] = { 14318U, 29499U, 28636U };
+                unsigned int best_xtal = g_ati_xtal_khz;
+                unsigned int best_err = 0xFFFFFFFFU;
+                unsigned int denom = (unsigned int)ref_div * post_div;
+                for (int xi = 0; xi < 3; xi++) {
+                    unsigned int vclk =
+                        (2U * k_xtals[xi] * (unsigned int)g_boot_fb + denom / 2U) /
+                        denom;
+                    unsigned int err = (vclk > boot_timing.pixel_clock_khz)
+                        ? (vclk - boot_timing.pixel_clock_khz)
+                        : (boot_timing.pixel_clock_khz - vclk);
+                    if (err < best_err) {
+                        best_err = err;
+                        best_xtal = k_xtals[xi];
+                    }
+                }
+                if (best_err < boot_timing.pixel_clock_khz / 4U) {
+                    g_ati_xtal_khz = best_xtal;
+                }
+            }
+        }
         g_ati_hw_modeset_last_status = g_ati_hw_modeset_capable
             ? "ATI Mach64 CRTC/PLL hardware modeset ready"
             : "Mach64 CRTC/PLL unavailable";
@@ -514,9 +745,11 @@ static int ati_mach64_probe_hw(void) {
         g_ati_active = 1;
         ati_mach64_build_modes();
         g_ati_status = g_ati_hw_modeset_last_status;
-        klog_info("[ATI ] active %s BAR0=0x%llx vram=%uKB regs=%s hwset=%s modes=%d",
+        klog_info("[ATI ] active %s BAR0=0x%llx vram=%uKB xtal=%ukHz ref_div=%u dsp=0x%08x/0x%08x regs=%s hwset=%s modes=%d",
                   g_ati_chip_name, (unsigned long long)bar0_phys,
                   g_ati_vram_bytes / 1024U,
+                  g_ati_xtal_khz, (unsigned int)ref_div,
+                  g_boot_dsp_config, g_boot_dsp_on_off,
                   has_regs ? "verified" : "probe-only",
                   g_ati_hw_modeset_capable ? "yes" : "no",
                   g_ati_mode_count);
@@ -571,8 +804,11 @@ static int ati_mach64_get_max_height(void) {
 
 static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     if (!ati_mach64_supports_bpp(w, h, bpp)) return 0;
+    if (w == g_cur_w && h == g_cur_h && bpp == g_cur_bpp) {
+        return 1;
+    }
     if (!g_ati_hw_modeset_capable) {
-        return w == g_cur_w && h == g_cur_h && bpp == g_cur_bpp;
+        return 0;
     }
 
     pdv_display_timing_t timing;
@@ -588,7 +824,13 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         return 0;
     }
 
-    int pitch = ((w * (bpp / 8) + 63) & ~63);
+    /*
+     * Mach64 CRTC_OFF_PITCH bits 31:22 store pitch in units of 8 pixels
+     * ((line_length / bytes_per_pixel) >> 3 == w >> 3), so line pitch in bytes
+     * must be exact w * (bpp / 8). Since w is a multiple of 8, pitch is also
+     * a multiple of 8 bytes.
+     */
+    int pitch = w * (bpp / 8);
     uint64_t frame_bytes = (uint64_t)(unsigned int)pitch *
                            (uint64_t)(unsigned int)h;
     pdv_fb_surface_t surface;
@@ -604,45 +846,85 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         return 0;
     }
 
+    if (w == g_boot_w && h == g_boot_h && bpp == g_boot_bpp &&
+        g_boot_regs_saved) {
+        unsigned char* mapped =
+            (unsigned char*)g_kapi->mmio_map_wc(surface.framebuffer_phys,
+                                                (size_t)frame_bytes);
+        if (!mapped) return 0;
+        mach64_restore_mode(g_boot_crtc, g_boot_dsp_config, g_boot_dsp_on_off,
+                            g_boot_gen, g_boot_dac, g_boot_test,
+                            g_boot_clock_cntl, g_boot_vclk, g_boot_post,
+                            g_boot_xclk, g_boot_fb,
+                            (unsigned char)(g_boot_clock_cntl & 0x03U));
+        pdv_fb_surface_t new_surface = surface;
+        new_surface.width = (uint32_t)w;
+        new_surface.height = (uint32_t)h;
+        new_surface.pitch = (uint32_t)pitch;
+        new_surface.bpp = (uint32_t)bpp;
+        new_surface.format = bpp == 16 ? PDV_PIXEL_FORMAT_RGB565 :
+                             bpp == 32 ? PDV_PIXEL_FORMAT_BGRA8888 :
+                                         PDV_PIXEL_FORMAT_BGR888;
+        new_surface.red_mask_size = bpp == 16 ? 5 : 8;
+        new_surface.red_mask_shift = bpp == 16 ? 11 : 16;
+        new_surface.green_mask_size = bpp == 16 ? 6 : 8;
+        new_surface.green_mask_shift = bpp == 16 ? 5 : 8;
+        new_surface.blue_mask_size = bpp == 16 ? 5 : 8;
+        new_surface.blue_mask_shift = 0;
+        g_kapi->fb_set_surface(&new_surface, mapped);
+        g_cur_w = w;
+        g_cur_h = h;
+        g_cur_bpp = bpp;
+        g_cur_pitch = pitch;
+        return 1;
+    }
+
     unsigned int saved_crtc[5];
     saved_crtc[0] = mach64_read32(MACH64_CRTC_H_TOTAL_DISP);
     saved_crtc[1] = mach64_read32(MACH64_CRTC_H_SYNC_STRT_WID);
     saved_crtc[2] = mach64_read32(MACH64_CRTC_V_TOTAL_DISP);
     saved_crtc[3] = mach64_read32(MACH64_CRTC_V_SYNC_STRT_WID);
     saved_crtc[4] = mach64_read32(MACH64_CRTC_OFF_PITCH);
+    unsigned int saved_dsp_config = mach64_read32(MACH64_DSP_CONFIG);
+    unsigned int saved_dsp_on_off = mach64_read32(MACH64_DSP_ON_OFF);
     unsigned int saved_gen = mach64_read32(MACH64_CRTC_GEN_CNTL);
     unsigned int saved_dac = mach64_read32(MACH64_DAC_CNTL);
     unsigned int saved_test = mach64_read32(MACH64_GEN_TEST_CNTL);
-    unsigned int saved_clock = mach64_read32(MACH64_CLOCK_CNTL);
+    unsigned char saved_clock_cntl = mach64_read8(MACH64_CLOCK_CNTL);
     unsigned char saved_vclk = mach64_pll_read(MACH64_PLL_VCLK_CNTL);
     unsigned char saved_post = mach64_pll_read(MACH64_PLL_VCLK_POST_DIV);
     unsigned char saved_xclk = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
     unsigned char saved_fb = mach64_pll_read(
         MACH64_PLL_VCLK_FB_DIV0 + MACH64_PLL_VCLK_CLOCK);
 
-    unsigned char ref_div = mach64_pll_read(0x02U);
+    unsigned char ref_div = mach64_pll_read(MACH64_PLL_REF_DIV);
     if (ref_div == 0 || ref_div == 0xFFU) return 0;
+    unsigned int xtal_2x = 2U * g_ati_xtal_khz;
     static const uint16_t k_post_div[8] = { 1, 2, 4, 8, 3, 0, 6, 12 };
     uint32_t best_error = 0xFFFFFFFFU;
     unsigned int best_n = 0, best_post = 0;
+    int best_in_vco = 0;
     for (unsigned int post = 0; post < 8; post++) {
         if (!k_post_div[post]) continue;
-        uint32_t divisor = (uint32_t)ref_div * 11U * k_post_div[post];
-        uint32_t numerator = timing.pixel_clock_khz * divisor;
-        unsigned int n = (numerator + 315000U / 2U) / 315000U;
+        uint32_t divisor = (uint32_t)ref_div * (uint32_t)k_post_div[post];
+        uint64_t numerator = (uint64_t)timing.pixel_clock_khz * (uint64_t)divisor;
+        unsigned int n = (unsigned int)((numerator + xtal_2x / 2U) / xtal_2x);
         if (n < 2U) n = 2U;
         if (n > 255U) n = 255U;
-        uint32_t actual = (n * 315000U + divisor / 2U) / divisor;
+        int in_vco = (n >= 128U && n <= 255U) ? 1 : 0;
+        uint32_t actual = (uint32_t)(((uint64_t)n * xtal_2x + divisor / 2U) / divisor);
         uint32_t error = actual > timing.pixel_clock_khz
             ? actual - timing.pixel_clock_khz
             : timing.pixel_clock_khz - actual;
-        if (error < best_error) {
+        if ((in_vco && !best_in_vco) ||
+            (in_vco == best_in_vco && error < best_error)) {
+            best_in_vco = in_vco;
             best_error = error;
             best_n = n;
             best_post = post;
         }
     }
-    if (!best_n || best_error > timing.pixel_clock_khz / 100U + 500U) {
+    if (!best_n || best_error > timing.pixel_clock_khz / 20U + 1000U) {
         return 0;
     }
 
@@ -655,8 +937,8 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     int v_sync_end = (int)timing.v_sync_end - 1;
     int v_total = (int)timing.v_total - 1;
     if (h_display < 0 || h_sync_start < 0 || h_sync_end < 0 || h_total < 0 ||
-        h_display > 511 || h_total > 511 || h_sync_start > 255 ||
-        h_sync_end > 255 || h_sync_start >= h_sync_end ||
+        h_display > 511 || h_total > 511 || h_sync_start > 511 ||
+        h_sync_end > 511 || h_sync_start >= h_sync_end ||
         v_display < 0 || v_total < 0 || v_total > 2047 ||
         v_sync_start > 2047 || v_sync_end > 2047 ||
         v_sync_start >= v_sync_end ||
@@ -682,31 +964,45 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         (((unsigned int)(v_sync_end - v_sync_start) & 0x1FU) << 16);
     unsigned int offset_units =
         (unsigned int)((surface.framebuffer_phys - g_ati_bar0_phys) >> 3);
+    unsigned int pitch_in_8px = (unsigned int)(w >> 3);
     unsigned int off_pitch =
         (offset_units & 0x000FFFFFU) |
-        ((((unsigned int)pitch >> 3) & 0x3FFU) << 20);
+        ((pitch_in_8px & 0x3FFU) << 22);
 
     unsigned int pixel_width = bpp == 16 ? 4U :
                                bpp == 24 ? 5U : 6U;
-    unsigned int new_gen = saved_gen;
-    new_gen &= ~(0x00000FFFU | (1U << 20) | (1U << 21) |
-                 (1U << 22) | (1U << 23) | (1U << 26) |
-                 (1U << 29) | (1U << 31));
-    new_gen |= MACH64_CRTC_EXT_DISP_EN | MACH64_CRTC_EN |
-               MACH64_CRTC_VGA_LINEAR | MACH64_CRTC_CNT_EN |
-               (pixel_width << 8);
+    /*
+     * Preserve CRTC_FIFO_LWM (bits 19:16) and lock bits (bits 15:12);
+     * do NOT set MACH64_CRTC_CNT_EN (bit 30), matching Linux aty_var_to_crtc.
+     */
+    unsigned int new_gen = (saved_gen & 0x000FE000U) |
+                           MACH64_CRTC_EXT_DISP_EN |
+                           MACH64_CRTC_EN |
+                           MACH64_CRTC_VGA_LINEAR |
+                           (pixel_width << 8);
+    if (bpp == 24) {
+        new_gen |= (1U << 26); /* CRTC_24BPP_ACCELERATION_ENABLE / BYTE_PIX_ORDER */
+    }
     unsigned int new_dac = saved_dac &
         ~(MACH64_DAC_8BIT_EN | MACH64_DAC_RAMDAC_SELECT);
+
+    unsigned int dsp_config = saved_dsp_config;
+    unsigned int dsp_on_off = saved_dsp_on_off;
+    (void)mach64_calc_dsp_gt(ref_div, best_n, k_post_div[best_post], bpp,
+                             &dsp_config, &dsp_on_off);
 
     int timeout = 200000;
     while (!(mach64_read32(MACH64_CRTC_INT_CNTL) & MACH64_CRTC_VBLANK) &&
            --timeout) {
     }
 
+    /* Disable CRTC before reprogramming timings, pitch, DSP and VPLL */
+    mach64_write32(MACH64_CRTC_GEN_CNTL, new_gen & ~MACH64_CRTC_EN);
     mach64_write32(MACH64_CRTC_H_TOTAL_DISP, h_total_disp);
     mach64_write32(MACH64_CRTC_H_SYNC_STRT_WID, h_sync);
     mach64_write32(MACH64_CRTC_V_TOTAL_DISP, v_total_disp);
     mach64_write32(MACH64_CRTC_V_SYNC_STRT_WID, v_sync);
+    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
     mach64_write32(MACH64_CRTC_OFF_PITCH, off_pitch);
 
     unsigned char post_value = saved_post;
@@ -724,25 +1020,37 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     mach64_pll_write(MACH64_PLL_XCLK_CNTL, xclk);
     mach64_pll_write((unsigned char)(MACH64_PLL_VCLK_FB_DIV0 +
                                      MACH64_PLL_VCLK_CLOCK),
-                     (unsigned char)(best_n - 1U));
+                     (unsigned char)best_n);
     mach64_pll_write(MACH64_PLL_VCLK_CNTL,
                      (unsigned char)((saved_vclk | 0x03U) &
                                      ~MACH64_PLL_VCLK_RESET));
-    g_kapi->sleep_ms(10);
+    g_kapi->sleep_ms(5);
 
-    mach64_write32(MACH64_CLOCK_CNTL, MACH64_CLOCK_CNTL_PROGRAMMED);
+    /* Select VCLK3 with CLOCK_STROBE (0x43) via 8-bit write (do NOT set CLOCK_DIV bits 5:4!) */
+    mach64_write8(MACH64_CLOCK_CNTL,
+                  (unsigned char)(MACH64_PLL_VCLK_CLOCK | MACH64_CLOCK_STROBE));
+    if (dsp_config || dsp_on_off) {
+        mach64_write32(MACH64_DSP_ON_OFF, dsp_on_off);
+        mach64_write32(MACH64_DSP_CONFIG, dsp_config);
+    }
     mach64_write32(MACH64_GEN_TEST_CNTL, saved_test | MACH64_GEN_GUI_EN);
     mach64_write32(MACH64_GEN_TEST_CNTL, saved_test);
     mach64_write32(MACH64_GEN_TEST_CNTL, saved_test | MACH64_GEN_GUI_EN);
     mach64_write32(MACH64_DAC_CNTL, new_dac);
     mach64_write32(MACH64_CRTC_GEN_CNTL, new_gen);
 
+    klog_info("[ATI ] set_mode %dx%d@%d pclk=%ukHz fb_div=%u post=%u(div=%u) off_pitch=0x%08x dsp=0x%08x/0x%08x gen=0x%08x",
+              w, h, bpp, timing.pixel_clock_khz, best_n, best_post,
+              (unsigned int)k_post_div[best_post], off_pitch,
+              dsp_config, dsp_on_off, new_gen);
+
     unsigned int h_verify = mach64_read32(MACH64_CRTC_H_TOTAL_DISP);
     unsigned int v_verify = mach64_read32(MACH64_CRTC_V_TOTAL_DISP);
     if (h_verify != h_total_disp || v_verify != v_total_disp) {
-        mach64_restore_mode(saved_crtc, saved_gen, saved_dac, saved_test,
-                            saved_clock, saved_vclk, saved_post, saved_xclk,
-                            saved_fb);
+        mach64_restore_mode(saved_crtc, saved_dsp_config, saved_dsp_on_off,
+                            saved_gen, saved_dac, saved_test,
+                            saved_clock_cntl, saved_vclk, saved_post,
+                            saved_xclk, saved_fb, MACH64_PLL_VCLK_CLOCK);
         return 0;
     }
 
@@ -750,9 +1058,10 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         (unsigned char*)g_kapi->mmio_map_wc(surface.framebuffer_phys,
                                             (size_t)frame_bytes);
     if (!mapped) {
-        mach64_restore_mode(saved_crtc, saved_gen, saved_dac, saved_test,
-                            saved_clock, saved_vclk, saved_post, saved_xclk,
-                            saved_fb);
+        mach64_restore_mode(saved_crtc, saved_dsp_config, saved_dsp_on_off,
+                            saved_gen, saved_dac, saved_test,
+                            saved_clock_cntl, saved_vclk, saved_post,
+                            saved_xclk, saved_fb, MACH64_PLL_VCLK_CLOCK);
         return 0;
     }
     pdv_fb_surface_t new_surface = surface;

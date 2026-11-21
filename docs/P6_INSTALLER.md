@@ -1,6 +1,6 @@
 # P6 Desktop and Offline Installer
 
-Build version: `26A262e`
+Build version: `26A263a`
 
 ## Boot modes
 

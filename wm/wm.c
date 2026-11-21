@@ -1722,9 +1722,15 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     if (volume_drag_active) {
         if (mb & INPUT_MOUSE_LEFT) {
             volume_set_from_y(my);
+            if (g_pxe_present_dirty) {
+                g_pxe_present_dirty = 0;
+                redraw = 1;
+                need_mr = 1;
+            }
             return;
         }
         volume_drag_active = 0;
+        (void)settings_save();
         if (mb_release) {
             redraw = 1;
             need_mr = 1;
@@ -1732,20 +1738,37 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
     if (volume_popup_open && mb_press) {
+        int volume_panel_hit =
+            mx >= panel_x && mx < panel_x + panel_w &&
+            my >= panel_y && my < panel_y + panel_h;
         if (volume_icon_hit) {
             volume_popup_open = 0;
+            redraw = 1;
+            need_mr = 1;
+            return;
         } else if (volume_mute_hit) {
             audio_toggle_mute();
             wm_sync_volume_state();
+            (void)settings_save();
+            redraw = 1;
+            need_mr = 1;
+            return;
         } else if (volume_slider_hit) {
             volume_drag_active = 1;
             volume_set_from_y(my);
+            redraw = 1;
+            need_mr = 1;
+            return;
+        } else if (volume_panel_hit) {
+            redraw = 1;
+            need_mr = 1;
+            return;
         } else {
+            /* Close popup and allow the click to pass through to windows below */
             volume_popup_open = 0;
+            redraw = 1;
+            need_mr = 1;
         }
-        redraw = 1;
-        need_mr = 1;
-        return;
     }
 
     wm_sync_volume_state();

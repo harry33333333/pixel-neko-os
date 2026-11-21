@@ -554,8 +554,8 @@ static void process_mouse(hid_state_t* hid, hid_report_layout_t* layout,
                                      layout->y_size);
     }
     if (layout->wheel_size) {
-        wheel = -read_report_signed(report, length, layout->wheel_offset,
-                                    layout->wheel_size);
+        wheel = read_report_signed(report, length, layout->wheel_offset,
+                                   layout->wheel_size);
     }
 
     if (layout->x_absolute || layout->y_absolute) {

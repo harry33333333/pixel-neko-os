@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A262e`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A263a`）
 
-在当前 `main` 主干（基准版本 **`v26A262e`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 `main` 主干（基准版本 **`v26A263a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 

@@ -1696,6 +1696,12 @@ int main(int argc, char** argv) {
 
     refresh_partitions(inst);
     inst->install_mode = (inst->sysinfo.boot_mode == 1) ? 1 : 0;
+    if (!inst->install_mode) {
+        pxe_notify_banner("INSTALL is disabled in Local/Live mode");
+        pxe_beep();
+        free(inst);
+        return 1;
+    }
     add_log(inst, "Installer ready. Ring 0 privileged disk/VFS APIs active.");
 
     pxe_win_desc_t desc;

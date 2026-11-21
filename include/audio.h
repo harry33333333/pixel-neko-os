@@ -55,6 +55,8 @@ void audio_set_bitrate(int kbps, int is_vbr);
 // Volume & Mixer Controls (0 ~ 100)
 void audio_set_volume(int vol);
 int audio_get_volume(void);
+int audio_get_master_volume(void);
+void audio_set_muted(int muted);
 void audio_toggle_mute(void);
 int audio_is_muted(void);
 

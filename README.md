@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A262e - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A263a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -95,6 +95,15 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - 修复 VGA Attribute Controller (`0x03C0`) 数据写入端口及双头 `NV_HEAD_STRIDE` (`0x2000`)，并在读取/保存 CRTC 状态前先解锁 `CR1F` (`0x57`) 与选择目标头 `CR44`。
 - 控制面板点击 `Keep (OK)` 确认已生效的硬件模式时不再重复触发二次 CRTC/PLL 重编程，后备缓冲页数计算同步按 64 字节对齐 pitch 分配。
 
+### 26A263a ATI Mach64 显示 FIFO/CRTC 修复、音量完全同步、Windows 滚轮方向与安装器模式门控
+- 修复 ATI 3D Rage II+DVD (`1002:4755`, Mach64 GT-B) 切换分辨率时屏幕分成 8 条竖向重复条带与花屏的问题：
+  - 修复 `CRTC_OFF_PITCH` (`0x0014`) 的 `CRTC_PITCH` 位移（由 `<< 20` 修正为 bits 31:22 的 `<< 22`）与单位（8 像素为单位 `w >> 3`，行距 `pitch = w * (bpp / 8)`）。
+  - 修复 `CLOCK_CNTL` (`0x0090`) 误写 32 位 `0x73` 触发 `CLOCK_DIV` 4 分频的问题，改用 8 位写入 `0x43` (`VCLK3 | CLOCK_STROBE`)。
+  - 新增 Mach64 VT/GT/GT-B 内部 32-qword Display FIFO 水位线计算（`DSP_CONFIG` `0x0020` 与 `DSP_ON_OFF` `0x0024`）、晶振频率自动校准（`14.318 MHz` / `29.499 MHz`）与 VCO 锁定区间 `[128, 255]` 反馈分频。
+- 修复 Control Panel (`cpanel.pxe`) 与顶部音量面板、内核音频引擎及 `.pse` 持久化的音量完全同步：拖动或滚轮调节音量、静音切换及重启后均保持 1:1 双向同步。
+- 统一 USB HID 与 PS/2 IntelliMouse 鼠标滚轮方向为 Windows 标准方向（向上滚动向上翻页/增加音量，向下滚动向下翻页/减小音量）。
+- 在正常硬盘启动（`mode=local`）与 Live 桌面模式（`mode=live`）下禁止启动 `INSTALL` (`install.pxe`)，仅允许在图形化安装引导模式（`mode=install`）下运行。
+
 ### 3. 全栈 USB 架构与现代芯片组兼容
 - **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
 - **现代芯片组与实体机适配**：针对 Intel 600 系列（如铭瑄 H610M-D）等现代主板实施根集线器端口强制复位（PR），将 BIOS 已使能端口强拉回默认地址 0 态，彻底解决进系统后 USB 鼠标无法移动的难题；屏蔽旧版芯片组路由寄存器误写，并引入端口退避重试。
@@ -124,18 +133,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A262e.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A263a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A262e.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A263a.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A262e.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A263a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -150,7 +159,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A262e.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A262e 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [26A263a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

@@ -235,8 +235,8 @@ void audio_init(void) {
     g_queue_bytes = 0;
     g_total_frames_played = 0;
     g_eof_reached = 0;
-    g_is_muted = 0;
-    g_master_volume = 85;
+    if (g_master_volume < 0) g_master_volume = 0;
+    if (g_master_volume > 100) g_master_volume = 100;
 
     for (int i = 0; i < 10; i++) g_spectrum_bands[i] = 0;
     g_vu_l = 0;
@@ -254,7 +254,8 @@ void audio_init(void) {
     }
 
     if (g_active_driver) {
-        g_active_driver->set_volume(g_master_volume, g_master_volume);
+        int v = audio_requested_volume();
+        g_active_driver->set_volume(v, v);
     }
 }
 
@@ -764,6 +765,20 @@ void audio_set_volume(int vol) {
 
 int audio_get_volume(void) {
     return g_is_muted ? 0 : g_master_volume;
+}
+
+int audio_get_master_volume(void) {
+    return g_master_volume;
+}
+
+void audio_set_muted(int muted) {
+    g_is_muted = muted ? 1 : 0;
+    if (g_active_driver) {
+        int v = (g_audio_state == AUDIO_STATE_PAUSED)
+                    ? 0
+                    : audio_requested_volume();
+        g_active_driver->set_volume(v, v);
+    }
 }
 
 void audio_toggle_mute(void) {

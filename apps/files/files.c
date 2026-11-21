@@ -311,6 +311,15 @@ static void open_entry(fm_t* fm, int idx) {
     }
 
     if (strcasecmp(ext, ".pxe") == 0) {
+        if (strcasecmp(e->name, "install.pxe") == 0) {
+            pxe_basic_sysinfo_t info;
+            memset(&info, 0, sizeof(info));
+            if (pxe_sys_get_basic_info(&info) == 0 && info.boot_mode != 1) {
+                show_msg(fm, "Installer Disabled",
+                         "INSTALL cannot be launched in Local or Live mode.", 1);
+                return;
+            }
+        }
         int pid = pxe_spawn(full, 0, NULL);
         if (pid < 0) {
             show_msg(fm, "PXE Launch Failed", "Invalid, corrupted, or blocked .pxe.", 1);
@@ -392,6 +401,15 @@ static void open_entry(fm_t* fm, int idx) {
                 }
             } else {
                 snprintf(canonical, sizeof(canonical), "%s", target);
+            }
+            if (strcasecmp(base, "install.pxe") == 0) {
+                pxe_basic_sysinfo_t info;
+                memset(&info, 0, sizeof(info));
+                if (pxe_sys_get_basic_info(&info) == 0 && info.boot_mode != 1) {
+                    show_msg(fm, "Installer Disabled",
+                             "INSTALL cannot be launched in Local or Live mode.", 1);
+                    return;
+                }
             }
             if (pxe_spawn(canonical, 0, NULL) < 0) {
                 show_msg(fm, "Shortcut Error",

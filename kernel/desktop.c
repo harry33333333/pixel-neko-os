@@ -879,6 +879,11 @@ static bool apps_path_filename(const char* path, char* filename,
 static bool launch_system_app_path(const char* path) {
     char filename[64];
     if (apps_path_filename(path, filename, sizeof(filename))) {
+        if (text_equal_ci(filename, "install.pxe") &&
+            settings_get_boot_mode() != SETTINGS_BOOT_INSTALLER) {
+            wm_notify_banner("INSTALL is disabled in Local/Live mode");
+            return false;
+        }
         bool bypass = text_equal_ci(filename, "sysinfo.pxe") ||
                       text_equal_ci(filename, "cpuz.pxe") ||
                       text_equal_ci(filename, "taskmgr.pxe") ||

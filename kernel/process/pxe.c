@@ -1781,6 +1781,21 @@ int pxe_spawn_file(const char* path, int argc, const char* const* argv,
         return -NEKO_EINVAL;
     }
 
+    /* Block INSTALL (install.pxe) in Local hard disk boot and Live Desktop modes */
+    const char* base = path;
+    for (const char* p = path; *p; p++) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    if ((pxe_strcasecmp(base, "install.pxe") == 0 ||
+         pxe_strcasecmp(hdr->app_name, "install") == 0) &&
+        !ui_install_mode_requested()) {
+        log_printf("[PXE ] Refusing to launch installer '%s' outside mode=install\n", path);
+        wm_notify_banner("INSTALL is disabled in Local/Live mode");
+        speaker_beep();
+        kfree(raw);
+        return -NEKO_EPERM;
+    }
+
     /* Single-instance check: focus existing live process if already running */
     if (hdr->flags & PXE_FLAG_SINGLE_INST) {
         uint64_t irq_f = pxe_irq_save();

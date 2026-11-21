@@ -185,7 +185,7 @@ void mouse_handle_byte(uint8_t byte) {
     int wheel = 0;
     if (g_packet[0] & 0x10u) dx -= 256;
     if (g_packet[0] & 0x20u) dy -= 256;
-    if (g_wheel_enabled) wheel = (int)(int8_t)g_packet[3];
+    if (g_wheel_enabled) wheel = -(int)(int8_t)g_packet[3];
 
     dx = dx * g_mouse_speed / 2;
     dy = -(dy * g_mouse_speed / 2);

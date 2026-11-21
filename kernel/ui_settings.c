@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "audio.h"
 #include "boot_framebuffer.h"
 #include "fat.h"
 #include "gfx_accel.h"
@@ -14,6 +15,8 @@
 #define PSE_WALLPAPER_PATH_MAX 256
 #define PSE_CLOCK_HIDE_DATE     0x01u
 #define PSE_CLOCK_HIDE_SECONDS  0x02u
+#define PSE_VOLUME_VALID        0x04u
+#define PSE_VOLUME_MUTED        0x08u
 #define PSE_BOOT_CONFIG_MAX     32768
 
 typedef struct {
@@ -363,9 +366,14 @@ static void apply_resolution(const pse_config_t* config) {
         g_saved_bpp = bpp;
         return;
     }
-    if (!gfx_accel_can_change_mode(width, height, bpp) ||
-        !gfx_accel_try_set_mode(width, height, bpp)) {
+    if (!gfx_accel_can_change_mode(width, height, bpp)) {
         log_printf("[SETTINGS] unsupported resolution %dx%d@%d; "
+                   "keeping %dx%d@%d\n",
+                   width, height, bpp, old_w, old_h, old_bpp);
+        goto fallback;
+    }
+    if (!gfx_accel_try_set_mode(width, height, bpp)) {
+        log_printf("[SETTINGS] failed resolution %dx%d@%d; "
                    "rolling back to %dx%d@%d\n",
                    width, height, bpp, old_w, old_h, old_bpp);
         gfx_accel_try_set_mode(old_w, old_h, old_bpp);
@@ -509,6 +517,13 @@ bool settings_load(void) {
         (records[selected].reserved[0] & PSE_CLOCK_HIDE_DATE) == 0;
     g_clock_show_seconds =
         (records[selected].reserved[0] & PSE_CLOCK_HIDE_SECONDS) == 0;
+    if (records[selected].reserved[0] & PSE_VOLUME_VALID) {
+        int vol = (int)records[selected].reserved[1];
+        if (vol < 0) vol = 0;
+        if (vol > 100) vol = 100;
+        audio_set_volume(vol);
+        audio_set_muted((records[selected].reserved[0] & PSE_VOLUME_MUTED) != 0);
+    }
     apply_resolution(&records[selected]);
     if (!apply_wallpaper(&records[selected])) {
         g_wallpaper_path[0] = '\0';
@@ -591,7 +606,10 @@ bool settings_save(void) {
         (uint8_t)(wallpaper_is_active() && g_wallpaper_path[0]);
     config.reserved[0] = (uint8_t)(
         (g_clock_show_date ? 0u : PSE_CLOCK_HIDE_DATE) |
-        (g_clock_show_seconds ? 0u : PSE_CLOCK_HIDE_SECONDS));
+        (g_clock_show_seconds ? 0u : PSE_CLOCK_HIDE_SECONDS) |
+        PSE_VOLUME_VALID |
+        (audio_is_muted() ? PSE_VOLUME_MUTED : 0u));
+    config.reserved[1] = (uint8_t)audio_get_master_volume();
     copy_text(config.wallpaper_path, sizeof(config.wallpaper_path),
               g_wallpaper_path);
     config.checksum = pse_crc32(

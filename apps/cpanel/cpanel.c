@@ -156,9 +156,12 @@ static void sync_from_sysinfo(cpanel_t* cp) {
     if (cp->mouse_speed < 1) cp->mouse_speed = 1;
     if (cp->mouse_speed > 5) cp->mouse_speed = 5;
     cp->pattern = (int)cp->info.desktop_pattern % 6;
-    cp->volume = (int)cp->info.volume;
-    if (cp->volume < 0) cp->volume = 0;
-    if (cp->volume > 100) cp->volume = 100;
+    if (!cp->drag_vol) {
+        cp->volume = (int)cp->info.volume;
+        if (cp->volume < 0) cp->volume = 0;
+        if (cp->volume > 100) cp->volume = 100;
+        (void)sync_volume_from_sysinfo(cp);
+    }
 
     int found_res = -1;
     for (int r = 0; r < cp->caps.mode_count; r++) {
@@ -618,7 +621,10 @@ int main(int argc, char** argv) {
                     cp.drag_mouse = 0;
                     pxe_settings_save();
                 }
-                cp.drag_vol = 0;
+                if (cp.drag_vol) {
+                    cp.drag_vol = 0;
+                    pxe_settings_save();
+                }
                 cp.drag_res_sb = 0;
             } else if (ev.type == PXE_EV_KEY_DOWN && cp.restart_confirm) {
                 if (ev.key == PXE_KEY_ENTER) {
@@ -699,6 +705,7 @@ int main(int argc, char** argv) {
                 } else if (pxe_point_in_rect(ev.x, ev.y, 124, 33, 104, 20)) {
                     int step = (ev.arg0 > 0) ? 5 : -5;
                     cpanel_apply_volume(&cp, cp.volume + step);
+                    pxe_settings_save();
                     dirty = 1;
                 } else if (pxe_point_in_rect(ev.x, ev.y, 126, 58, 204, 20) &&
                            cp.caps.mode_count > 0) {
@@ -1024,7 +1031,7 @@ int main(int argc, char** argv) {
             pxe_win_present(win_id);
             dirty = 0;
         } else if (running) {
-            pxe_sleep_ms(50);
+            pxe_sleep_ms(15);
         }
     }
 
