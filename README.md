@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A262d - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A262e - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统
 
 ---
@@ -90,6 +90,11 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - 修复 G7x 在部分实体板上把 CRTC pitch/pixel 只读镜像值不一致误判为切换失败的问题。水平总长与扩展高位仍作为回滚依据，pitch/pixel 改为诊断日志，不再阻止有效的 CRTC/PLL 切换。
 - 新增完整 CRTC 回读日志，包含实际值、期望值和 advisory mismatch 提示。
 
+### 26A262e 实体机 NVIDIA PCIO 16 位端口偏移与无重启切换修复
+- 修复 `nvidia_crtc_index_port()` 与 `nvidia_vga_status_port()` 返回类型误写为 `unsigned char` 导致 `0x03D4` / `0x03DA` 被 8 位截断为 `0xD4` / `0xDA` 的问题；此前 `PCIO` (`BAR0 + 0x601000`) 读写全部落在 `0x6010D4` 未映射区并读回 `0x00`，导致运行时切换分辨率被误判失败并回滚。
+- 修复 VGA Attribute Controller (`0x03C0`) 数据写入端口及双头 `NV_HEAD_STRIDE` (`0x2000`)，并在读取/保存 CRTC 状态前先解锁 `CR1F` (`0x57`) 与选择目标头 `CR44`。
+- 控制面板点击 `Keep (OK)` 确认已生效的硬件模式时不再重复触发二次 CRTC/PLL 重编程，后备缓冲页数计算同步按 64 字节对齐 pitch 分配。
+
 ### 3. 全栈 USB 架构与现代芯片组兼容
 - **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
 - **现代芯片组与实体机适配**：针对 Intel 600 系列（如铭瑄 H610M-D）等现代主板实施根集线器端口强制复位（PR），将 BIOS 已使能端口强拉回默认地址 0 态，彻底解决进系统后 USB 鼠标无法移动的难题；屏蔽旧版芯片组路由寄存器误写，并引入端口退避重试。
@@ -119,18 +124,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A262d.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A262e.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A262d.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A262e.iso -m 512M -serial stdio -boot d
 ```
 
 ### P6 自动化测试套件
 `scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A262d.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A262e.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -145,7 +150,7 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A262d.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A262d 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [26A262e 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
 
 ---
 

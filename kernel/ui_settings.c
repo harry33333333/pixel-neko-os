@@ -357,6 +357,12 @@ static void apply_resolution(const pse_config_t* config) {
                    width, height, bpp, old_w, old_h, old_bpp);
         goto fallback;
     }
+    if (width == old_w && height == old_h && bpp == old_bpp) {
+        g_saved_width = width;
+        g_saved_height = height;
+        g_saved_bpp = bpp;
+        return;
+    }
     if (!gfx_accel_can_change_mode(width, height, bpp) ||
         !gfx_accel_try_set_mode(width, height, bpp)) {
         log_printf("[SETTINGS] unsupported resolution %dx%d@%d; "

@@ -38,7 +38,7 @@ jobs:
         make iso 2>&1 | tee make.log
         VERSION=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
         if [ -z "$VERSION" ]; then
-          VERSION="26A262d"
+          VERSION="26A262e"
         fi
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         echo "TAG_NAME=v$VERSION" >> "$GITHUB_ENV"
@@ -117,8 +117,8 @@ jobs:
           - NVIDIA G7x now accesses the VGA CRTC through the BAR0 `0x601000` MMIO mirror, matching the PLL update and preventing out-of-range scanout on real hardware.
           - Runtime modeset now resizes the dedicated PAT write-combining framebuffer window before compositor drawing, preventing post-switch page faults and panic resets.
           - NVIDIA G7x now updates the PVIO Misc Output sync polarity and Sequencer state required by DMT modes; 1024x768 correctly switches from 800x600 positive sync to negative H/V sync.
-          - The G7x modeset path no longer puts the VGA Sequencer into reset and no longer rolls back solely because write-only CRTC pitch/pixel registers read back with board-specific masks.
-          - The notification-area speaker icon opens a Windows XP-style volume panel with a draggable slider and a separate mute button for `v26A262d`.
+          - The G7x modeset path no longer puts the VGA Sequencer into reset, uses full 16-bit BAR0 PCIO port offsets (`0x03D4`/`0x03DA`) instead of 8-bit truncated offsets, and no longer rolls back solely because write-only CRTC pitch/pixel registers read back with board-specific masks.
+          - The notification-area speaker icon opens a Windows XP-style volume panel with a draggable slider and a separate mute button for `v26A262e`.
         draft: false
         prerelease: true
         make_latest: false

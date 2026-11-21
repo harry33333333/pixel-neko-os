@@ -95,8 +95,14 @@ static size_t ui_calc_backbuffer_pages(int width, int height, int bpp,
     if (width > 16384 || height > 16384) return 0;
     if (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return 0;
     uint64_t bpp_bytes = (uint64_t)(unsigned int)(bpp / 8);
-    uint64_t bytes = (uint64_t)(unsigned int)width *
-                     (uint64_t)(unsigned int)height * bpp_bytes;
+    uint64_t pitch =
+        ((uint64_t)(unsigned int)width * bpp_bytes + 63ULL) & ~63ULL;
+    if ((int)g_main_surface.width == width &&
+        (int)g_main_surface.bpp == bpp &&
+        g_main_surface.pitch > pitch) {
+        pitch = g_main_surface.pitch;
+    }
+    uint64_t bytes = pitch * (uint64_t)(unsigned int)height;
     if (out_bytes) *out_bytes = bytes;
     return (size_t)((bytes + PAGE_SIZE - 1) / PAGE_SIZE);
 }

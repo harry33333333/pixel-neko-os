@@ -425,8 +425,13 @@ static int pxe_display_mode_request(int width, int height, int bpp,
         return -NEKO_EINVAL;
     }
     if (gfx_accel_can_modeset_hw()) {
-        if (!gfx_accel_try_set_mode(width, height, bpp)) {
-            return -NEKO_EINVAL;
+        if (width != screen_w || height != screen_h || bpp != screen_bpp ||
+            (int)g_main_surface.width != width ||
+            (int)g_main_surface.height != height ||
+            (int)g_main_surface.bpp != bpp) {
+            if (!gfx_accel_try_set_mode(width, height, bpp)) {
+                return -NEKO_EINVAL;
+            }
         }
         settings_set_resolution(width, height, bpp);
         wm_request_desktop_redraw();
