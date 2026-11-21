@@ -68,14 +68,18 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_PLL_WR_EN            0x02U
 #define MACH64_PLL_ADDR_MASK        0xFCU
 #define MACH64_PLL_REF_DIV          0x02U
+#define MACH64_PLL_GEN_CNTL         0x03U
 #define MACH64_PLL_MCLK_FB_DIV      0x04U
 #define MACH64_PLL_VCLK_CNTL        0x05U
 #define MACH64_PLL_VCLK_RESET       0x04U
 #define MACH64_PLL_VCLK_POST_DIV    0x06U
 #define MACH64_PLL_VCLK_FB_DIV0     0x07U
 #define MACH64_PLL_XCLK_CNTL        0x0BU
+#define MACH64_PLL_DLL_CNTL         0x0CU
+#define MACH64_PLL_VFC_CNTL         0x0DU
 #define MACH64_PLL_VCLK_CLOCK       3U
 #define MACH64_CLOCK_STROBE         0x40U
+#define MACH64_DAC_MASK             0x00C2U
 
 static int g_ati_active = 0;
 static unsigned short g_ati_device_id = 0;
@@ -103,11 +107,15 @@ static unsigned int g_boot_dsp_on_off = 0;
 static unsigned int g_boot_gen = 0;
 static unsigned int g_boot_dac = 0;
 static unsigned int g_boot_test = 0;
+static unsigned int g_boot_mem_cntl = 0;
 static unsigned char g_boot_clock_cntl = 0;
+static unsigned char g_boot_pll_gen = 0;
 static unsigned char g_boot_vclk = 0;
 static unsigned char g_boot_post = 0;
 static unsigned char g_boot_xclk = 0;
 static unsigned char g_boot_fb = 0;
+static unsigned char g_boot_dll_cntl = 0;
+static unsigned char g_boot_vfc_cntl = 0;
 
 static inline unsigned int mach64_read32(unsigned int reg) {
     if (g_ati_regs) {
@@ -341,11 +349,44 @@ static void ati_mach64_sync(void) {
     }
 }
 
+static void mach64_pulse_dll_dsp(unsigned int dsp_config,
+                                 unsigned int dsp_on_off) {
+    unsigned int ram_type = mach64_read32(MACH64_CNFG_STAT0) & 0x07U;
+    unsigned char dll_cntl = g_boot_dll_cntl;
+    if (dll_cntl == 0 || dll_cntl == 0xFFU) {
+        if (g_ati_device_id == PCI_DEVICE_ATI_RAGE_XL ||
+            g_ati_device_id == PCI_DEVICE_ATI_RAGE_XL_PCI) {
+            dll_cntl = 0x80U;
+        } else if (ram_type >= 4U) {
+            dll_cntl = 0xA6U;
+        } else {
+            dll_cntl = 0xA0U;
+        }
+    } else {
+        dll_cntl &= (unsigned char)~0x40U;
+    }
+    unsigned char vfc_cntl = (g_boot_vfc_cntl != 0 && g_boot_vfc_cntl != 0xFFU)
+                                 ? g_boot_vfc_cntl
+                                 : 0x1BU;
+    mach64_pll_write(MACH64_PLL_DLL_CNTL, dll_cntl);
+    mach64_pll_write(MACH64_PLL_VFC_CNTL, vfc_cntl);
+    mach64_write32(MACH64_DSP_CONFIG, dsp_config);
+    mach64_write32(MACH64_DSP_ON_OFF, dsp_on_off);
+    g_kapi->sleep_ms(10);
+    mach64_pll_write(MACH64_PLL_DLL_CNTL, dll_cntl);
+    g_kapi->sleep_ms(10);
+    mach64_pll_write(MACH64_PLL_DLL_CNTL, (unsigned char)(dll_cntl | 0x40U));
+    g_kapi->sleep_ms(10);
+    mach64_pll_write(MACH64_PLL_DLL_CNTL, (unsigned char)(dll_cntl & ~0x40U));
+}
+
 static void mach64_restore_mode(const unsigned int crtc[5],
                                 unsigned int dsp_config,
                                 unsigned int dsp_on_off,
                                 unsigned int gen, unsigned int dac,
-                                unsigned int test, unsigned char clock_cntl,
+                                unsigned int test, unsigned int mem_cntl,
+                                unsigned char clock_cntl,
+                                unsigned char pll_gen,
                                 unsigned char vclk, unsigned char post,
                                 unsigned char xclk, unsigned char fb_div,
                                 unsigned char fb_clk_idx) {
@@ -354,22 +395,31 @@ static void mach64_restore_mode(const unsigned int crtc[5],
     mach64_write32(MACH64_CRTC_H_SYNC_STRT_WID, crtc[1]);
     mach64_write32(MACH64_CRTC_V_TOTAL_DISP, crtc[2]);
     mach64_write32(MACH64_CRTC_V_SYNC_STRT_WID, crtc[3]);
-    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
     mach64_write32(MACH64_CRTC_OFF_PITCH, crtc[4]);
-    if (dsp_config || dsp_on_off) {
-        mach64_write32(MACH64_DSP_ON_OFF, dsp_on_off);
-        mach64_write32(MACH64_DSP_CONFIG, dsp_config);
-    }
+    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
+    mach64_write8(MACH64_CLOCK_CNTL,
+                  (unsigned char)((clock_cntl & 0x0FU) | MACH64_CLOCK_STROBE));
     mach64_pll_write(MACH64_PLL_VCLK_CNTL,
                      (unsigned char)(vclk | MACH64_PLL_VCLK_RESET));
     mach64_pll_write(MACH64_PLL_VCLK_POST_DIV, post);
     mach64_pll_write(MACH64_PLL_XCLK_CNTL, xclk);
     mach64_pll_write((unsigned char)(MACH64_PLL_VCLK_FB_DIV0 +
                                      (fb_clk_idx & 0x03U)), fb_div);
+    mach64_pll_write(MACH64_PLL_GEN_CNTL,
+                     (unsigned char)((pll_gen & ~(0x01U | 0x02U)) | 0x04U));
     mach64_pll_write(MACH64_PLL_VCLK_CNTL,
                      (unsigned char)(vclk & ~MACH64_PLL_VCLK_RESET));
-    mach64_write8(MACH64_CLOCK_CNTL,
-                  (unsigned char)((clock_cntl & 0x0FU) | MACH64_CLOCK_STROBE));
+    g_kapi->sleep_ms(5);
+    mach64_pll_write(MACH64_PLL_GEN_CNTL, pll_gen);
+    mach64_pll_write(MACH64_PLL_VCLK_CNTL, vclk);
+    g_kapi->sleep_ms(1);
+    if (dsp_config || dsp_on_off) {
+        mach64_pulse_dll_dsp(dsp_config, dsp_on_off);
+    }
+    if (mem_cntl && mem_cntl != 0xFFFFFFFFU) {
+        mach64_write32(MACH64_MEM_CNTL, mem_cntl);
+    }
+    mach64_write8(MACH64_DAC_MASK, 0xFFU);
     mach64_write32(MACH64_GEN_TEST_CNTL, test | MACH64_GEN_GUI_EN);
     mach64_write32(MACH64_DAC_CNTL, dac);
     mach64_write32(MACH64_CRTC_GEN_CNTL, gen);
@@ -377,141 +427,185 @@ static void mach64_restore_mode(const unsigned int crtc[5],
 
 /*
  * Calculate Mach64 VT/GT/GT-B Display FIFO watermarks (DSP_CONFIG & DSP_ON_OFF)
- * following the Linux kernel atyfb driver (drivers/video/fbdev/aty/mach64_ct.c).
- * Without programming DSP_CONFIG/DSP_ON_OFF on 3D Rage II+DVD (Mach64 GT-B),
- * the 32-qword (256-byte = 128-pixel at 16bpp) internal display FIFO drains
- * and wraps 8 times across a 1024-pixel scanline.
+ * using the exact algorithm from Linux drivers/video/fbdev/aty/mach64_ct.c
+ * (aty_init_pll_ct + aty_dsp_gt).
  */
 static int mach64_calc_dsp_gt(unsigned char ref_div,
                               unsigned int vclk_fb_div,
-                              unsigned int vclk_post_div,
+                              unsigned int vclk_post_div_real,
                               int bpp,
                               unsigned int* out_dsp_config,
                               unsigned int* out_dsp_on_off) {
-    static const unsigned int k_xclk_post_div[8] = { 1, 2, 4, 8, 3, 1, 3, 12 };
     unsigned char mclk_fb_div = mach64_pll_read(MACH64_PLL_MCLK_FB_DIV);
     unsigned char pll_ext_cntl = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
-    unsigned int mem_cntl = mach64_read32(MACH64_MEM_CNTL);
+    unsigned int memcntl = mach64_read32(MACH64_MEM_CNTL);
+    unsigned int ram_type = mach64_read32(MACH64_CNFG_STAT0) & 0x07U;
     if (ref_div == 0 || mclk_fb_div == 0 || mclk_fb_div == 0xFFU ||
-        vclk_fb_div == 0 || vclk_post_div == 0 || bpp <= 0) {
+        vclk_fb_div == 0 || vclk_post_div_real == 0 || bpp < 8) {
         return 0;
     }
 
-    unsigned int mclk_fb_mult = (pll_ext_cntl & 0x04U) ? 4U : 2U;
-    unsigned int xclk_post_div = k_xclk_post_div[pll_ext_cntl & 0x07U];
-    if (xclk_post_div == 0) xclk_post_div = 1U;
-
-    unsigned int mem_type = (mem_cntl >> 16) & 0x07U;
-    unsigned int trcd = ((mem_cntl >> 10) & 0x03U) + 1U;
-    unsigned int trp = ((mem_cntl >> 8) & 0x03U) + 1U;
-    unsigned int tras = ((mem_cntl >> 12) & 0x07U) + 1U;
-
-    unsigned int fifo_depth = 32U;
-    unsigned int default_loop_latency = 10U;
-    unsigned int xras = (tras + 3U) * 2U;
-    unsigned int rloop = ((11U + 3U + xras) / 2U + 1U) & ~1U;
-
-    if (g_ati_device_id == PCI_DEVICE_ATI_RAGE_GT ||
-        g_ati_device_id == PCI_DEVICE_ATI_MACH64_VT) {
-        fifo_depth = 24U;
-        rloop = 12U;
-        default_loop_latency = 10U;
-    } else if (mem_type >= 5U) {
-        /* SDRAM / SGRAM */
-        if (mem_type == 6U) {
-            xras = tras + 1U;
-        } else {
-            xras = trcd + ((mem_cntl & (1U << 18)) ? 2U : 1U);
-        }
-        rloop = (11U + 2U + xras + trp + 1U) & ~1U;
-        default_loop_latency = (g_ati_vram_bytes <= 1024U * 1024U) ? 9U : 8U;
+    int xclk_post_div = (int)(pll_ext_cntl & 0x07U);
+    unsigned int xclk_ref_div = 1U;
+    switch (xclk_post_div) {
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+            break;
+        case 4:
+            xclk_ref_div = 3U;
+            xclk_post_div = 0;
+            break;
+        default:
+            xclk_post_div = 0;
+            break;
+    }
+    /* PLL_MFB_TIMES_4_2B is bit 3 (0x08) of PLL_EXT_CNTL */
+    if (pll_ext_cntl & 0x08U) {
+        xclk_post_div -= 1;
     }
 
-    unsigned int dsp_loop_latency = default_loop_latency;
-    if (g_boot_dsp_config & 0x000F0000U) {
+    unsigned int trp = (memcntl & 0x0300U) >> 8;
+    unsigned int xclkpagefaultdelay =
+        ((memcntl & 0x0C00U) >> 10) + ((memcntl & 0x1000U) >> 12) + trp + 2U;
+    unsigned int xclkmaxrasdelay =
+        ((memcntl & 0x070000U) >> 16) + trp + 2U;
+
+    /*
+     * Determine FIFO depth (24 vs 32 qwords). On Mach64 VT / GT / GT-B
+     * (including 3D Rage II+DVD 1002:4755), we can also verify the exact FIFO
+     * depth from the VBIOS boot DSP_ON_OFF / DSP_CONFIG watermarks:
+     * (boot_dsp_off * 32) / boot_dsp_xclks == fifo_size - 1.
+     */
+    unsigned int fifo_size = 24U;
+    if (g_ati_device_id == PCI_DEVICE_ATI_RAGE_PRO_PCI ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_PRO_TRB ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_PRO_AGP ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_XL ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_XL_PCI ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_IIC_PCI ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_IIC_AGP ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_IIC_B ||
+        g_ati_device_id == PCI_DEVICE_ATI_RAGE_IIC_C) {
+        fifo_size = 32U;
+    }
+    unsigned int boot_xclks = g_boot_dsp_config & 0x3FFFU;
+    unsigned int boot_off = g_boot_dsp_on_off & 0x7FFU;
+    if (boot_xclks > 0 && boot_off > 0) {
+        unsigned int est_fifo =
+            ((boot_off << 5) + (boot_xclks >> 1)) / boot_xclks + 1U;
+        fifo_size = (est_fifo >= 28U) ? 32U : 24U;
+    }
+
+    if (fifo_size == 24U) {
+        xclkpagefaultdelay += 2U;
+        xclkmaxrasdelay += 3U;
+    }
+
+    unsigned int dsp_loop_latency = 10U;
+    switch (ram_type) {
+        case 1U: /* DRAM */
+            if (g_ati_vram_bytes <= 1024U * 1024U) {
+                dsp_loop_latency = 10U;
+            } else {
+                dsp_loop_latency = 8U;
+                xclkpagefaultdelay += 2U;
+            }
+            break;
+        case 2U: /* EDO */
+        case 3U: /* PSEUDO_EDO */
+            if (g_ati_vram_bytes <= 1024U * 1024U) {
+                dsp_loop_latency = 9U;
+            } else {
+                dsp_loop_latency = 8U;
+                xclkpagefaultdelay += 1U;
+            }
+            break;
+        case 4U: /* SDRAM */
+            if (g_ati_vram_bytes <= 1024U * 1024U) {
+                dsp_loop_latency = 11U;
+            } else {
+                dsp_loop_latency = 10U;
+                xclkpagefaultdelay += 1U;
+            }
+            break;
+        case 5U: /* SGRAM */
+            dsp_loop_latency = 8U;
+            xclkpagefaultdelay += 3U;
+            break;
+        default:
+            dsp_loop_latency = 11U;
+            xclkpagefaultdelay += 3U;
+            break;
+    }
+
+    if (xclkmaxrasdelay <= xclkpagefaultdelay) {
+        xclkmaxrasdelay = xclkpagefaultdelay + 1U;
+    }
+    if (g_boot_dsp_config) {
         dsp_loop_latency = (g_boot_dsp_config >> 16) & 0x0FU;
     }
 
-    unsigned int m = (unsigned int)mclk_fb_div * mclk_fb_mult * vclk_post_div * 16U;
-    unsigned int n = 2U * xclk_post_div * vclk_fb_div * (unsigned int)bpp;
-    if (m == 0 || n == 0) return 0;
+    uint32_t multiplier = (uint32_t)mclk_fb_div * vclk_post_div_real;
+    uint32_t divider = (uint32_t)vclk_fb_div * xclk_ref_div * ((uint32_t)bpp >> 2);
+    int vshift = (6 - 2) - xclk_post_div;
+    if (vshift < 0) vshift = 0;
 
-    const unsigned int s_shift = 5U;
-    uint32_t multiplier = (uint32_t)(((uint64_t)n << s_shift) / (uint64_t)m);
-    uint32_t divider = (uint32_t)(((uint64_t)m << 2) / (uint64_t)n);
-    if (multiplier == 0) multiplier = 1U;
-    if (divider == 0) divider = 1U;
-
-    uint32_t ras_multiplier = (xras << s_shift) / xclk_post_div;
-    uint32_t ras_divider = (xclk_post_div << 2) / (xras ? xras : 1U);
-    if (ras_divider == 0) ras_divider = 1U;
-
-    uint32_t t_page = trp * 2U;
-    uint32_t c_overhead = (g_ati_vram_bytes > 4U * 1024U * 1024U) ? 2U : 1U;
-
-    uint32_t max_off = 0;
-    unsigned int dsp_precision = 0;
-    for (dsp_precision = 0; dsp_precision < 8U; dsp_precision++) {
-        uint32_t p_shift = dsp_precision + s_shift;
-        max_off = (((fifo_depth - 1U) << p_shift) - ((uint32_t)1U << (p_shift - 2U))) /
-                  multiplier;
-        if (max_off > (1U << (11U - 1U))) {
-            break;
-        }
+    while (((multiplier | divider) & 1U) == 0U &&
+           multiplier > 0U && divider > 0U) {
+        multiplier >>= 1;
+        divider >>= 1;
     }
-    if (dsp_precision == 0) dsp_precision = 1U;
-    dsp_precision--;
+    if (multiplier == 0U || divider == 0U) return 0;
 
-    uint32_t p_shift = dsp_precision + s_shift;
-    uint32_t dsp_off = (((fifo_depth - 1U) << p_shift) / multiplier) -
-                       ((1U << (p_shift - 2U)) / multiplier);
-
-    uint32_t dsp_on = 0;
-    if (dsp_precision < 5U) {
-        uint32_t shift = 5U - dsp_precision;
-        uint32_t tmp_on = ((((rloop + c_overhead) >> shift) + 1U) << 2) / divider;
-        uint32_t tmp_off = ((dsp_off >> shift) << 2) / divider -
-                           ((t_page + c_overhead) >> shift);
-        while (tmp_on < tmp_off) {
-            if (ras_multiplier > (1U << p_shift)) {
-                tmp_on += (((ras_multiplier >> p_shift) + 1U) << 2) / divider;
-                tmp_off -= (xras >> shift);
-            } else {
-                tmp_on += ((1U << 2) / divider) + 1U;
-                tmp_off -= ((ras_divider >> 2) >> shift);
-            }
-        }
-        dsp_on = ((tmp_on - tmp_off) << shift) +
-                 (ras_multiplier >> s_shift) +
-                 ((((t_page + (1U << (shift - 1U))) >> shift) << p_shift) / multiplier);
-    } else {
-        uint32_t shift = dsp_precision - 5U;
-        uint32_t tmp_on = (((rloop + c_overhead) << shift) << 2) / divider;
-        uint32_t tmp_off = ((dsp_off << 2) / divider) -
-                           ((t_page + c_overhead) << shift);
-        while (tmp_on < tmp_off) {
-            if (ras_multiplier > (1U << p_shift)) {
-                tmp_on += (((ras_multiplier >> p_shift) + 1U) << 2) / divider;
-                tmp_off -= (xras << shift);
-            } else {
-                tmp_on += ((1U << 2) / divider) + 1U;
-                tmp_off -= ((ras_divider << shift) >> 2);
-            }
-        }
-        dsp_on = ((tmp_on - tmp_off) >> shift) +
-                 (ras_multiplier >> s_shift) +
-                 (((t_page << p_shift) + (multiplier >> 1)) / multiplier);
+    /* Determine DSP precision first (aty_dsp_gt lines 163-173) */
+    uint32_t tmp = ((multiplier * fifo_size) << (unsigned int)vshift) / divider;
+    int dsp_precision = -5;
+    for (; tmp != 0U; dsp_precision++) {
+        tmp >>= 1;
+    }
+    if (dsp_precision < 0) {
+        dsp_precision = 0;
+    } else if (dsp_precision > 7) {
+        dsp_precision = 7;
     }
 
-    uint32_t dsp_xclks = ((1U << (p_shift + 5U)) + (multiplier >> 1)) / multiplier;
+    unsigned int xshift = (unsigned int)(6 - dsp_precision);
+    unsigned int uvshift = (unsigned int)vshift + xshift;
+
+    /* Move on to dsp_off (aty_dsp_gt lines 176-177) */
+    uint32_t dsp_off =
+        ((multiplier * (fifo_size - 1U)) << uvshift) / divider -
+        (1U << (uvshift - xshift));
+
+    /* Calculate dsp_on (aty_dsp_gt lines 183-197) */
+    uint32_t dsp_on = ((multiplier << uvshift) + divider) / divider;
+    tmp = (xclkmaxrasdelay << xshift) + 1U;
+    if (dsp_on < tmp) {
+        dsp_on = tmp;
+    }
+    dsp_on = dsp_on + (tmp * 2U) + (xclkpagefaultdelay << xshift);
+
+    /* Calculate rounding factor and apply it to dsp_on */
+    tmp = ((1U << (unsigned int)(7 - dsp_precision)) - 1U) >> 1;
+    dsp_on = ((dsp_on + tmp) / (tmp + 1U)) * (tmp + 1U);
+    if (dsp_on >= ((dsp_off / (tmp + 1U)) * (tmp + 1U))) {
+        dsp_on = dsp_off - (multiplier << uvshift) / divider;
+        dsp_on = (dsp_on / (tmp + 1U)) * (tmp + 1U);
+    }
+
+    /* Last but not least: dsp_xclks (aty_dsp_gt line 200) */
+    uint32_t dsp_xclks =
+        ((multiplier << (uvshift + 5U)) + divider) / divider;
     if (dsp_off > 0x7FFU) dsp_off = 0x7FFU;
     if (dsp_on > 0x7FFU) dsp_on = 0x7FFU;
     if (dsp_xclks > 0x3FFFU) dsp_xclks = 0x3FFFU;
 
-    *out_dsp_config = (dsp_xclks & 0x3FFFU) |
+    *out_dsp_on_off = ((dsp_on & 0x7FFU) << 16) | (dsp_off & 0x7FFU);
+    *out_dsp_config = (((uint32_t)dsp_precision & 0x07U) << 20) |
                       ((dsp_loop_latency & 0x0FU) << 16) |
-                      ((dsp_precision & 0x07U) << 20);
-    *out_dsp_on_off = (dsp_off & 0x7FFU) | ((dsp_on & 0x7FFU) << 16);
+                      (dsp_xclks & 0x3FFFU);
     return 1;
 }
 
@@ -692,10 +786,14 @@ static int ati_mach64_probe_hw(void) {
             g_boot_gen = mach64_read32(MACH64_CRTC_GEN_CNTL);
             g_boot_dac = mach64_read32(MACH64_DAC_CNTL);
             g_boot_test = mach64_read32(MACH64_GEN_TEST_CNTL);
+            g_boot_mem_cntl = mach64_read32(MACH64_MEM_CNTL);
             g_boot_clock_cntl = mach64_read8(MACH64_CLOCK_CNTL);
+            g_boot_pll_gen = mach64_pll_read(MACH64_PLL_GEN_CNTL);
             g_boot_vclk = mach64_pll_read(MACH64_PLL_VCLK_CNTL);
             g_boot_post = mach64_pll_read(MACH64_PLL_VCLK_POST_DIV);
             g_boot_xclk = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
+            g_boot_dll_cntl = mach64_pll_read(MACH64_PLL_DLL_CNTL);
+            g_boot_vfc_cntl = mach64_pll_read(MACH64_PLL_VFC_CNTL);
             unsigned char boot_clk_idx = (unsigned char)(g_boot_clock_cntl & 0x03U);
             g_boot_fb = mach64_pll_read(
                 (unsigned char)(MACH64_PLL_VCLK_FB_DIV0 + boot_clk_idx));
@@ -854,7 +952,8 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         if (!mapped) return 0;
         mach64_restore_mode(g_boot_crtc, g_boot_dsp_config, g_boot_dsp_on_off,
                             g_boot_gen, g_boot_dac, g_boot_test,
-                            g_boot_clock_cntl, g_boot_vclk, g_boot_post,
+                            g_boot_mem_cntl, g_boot_clock_cntl,
+                            g_boot_pll_gen, g_boot_vclk, g_boot_post,
                             g_boot_xclk, g_boot_fb,
                             (unsigned char)(g_boot_clock_cntl & 0x03U));
         pdv_fb_surface_t new_surface = surface;
@@ -890,7 +989,9 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     unsigned int saved_gen = mach64_read32(MACH64_CRTC_GEN_CNTL);
     unsigned int saved_dac = mach64_read32(MACH64_DAC_CNTL);
     unsigned int saved_test = mach64_read32(MACH64_GEN_TEST_CNTL);
+    unsigned int saved_mem_cntl = mach64_read32(MACH64_MEM_CNTL);
     unsigned char saved_clock_cntl = mach64_read8(MACH64_CLOCK_CNTL);
+    unsigned char saved_pll_gen = mach64_pll_read(MACH64_PLL_GEN_CNTL);
     unsigned char saved_vclk = mach64_pll_read(MACH64_PLL_VCLK_CNTL);
     unsigned char saved_post = mach64_pll_read(MACH64_PLL_VCLK_POST_DIV);
     unsigned char saved_xclk = mach64_pll_read(MACH64_PLL_XCLK_CNTL);
@@ -996,22 +1097,30 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
            --timeout) {
     }
 
-    /* Disable CRTC before reprogramming timings, pitch, DSP and VPLL */
+    /*
+     * Program CRTC and PLL following Linux atyfb_set_par / aty_set_crtc /
+     * aty_set_pll_ct (drivers/video/fbdev/aty/atyfb_base.c & mach64_ct.c).
+     */
     mach64_write32(MACH64_CRTC_GEN_CNTL, new_gen & ~MACH64_CRTC_EN);
     mach64_write32(MACH64_CRTC_H_TOTAL_DISP, h_total_disp);
     mach64_write32(MACH64_CRTC_H_SYNC_STRT_WID, h_sync);
     mach64_write32(MACH64_CRTC_V_TOTAL_DISP, v_total_disp);
     mach64_write32(MACH64_CRTC_V_SYNC_STRT_WID, v_sync);
-    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
     mach64_write32(MACH64_CRTC_OFF_PITCH, off_pitch);
+    mach64_write32(MACH64_CRTC_VLINE_CRNT_VLINE, 0U);
+    mach64_write32(MACH64_CRTC_GEN_CNTL, new_gen);
+
+    /* Select VCLK3 with CLOCK_STROBE (0x43) via 8-bit write */
+    mach64_write8(MACH64_CLOCK_CNTL,
+                  (unsigned char)(MACH64_PLL_VCLK_CLOCK | MACH64_CLOCK_STROBE));
 
     unsigned char post_value = saved_post;
     unsigned int shift = MACH64_PLL_VCLK_CLOCK * 2U;
     post_value = (unsigned char)((post_value & ~(0x03U << shift)) |
                                  ((best_post & 0x03U) << shift));
+    unsigned char vclk_cntl_val = (unsigned char)((saved_vclk & ~0x30U) | 0x03U);
     mach64_pll_write(MACH64_PLL_VCLK_CNTL,
-                     (unsigned char)(saved_vclk | 0x03U |
-                                     MACH64_PLL_VCLK_RESET));
+                     (unsigned char)(vclk_cntl_val | MACH64_PLL_VCLK_RESET));
     mach64_pll_write(MACH64_PLL_VCLK_POST_DIV, post_value);
     unsigned char xclk = saved_xclk;
     unsigned int xbit = 0x10U << MACH64_PLL_VCLK_CLOCK;
@@ -1021,20 +1130,30 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     mach64_pll_write((unsigned char)(MACH64_PLL_VCLK_FB_DIV0 +
                                      MACH64_PLL_VCLK_CLOCK),
                      (unsigned char)best_n);
+    mach64_pll_write(MACH64_PLL_GEN_CNTL,
+                     (unsigned char)((saved_pll_gen & ~(0x01U | 0x02U)) | 0x04U));
     mach64_pll_write(MACH64_PLL_VCLK_CNTL,
-                     (unsigned char)((saved_vclk | 0x03U) &
-                                     ~MACH64_PLL_VCLK_RESET));
+                     (unsigned char)(vclk_cntl_val & ~MACH64_PLL_VCLK_RESET));
     g_kapi->sleep_ms(5);
+    mach64_pll_write(MACH64_PLL_GEN_CNTL, saved_pll_gen);
+    mach64_pll_write(MACH64_PLL_VCLK_CNTL, vclk_cntl_val);
+    g_kapi->sleep_ms(1);
 
-    /* Select VCLK3 with CLOCK_STROBE (0x43) via 8-bit write (do NOT set CLOCK_DIV bits 5:4!) */
-    mach64_write8(MACH64_CLOCK_CNTL,
-                  (unsigned char)(MACH64_PLL_VCLK_CLOCK | MACH64_CLOCK_STROBE));
     if (dsp_config || dsp_on_off) {
-        mach64_write32(MACH64_DSP_ON_OFF, dsp_on_off);
-        mach64_write32(MACH64_DSP_CONFIG, dsp_config);
+        mach64_pulse_dll_dsp(dsp_config, dsp_on_off);
     }
-    mach64_write32(MACH64_GEN_TEST_CNTL, saved_test | MACH64_GEN_GUI_EN);
-    mach64_write32(MACH64_GEN_TEST_CNTL, saved_test);
+
+    /* Update MEM_CNTL aperture pixel depth bits 27:26 (atyfb_set_par lines 178-208) */
+    if (saved_mem_cntl != 0xFFFFFFFFU) {
+        unsigned int new_mem_cntl = saved_mem_cntl & 0xF3FFFFFFU;
+        if (bpp == 16) {
+            new_mem_cntl |= 0x04000000U;
+        } else if (bpp == 32) {
+            new_mem_cntl |= 0x08000000U;
+        }
+        mach64_write32(MACH64_MEM_CNTL, new_mem_cntl);
+    }
+    mach64_write8(MACH64_DAC_MASK, 0xFFU);
     mach64_write32(MACH64_GEN_TEST_CNTL, saved_test | MACH64_GEN_GUI_EN);
     mach64_write32(MACH64_DAC_CNTL, new_dac);
     mach64_write32(MACH64_CRTC_GEN_CNTL, new_gen);
@@ -1049,7 +1168,8 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     if (h_verify != h_total_disp || v_verify != v_total_disp) {
         mach64_restore_mode(saved_crtc, saved_dsp_config, saved_dsp_on_off,
                             saved_gen, saved_dac, saved_test,
-                            saved_clock_cntl, saved_vclk, saved_post,
+                            saved_mem_cntl, saved_clock_cntl,
+                            saved_pll_gen, saved_vclk, saved_post,
                             saved_xclk, saved_fb, MACH64_PLL_VCLK_CLOCK);
         return 0;
     }
@@ -1060,7 +1180,8 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     if (!mapped) {
         mach64_restore_mode(saved_crtc, saved_dsp_config, saved_dsp_on_off,
                             saved_gen, saved_dac, saved_test,
-                            saved_clock_cntl, saved_vclk, saved_post,
+                            saved_mem_cntl, saved_clock_cntl,
+                            saved_pll_gen, saved_vclk, saved_post,
                             saved_xclk, saved_fb, MACH64_PLL_VCLK_CLOCK);
         return 0;
     }
