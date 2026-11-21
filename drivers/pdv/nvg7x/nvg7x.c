@@ -56,6 +56,14 @@ static int g_cur_h = 768;
 static int g_cur_bpp = 16;
 static int g_cur_pitch = 2048;
 static int g_head;
+static uint32_t g_crystal_khz = 13500U;
+static uint32_t g_vpll_ref_khz = 54000U;
+static uint32_t g_boot_vco_khz = 320000U;
+static uint32_t g_boot_vpll;
+static uint32_t g_boot_vpllb;
+static uint32_t g_boot_vpll2b;
+static uint32_t g_boot_0580;
+static int g_has_boot_vpll;
 static volatile unsigned char* g_regs;
 static pdv_display_mode_t g_nv_modes[NV_MAX_MODES];
 static int g_nv_mode_count;
@@ -476,27 +484,38 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
     nvidia_disable_attribute_palette();
 }
 
-static int nvidia_calc_vpll(uint32_t target_khz, uint32_t crystal_khz,
+static int nvidia_calc_vpll(uint32_t target_khz, uint32_t ref_khz,
                             uint32_t* out_pll) {
-    if (!target_khz || !crystal_khz || !out_pll || target_khz > 400000U) {
+    if (!target_khz || !ref_khz || !out_pll || target_khz > 400000U) {
         return 0;
     }
+    uint32_t boot_m = g_has_boot_vpll ? (g_boot_vpll & 0xFFU) : 0U;
+    uint32_t boot_hi = g_has_boot_vpll ? (g_boot_vpll & 0xFFF80000U) : 0U;
+    uint64_t vco_min = 128000ULL;
+    uint64_t vco_max = 1000000ULL;
+    if (g_has_boot_vpll && g_boot_vco_khz >= 100000U) {
+        uint64_t low = (uint64_t)g_boot_vco_khz / 2ULL;
+        uint64_t high = (uint64_t)g_boot_vco_khz * 2ULL;
+        if (low >= 100000ULL && low < 400000ULL) vco_min = low;
+        if (high >= 350000ULL && high <= 1200000ULL) vco_max = high;
+    }
+    uint32_t max_m = (boot_m > 14U && boot_m <= 32U) ? boot_m : 14U;
     uint32_t best_error = 0xFFFFFFFFU;
     for (unsigned int p = 0; p <= 6; p++) {
         uint64_t scaled = (uint64_t)target_khz << p;
-        if (scaled < 400000ULL || scaled > 1000000ULL) continue;
-        for (unsigned int m = 1; m <= 13; m++) {
-            uint64_t n64 = (scaled * m + (crystal_khz * 2ULL)) /
-                           ((uint64_t)crystal_khz * 4ULL);
+        if (scaled < vco_min || scaled > vco_max) continue;
+        for (unsigned int m = 1; m <= max_m; m++) {
+            uint64_t n64 = (scaled * m + (ref_khz / 2ULL)) /
+                           (uint64_t)ref_khz;
             if (n64 < 5ULL || n64 > 255ULL) continue;
             unsigned int n = (unsigned int)n64;
-            uint32_t actual = (uint32_t)((((uint64_t)crystal_khz * 4ULL) *
-                                          n / m) >> p);
+            uint32_t actual = (uint32_t)((((uint64_t)ref_khz * n) / m) >> p);
             uint32_t error = actual > target_khz
                 ? actual - target_khz : target_khz - actual;
-            if (error < best_error) {
+            if (error < best_error ||
+                (error == best_error && m == boot_m)) {
                 best_error = error;
-                *out_pll = (p << 16) | (n << 8) | m;
+                *out_pll = boot_hi | (p << 16) | (n << 8) | m;
             }
         }
     }
@@ -533,14 +552,22 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
                                             (size_t)frame_bytes);
     if (!mapped) return 0;
 
-    uint32_t crystal_khz =
-        (pdv_mmio_read32(g_regs + 0x00101000U) & 0x40U) ? 14318U : 13500U;
+    uint32_t boot0 = pdv_mmio_read32(g_regs + 0x00101000U);
+    uint32_t crystal_khz = (boot0 & 0x40U) ? 14318U : 13500U;
+    if (boot0 & (1U << 22)) {
+        crystal_khz = 27000U;
+    }
+    if (g_crystal_khz == 13500U || g_crystal_khz == 14318U ||
+        g_crystal_khz == 27000U) {
+        crystal_khz = g_crystal_khz;
+    }
+    uint32_t ref_khz = g_has_boot_vpll ? g_vpll_ref_khz : (crystal_khz * 4U);
     uint32_t vpll;
-    if (!nvidia_calc_vpll(timing.pixel_clock_khz, crystal_khz, &vpll)) {
+    if (!nvidia_calc_vpll(timing.pixel_clock_khz, ref_khz, &vpll)) {
         return 0;
     }
-    klog_info("[NV  ] modeset %dx%dx%d pclk=%ukHz h=%u/%u/%u/%u v=%u/%u/%u/%u vpll=0x%08x",
-              w, h, bpp, timing.pixel_clock_khz,
+    klog_info("[NV  ] modeset %dx%dx%d pclk=%ukHz xtal=%ukHz ref=%ukHz h=%u/%u/%u/%u v=%u/%u/%u/%u vpll=0x%08x",
+              w, h, bpp, timing.pixel_clock_khz, crystal_khz, ref_khz,
               timing.h_display, timing.h_sync_start, timing.h_sync_end,
               timing.h_total, timing.v_display, timing.v_sync_start,
               timing.v_sync_end, timing.v_total, vpll);
@@ -682,13 +709,26 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     nvidia_ramdac_write(0x00000404U, dac_control);
     nvidia_ramdac_write(0x00000608U,
         nvidia_ramdac_read(0x00000608U) | (1U << 20));
-    nvidia_ramdac0_write(NV_RAMDAC_PLL_SEL_REG, 0x10000700U);
-    nvidia_ramdac0_write(0x00000580U,
-        nvidia_ramdac0_read(0x00000580U) & 0xEFFFFEFFU);
-    nvidia_ramdac0_write(0x00000508U, vpll);
-    nvidia_ramdac0_write(0x00000520U, vpll);
-    nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, 0x80000401U);
-    nvidia_ramdac0_write(0x0000057CU, 0x80000401U);
+    unsigned int pll_sel = nvidia_ramdac0_read(NV_RAMDAC_PLL_SEL_REG);
+    if (pll_sel == 0xFFFFFFFFU || pll_sel == 0U) {
+        pll_sel = 0x10000700U;
+    }
+    pll_sel |= 0x10000700U | (g_head ? 0x20000000U : 0U);
+    nvidia_ramdac0_write(NV_RAMDAC_PLL_SEL_REG, pll_sel);
+    if (g_has_boot_vpll) {
+        nvidia_ramdac0_write(0x00000580U, g_boot_0580);
+        nvidia_ramdac0_write(0x00000508U, vpll);
+        nvidia_ramdac0_write(0x00000520U, vpll);
+        nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, g_boot_vpllb);
+        nvidia_ramdac0_write(0x0000057CU, g_boot_vpll2b);
+    } else {
+        nvidia_ramdac0_write(0x00000580U,
+            nvidia_ramdac0_read(0x00000580U) & 0xEFFFFEFFU);
+        nvidia_ramdac0_write(0x00000508U, vpll);
+        nvidia_ramdac0_write(0x00000520U, vpll);
+        nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, 0x80000401U);
+        nvidia_ramdac0_write(0x0000057CU, 0x80000401U);
+    }
     unsigned int general = bpp == 16 ? 0x00101100U : 0x00100100U;
     nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, general | 0x30U);
     nvidia_write_graphics(0, 0x00U);
@@ -892,9 +932,48 @@ static int nvidia_g7x_probe(void) {
             nv_vga_write(0x1F, 0x57U);
             unsigned char cr28 = nv_vga_read(0x28);
             unsigned char cr33 = nv_vga_read(0x33);
-            klog_info("[NV  ] output CRTC head=%d slaved=%d tv=%d",
+            uint32_t boot0 = pdv_mmio_read32(g_regs + 0x00101000U);
+            g_crystal_khz = (boot0 & 0x40U) ? 14318U : 13500U;
+            if (boot0 & (1U << 22)) {
+                g_crystal_khz = 27000U;
+            }
+            uint32_t boot_vpll =
+                nvidia_ramdac0_read(g_head ? 0x0520U : 0x0508U);
+            uint32_t boot_vpllb = nvidia_ramdac0_read(0x0578U);
+            uint32_t boot_vpll2b = nvidia_ramdac0_read(0x057CU);
+            uint32_t boot_pllsel =
+                nvidia_ramdac0_read(NV_RAMDAC_PLL_SEL_REG);
+            uint32_t boot_0580 = nvidia_ramdac0_read(0x0580U);
+            g_has_boot_vpll = 0;
+            g_vpll_ref_khz = g_crystal_khz * 4U;
+            int bw = (surf.width >= PDV_DISPLAY_MIN_WIDTH) ? (int)surf.width : sw;
+            int bh = (surf.height >= PDV_DISPLAY_MIN_HEIGHT) ? (int)surf.height : sh;
+            pdv_display_timing_t boot_timing;
+            uint32_t bm = boot_vpll & 0xFFU;
+            uint32_t bn = (boot_vpll >> 8) & 0xFFU;
+            uint32_t bp = (boot_vpll >> 16) & 0x07U;
+            if (bm >= 1U && bm <= 32U && bn >= 4U &&
+                g_kapi->display_get_mode_timing &&
+                g_kapi->display_get_mode_timing(bw, bh, &boot_timing) &&
+                boot_timing.pixel_clock_khz >= 20000U) {
+                uint64_t bvco = (uint64_t)boot_timing.pixel_clock_khz << bp;
+                uint32_t bref = (uint32_t)((bvco * bm + (bn / 2U)) / bn);
+                if (bref >= 12000U && bref <= 250000U) {
+                    g_boot_vpll = boot_vpll;
+                    g_boot_vpllb = boot_vpllb;
+                    g_boot_vpll2b = boot_vpll2b;
+                    g_boot_0580 = boot_0580;
+                    g_boot_vco_khz = (uint32_t)bvco;
+                    g_vpll_ref_khz = bref;
+                    g_has_boot_vpll = 1;
+                }
+            }
+            klog_info("[NV  ] output CRTC head=%d slaved=%d tv=%d straps=0x%08x xtal=%ukHz ref=%ukHz vpll=0x%08x vpllb=0x%08x pllsel=0x%08x ctrl=0x%08x",
                       g_head, (cr28 & 0x80U) ? 1 : 0,
-                      (cr28 & 0x80U) && !(cr33 & 0x01U) ? 1 : 0);
+                      (cr28 & 0x80U) && !(cr33 & 0x01U) ? 1 : 0,
+                      boot0, g_crystal_khz, g_vpll_ref_khz, boot_vpll,
+                      g_head ? boot_vpll2b : boot_vpllb,
+                      boot_pllsel, boot_0580);
         }
 
         unsigned int hw_vram = nvidia_probe_hw_vram(g_bar0);

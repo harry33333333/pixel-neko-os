@@ -434,7 +434,9 @@ static int pxe_display_mode_request(int width, int height, int bpp,
                 return -NEKO_EINVAL;
             }
         }
-        settings_set_resolution(width, height, bpp);
+        if (commit) {
+            settings_set_resolution(width, height, bpp);
+        }
         wm_request_desktop_redraw();
         return 0;
     }
