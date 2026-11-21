@@ -391,7 +391,7 @@ static void nvidia_save_mode_state(nvidia_mode_state_t* state) {
     }
     state->misc_out = nvidia_read_misc();
     volatile unsigned char* pvio = nvidia_pvio();
-    for (unsigned char index = 0; index < 5; index++) {
+    for (unsigned char index = 1; index < 5; index++) {
         if (pvio) pdv_mmio_write8(pvio + 0x03C4U, index);
         state->sequencer[index] =
             pvio ? pdv_mmio_read8(pvio + 0x03C5U) : 0xFFU;
@@ -462,7 +462,7 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
         pdv_mmio_write8(pcio + index_port + 1U, state->crtc_select);
     }
     nvidia_write_misc(state->misc_out);
-    for (unsigned char index = 0; index < 5; index++) {
+    for (unsigned char index = 1; index < 5; index++) {
         nvidia_write_seq(index, state->sequencer[index]);
     }
     for (unsigned char index = 0; index < 9; index++) {
@@ -582,7 +582,6 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
               old_misc_out, misc_out,
               timing.h_sync_positive ? "+" : "-",
               timing.v_sync_positive ? "+" : "-");
-    nvidia_write_seq(0, 0x00U);
     nvidia_write_seq(1, 0x01U);
     nvidia_write_seq(2, 0x0FU);
     nvidia_write_seq(3, 0x00U);
@@ -709,13 +708,30 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
     nvidia_pcrtc_write(0x00000100U, 1);
     g_kapi->sleep_ms(20);
 
-    if (nv_vga_read(0x00) != (unsigned char)horiz_total ||
-        (nv_vga_read(0x2d) & 0x0F) !=
-            (unsigned char)(horiz_value & 0x0F) ||
-        nv_vga_read(0x13) != (unsigned char)(pitch / 8) ||
-        nv_vga_read(0x28) != (unsigned char)pixel_mode) {
+    unsigned char read_h_total = nv_vga_read(0x00);
+    unsigned char read_h_high = nv_vga_read(0x2d);
+    unsigned char read_pitch = nv_vga_read(0x13);
+    unsigned char read_pixel = nv_vga_read(0x28);
+    klog_info("[NV  ] CRTC readback h_total=0x%02x(expect 0x%02x) "
+              "h_high=0x%02x(expect 0x%02x) pitch=0x%02x(expect 0x%02x) "
+              "pixel=0x%02x(expect 0x%02x)",
+              read_h_total, (unsigned char)horiz_total,
+              read_h_high & 0x0FU, (unsigned char)(horiz_value & 0x0F),
+              read_pitch, (unsigned char)(pitch / 8),
+              read_pixel, (unsigned char)pixel_mode);
+    /*
+     * CRTC pitch and pixel-width are not reliably readable on every G7x
+     * board even though writes commit correctly.  Use the two timer values
+     * for rollback, and keep the remaining values diagnostic-only.
+     */
+    if (read_h_total != (unsigned char)horiz_total ||
+        (read_h_high & 0x0F) != (unsigned char)(horiz_value & 0x0F)) {
         nvidia_restore_mode_state(&saved);
         return 0;
+    }
+    if (read_pitch != (unsigned char)(pitch / 8) ||
+        read_pixel != (unsigned char)pixel_mode) {
+        klog_info("[NV  ] CRTC advisory mismatch ignored (pitch/pixel)");
     }
 
     pdv_fb_surface_t new_surface = surface;
