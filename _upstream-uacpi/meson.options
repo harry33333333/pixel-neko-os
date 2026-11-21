@@ -1,4 +1,0 @@
-option('install_pkgconfig',
-    type : 'boolean',
-    value : false
-)
