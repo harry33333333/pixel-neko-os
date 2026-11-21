@@ -78,6 +78,49 @@ static void format_vram_str(uint64_t bytes, char* out, size_t cap) {
     }
 }
 
+static int cpanel_vol_from_x(int mx) {
+    int off = mx - 128;
+    if (off < 0) off = 0;
+    if (off > 96) off = 96;
+    return (off * 100 + 48) / 96;
+}
+
+static int sync_volume_from_sysinfo(cpanel_t* cp) {
+    pxe_audio_status_t st;
+    int vol = cp->volume;
+    if (pxe_audio_get_status(&st) == 0) {
+        vol = st.muted ? 0 : (int)st.volume;
+    } else {
+        pxe_basic_sysinfo_t info;
+        if (pxe_sys_get_basic_info(&info) == 0) {
+            vol = (int)info.volume;
+        }
+    }
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    if (vol != cp->volume) {
+        cp->volume = vol;
+        cp->info.volume = (uint8_t)vol;
+        return 1;
+    }
+    return 0;
+}
+
+static void cpanel_apply_volume(cpanel_t* cp, int vol) {
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    pxe_audio_set_volume(vol);
+    pxe_audio_status_t st;
+    if (pxe_audio_get_status(&st) == 0) {
+        cp->volume = st.muted ? 0 : (int)st.volume;
+    } else {
+        cp->volume = vol;
+    }
+    if (cp->volume < 0) cp->volume = 0;
+    if (cp->volume > 100) cp->volume = 100;
+    cp->info.volume = (uint8_t)cp->volume;
+}
+
 static void clamp_res_scroll(cpanel_t* cp) {
     int max_scroll = cp->caps.mode_count - CPANEL_DROPDOWN_VIS;
     if (max_scroll < 0) max_scroll = 0;
@@ -196,7 +239,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     pxe_draw_text(surf, 10, 34, "Sound Vol:", PXE_COL_BLACK);
     int vx_tx = 126, vx_ty = 39;
     pxe_draw_bevel_box(surf, vx_tx, vx_ty, 100, 8, 1, PXE_COL_BLACK);
-    int fill_w = (cp->volume * 96) / 100;
+    int fill_w = (cp->volume * 96 + 50) / 100;
     if (fill_w > 0) pxe_fill_rect(surf, vx_tx + 2, vx_ty + 2, fill_w, 4, PXE_COL_GREEN);
     char v_str[12];
     snprintf(v_str, sizeof(v_str), "%d%%", cp->volume);
@@ -515,7 +558,23 @@ int main(int argc, char** argv) {
                 running = 0;
                 break;
             } else if (ev.type == PXE_EV_REDRAW || ev.type == PXE_EV_ACTIVATE) {
+                int old_w = cp.info.screen_w;
+                int old_h = cp.info.screen_h;
+                int old_bpp = cp.info.screen_bpp;
+                int old_sel_res = cp.sel_res;
+                int old_sel_bpp = cp.sel_bpp;
+                int old_scroll = cp.res_scroll;
                 sync_from_sysinfo(&cp);
+                if (cp.info.screen_w == old_w &&
+                    cp.info.screen_h == old_h &&
+                    cp.info.screen_bpp == old_bpp &&
+                    old_sel_res >= 0 && old_sel_res < cp.caps.mode_count &&
+                    mode_supported(&cp, old_sel_res, old_sel_bpp)) {
+                    cp.sel_res = old_sel_res;
+                    cp.sel_bpp = old_sel_bpp;
+                    cp.res_scroll = old_scroll;
+                    clamp_res_scroll(&cp);
+                }
                 dirty = 1;
             } else if (ev.type == PXE_EV_MOUSE_MOVE && (ev.buttons & PXE_BTN_LEFT)) {
                 if (cp.drag_mouse) {
@@ -528,12 +587,9 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     }
                 } else if (cp.drag_vol) {
-                    int vol = ((ev.x - 126) * 100) / 100;
-                    if (vol < 0) vol = 0;
-                    if (vol > 100) vol = 100;
+                    int vol = cpanel_vol_from_x(ev.x);
                     if (vol != cp.volume) {
-                        cp.volume = vol;
-                        pxe_audio_set_volume(vol);
+                        cpanel_apply_volume(&cp, vol);
                         dirty = 1;
                     }
                 } else if (cp.drag_res_sb && cp.res_open && cp.caps.mode_count > CPANEL_DROPDOWN_VIS) {
@@ -639,6 +695,10 @@ int main(int argc, char** argv) {
                     if (max_scroll < 0) max_scroll = 0;
                     if (cp.res_scroll < 0) cp.res_scroll = 0;
                     if (cp.res_scroll > max_scroll) cp.res_scroll = max_scroll;
+                    dirty = 1;
+                } else if (pxe_point_in_rect(ev.x, ev.y, 124, 33, 104, 20)) {
+                    int step = (ev.arg0 > 0) ? 5 : -5;
+                    cpanel_apply_volume(&cp, cp.volume + step);
                     dirty = 1;
                 } else if (pxe_point_in_rect(ev.x, ev.y, 126, 58, 204, 20) &&
                            cp.caps.mode_count > 0) {
@@ -780,12 +840,9 @@ int main(int argc, char** argv) {
 
                 /* Volume slider */
                 if (pxe_point_in_rect(mx, my, 124, 33, 104, 20)) {
-                    int vol = ((mx - 126) * 100) / 100;
-                    if (vol < 0) vol = 0;
-                    if (vol > 100) vol = 100;
-                    cp.volume = vol;
+                    int vol = cpanel_vol_from_x(mx);
                     cp.drag_vol = 1;
-                    pxe_audio_set_volume(vol);
+                    cpanel_apply_volume(&cp, vol);
                     dirty = 1;
                     continue;
                 }
@@ -956,6 +1013,10 @@ int main(int argc, char** argv) {
                 }
                 dirty = 1;
             }
+        }
+
+        if (running && !cp.drag_vol && sync_volume_from_sysinfo(&cp)) {
+            dirty = 1;
         }
 
         if (dirty && running) {

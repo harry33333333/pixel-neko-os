@@ -751,6 +751,9 @@ void audio_set_volume(int vol) {
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
     g_master_volume = vol;
+    if (g_is_muted) {
+        g_is_muted = 0;
+    }
     if (g_active_driver) {
         int v = (g_audio_state == AUDIO_STATE_PAUSED)
                     ? 0

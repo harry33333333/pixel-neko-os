@@ -354,7 +354,7 @@ static void render_player_body(const pxe_win_surface_t* surf, const player_t* pl
     pxe_fill_rect(surf, 10, 134, 38, 16, PXE_COL_LIGHT_GRAY);
     pxe_draw_text(surf, 10, 134, "VOL:", PXE_COL_BLACK);
     pxe_draw_bevel_box(surf, 50, 137, 100, 10, 1, PXE_COL_BLACK);
-    int vfill = (pl->st.volume * 96) / 100;
+    int vfill = ((pl->st.muted ? 0 : pl->st.volume) * 96 + 50) / 100;
     if (vfill > 0) pxe_fill_rect(surf, 52, 139, vfill, 6, pl->st.muted ? PXE_COL_DARK_GRAY : PXE_COL_GREEN);
     char vtxt[16];
     snprintf(vtxt, sizeof(vtxt), "%d%%%s", pl->st.volume, pl->st.muted ? " [MUTE]" : "");
@@ -579,7 +579,17 @@ int main(int argc, char** argv) {
                     pl->seek_target_sec = (ox * pl->st.duration_sec) / sb_w;
                     dirty = 1;
                 } else if (pl->drag_vol) {
-                    int vx = ev.x - 50;
+                    int off = ev.x - 52;
+                    if (off < 0) off = 0;
+                    if (off > 96) off = 96;
+                    int vx = (off * 100 + 48) / 96;
+                    pxe_audio_set_volume(vx);
+                    pxe_audio_get_status(&pl->st);
+                    dirty = 1;
+                }
+            } else if (ev.type == PXE_EV_MOUSE_WHEEL && ev.arg0 != 0) {
+                if (pxe_point_in_rect(ev.x, ev.y, 50, 134, 100, 16)) {
+                    int vx = pl->st.volume + (ev.arg0 > 0 ? 5 : -5);
                     if (vx < 0) vx = 0;
                     if (vx > 100) vx = 100;
                     pxe_audio_set_volume(vx);
@@ -658,10 +668,12 @@ int main(int argc, char** argv) {
 
                 /* Volume slider */
                 if (pxe_point_in_rect(mx, my, 50, 134, 100, 16)) {
-                    int vx = mx - 50;
-                    if (vx < 0) vx = 0;
-                    if (vx > 100) vx = 100;
+                    int off = mx - 52;
+                    if (off < 0) off = 0;
+                    if (off > 96) off = 96;
+                    int vx = (off * 100 + 48) / 96;
                     pxe_audio_set_volume(vx);
+                    pxe_audio_get_status(&pl->st);
                     pl->drag_vol = 1;
                     dirty = 1;
                     continue;

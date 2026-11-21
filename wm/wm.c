@@ -359,6 +359,8 @@ static void draw_volume_icon(unsigned char* v, int x, int y) {
     }
 }
 
+static void wm_sync_volume_state(void);
+
 static void volume_set_from_y(int y) {
     int panel_x = 0, panel_y = 0, panel_w = 0, panel_h = 0;
     notification_volume_panel(&panel_x, &panel_y, &panel_w, &panel_h);
@@ -367,11 +369,15 @@ static void volume_set_from_y(int y) {
     (void)panel_h;
     int track_top = panel_y + 28;
     int track_height = 78;
-    int volume = ((track_top + track_height - 1 - y) * 100) /
-                 (track_height - 1);
+    int span = track_height - 1;
+    int offset = track_top + track_height - 1 - y;
+    if (offset < 0) offset = 0;
+    if (offset > span) offset = span;
+    int volume = (offset * 100 + span / 2) / span;
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     audio_set_volume(volume);
+    wm_sync_volume_state();
     redraw = 1;
     need_mr = 1;
 }
@@ -425,17 +431,18 @@ static void draw_volume_popup(unsigned char* v) {
             PUT_PIXEL(v, px, py, 8);
         }
     }
-    int fill_h = (volume * (track_h - 2)) / 100;
-    if (!audio_is_muted() && fill_h > 0) {
-        for (int py = track_y + track_h - 1 - fill_h;
-             py < track_y + track_h - 1; py++) {
+    int eff_vol = audio_is_muted() ? 0 : volume;
+    int thumb_y = track_y + track_h - 1 -
+                  (eff_vol * (track_h - 1) + 50) / 100;
+    if (eff_vol > 0) {
+        int fill_top = thumb_y;
+        if (fill_top < track_y + 1) fill_top = track_y + 1;
+        for (int py = fill_top; py < track_y + track_h - 1; py++) {
             for (int px = track_x + 1; px < track_x + track_w - 1; px++) {
                 PUT_PIXEL(v, px, py, 1);
             }
         }
     }
-    int thumb_y = track_y + track_h - 1 -
-                  ((audio_is_muted() ? 0 : volume) * (track_h - 1)) / 100;
     for (int py = thumb_y - 4; py <= thumb_y + 4; py++) {
         for (int px = track_x - 5; px < track_x + track_w + 5; px++) {
             if (py >= track_y && py < track_y + track_h) {
@@ -1353,9 +1360,10 @@ static inline void wm_irq_restore(uint64_t rflags) {
 static void wm_dyn_push_event(wm_dyn_win_t* dw, const pxe_event_t* ev) {
     if (!dw || !dw->used || !ev) return;
     uint64_t flags = wm_irq_save();
-    if (ev->type == PXE_EV_MOUSE_MOVE && dw->ev_count > 0) {
+    if ((ev->type == PXE_EV_MOUSE_MOVE || ev->type == PXE_EV_REDRAW) &&
+        dw->ev_count > 0) {
         int last_idx = (dw->ev_tail - 1 + WM_EV_QUEUE_CAP) % WM_EV_QUEUE_CAP;
-        if (dw->ev_queue[last_idx].type == PXE_EV_MOUSE_MOVE) {
+        if (dw->ev_queue[last_idx].type == ev->type) {
             dw->ev_queue[last_idx] = *ev;
             wm_irq_restore(flags);
             scheduler_wake_win_waiters(dw->win_id);
@@ -1380,6 +1388,28 @@ static void wm_dyn_push_simple(wm_dyn_win_t* dw, uint32_t type) {
     ev.w = dw->client_w;
     ev.h = dw->client_h;
     wm_dyn_push_event(dw, &ev);
+}
+
+static void wm_sync_volume_state(void) {
+    static int last_volume_state = -1;
+    static int last_mute_state = -1;
+    int current_volume = audio_get_volume();
+    int current_mute = audio_is_muted() ? 1 : 0;
+    if (current_volume != last_volume_state ||
+        current_mute != last_mute_state) {
+        int had_prev = (last_volume_state != -1);
+        last_volume_state = current_volume;
+        last_mute_state = current_mute;
+        redraw = 1;
+        need_mr = 1;
+        if (had_prev) {
+            for (int s = 0; s < WM_DYN_MAX; s++) {
+                if (g_dyn_wins[s].used) {
+                    wm_dyn_push_simple(&g_dyn_wins[s], PXE_EV_REDRAW);
+                }
+            }
+        }
+    }
 }
 
 void wm_on_resolution_change(int w, int h) {
@@ -1616,6 +1646,7 @@ void wm_mouse_wheel(int mx, int my, int wheel) {
         if (volume < 0) volume = 0;
         if (volume > 100) volume = 100;
         audio_set_volume(volume);
+        wm_sync_volume_state();
         redraw = 1;
         need_mr = 1;
         return;
@@ -1705,6 +1736,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             volume_popup_open = 0;
         } else if (volume_mute_hit) {
             audio_toggle_mute();
+            wm_sync_volume_state();
         } else if (volume_slider_hit) {
             volume_drag_active = 1;
             volume_set_from_y(my);
@@ -1716,17 +1748,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
-    static int last_volume_state = -1;
-    static int last_mute_state = -1;
-    int current_volume = audio_get_volume();
-    int current_mute = audio_is_muted() ? 1 : 0;
-    if (current_volume != last_volume_state ||
-        current_mute != last_mute_state) {
-        last_volume_state = current_volume;
-        last_mute_state = current_mute;
-        redraw = 1;
-        need_mr = 1;
-    }
+    wm_sync_volume_state();
 
     if (g_pxe_present_dirty && !wm_is_dragging()) {
         g_pxe_present_dirty = 0;
