@@ -803,7 +803,7 @@ int vfs_eject_media(char letter) {
         result = strncmp(drive->dev->name, "ahci", 4) == 0
                      ? ahci_atapi_eject(drive->dev)
                      : ata_atapi_eject(drive->dev);
-    } else if (drive->dev->scsi_cmd) {
+    } else if (blkdev_has_scsi_cmd(drive->dev)) {
         uint8_t stop_cmd[6] = { 0x1B, 0, 0, 0, 0x02, 0 };
         result = blkdev_scsi_cmd(drive->dev, stop_cmd, 6, NULL, 0);
     } else {

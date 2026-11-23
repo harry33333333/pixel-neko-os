@@ -465,7 +465,7 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
             drive->packet ? NULL : ata_write_blocks,
             drive->packet ? atapi_check_media : NULL, drive);
         if (block) {
-            if (drive->packet) block->scsi_cmd = ata_atapi_scsi_cmd;
+            if (drive->packet) block_set_scsi_cmd(block, ata_atapi_scsi_cmd);
             memcpy(block->model, drive->model, sizeof(block->model));
             log_printf("[ATA ] %s %u:%u %s sectors=%llu\n",
                        drive->packet ? "ATAPI" : "ATA", channel, slave,

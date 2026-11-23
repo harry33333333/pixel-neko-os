@@ -3,6 +3,7 @@
 #include "string.h"
 
 blkdev_t g_blkdevs[MAX_BLKDEV];
+static blkdev_scsi_cmd_fn g_blkdev_scsi_cmds[MAX_BLKDEV];
 static int g_block_count;
 
 static void block_copy_name(char* target, unsigned int capacity,
@@ -18,6 +19,7 @@ static void block_copy_name(char* target, unsigned int capacity,
 
 void blkdev_init(void) {
     memset(g_blkdevs, 0, sizeof(g_blkdevs));
+    memset(g_blkdev_scsi_cmds, 0, sizeof(g_blkdev_scsi_cmds));
     g_block_count = 0;
 }
 
@@ -44,6 +46,7 @@ blkdev_t* block_register(const char* name, blk_type_t type, int unit,
     }
     blkdev_t* dev = &g_blkdevs[slot];
     memset(dev, 0, sizeof(*dev));
+    g_blkdev_scsi_cmds[slot] = NULL;
     dev->id = slot;
     dev->type = type;
     dev->unit = unit;
@@ -69,6 +72,8 @@ void block_unregister(blkdev_t* dev) {
     if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) {
         return;
     }
+    int slot = (int)(dev - g_blkdevs);
+    g_blkdev_scsi_cmds[slot] = NULL;
     memset(dev, 0, sizeof(*dev));
 }
 
@@ -132,8 +137,25 @@ void block_set_capacity(blkdev_t* dev, uint64_t sectors,
     dev->media_generation++;
 }
 
+void block_set_scsi_cmd(blkdev_t* dev, blkdev_scsi_cmd_fn fn) {
+    if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) return;
+    int slot = (int)(dev - g_blkdevs);
+    g_blkdev_scsi_cmds[slot] = fn;
+}
+
+int blkdev_has_scsi_cmd(const blkdev_t* dev) {
+    if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) return 0;
+    int slot = (int)(dev - g_blkdevs);
+    return g_blkdev_scsi_cmds[slot] != NULL;
+}
+
 int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
                     void* buffer, uint32_t buffer_len) {
-    if (!dev || !dev->scsi_cmd || !cdb || !cdb_len) return -1;
-    return dev->scsi_cmd(dev, cdb, cdb_len, buffer, buffer_len);
+    if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count ||
+        !cdb || !cdb_len) {
+        return -1;
+    }
+    int slot = (int)(dev - g_blkdevs);
+    if (!g_blkdev_scsi_cmds[slot]) return -1;
+    return g_blkdev_scsi_cmds[slot](dev, cdb, cdb_len, buffer, buffer_len);
 }

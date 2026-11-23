@@ -524,7 +524,7 @@ static int ahci_probe_port(ahci_port_t* port) {
         ahci_read_blocks, port->packet ? NULL : ahci_write_blocks,
         port->packet ? ahci_atapi_check_media : NULL, port);
     if (!block) return -1;
-    if (port->packet) block->scsi_cmd = ahci_atapi_scsi_cmd;
+    if (port->packet) block_set_scsi_cmd(block, ahci_atapi_scsi_cmd);
     memcpy(block->model, port->model, sizeof(block->model));
     log_printf("[AHCI] Controller %u port %u %s: %s, %llu sectors\n",
                port->controller->index, port->index,

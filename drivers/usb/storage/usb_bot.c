@@ -501,7 +501,7 @@ int usb_storage_attach(usb_device_t* device) {
         return -1;
     }
     if (bot->is_optical) {
-        bot->block->scsi_cmd = bot_scsi_cmd;
+        block_set_scsi_cmd(bot->block, bot_scsi_cmd);
     }
     g_bot_count++;
     g_bot_generation++;

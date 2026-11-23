@@ -23,7 +23,7 @@ static uint32_t cdda_be32(const uint8_t* p) {
 }
 
 int cdda_read_toc(blkdev_t* dev, cdda_toc_t* out_toc) {
-    if (!dev || !dev->scsi_cmd || !out_toc) return -1;
+    if (!dev || !blkdev_has_scsi_cmd(dev) || !out_toc) return -1;
     memset(out_toc, 0, sizeof(*out_toc));
 
     uint8_t buf[804];
@@ -77,7 +77,7 @@ int cdda_read_toc(blkdev_t* dev, cdda_toc_t* out_toc) {
 }
 
 int cdda_read_sectors(blkdev_t* dev, uint32_t lba, uint32_t count, void* out_buf) {
-    if (!dev || !dev->scsi_cmd || !out_buf || !count) return -1;
+    if (!dev || !blkdev_has_scsi_cmd(dev) || !out_buf || !count) return -1;
     uint8_t* dst = (uint8_t*)out_buf;
     while (count > 0) {
         uint32_t batch = count > CDDA_BATCH_SECTORS ? CDDA_BATCH_SECTORS : count;
@@ -230,3 +230,4 @@ void cdda_dec_seek(unsigned int seconds) {
 void cdda_dec_close(void) {
     memset(&g_cdda, 0, sizeof(g_cdda));
 }
+
