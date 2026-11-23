@@ -12,7 +12,7 @@
 #define COLHDR_H     18
 #define HEADER_H     (TOOLBAR_H + PATHBAR_H + COLHDR_H)
 #define STATUS_H     20
-#define ROW_H        16
+#define ROW_H        18
 #define SB_W         14
 
 #define MODAL_NONE        0
@@ -74,7 +74,35 @@ typedef struct {
     char       modal_input[128];
     int        modal_len;
     char       modal_target_path[256];
+    int        zh;
 } fm_t;
+
+#define FM_TR(fm, z, e) ((fm)->zh ? (z) : (e))
+
+static void sync_fm_menu(fm_t* fm) {
+    pxe_menu_bar_t mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.menu_count = 2;
+    strcpy(mb.menus[0].title, FM_TR(fm, "文件", "File"));
+    mb.menus[0].item_count = 9;
+    strcpy(mb.menus[0].items[0].label, FM_TR(fm, "打开", "Open"));             mb.menus[0].items[0].enabled = 1;
+    strcpy(mb.menus[0].items[1].label, FM_TR(fm, "剪切", "Cut"));              mb.menus[0].items[1].enabled = 1;
+    strcpy(mb.menus[0].items[2].label, FM_TR(fm, "复制", "Copy"));             mb.menus[0].items[2].enabled = 1;
+    strcpy(mb.menus[0].items[3].label, FM_TR(fm, "粘贴", "Paste"));            mb.menus[0].items[3].enabled = 1;
+    strcpy(mb.menus[0].items[4].label, FM_TR(fm, "重命名...", "Rename..."));   mb.menus[0].items[4].enabled = 1;
+    strcpy(mb.menus[0].items[5].label, FM_TR(fm, "新建目录...", "New Folder...")); mb.menus[0].items[5].enabled = 1;
+    strcpy(mb.menus[0].items[6].label, FM_TR(fm, "删除", "Delete"));           mb.menus[0].items[6].enabled = 1;
+    strcpy(mb.menus[0].items[7].label, FM_TR(fm, "弹出", "Eject"));            mb.menus[0].items[7].enabled = 1;
+    strcpy(mb.menus[0].items[8].label, FM_TR(fm, "退出", "Exit"));             mb.menus[0].items[8].enabled = 1;
+
+    strcpy(mb.menus[1].title, FM_TR(fm, "视图", "View"));
+    mb.menus[1].item_count = 4;
+    strcpy(mb.menus[1].items[0].label, FM_TR(fm, "刷新", "Refresh"));          mb.menus[1].items[0].enabled = 1;
+    strcpy(mb.menus[1].items[1].label, FM_TR(fm, "按名称排序", "Sort by Name")); mb.menus[1].items[1].enabled = 1;
+    strcpy(mb.menus[1].items[2].label, FM_TR(fm, "按大小排序", "Sort by Size")); mb.menus[1].items[2].enabled = 1;
+    strcpy(mb.menus[1].items[3].label, FM_TR(fm, "磁盘列表", "Drives Root"));  mb.menus[1].items[3].enabled = 1;
+    pxe_win_set_menu(fm->win_id, &mb);
+}
 
 static const pxe_win_surface_t* g_prog_surf = NULL;
 static int g_prog_win_id = -1;
@@ -590,12 +618,13 @@ static void action_begin_rename(fm_t* fm, int idx) {
     if (fm->current_path[0] == '\0' || idx < 0 || idx >= fm->entry_count) return;
     if (fm->entries[idx].is_parent) return;
     if (drive_is_readonly(fm->current_path[0])) {
-        show_msg(fm, "Read-Only Drive", "Cannot rename files on read-only drive.", 1);
+        show_msg(fm, FM_TR(fm, "只读驱动器", "Read-Only Drive"),
+                 FM_TR(fm, "无法在只读驱动器上重命名文件。", "Cannot rename files on read-only drive."), 1);
         return;
     }
     fm->modal = MODAL_RENAME;
-    snprintf(fm->modal_title, sizeof(fm->modal_title), "Rename");
-    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "New name:");
+    snprintf(fm->modal_title, sizeof(fm->modal_title), "%s", FM_TR(fm, "重命名", "Rename"));
+    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "%s", FM_TR(fm, "新名称:", "New name:"));
     snprintf(fm->modal_input, sizeof(fm->modal_input), "%s", fm->entries[idx].name);
     fm->modal_len = (int)strlen(fm->modal_input);
     join_path(fm->modal_target_path, sizeof(fm->modal_target_path),
@@ -604,17 +633,19 @@ static void action_begin_rename(fm_t* fm, int idx) {
 
 static void action_begin_mkdir(fm_t* fm) {
     if (fm->current_path[0] == '\0') {
-        show_msg(fm, "New Folder", "Open a writable drive first.", 1);
+        show_msg(fm, FM_TR(fm, "新建文件夹", "New Folder"),
+                 FM_TR(fm, "请先打开一个可写磁盘分区。", "Open a writable drive first."), 1);
         return;
     }
     if (drive_is_readonly(fm->current_path[0])) {
-        show_msg(fm, "Read-Only Drive", "Cannot create folder on read-only drive.", 1);
+        show_msg(fm, FM_TR(fm, "只读驱动器", "Read-Only Drive"),
+                 FM_TR(fm, "无法在只读驱动器上创建文件夹。", "Cannot create folder on read-only drive."), 1);
         return;
     }
     fm->modal = MODAL_MKDIR;
-    snprintf(fm->modal_title, sizeof(fm->modal_title), "New Folder");
-    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "Folder name:");
-    snprintf(fm->modal_input, sizeof(fm->modal_input), "NEW_DIR");
+    snprintf(fm->modal_title, sizeof(fm->modal_title), "%s", FM_TR(fm, "新建文件夹", "New Folder"));
+    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "%s", FM_TR(fm, "文件夹名称:", "Folder name:"));
+    snprintf(fm->modal_input, sizeof(fm->modal_input), "%s", FM_TR(fm, "新建文件夹", "NEW_DIR"));
     fm->modal_len = (int)strlen(fm->modal_input);
 }
 
@@ -622,12 +653,14 @@ static void action_begin_delete(fm_t* fm, int idx) {
     if (fm->current_path[0] == '\0' || idx < 0 || idx >= fm->entry_count) return;
     if (fm->entries[idx].is_parent) return;
     if (drive_is_readonly(fm->current_path[0])) {
-        show_msg(fm, "Read-Only Drive", "Cannot delete on read-only drive.", 1);
+        show_msg(fm, FM_TR(fm, "只读驱动器", "Read-Only Drive"),
+                 FM_TR(fm, "无法在只读驱动器上执行删除。", "Cannot delete on read-only drive."), 1);
         return;
     }
     fm->modal = MODAL_CONFIRM_DEL;
-    snprintf(fm->modal_title, sizeof(fm->modal_title), "Confirm Delete");
-    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "Delete \"%s\"?", fm->entries[idx].name);
+    snprintf(fm->modal_title, sizeof(fm->modal_title), "%s", FM_TR(fm, "确认删除", "Confirm Delete"));
+    snprintf(fm->modal_msg, sizeof(fm->modal_msg),
+             FM_TR(fm, "确定删除 \"%s\" 吗?", "Delete \"%s\"?"), fm->entries[idx].name);
     join_path(fm->modal_target_path, sizeof(fm->modal_target_path),
               fm->current_path, fm->entries[idx].name);
 }
@@ -708,26 +741,26 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
 
     /* 1. Toolbar */
     int bx = 4;
-    pxe_draw_button(surf, bx, 3, 46, 20, "Drives", 0, 1); bx += 50;
-    pxe_draw_button(surf, bx, 3, 36, 20, "Up", 0, fm->current_path[0] != 0); bx += 40;
+    pxe_draw_button(surf, bx, 3, 46, 20, FM_TR(fm, "磁盘", "Drives"), 0, 1); bx += 50;
+    pxe_draw_button(surf, bx, 3, 36, 20, FM_TR(fm, "上级", "Up"), 0, fm->current_path[0] != 0); bx += 40;
     int can_open = (fm->selected >= 0 && fm->selected < fm->entry_count);
-    pxe_draw_button(surf, bx, 3, 42, 20, "Open", 0, can_open); bx += 46;
+    pxe_draw_button(surf, bx, 3, 42, 20, FM_TR(fm, "打开", "Open"), 0, can_open); bx += 46;
     int can_copy = (fm->current_path[0] != 0 && can_open && !fm->entries[fm->selected].is_parent);
-    pxe_draw_button(surf, bx, 3, 38, 20, "Copy", 0, can_copy); bx += 42;
-    pxe_draw_button(surf, bx, 3, 32, 20, "Cut", 0, can_copy); bx += 36;
+    pxe_draw_button(surf, bx, 3, 38, 20, FM_TR(fm, "复制", "Copy"), 0, can_copy); bx += 42;
+    pxe_draw_button(surf, bx, 3, 32, 20, FM_TR(fm, "剪切", "Cut"), 0, can_copy); bx += 36;
     int can_paste = (fm->has_clip && fm->current_path[0] != 0);
-    pxe_draw_button(surf, bx, 3, 42, 20, "Paste", 0, can_paste); bx += 46;
-    pxe_draw_button(surf, bx, 3, 50, 20, "NewDir", 0, fm->current_path[0] != 0); bx += 54;
-    pxe_draw_button(surf, bx, 3, 42, 20, "Eject", 0, 1);
+    pxe_draw_button(surf, bx, 3, 42, 20, FM_TR(fm, "粘贴", "Paste"), 0, can_paste); bx += 46;
+    pxe_draw_button(surf, bx, 3, 50, 20, FM_TR(fm, "新建", "NewDir"), 0, fm->current_path[0] != 0); bx += 54;
+    pxe_draw_button(surf, bx, 3, 42, 20, FM_TR(fm, "弹出", "Eject"), 0, 1);
 
     /* 2. Path bar */
     pxe_draw_bevel_box(surf, 4, 26, surf->width - 8, 17, 1, PXE_COL_WHITE);
-    char pstr[264];
-    snprintf(pstr, sizeof(pstr), "Path: %s",
-             fm->current_path[0] ? fm->current_path : "Drives Root");
-    int max_pc = (surf->width - 20) / 6;
-    if (max_pc > 3 && (int)strlen(pstr) > max_pc) pstr[max_pc] = '\0';
-    pxe_draw_text_small(surf, 8, 31, pstr, PXE_COL_BLACK);
+    char pstr[272], pclip[272];
+    snprintf(pstr, sizeof(pstr), "%s: %s",
+             FM_TR(fm, "路径", "Path"),
+             fm->current_path[0] ? fm->current_path : FM_TR(fm, "驱动器列表", "Drives Root"));
+    utf8_clip_by_pixels(pstr, surf->width - 18, 1, pclip, sizeof(pclip));
+    pxe_draw_text_small(surf, 8, 29, pclip, PXE_COL_BLACK);
 
     /* 3. Column header */
     int list_x = 4, list_y = HEADER_H, list_w = surf->width - 8 - SB_W;
@@ -735,14 +768,14 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     if (list_h < 20) list_h = 20;
     pxe_draw_bevel_box(surf, 4, 44, surf->width - 8, 17, 0, PXE_COL_LIGHT_GRAY);
     if (fm->current_path[0] == '\0') {
-        pxe_draw_text_small(surf, 10, 49, "Drive", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, 76, 49, "FS", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, 152, 49, "Label", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, list_w - 134, 49, "Total", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, list_w - 64, 49, "Free", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, 10, 47, FM_TR(fm, "驱动器", "Drive"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, 76, 47, FM_TR(fm, "格式", "FS"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, 152, 47, FM_TR(fm, "卷标", "Label"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, list_w - 134, 47, FM_TR(fm, "总计", "Total"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, list_w - 64, 47, FM_TR(fm, "可用", "Free"), PXE_COL_BLACK);
     } else {
-        pxe_draw_text_small(surf, 10, 49, "Name", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, list_w - 78, 49, "Type / Size", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, 10, 47, FM_TR(fm, "名称", "Name"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, list_w - 78, 47, FM_TR(fm, "类型 / 大小", "Type / Size"), PXE_COL_BLACK);
     }
 
     /* 4. List background & entries */
@@ -763,7 +796,7 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         }
         uint32_t fg = sel ? PXE_COL_WHITE : (e->is_dir ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
 
-        char dname[136];
+        char dname[136], dclip[136];
         if (e->is_dir) {
             if (e->is_parent && strlen(fm->current_path) <= 3) {
                 snprintf(dname, sizeof(dname), "[.. (Drives)]");
@@ -773,21 +806,18 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         } else {
             snprintf(dname, sizeof(dname), "%s", e->name);
         }
-        int name_max = (fm->current_path[0] == '\0') ? 9 : ((list_w - 98) / 8);
-        if (name_max > 3 && (int)strlen(dname) > name_max) {
-            dname[name_max] = '\0';
-            dname[name_max - 1] = '.';
-            dname[name_max - 2] = '.';
-        }
-        pxe_draw_text(surf, list_x + 6, ry, dname, fg);
+        int name_px = (fm->current_path[0] == '\0') ? 68 : (list_w - 94);
+        if (name_px < 24) name_px = 24;
+        utf8_clip_by_pixels(dname, name_px, 0, dclip, sizeof(dclip));
+        pxe_draw_text(surf, list_x + 6, ry + 1, dclip, fg);
 
         if (fm->current_path[0] == '\0') {
             pxe_draw_text_small(surf, 76, ry + 5,
                                 e->fs_name[0] ? e->fs_name : "DRIVE", fg);
             if (e->label[0]) {
-                char lb[14];
-                snprintf(lb, sizeof(lb), "%.12s", e->label);
-                pxe_draw_text_small(surf, 152, ry + 5, lb, fg);
+                char lb[32];
+                utf8_clip_by_pixels(e->label, 72, 1, lb, sizeof(lb));
+                pxe_draw_text_small(surf, 152, ry + 3, lb, fg);
             }
             char ts[20], fs[20];
             fmt_kb(e->size, ts, sizeof(ts));
@@ -816,45 +846,55 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     /* 6. Status bar */
     int sby = surf->height - STATUS_H;
     pxe_draw_hline(surf, 0, sby, surf->width, PXE_COL_DARK_GRAY);
-    char sbuf[128];
+    char sbuf[160], sclip[160];
     if (fm->has_clip) {
-        snprintf(sbuf, sizeof(sbuf), "%s: %s | Items: %d",
-                 fm->clip_is_cut ? "Cut" : "Copied",
-                 fm->clip_name, fm->entry_count);
+        snprintf(sbuf, sizeof(sbuf), "%s: %s | %s: %d",
+                 fm->clip_is_cut ? FM_TR(fm, "已剪切", "Cut") : FM_TR(fm, "已复制", "Copied"),
+                 fm->clip_name, FM_TR(fm, "项目数", "Items"), fm->entry_count);
     } else if (fm->current_path[0] == '\0') {
-        snprintf(sbuf, sizeof(sbuf), "Drives: %d | Double-click to open | Eject unmounts CD/FD",
+        snprintf(sbuf, sizeof(sbuf),
+                 fm->zh ? "驱动器: %d | 双击进入分区 | 弹出可卸载光盘/软盘"
+                        : "Drives: %d | Double-click to open | Eject unmounts CD/FD",
                  fm->entry_count);
     } else {
-        snprintf(sbuf, sizeof(sbuf), "Items: %d | Right-click for Cut/Copy/Paste/Rename/Delete",
+        snprintf(sbuf, sizeof(sbuf),
+                 fm->zh ? "项目: %d | 右键可剪切、复制、粘贴、重命名或删除"
+                        : "Items: %d | Right-click for Cut/Copy/Paste/Rename/Delete",
                  fm->entry_count > 0 ? fm->entry_count - 1 : 0);
     }
-    int max_sc = (surf->width - 14) / 6;
-    if (max_sc > 3 && (int)strlen(sbuf) > max_sc) sbuf[max_sc] = '\0';
-    pxe_draw_text_small(surf, 6, sby + 6, sbuf, PXE_COL_BLACK);
+    utf8_clip_by_pixels(sbuf, surf->width - 14, 1, sclip, sizeof(sclip));
+    pxe_draw_text_small(surf, 6, sby + 5, sclip, PXE_COL_BLACK);
 
     /* 7. Context Menu */
     if (fm->ctx_kind != CTX_NONE) {
         pxe_draw_bevel_box(surf, fm->ctx_x, fm->ctx_y, fm->ctx_w, fm->ctx_h, 0, PXE_COL_LIGHT_GRAY);
         if (fm->ctx_kind == CTX_ITEM) {
-            const char* items[8] = {
+            const char* items_en[8] = {
                 "Open", "Cut", "Copy", "Paste", "Rename...",
                 "Delete", "New Folder...", "Properties..."
             };
+            const char* items_zh[8] = {
+                "打开", "剪切", "复制", "粘贴", "重命名...",
+                "删除", "新建目录...", "属性..."
+            };
             int en[8] = { 1, 1, 1, fm->has_clip, 1, 1, 1, 1 };
             for (int i = 0; i < 8; i++) {
-                pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 5 + i * 18,
-                                    items[i], en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
+                pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4 + i * 18,
+                                    fm->zh ? items_zh[i] : items_en[i],
+                                    en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
             }
         } else if (fm->ctx_kind == CTX_BG) {
-            const char* items[4] = { "Paste", "New Folder...", "Refresh", "Drives" };
+            const char* items_en[4] = { "Paste", "New Folder...", "Refresh", "Drives" };
+            const char* items_zh[4] = { "粘贴", "新建目录...", "刷新", "驱动器" };
             int en[4] = { fm->has_clip, 1, 1, 1 };
             for (int i = 0; i < 4; i++) {
-                pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 5 + i * 18,
-                                    items[i], en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
+                pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4 + i * 18,
+                                    fm->zh ? items_zh[i] : items_en[i],
+                                    en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
             }
         } else if (fm->ctx_kind == CTX_DRIVE) {
-            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 5, "Open", PXE_COL_BLACK);
-            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 23, "Eject", PXE_COL_BLACK);
+            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4, FM_TR(fm, "打开", "Open"), PXE_COL_BLACK);
+            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 22, FM_TR(fm, "弹出", "Eject"), PXE_COL_BLACK);
         }
     }
 
@@ -866,14 +906,16 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
         pxe_draw_text(surf, dx + 8, dy + 3, fm->modal_title, PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 10, dy + 25, fm->modal_msg, PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 10, dy + 23, fm->modal_msg, PXE_COL_BLACK);
         pxe_draw_bevel_box(surf, dx + 10, dy + 36, dw - 20, 22, 1, PXE_COL_WHITE);
-        int max_c = (dw - 28) / 8;
-        int start = (fm->modal_len > max_c) ? (fm->modal_len - max_c) : 0;
-        pxe_draw_text(surf, dx + 14, dy + 39, fm->modal_input + start, PXE_COL_BLACK);
-        pxe_draw_vline(surf, dx + 14 + (fm->modal_len - start) * 8, dy + 39, 16, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + 46,  dy + 66, 72, 22, "OK", 0, 1);
-        pxe_draw_button(surf, dx + 142, dy + 66, 72, 22, "Cancel", 0, 1);
+        const char* vis_in = fm->modal_input;
+        while (*vis_in && pxe_text_width(vis_in) > dw - 28) {
+            (void)utf8_decode_next(&vis_in);
+        }
+        pxe_draw_text(surf, dx + 14, dy + 39, vis_in, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width(vis_in), dy + 39, 16, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + 46,  dy + 66, 72, 22, FM_TR(fm, "确定", "OK"), 0, 1);
+        pxe_draw_button(surf, dx + 142, dy + 66, 72, 22, FM_TR(fm, "取消", "Cancel"), 0, 1);
     } else if (fm->modal == MODAL_CONFIRM_DEL) {
         int dw = 260, dh = 86;
         int dx = (surf->width - dw) / 2;
@@ -881,9 +923,9 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_RED);
         pxe_draw_text(surf, dx + 8, dy + 3, fm->modal_title, PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 12, dy + 32, fm->modal_msg, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + 46,  dy + 54, 72, 22, "Delete", 0, 1);
-        pxe_draw_button(surf, dx + 142, dy + 54, 72, 22, "Cancel", 0, 1);
+        pxe_draw_text_small(surf, dx + 12, dy + 30, fm->modal_msg, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + 46,  dy + 54, 72, 22, FM_TR(fm, "删除", "Delete"), 0, 1);
+        pxe_draw_button(surf, dx + 142, dy + 54, 72, 22, FM_TR(fm, "取消", "Cancel"), 0, 1);
     } else if (fm->modal == MODAL_MSG) {
         int dw = 300, dh = 88;
         if (dw > surf->width - 12) dw = surf->width - 12;
@@ -896,7 +938,7 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         pxe_draw_text(surf, dx + 42, dy + 13, fm->modal_title,
                       fm->modal_is_err ? PXE_COL_DARK_RED : PXE_COL_DARK_BLUE);
         pxe_draw_text_small(surf, dx + 42, dy + 34, fm->modal_msg, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + dw / 2 - 32, dy + 56, 64, 22, "OK", 0, 1);
+        pxe_draw_button(surf, dx + dw / 2 - 32, dy + 56, 64, 22, FM_TR(fm, "确定", "OK"), 0, 1);
     }
 }
 
@@ -916,6 +958,7 @@ int main(int argc, char** argv) {
     if (!fm) return 1;
     fm->selected = -1;
     fm->last_click_idx = -1;
+    fm->zh = pxe_is_zh();
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -927,7 +970,7 @@ int main(int argc, char** argv) {
     desc.min_h = 220;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "File Manager");
+    strcpy(desc.title, FM_TR(fm, "文件管理", "File Manager"));
 
     pxe_win_surface_t surf;
     fm->win_id = pxe_win_create(&desc, &surf);
@@ -936,28 +979,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pxe_menu_bar_t mb;
-    memset(&mb, 0, sizeof(mb));
-    mb.menu_count = 2;
-    strcpy(mb.menus[0].title, "File");
-    mb.menus[0].item_count = 9;
-    strcpy(mb.menus[0].items[0].label, "Open");          mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, "Cut");           mb.menus[0].items[1].enabled = 1;
-    strcpy(mb.menus[0].items[2].label, "Copy");          mb.menus[0].items[2].enabled = 1;
-    strcpy(mb.menus[0].items[3].label, "Paste");         mb.menus[0].items[3].enabled = 1;
-    strcpy(mb.menus[0].items[4].label, "Rename...");     mb.menus[0].items[4].enabled = 1;
-    strcpy(mb.menus[0].items[5].label, "New Folder..."); mb.menus[0].items[5].enabled = 1;
-    strcpy(mb.menus[0].items[6].label, "Delete");        mb.menus[0].items[6].enabled = 1;
-    strcpy(mb.menus[0].items[7].label, "Eject");         mb.menus[0].items[7].enabled = 1;
-    strcpy(mb.menus[0].items[8].label, "Exit");          mb.menus[0].items[8].enabled = 1;
-
-    strcpy(mb.menus[1].title, "View");
-    mb.menus[1].item_count = 4;
-    strcpy(mb.menus[1].items[0].label, "Refresh");      mb.menus[1].items[0].enabled = 1;
-    strcpy(mb.menus[1].items[1].label, "Sort by Name"); mb.menus[1].items[1].enabled = 1;
-    strcpy(mb.menus[1].items[2].label, "Sort by Size"); mb.menus[1].items[2].enabled = 1;
-    strcpy(mb.menus[1].items[3].label, "Drives Root");  mb.menus[1].items[3].enabled = 1;
-    pxe_win_set_menu(fm->win_id, &mb);
+    sync_fm_menu(fm);
 
     if (argc > 1 && argv[1] && argv[1][0]) {
         snprintf(fm->current_path, sizeof(fm->current_path), "%s", argv[1]);
@@ -989,9 +1011,16 @@ int main(int argc, char** argv) {
             case PXE_EV_RESIZE:
                 if (pxe_win_get_surface(fm->win_id, &surf) == 0) dirty = 1;
                 break;
-            case PXE_EV_REDRAW:
+            case PXE_EV_REDRAW: {
+                int new_zh = pxe_is_zh();
+                if (new_zh != fm->zh) {
+                    fm->zh = new_zh;
+                    sync_fm_menu(fm);
+                    pxe_win_set_title(fm->win_id, FM_TR(fm, "文件管理", "File Manager"));
+                }
                 dirty = 1;
                 break;
+            }
             case PXE_EV_ACTIVATE:
                 if (ev.text[0]) {
                     snprintf(fm->current_path, sizeof(fm->current_path), "%s", ev.text);
@@ -1199,7 +1228,18 @@ int main(int argc, char** argv) {
                     } else if (ev.key == PXE_KEY_ENTER) {
                         submit_modal(fm);
                     } else if (ev.key == PXE_KEY_BACKSPACE) {
-                        if (fm->modal_len > 0) fm->modal_input[--fm->modal_len] = '\0';
+                        if (fm->modal_len > 0) {
+                            int d = utf8_prev_char_bytes(fm->modal_input, fm->modal_len);
+                            fm->modal_len -= d;
+                            fm->modal_input[fm->modal_len] = '\0';
+                        }
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        int tl = (int)strlen(ev.text);
+                        if (fm->modal_len + tl < 120) {
+                            memcpy(fm->modal_input + fm->modal_len, ev.text, (size_t)tl);
+                            fm->modal_len += tl;
+                            fm->modal_input[fm->modal_len] = '\0';
+                        }
                     } else if (ev.key >= 32 && ev.key <= 126 && fm->modal_len < 120) {
                         fm->modal_input[fm->modal_len++] = (char)ev.key;
                         fm->modal_input[fm->modal_len] = '\0';

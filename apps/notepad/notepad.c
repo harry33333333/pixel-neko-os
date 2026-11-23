@@ -16,7 +16,7 @@ typedef struct {
     char* text;
     int   len;
     int   cursor;
-    int   scroll_x;
+    int   scroll_x; /* in 8px horizontal units */
     int   scroll_y;
     int   sel_start;
     int   sel_end;
@@ -31,11 +31,36 @@ typedef struct {
     int   btn_ok_pressed;
     int   btn_cancel_pressed;
     int   win_id;
+    int   zh;
 } notepad_t;
 
+#define NP_TR(ed, zh_s, en_s) ((ed)->zh ? (zh_s) : (en_s))
+
+static void sync_notepad_menu(notepad_t* ed) {
+    pxe_menu_bar_t mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.menu_count = 2;
+    strcpy(mb.menus[0].title, NP_TR(ed, "文件", "File"));
+    mb.menus[0].item_count = 5;
+    strcpy(mb.menus[0].items[0].label, NP_TR(ed, "新建", "New"));          mb.menus[0].items[0].enabled = 1;
+    strcpy(mb.menus[0].items[1].label, NP_TR(ed, "打开...", "Open..."));   mb.menus[0].items[1].enabled = 1;
+    strcpy(mb.menus[0].items[2].label, NP_TR(ed, "保存", "Save"));         mb.menus[0].items[2].enabled = 1;
+    strcpy(mb.menus[0].items[3].label, NP_TR(ed, "另存为...", "Save As...")); mb.menus[0].items[3].enabled = 1;
+    strcpy(mb.menus[0].items[4].label, NP_TR(ed, "退出", "Exit"));         mb.menus[0].items[4].enabled = 1;
+
+    strcpy(mb.menus[1].title, NP_TR(ed, "编辑", "Edit"));
+    mb.menus[1].item_count = 5;
+    strcpy(mb.menus[1].items[0].label, NP_TR(ed, "剪切", "Cut"));          mb.menus[1].items[0].enabled = 1;
+    strcpy(mb.menus[1].items[1].label, NP_TR(ed, "复制", "Copy"));         mb.menus[1].items[1].enabled = 1;
+    strcpy(mb.menus[1].items[2].label, NP_TR(ed, "粘贴", "Paste"));        mb.menus[1].items[2].enabled = 1;
+    strcpy(mb.menus[1].items[3].label, NP_TR(ed, "删除", "Delete"));       mb.menus[1].items[3].enabled = 1;
+    strcpy(mb.menus[1].items[4].label, NP_TR(ed, "全选", "Select All"));   mb.menus[1].items[4].enabled = 1;
+    pxe_win_set_menu(ed->win_id, &mb);
+}
+
 static void update_title(notepad_t* ed) {
-    char title[64];
-    const char* name = "Untitled";
+    char title[48];
+    const char* name = NP_TR(ed, "未命名", "Untitled");
     if (ed->filename[0]) {
         const char* slash = ed->filename;
         for (const char* p = ed->filename; *p; p++) {
@@ -43,7 +68,10 @@ static void update_title(notepad_t* ed) {
         }
         if (*slash) name = slash;
     }
-    snprintf(title, sizeof(title), "Notepad - %s%s", name, ed->modified ? "*" : "");
+    char prefix[36];
+    snprintf(prefix, sizeof(prefix), "%s - %s%s",
+             NP_TR(ed, "记事本", "Notepad"), name, ed->modified ? "*" : "");
+    utf8_clip_by_pixels(prefix, 280, 0, title, sizeof(title));
     pxe_win_set_title(ed->win_id, title);
 }
 
@@ -65,7 +93,8 @@ static void ed_open_file(notepad_t* ed, const char* path) {
     pxe_dirent_t st;
     if (pxe_stat(path, &st) != 0 || st.is_dir) {
         ed->modal = MODAL_ERROR;
-        snprintf(ed->err_msg, sizeof(ed->err_msg), "Cannot open file.");
+        snprintf(ed->err_msg, sizeof(ed->err_msg), "%s",
+                 NP_TR(ed, "无法打开指定文件。", "Cannot open file."));
         pxe_beep();
         return;
     }
@@ -73,13 +102,19 @@ static void ed_open_file(notepad_t* ed, const char* path) {
     int n = pxe_read_file(path, ed->text, (size_t)to_read);
     if (n < 0) {
         ed->modal = MODAL_ERROR;
-        snprintf(ed->err_msg, sizeof(ed->err_msg), "Read failed.");
+        snprintf(ed->err_msg, sizeof(ed->err_msg), "%s",
+                 NP_TR(ed, "读取文件失败。", "Read failed."));
         pxe_beep();
         return;
     }
-    /* Normalize CRLF -> LF for clean cursor indexing */
+    /* Strip UTF-8 BOM if present and normalize CRLF -> LF */
+    int start = 0;
+    if (n >= 3 && (unsigned char)ed->text[0] == 0xEFu &&
+        (unsigned char)ed->text[1] == 0xBBu && (unsigned char)ed->text[2] == 0xBFu) {
+        start = 3;
+    }
     int out = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = start; i < n; i++) {
         if (ed->text[i] == '\r') {
             if (i + 1 < n && ed->text[i + 1] == '\n') continue;
             ed->text[out++] = '\n';
@@ -107,9 +142,11 @@ static void ed_save_to(notepad_t* ed, const char* path) {
     if (wr < 0) {
         ed->modal = MODAL_ERROR;
         if (wr == -8) {
-            snprintf(ed->err_msg, sizeof(ed->err_msg), "Active log is read-only!");
+            snprintf(ed->err_msg, sizeof(ed->err_msg), "%s",
+                     NP_TR(ed, "系统运行日志为只读文件！", "Active log is read-only!"));
         } else {
-            snprintf(ed->err_msg, sizeof(ed->err_msg), "Failed to save file!");
+            snprintf(ed->err_msg, sizeof(ed->err_msg), "%s",
+                     NP_TR(ed, "保存文件失败！", "Failed to save file!"));
         }
         pxe_beep();
         return;
@@ -125,10 +162,7 @@ static void ed_open_modal_path(notepad_t* ed, int kind) {
     ed->modal = kind;
     ed->btn_ok_pressed = 0;
     ed->btn_cancel_pressed = 0;
-    if (kind == MODAL_SAVE_AS && ed->filename[0]) {
-        strncpy(ed->modal_input, ed->filename, sizeof(ed->modal_input) - 1);
-        ed->modal_input[sizeof(ed->modal_input) - 1] = '\0';
-    } else if (kind == MODAL_OPEN && ed->filename[0]) {
+    if ((kind == MODAL_SAVE_AS || kind == MODAL_OPEN) && ed->filename[0]) {
         strncpy(ed->modal_input, ed->filename, sizeof(ed->modal_input) - 1);
         ed->modal_input[sizeof(ed->modal_input) - 1] = '\0';
     } else {
@@ -160,15 +194,23 @@ static void delete_selection(notepad_t* ed) {
     update_title(ed);
 }
 
-static void insert_char(notepad_t* ed, char c) {
+static void insert_utf8_text(notepad_t* ed, const char* s) {
+    if (!s || !s[0]) return;
     if (has_selection(ed)) delete_selection(ed);
-    if (ed->len >= EDITOR_MAX - 1) return;
-    memmove(ed->text + ed->cursor + 1, ed->text + ed->cursor,
+    int slen = (int)strlen(s);
+    if (ed->len + slen >= EDITOR_MAX - 1) return;
+    memmove(ed->text + ed->cursor + slen, ed->text + ed->cursor,
             (size_t)(ed->len - ed->cursor + 1));
-    ed->text[ed->cursor++] = c;
-    ed->len++;
+    memcpy(ed->text + ed->cursor, s, (size_t)slen);
+    ed->cursor += slen;
+    ed->len += slen;
     ed->modified = 1;
     update_title(ed);
+}
+
+static void insert_char(notepad_t* ed, char c) {
+    char tmp[2] = { c, '\0' };
+    insert_utf8_text(ed, tmp);
 }
 
 static int get_line_start(const notepad_t* ed, int pos) {
@@ -189,37 +231,63 @@ static int count_total_lines(const notepad_t* ed) {
     return lines;
 }
 
-static void get_xy_from_pos(const notepad_t* ed, int pos, int* out_x, int* out_y) {
-    int x = 0, y = 0;
-    for (int i = 0; i < pos && i < ed->len; i++) {
-        if (ed->text[i] == '\n') {
+static void get_px_line_from_pos(const notepad_t* ed, int pos, int* out_px, int* out_y, int* out_col) {
+    int px = 0, y = 0, col = 0;
+    const char* base = ed->text;
+    const char* limit = ed->text + ((pos < ed->len) ? pos : ed->len);
+    const char* p = base;
+    while (p < limit && *p) {
+        if (*p == '\n') {
             y++;
-            x = 0;
-        } else if (ed->text[i] == '\t') {
-            x += 4 - (x & 3);
+            px = 0;
+            col = 0;
+            p++;
+        } else if (*p == '\t') {
+            int cols = 4 - (col & 3);
+            col += cols;
+            px += cols * 8;
+            p++;
         } else {
-            x++;
+            uint32_t cp = utf8_decode_next(&p);
+            int w = (cp < 0x80u) ? 8 : 16;
+            px += w;
+            col += (cp < 0x80u) ? 1 : 2;
         }
     }
-    *out_x = x;
-    *out_y = y;
+    if (out_px) *out_px = px;
+    if (out_y) *out_y = y;
+    if (out_col) *out_col = col;
 }
 
-static int get_pos_from_xy(const notepad_t* ed, int tx, int ty) {
+static int get_pos_from_px_line(const notepad_t* ed, int target_px, int ty) {
     if (ty < 0) return 0;
-    int cx = 0, cy = 0;
-    for (int i = 0; i < ed->len; i++) {
-        if (cy == ty) {
-            if (cx >= tx) return i;
-        }
-        if (ed->text[i] == '\n') {
-            if (cy == ty) return i;
+    int px = 0, cy = 0, col = 0;
+    const char* base = ed->text;
+    const char* end = ed->text + ed->len;
+    const char* p = base;
+    while (p < end && *p) {
+        int byte_idx = (int)(p - base);
+        if (cy == ty && px >= target_px) return byte_idx;
+        if (*p == '\n') {
+            if (cy == ty) return byte_idx;
             cy++;
-            cx = 0;
-        } else if (ed->text[i] == '\t') {
-            cx += 4 - (cx & 3);
+            px = 0;
+            col = 0;
+            p++;
+        } else if (*p == '\t') {
+            int cols = 4 - (col & 3);
+            int w = cols * 8;
+            if (cy == ty && px + w / 2 >= target_px) return byte_idx;
+            col += cols;
+            px += w;
+            p++;
         } else {
-            cx++;
+            const char* prev = p;
+            uint32_t cp = utf8_decode_next(&p);
+            int w = (cp < 0x80u) ? 8 : 16;
+            if (cy == ty && px + w / 2 >= target_px) return (int)(prev - base);
+            px += w;
+            col += (cp < 0x80u) ? 1 : 2;
         }
     }
     return ed->len;
@@ -247,26 +315,30 @@ static void ed_paste(notepad_t* ed) {
     char tmp[4096];
     if (pxe_clipboard_get(tmp, sizeof(tmp)) <= 0) return;
     if (has_selection(ed)) delete_selection(ed);
+    int out = 0;
     for (int i = 0; tmp[i]; i++) {
-        if (tmp[i] == '\r') continue;
-        insert_char(ed, tmp[i]);
+        if (tmp[i] != '\r') tmp[out++] = tmp[i];
     }
+    tmp[out] = '\0';
+    insert_utf8_text(ed, tmp);
 }
 
 static void ensure_cursor_visible(notepad_t* ed, const pxe_win_surface_t* surf) {
     int text_w = surf->width - 14 - 4;
     int text_h = surf->height - 22;
     int vis_lines = text_h / 16;
-    int vis_cols  = text_w / 8;
     if (vis_lines < 1) vis_lines = 1;
-    if (vis_cols < 1) vis_cols = 1;
 
-    int cx, cy;
-    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
+    int cpx, cy;
+    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, NULL);
     if (cy < ed->scroll_y) ed->scroll_y = cy;
     if (cy >= ed->scroll_y + vis_lines) ed->scroll_y = cy - vis_lines + 1;
-    if (cx < ed->scroll_x) ed->scroll_x = cx;
-    if (cx >= ed->scroll_x + vis_cols) ed->scroll_x = cx - vis_cols + 1;
+    int sc_px = ed->scroll_x * 8;
+    if (cpx < sc_px) ed->scroll_x = cpx / 8;
+    if (cpx + 16 > sc_px + text_w) {
+        ed->scroll_x = (cpx + 16 - text_w + 7) / 8;
+        if (ed->scroll_x < 0) ed->scroll_x = 0;
+    }
 }
 
 static void render_notepad(const pxe_win_surface_t* surf, const notepad_t* ed) {
@@ -284,20 +356,36 @@ static void render_notepad(const pxe_win_surface_t* surf, const notepad_t* ed) {
         s2 = (ed->sel_start > ed->sel_end) ? ed->sel_start : ed->sel_end;
     }
 
-    int cur_x = 0, cur_y = 0;
-    for (int i = 0; i <= ed->len; i++) {
-        int px = 2 + (cur_x - ed->scroll_x) * 8;
+    int cur_px = 0, cur_y = 0, cur_col = 0;
+    int i = 0;
+    while (i <= ed->len) {
+        int px = 2 + cur_px - ed->scroll_x * 8;
         int py = 2 + (cur_y - ed->scroll_y) * 16;
 
-        int char_cols = 1;
-        if (i < ed->len && ed->text[i] == '\t') {
-            char_cols = 4 - (cur_x & 3);
+        int byte_adv = 1;
+        int glyph_w = 8;
+        uint32_t cp = 0;
+        if (i < ed->len) {
+            if (ed->text[i] == '\t') {
+                int cols = 4 - (cur_col & 3);
+                glyph_w = cols * 8;
+                byte_adv = 1;
+            } else if (ed->text[i] == '\n') {
+                glyph_w = 8;
+                byte_adv = 1;
+            } else {
+                const char* p = ed->text + i;
+                cp = utf8_decode_next(&p);
+                byte_adv = (int)(p - (ed->text + i));
+                if (byte_adv < 1) byte_adv = 1;
+                glyph_w = (cp < 0x80u) ? 8 : 16;
+            }
         }
 
-        if (s1 >= 0 && i >= s1 && i < s2) {
-            if (py >= 0 && py + 16 <= text_h && px + char_cols * 8 > 0 && px < text_w) {
+        if (i < ed->len && s1 >= 0 && i >= s1 && i < s2) {
+            if (py >= 0 && py + 16 <= text_h && px + glyph_w > 0 && px < text_w) {
                 int hx = (px < 0) ? 0 : px;
-                int hw = px + char_cols * 8 - hx;
+                int hw = px + glyph_w - hx;
                 if (hx + hw > text_w) hw = text_w - hx;
                 if (hw > 0) pxe_fill_rect(surf, hx, py, hw, 16, PXE_COL_BLUE);
             }
@@ -309,21 +397,32 @@ static void render_notepad(const pxe_win_surface_t* surf, const notepad_t* ed) {
             }
         }
 
-        if (i < ed->len) {
-            char c = ed->text[i];
-            if (c == '\n') {
-                cur_y++;
-                cur_x = 0;
-            } else if (c == '\t') {
-                cur_x += char_cols;
-            } else {
-                uint32_t fg = (s1 >= 0 && i >= s1 && i < s2) ? PXE_COL_WHITE : PXE_COL_BLACK;
-                if (px >= 0 && px + 8 <= text_w && py >= 0 && py + 16 <= text_h) {
-                    pxe_draw_char(surf, px, py, c, fg);
+        if (i >= ed->len) break;
+
+        char c = ed->text[i];
+        if (c == '\n') {
+            cur_y++;
+            cur_px = 0;
+            cur_col = 0;
+        } else if (c == '\t') {
+            cur_col += glyph_w / 8;
+            cur_px += glyph_w;
+        } else {
+            uint32_t fg = (s1 >= 0 && i >= s1 && i < s2) ? PXE_COL_WHITE : PXE_COL_BLACK;
+            if (px >= 0 && px + glyph_w <= text_w && py >= 0 && py + 16 <= text_h) {
+                if (cp < 0x80u) {
+                    pxe_draw_char(surf, px, py, (char)cp, fg);
+                } else {
+                    char ubuf[5];
+                    int ul = utf8_encode_one(cp, ubuf);
+                    ubuf[ul] = '\0';
+                    pxe_draw_text(surf, px, py, ubuf, fg);
                 }
-                cur_x++;
             }
+            cur_px += glyph_w;
+            cur_col += (cp < 0x80u) ? 1 : 2;
         }
+        i += byte_adv;
     }
 
     /* Vertical scrollbar */
@@ -338,16 +437,20 @@ static void render_notepad(const pxe_win_surface_t* surf, const notepad_t* ed) {
     pxe_draw_hline(surf, 0, sby, surf->width, PXE_COL_DARK_GRAY);
     pxe_draw_hline(surf, 0, sby + 1, surf->width, PXE_COL_WHITE);
 
-    int cx, cy;
-    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
-    char status[128];
-    snprintf(status, sizeof(status), "%s%s | Ln %d, Col %d",
-             ed->filename[0] ? ed->filename : "Untitled",
-             ed->modified ? "*" : "",
-             cy + 1, cx + 1);
-    int max_c = (surf->width - 12) / 6;
-    if (max_c > 0 && (int)strlen(status) > max_c) status[max_c] = '\0';
-    pxe_draw_text_small(surf, 6, sby + 8, status, PXE_COL_BLACK);
+    int cpx, cy, col;
+    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, &col);
+    char status[160], sclip[160];
+    if (ed->zh) {
+        snprintf(status, sizeof(status), "%s%s | 第 %d 行, 第 %d 列",
+                 ed->filename[0] ? ed->filename : "未命名",
+                 ed->modified ? "*" : "", cy + 1, col + 1);
+    } else {
+        snprintf(status, sizeof(status), "%s%s | Ln %d, Col %d",
+                 ed->filename[0] ? ed->filename : "Untitled",
+                 ed->modified ? "*" : "", cy + 1, col + 1);
+    }
+    utf8_clip_by_pixels(status, surf->width - 12, 1, sclip, sizeof(sclip));
+    pxe_draw_text_small(surf, 6, sby + 5, sclip, PXE_COL_BLACK);
 
     /* Modal dialogs */
     if (ed->modal == MODAL_OPEN || ed->modal == MODAL_SAVE_AS) {
@@ -358,36 +461,44 @@ static void render_notepad(const pxe_win_surface_t* surf, const notepad_t* ed) {
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
         pxe_draw_text(surf, dx + 8, dy + 3,
-                      (ed->modal == MODAL_OPEN) ? "Open File" : "Save As",
+                      (ed->modal == MODAL_OPEN) ? NP_TR(ed, "打开文件", "Open File")
+                                                : NP_TR(ed, "另存为", "Save As"),
                       PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 10, dy + 25, "Path (e.g. C:\\NOTE.TXT):", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 10, dy + 23,
+                            NP_TR(ed, "文件路径 (例如 C:\\NOTE.TXT):", "Path (e.g. C:\\NOTE.TXT):"),
+                            PXE_COL_BLACK);
         pxe_draw_bevel_box(surf, dx + 10, dy + 36, dw - 20, 22, 1, PXE_COL_WHITE);
 
-        int max_vis = (dw - 28) / 8;
-        if (max_vis < 1) max_vis = 1;
-        int start = (ed->modal_len > max_vis) ? (ed->modal_len - max_vis) : 0;
-        pxe_draw_text(surf, dx + 14, dy + 39, ed->modal_input + start, PXE_COL_BLACK);
-        int cur_px = dx + 14 + (ed->modal_len - start) * 8;
-        pxe_draw_vline(surf, cur_px, dy + 39, 16, PXE_COL_BLACK);
+        const char* vis_src = ed->modal_input;
+        int box_px = dw - 28;
+        while (*vis_src && pxe_text_width(vis_src) > box_px) {
+            (void)utf8_decode_next(&vis_src);
+        }
+        pxe_draw_text(surf, dx + 14, dy + 39, vis_src, PXE_COL_BLACK);
+        int cur_draw_px = dx + 14 + pxe_text_width(vis_src);
+        pxe_draw_vline(surf, cur_draw_px, dy + 39, 16, PXE_COL_BLACK);
 
-        pxe_draw_button(surf, dx + dw / 2 - 74, dy + 66, 66, 22, "OK", ed->btn_ok_pressed, 1);
-        pxe_draw_button(surf, dx + dw / 2 + 8,  dy + 66, 66, 22, "Cancel", ed->btn_cancel_pressed, 1);
+        pxe_draw_button(surf, dx + dw / 2 - 74, dy + 66, 66, 22,
+                        NP_TR(ed, "确定", "OK"), ed->btn_ok_pressed, 1);
+        pxe_draw_button(surf, dx + dw / 2 + 8,  dy + 66, 66, 22,
+                        NP_TR(ed, "取消", "Cancel"), ed->btn_cancel_pressed, 1);
     } else if (ed->modal == MODAL_ERROR) {
-        int dw = 240, dh = 86;
+        int dw = 260, dh = 86;
         int dx = (surf->width - dw) / 2;
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 12, dy + 12, 22, 22, PXE_COL_DARK_RED);
         pxe_draw_text(surf, dx + 19, dy + 15, "!", PXE_COL_WHITE);
-        pxe_draw_text(surf, dx + 42, dy + 12, "File Error", PXE_COL_DARK_RED);
-        pxe_draw_text_small(surf, dx + 42, dy + 32, ed->err_msg, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + dw / 2 - 30, dy + 56, 60, 22, "OK", ed->btn_ok_pressed, 1);
+        pxe_draw_text(surf, dx + 42, dy + 12, NP_TR(ed, "文件错误", "File Error"), PXE_COL_DARK_RED);
+        pxe_draw_text_small(surf, dx + 42, dy + 34, ed->err_msg, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + dw / 2 - 30, dy + 56, 60, 22,
+                        NP_TR(ed, "确定", "OK"), ed->btn_ok_pressed, 1);
     }
 }
 
 static void handle_modal_mouse_down(notepad_t* ed, const pxe_win_surface_t* surf, int mx, int my) {
     if (ed->modal == MODAL_ERROR) {
-        int dw = 240, dh = 86;
+        int dw = 260, dh = 86;
         int dx = (surf->width - dw) / 2;
         int dy = (surf->height - dh) / 2;
         if (pxe_point_in_rect(mx, my, dx + dw / 2 - 30, dy + 56, 60, 22)) {
@@ -408,7 +519,7 @@ static void handle_modal_mouse_down(notepad_t* ed, const pxe_win_surface_t* surf
 
 static void handle_modal_mouse_up(notepad_t* ed, const pxe_win_surface_t* surf, int mx, int my) {
     if (ed->modal == MODAL_ERROR) {
-        int dw = 240, dh = 86;
+        int dw = 260, dh = 86;
         int dx = (surf->width - dw) / 2;
         int dy = (surf->height - dh) / 2;
         if (ed->btn_ok_pressed && pxe_point_in_rect(mx, my, dx + dw / 2 - 30, dy + 56, 60, 22)) {
@@ -447,6 +558,7 @@ int main(int argc, char** argv) {
     ed->text[0] = '\0';
     ed->sel_start = -1;
     ed->sel_end = -1;
+    ed->zh = pxe_is_zh();
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -458,7 +570,7 @@ int main(int argc, char** argv) {
     desc.min_h = 180;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "Notepad - Untitled");
+    strcpy(desc.title, NP_TR(ed, "记事本 - 未命名", "Notepad - Untitled"));
 
     pxe_win_surface_t surf;
     ed->win_id = pxe_win_create(&desc, &surf);
@@ -468,25 +580,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pxe_menu_bar_t mb;
-    memset(&mb, 0, sizeof(mb));
-    mb.menu_count = 2;
-    strcpy(mb.menus[0].title, "File");
-    mb.menus[0].item_count = 5;
-    strcpy(mb.menus[0].items[0].label, "New");        mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, "Open...");    mb.menus[0].items[1].enabled = 1;
-    strcpy(mb.menus[0].items[2].label, "Save");       mb.menus[0].items[2].enabled = 1;
-    strcpy(mb.menus[0].items[3].label, "Save As..."); mb.menus[0].items[3].enabled = 1;
-    strcpy(mb.menus[0].items[4].label, "Exit");       mb.menus[0].items[4].enabled = 1;
-
-    strcpy(mb.menus[1].title, "Edit");
-    mb.menus[1].item_count = 5;
-    strcpy(mb.menus[1].items[0].label, "Cut");        mb.menus[1].items[0].enabled = 1;
-    strcpy(mb.menus[1].items[1].label, "Copy");       mb.menus[1].items[1].enabled = 1;
-    strcpy(mb.menus[1].items[2].label, "Paste");      mb.menus[1].items[2].enabled = 1;
-    strcpy(mb.menus[1].items[3].label, "Delete");     mb.menus[1].items[3].enabled = 1;
-    strcpy(mb.menus[1].items[4].label, "Select All"); mb.menus[1].items[4].enabled = 1;
-    pxe_win_set_menu(ed->win_id, &mb);
+    sync_notepad_menu(ed);
 
     if (argc > 1 && argv[1] && argv[1][0]) {
         ed_open_file(ed, argv[1]);
@@ -518,9 +612,16 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
                 break;
-            case PXE_EV_REDRAW:
+            case PXE_EV_REDRAW: {
+                int new_zh = pxe_is_zh();
+                if (new_zh != ed->zh) {
+                    ed->zh = new_zh;
+                    sync_notepad_menu(ed);
+                    update_title(ed);
+                }
                 dirty = 1;
                 break;
+            }
             case PXE_EV_ACTIVATE:
                 if (ev.text[0]) ed_open_file(ed, ev.text);
                 dirty = 1;
@@ -570,11 +671,11 @@ int main(int argc, char** argv) {
                         }
                         dirty = 1;
                     } else if (ev.y < text_h) {
-                        int tx = ed->scroll_x + (ev.x - 2) / 8;
+                        int tpx = ed->scroll_x * 8 + (ev.x - 2);
                         int ty = ed->scroll_y + (ev.y - 2) / 16;
-                        if (tx < 0) tx = 0;
+                        if (tpx < 0) tpx = 0;
                         if (ty < 0) ty = 0;
-                        ed->cursor = get_pos_from_xy(ed, tx, ty);
+                        ed->cursor = get_pos_from_px_line(ed, tpx, ty);
                         ed->sel_start = ed->cursor;
                         ed->sel_end = ed->cursor;
                         ed->dragging = 1;
@@ -584,11 +685,11 @@ int main(int argc, char** argv) {
                 break;
             case PXE_EV_MOUSE_MOVE:
                 if (ed->dragging && (ev.buttons & PXE_BTN_LEFT) && ed->modal == MODAL_NONE) {
-                    int tx = ed->scroll_x + (ev.x - 2) / 8;
+                    int tpx = ed->scroll_x * 8 + (ev.x - 2);
                     int ty = ed->scroll_y + (ev.y - 2) / 16;
-                    if (tx < 0) tx = 0;
+                    if (tpx < 0) tpx = 0;
                     if (ty < 0) ty = 0;
-                    int pos = get_pos_from_xy(ed, tx, ty);
+                    int pos = get_pos_from_px_line(ed, tpx, ty);
                     if (pos != ed->sel_end) {
                         ed->sel_end = pos;
                         ed->cursor = pos;
@@ -644,7 +745,17 @@ int main(int argc, char** argv) {
                         }
                     } else if (ev.key == PXE_KEY_BACKSPACE) {
                         if (ed->modal_len > 0) {
-                            ed->modal_input[--ed->modal_len] = '\0';
+                            int d = utf8_prev_char_bytes(ed->modal_input, ed->modal_len);
+                            ed->modal_len -= d;
+                            ed->modal_input[ed->modal_len] = '\0';
+                            dirty = 1;
+                        }
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        int tl = (int)strlen(ev.text);
+                        if (ed->modal_len + tl < 250) {
+                            memcpy(ed->modal_input + ed->modal_len, ev.text, (size_t)tl);
+                            ed->modal_len += tl;
+                            ed->modal_input[ed->modal_len] = '\0';
                             dirty = 1;
                         }
                     } else if (ev.key >= 32 && ev.key <= 126 && ed->modal_len < 250) {
@@ -686,20 +797,20 @@ int main(int argc, char** argv) {
                 }
 
                 if (ev.key == PXE_KEY_UP) {
-                    int cx, cy;
-                    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
-                    if (cy > 0) ed->cursor = get_pos_from_xy(ed, cx, cy - 1);
+                    int cpx, cy;
+                    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, NULL);
+                    if (cy > 0) ed->cursor = get_pos_from_px_line(ed, cpx, cy - 1);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_DOWN) {
-                    int cx, cy;
-                    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
-                    ed->cursor = get_pos_from_xy(ed, cx, cy + 1);
+                    int cpx, cy;
+                    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, NULL);
+                    ed->cursor = get_pos_from_px_line(ed, cpx, cy + 1);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_LEFT) {
-                    if (ed->cursor > 0) ed->cursor--;
+                    if (ed->cursor > 0) ed->cursor -= utf8_prev_char_bytes(ed->text, ed->cursor);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_RIGHT) {
-                    if (ed->cursor < ed->len) ed->cursor++;
+                    if (ed->cursor < ed->len) ed->cursor += utf8_next_char_bytes(ed->text, ed->cursor, ed->len);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_HOME) {
                     ed->cursor = get_line_start(ed, ed->cursor);
@@ -708,27 +819,28 @@ int main(int argc, char** argv) {
                     ed->cursor = get_line_end(ed, ed->cursor);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_PGUP) {
-                    int cx, cy;
+                    int cpx, cy;
                     int step = (text_h / 16 > 1) ? (text_h / 16) : 1;
-                    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
+                    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, NULL);
                     int ny = cy - step;
                     if (ny < 0) ny = 0;
-                    ed->cursor = get_pos_from_xy(ed, cx, ny);
+                    ed->cursor = get_pos_from_px_line(ed, cpx, ny);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_PGDN) {
-                    int cx, cy;
+                    int cpx, cy;
                     int step = (text_h / 16 > 1) ? (text_h / 16) : 1;
-                    get_xy_from_pos(ed, ed->cursor, &cx, &cy);
-                    ed->cursor = get_pos_from_xy(ed, cx, cy + step);
+                    get_px_line_from_pos(ed, ed->cursor, &cpx, &cy, NULL);
+                    ed->cursor = get_pos_from_px_line(ed, cpx, cy + step);
                     ed->sel_start = ed->sel_end = -1;
                 } else if (ev.key == PXE_KEY_BACKSPACE) {
                     if (has_selection(ed)) {
                         delete_selection(ed);
                     } else if (ed->cursor > 0) {
-                        memmove(ed->text + ed->cursor - 1, ed->text + ed->cursor,
+                        int d = utf8_prev_char_bytes(ed->text, ed->cursor);
+                        memmove(ed->text + ed->cursor - d, ed->text + ed->cursor,
                                 (size_t)(ed->len - ed->cursor + 1));
-                        ed->cursor--;
-                        ed->len--;
+                        ed->cursor -= d;
+                        ed->len -= d;
                         ed->modified = 1;
                         update_title(ed);
                     }
@@ -736,9 +848,10 @@ int main(int argc, char** argv) {
                     if (has_selection(ed)) {
                         delete_selection(ed);
                     } else if (ed->cursor < ed->len) {
-                        memmove(ed->text + ed->cursor, ed->text + ed->cursor + 1,
-                                (size_t)(ed->len - ed->cursor));
-                        ed->len--;
+                        int d = utf8_next_char_bytes(ed->text, ed->cursor, ed->len);
+                        memmove(ed->text + ed->cursor, ed->text + ed->cursor + d,
+                                (size_t)(ed->len - ed->cursor - d + 1));
+                        ed->len -= d;
                         ed->modified = 1;
                         update_title(ed);
                     }
@@ -746,6 +859,8 @@ int main(int argc, char** argv) {
                     insert_char(ed, '\n');
                 } else if (ev.key == PXE_KEY_TAB) {
                     insert_char(ed, '\t');
+                } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                    insert_utf8_text(ed, ev.text);
                 } else if (ev.key >= 32 && ev.key <= 126) {
                     insert_char(ed, (char)ev.key);
                 } else {

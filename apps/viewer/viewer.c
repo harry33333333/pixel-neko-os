@@ -1552,7 +1552,10 @@ typedef struct {
     int          open_len;
     int          err_modal;
     char         err_msg[96];
+    int          zh;
 } viewer_t;
+
+#define VW_TR(vw, z, e) ((vw)->zh ? (z) : (e))
 
 static void make_sample_image(viewer_t* vw) {
     img_free(&vw->img);
@@ -1694,12 +1697,12 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
     /* Toolbar (y=0..25) */
     pxe_fill_rect(surf, 0, 0, surf->width, 26, PXE_COL_LIGHT_GRAY);
     pxe_draw_hline(surf, 0, 25, surf->width, PXE_COL_DARK_GRAY);
-    pxe_draw_button(surf, 6,   3, 46, 20, "Open", 0, 1);
+    pxe_draw_button(surf, 6,   3, 46, 20, VW_TR(vw, "打开", "Open"), 0, 1);
     pxe_draw_button(surf, 56,  3, 24, 20, "-", 0, 1);
     pxe_draw_button(surf, 84,  3, 24, 20, "+", 0, 1);
     pxe_draw_button(surf, 112, 3, 38, 20, "1:1", 0, 1);
-    pxe_draw_button(surf, 154, 3, 38, 20, "Fit", 0, 1);
-    pxe_draw_button(surf, 198, 3, 114, 20, "Set Wallpaper", 0, vw->img.pixels != NULL);
+    pxe_draw_button(surf, 154, 3, 38, 20, VW_TR(vw, "适应", "Fit"), 0, 1);
+    pxe_draw_button(surf, 198, 3, 114, 20, VW_TR(vw, "设为壁纸", "Set Wallpaper"), 0, vw->img.pixels != NULL);
 
     /* Status bar */
     int sb_y = surf->height - 20;
@@ -1709,16 +1712,20 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
     if (vw->img.pixels && vw->img.width > 0) {
         uint64_t kb = ((uint64_t)vw->img.width * (uint64_t)vw->img.height * 4ull) / 1024ull;
         if (vw->zoom_pct == 0) {
-            snprintf(status, sizeof(status), "%dx%d 32-bit | Zoom: Fit | %llu KB",
+            snprintf(status, sizeof(status),
+                     vw->zh ? "%dx%d 32位 | 缩放: 适应 | %llu KB"
+                            : "%dx%d 32-bit | Zoom: Fit | %llu KB",
                      vw->img.width, vw->img.height, (unsigned long long)kb);
         } else {
-            snprintf(status, sizeof(status), "%dx%d 32-bit | Zoom: %d%% | %llu KB",
+            snprintf(status, sizeof(status),
+                     vw->zh ? "%dx%d 32位 | 缩放: %d%% | %llu KB"
+                            : "%dx%d 32-bit | Zoom: %d%% | %llu KB",
                      vw->img.width, vw->img.height, vw->zoom_pct, (unsigned long long)kb);
         }
     } else {
-        snprintf(status, sizeof(status), "No image loaded");
+        snprintf(status, sizeof(status), "%s", VW_TR(vw, "未加载图片", "No image loaded"));
     }
-    pxe_draw_text_small(surf, 8, sb_y + 7, status, PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 8, sb_y + 5, status, PXE_COL_BLACK);
 
     /* Viewport */
     int vp_x = 0, vp_y = 26, vp_w = surf->width, vp_h = sb_y - vp_y;
@@ -1727,7 +1734,7 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
 
     if (!vw->img.pixels || vw->img.width <= 0 || vw->img.height <= 0) {
         pxe_draw_text(surf, vp_x + vp_w / 2 - 44, vp_y + vp_h / 2 - 8,
-                      "(No Image)", PXE_COL_WHITE);
+                      VW_TR(vw, "(无图像)", "(No Image)"), PXE_COL_WHITE);
     } else {
         int dw, dh;
         if (vw->zoom_pct == 0) {
@@ -1781,10 +1788,10 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
     if (vw->wp_menu_open) {
         int mx = 198, my = 25, mw = 114, mh = 4 * 18 + 4;
         pxe_draw_bevel_box(surf, mx, my, mw, mh, 0, PXE_COL_WHITE);
-        pxe_draw_text_small(surf, mx + 8, my + 6 + 0 * 18, "1. Fill", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, mx + 8, my + 6 + 1 * 18, "2. Fit", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, mx + 8, my + 6 + 2 * 18, "3. Stretch", PXE_COL_BLACK);
-        pxe_draw_text_small(surf, mx + 8, my + 6 + 3 * 18, "4. Tile", PXE_COL_BLACK);
+        pxe_draw_text_small(surf, mx + 8, my + 5 + 0 * 18, VW_TR(vw, "1. 填充", "1. Fill"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, mx + 8, my + 5 + 1 * 18, VW_TR(vw, "2. 适应", "2. Fit"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, mx + 8, my + 5 + 2 * 18, VW_TR(vw, "3. 拉伸", "3. Stretch"), PXE_COL_BLACK);
+        pxe_draw_text_small(surf, mx + 8, my + 5 + 3 * 18, VW_TR(vw, "4. 平铺", "4. Tile"), PXE_COL_BLACK);
     }
 
     if (vw->open_modal) {
@@ -1794,14 +1801,17 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Open Image (BMP/PNG/JPG)", PXE_COL_WHITE);
+        pxe_draw_text(surf, dx + 8, dy + 3,
+                      VW_TR(vw, "打开图片 (BMP/PNG/JPG)", "Open Image (BMP/PNG/JPG)"), PXE_COL_WHITE);
         pxe_draw_bevel_box(surf, dx + 10, dy + 28, dw - 20, 22, 1, PXE_COL_WHITE);
-        int max_c = (dw - 28) / 6;
-        int start = (vw->open_len > max_c) ? (vw->open_len - max_c) : 0;
-        pxe_draw_text_small(surf, dx + 14, dy + 36, vw->open_input + start, PXE_COL_BLACK);
-        pxe_draw_vline(surf, dx + 14 + (vw->open_len - start) * 6, dy + 32, 14, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + dw / 2 - 72, dy + 60, 64, 22, "Open", 0, 1);
-        pxe_draw_button(surf, dx + dw / 2 + 8,  dy + 60, 64, 22, "Cancel", 0, 1);
+        const char* vis_in = vw->open_input;
+        while (*vis_in && pxe_text_width_small(vis_in) > dw - 30) {
+            (void)utf8_decode_next(&vis_in);
+        }
+        pxe_draw_text_small(surf, dx + 14, dy + 34, vis_in, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width_small(vis_in), dy + 32, 14, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + dw / 2 - 72, dy + 60, 64, 22, VW_TR(vw, "打开", "Open"), 0, 1);
+        pxe_draw_button(surf, dx + dw / 2 + 8,  dy + 60, 64, 22, VW_TR(vw, "取消", "Cancel"), 0, 1);
     } else if (vw->err_modal) {
         int dw = 300, dh = 90;
         if (dw > surf->width - 12) dw = surf->width - 12;
@@ -1810,9 +1820,9 @@ static void render_viewer(const pxe_win_surface_t* surf, viewer_t* vw) {
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 12, dy + 12, 22, 22, PXE_COL_DARK_RED);
         pxe_draw_text(surf, dx + 19, dy + 15, "!", PXE_COL_WHITE);
-        pxe_draw_text(surf, dx + 42, dy + 14, "Image Error", PXE_COL_DARK_RED);
+        pxe_draw_text(surf, dx + 42, dy + 14, VW_TR(vw, "图像错误", "Image Error"), PXE_COL_DARK_RED);
         pxe_draw_text_small(surf, dx + 42, dy + 34, vw->err_msg, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + dw / 2 - 30, dy + 58, 60, 22, "OK", 0, 1);
+        pxe_draw_button(surf, dx + dw / 2 - 30, dy + 58, 60, 22, VW_TR(vw, "确定", "OK"), 0, 1);
     }
 }
 
@@ -1840,6 +1850,7 @@ int main(int argc, char** argv) {
     viewer_t* vw = (viewer_t*)calloc(1, sizeof(viewer_t));
     if (!vw) return 1;
 
+    vw->zh = pxe_is_zh();
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     desc.x = 72;
@@ -1850,7 +1861,7 @@ int main(int argc, char** argv) {
     desc.min_h = 220;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "Image Viewer");
+    strcpy(desc.title, VW_TR(vw, "图片查看器", "Image Viewer"));
 
     pxe_win_surface_t surf;
     vw->win_id = pxe_win_create(&desc, &surf);
@@ -1887,6 +1898,10 @@ int main(int argc, char** argv) {
                 if (pxe_win_get_surface(vw->win_id, &surf) == 0) dirty = 1;
                 break;
             case PXE_EV_REDRAW:
+                vw->zh = pxe_is_zh();
+                if (!vw->img_path[0]) {
+                    pxe_win_set_title(vw->win_id, VW_TR(vw, "图片查看器", "Image Viewer"));
+                }
                 dirty = 1;
                 break;
             case PXE_EV_ACTIVATE:
@@ -2010,7 +2025,17 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     } else if (ev.key == PXE_KEY_BACKSPACE) {
                         if (vw->open_len > 0) {
-                            vw->open_input[--vw->open_len] = '\0';
+                            int d = utf8_prev_char_bytes(vw->open_input, vw->open_len);
+                            vw->open_len -= d;
+                            vw->open_input[vw->open_len] = '\0';
+                            dirty = 1;
+                        }
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        int tl = (int)strlen(ev.text);
+                        if (vw->open_len + tl < 250) {
+                            memcpy(vw->open_input + vw->open_len, ev.text, (size_t)tl);
+                            vw->open_len += tl;
+                            vw->open_input[vw->open_len] = '\0';
                             dirty = 1;
                         }
                     } else if (ev.key >= 32 && ev.key <= 126 && vw->open_len < 250) {

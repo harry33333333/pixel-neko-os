@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A270a`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A280a`）
 
-在当前 `main` 主干（基准版本 **`v26A270a`**）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，支持图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 **`v26A280a`**（`beta` 中文国际化分支）中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，全面支持 UTF-8 简体中文显示、Rime 拼音输入法（`PXE_KEY_UTF8`）、动态界面语言切换、图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -89,7 +89,8 @@ row15 = ................
   - 入口函数支持标准 `int main(int argc, char** argv)`（`crt0_r3.asm` / `crt0_r0.asm` 传入 `argc`/`argv`，双击关联文档启动时 `argv[1]` 为目标路径；`SINGLE_INST` 重复唤醒通过 `PXE_EV_ACTIVATE` 事件的 `ev.text` 传递）
   - `void pxe_exit(int status)`、`int pxe_getpid(void)`、`void pxe_yield(void)`、`void pxe_sleep_ms(uint32_t ms)`、`uint64_t pxe_get_ticks(void)`、`void pxe_debug_log(const char* msg)`
   - `int pxe_spawn(const char* path, int argc, const char* const* argv)`、`int pxe_waitpid(int pid, int* out_status)`
-  - `int pxe_get_rtc_time(pxe_rtc_time_t* out)`、`int pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out)`
+  - `int pxe_get_rtc_time(pxe_rtc_time_t* out)`、`int pxe_sys_get_basic_info(pxe_basic_sysinfo_t* out)`（含 `ui_lang` 字段，取值为 `PXE_LANG_ZH` = `1` 或 `PXE_LANG_EN` = `0`）
+  - **多语言控制（`v26A280a` 新增）**：`int pxe_is_zh(void)`（判断当前系统是否处于简体中文模式）、`int pxe_set_language(int lang)`（需 `SYS_SETTINGS` 或 Ring 0，写入 `SYSTEM.PSE` 并广播全桌面窗口重绘）
 - **显示能力探测与分辨率/色深控制（`v26A220a` 新增）**：
   - **`int pxe_display_get_caps(pxe_display_caps_t* out)`**：从当前激活的显卡驱动动态读取显示能力，核心字段如下：
     - `flags`：`PXE_DISP_FLAG_DRIVER_ACTIVE`（存在有效显卡驱动）、`PXE_DISP_FLAG_HW_2D`（硬件 2D 加速激活）、`PXE_DISP_FLAG_UNLIMITED_RES`（驱动已开启无人工上限模式）
@@ -113,15 +114,19 @@ row15 = ................
   - `int pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface)`（收到 `PXE_EV_RESIZE` 后**务必调用**以刷新 `width`/`height`/`stride`）
   - `int pxe_win_present(int win_id)` / `int pxe_win_present_rect(int win_id, int x, int y, int w, int h)`
   - `int pxe_win_poll_event(int win_id, pxe_event_t* out_ev)` / `int pxe_win_wait_event(int win_id, pxe_event_t* out_ev)`
+  - **键盘与中文输入法事件**：普通按键返回 `PXE_EV_KEY_DOWN` 并在 `ev.key` 中携带 ASCII 或 `PXE_KEY_*` 控制键；当内置拼音输入法上屏中文/标点时，窗口收到 `ev.type == PXE_EV_KEY_DOWN`、`ev.key == PXE_KEY_UTF8`（`0x1020`），上屏的 UTF-8 多字节文本位于 `ev.text[32]`。
   - **鼠标滚轮事件**：`PXE_EV_MOUSE_WHEEL`（`10`）仅在鼠标位于窗口客户区时发送；`ev.x`/`ev.y` 为客户区坐标，`ev.arg0` 为有符号滚轮增量，正值向上、负值向下。复用既有字段以保持 `pxe_event_t` ABI 大小不变。
   - `int pxe_clipboard_get(char* buf, size_t max_len)` / `int pxe_clipboard_set(const char* text)`、`void pxe_notify_banner(const char* message)`、`void pxe_beep(void)`
 - **基础与控件绘图（同时兼容 `PXE_CANVAS_PAL8` 与 `PXE_CANVAS_RGB32`）**：
   - 像素与几何：`pxe_palette_to_rgb32`、`pxe_put_pixel`、`pxe_put_rgb32`、`pxe_fill_rect`、`pxe_draw_rect`、`pxe_draw_hline`、`pxe_draw_vline`
-  - 字体与经典 UI 控件：`pxe_draw_char`、`pxe_draw_text`、`pxe_draw_text_small`、`pxe_draw_bevel_box`、`pxe_draw_button`、`pxe_draw_scrollbar`、`pxe_point_in_rect`
+  - 字体与经典 UI 控件：`pxe_draw_char`、`pxe_draw_text`、`pxe_draw_text_small`、`pxe_text_width`、`pxe_text_width_small`、`pxe_draw_bevel_box`、`pxe_draw_button`、`pxe_draw_scrollbar`、`pxe_point_in_rect`
 
 ### 3.3 内存、字符串、文件系统与音频
 
 - **动态内存与字符串（`<pxe/mem.h>`, `<pxe/str.h>`）**：`pxe_sbrk`、`malloc`、`calloc`、`realloc`、`free`、`memcpy`、`memmove`、`memset`、`memcmp`、`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strcasecmp`/`strchr`/`strrchr`/`snprintf`/`vsnprintf`。
+- **UTF-8 / UTF-16 文本处理（`<pxe/str.h>`，`v26A280a` 新增）**：
+  - `utf8_decode_next`、`utf8_encode_one`、`utf8_prev_char_bytes`、`utf8_next_char_bytes`、`utf8_clip_by_pixels`、`utf8_validate`
+  - `utf16le_to_utf8`、`utf8_to_utf16le`、`ucs2be_to_utf8`（供 VFS 长文件名与外部文本转换使用）
 - **虚拟文件系统（`<pxe/fs.h>`）**：使用 Windows 风格盘符路径（如 `"C:\\TEST.TXT"`）：
   - `pxe_open`、`pxe_read`、`pxe_seek`、`pxe_close`、`pxe_stat`、`pxe_read_file`、`pxe_write_file`、`pxe_copy_file`、`pxe_listdir`、`pxe_mkdir`、`pxe_unlink`、`pxe_rename`、`pxe_get_drives`、`pxe_eject_drive`。
 - **音频控制与流式输入（`<pxe/audio.h>`）**：
@@ -219,4 +224,53 @@ include $(SDK_DIR)/pxe_app.mk
   1. 将源码与 `Makefile`、`.pxi` 放在 `pixel-neko-os/apps/myapp/`；
   2. 在 [Makefile](../Makefile) 的 `APPS_PXE_NAMES` 中追加 `myapp`；
   3. 在 [scripts/make_iso.sh](../scripts/make_iso.sh) 的 `REQUIRED_APPS` 中追加 `myapp`；
-  4. 参考完整内置示例：[apps/cpanel/cpanel.c](../apps/cpanel/cpanel.c)（Ring 3 + `SYS_SETTINGS` 动态分辨率切换）、[apps/sysinfo/sysinfo.c](../apps/sysinfo/sysinfo.c)（Ring 0 系统诊断）、[apps/taskmgr/taskmgr.c](../apps/taskmgr/taskmgr.c)（Ring 0 任务管理器）、[sdk/examples/hello_gui/hello.c](../sdk/examples/hello_gui/hello.c)、[sdk/examples/mini_taskmon/mini_taskmon.c](../sdk/examples/mini_taskmon/mini_taskmon.c)。
+  4. 参考完整内置示例：[apps/cpanel/cpanel.c](../apps/cpanel/cpanel.c)（Ring 3 + `SYS_SETTINGS` 动态分辨率与语言切换）、[apps/notepad/notepad.c](../apps/notepad/notepad.c)（UTF-8 中文编辑与 `PXE_KEY_UTF8` 接入）、[apps/sysinfo/sysinfo.c](../apps/sysinfo/sysinfo.c)（Ring 0 系统诊断）、[apps/taskmgr/taskmgr.c](../apps/taskmgr/taskmgr.c)（Ring 0 任务管理器）、[sdk/examples/hello_gui/hello.c](../sdk/examples/hello_gui/hello.c)、[sdk/examples/mini_taskmon/mini_taskmon.c](../sdk/examples/mini_taskmon/mini_taskmon.c)。
+
+---
+
+## 五、 简体中文、UTF-8 与拼音输入法开发指南（`v26A280a`）
+
+### 5.1 字体渲染与像素宽度度量
+
+- **内置字体与字库**：系统启动时加载 `system/FONT_CJK.FNT`，`pxe_draw_text()` 使用 **8×16 ASCII + 12×12 中日韩点阵字模**（中文单字宽 `12px`，英文半角宽 `8px`，行高建议 `16px`~`18px`）；`pxe_draw_text_small()` 在纯 ASCII 行使用 **5×7** 字模（宽 `6px`），若同一行混排中文等非 ASCII 字符，SDK 与内核字体引擎会自动对 ASCII 字符做 `+3px` 基线居中对齐，中文仍占 `12px` 宽。
+- **严禁用 `strlen(s) * 8` 估算中文宽度**：由于 1 个 UTF-8 汉字占 3 字节但仅占 `12px`（而非 `24px`），必须改用像素度量与按码点截断工具：
+  - `int pxe_text_width(const char* text)` / `int pxe_text_width_small(const char* text)`
+  - `void utf8_clip_by_pixels(const char* src, int max_pixels, int is_small_font, char* dst, size_t dst_cap)`（保证在完整 UTF-8 字符边界处截断，绝不切碎多字节序列导致乱码）。
+
+### 5.2 接入拼音输入法（`PXE_KEY_UTF8`）与光标编辑
+
+系统窗口管理器（`wm/ime.c`）内置与 Windows 7 一致的 **`Ctrl + Shift`** 快捷键以及顶部状态栏 `[中]`/`[EN]` 切换按钮，词库 `system/IME.PNY` 由 [scripts/gen_ime_dict.py](../scripts/gen_ime_dict.py) 基于 Rime 朙月拼音/八股文词库预先构建，支持全拼、简拼、词组与整句联想。应用无需手动实现输入法，只需正确处理 `PXE_KEY_UTF8` 事件与 UTF-8 光标移动：
+
+```c
+if (ev.type == PXE_EV_KEY_DOWN) {
+    if (ev.key == PXE_KEY_BACKSPACE && len > 0) {
+        /* 关键：按完整 UTF-8 字符退格，不能 len-- */
+        int step = utf8_prev_char_bytes(buf, len);
+        len -= step;
+        buf[len] = '\0';
+    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+        /* 输入法上屏的中文或中文标点（UTF-8） */
+        int n = (int)strlen(ev.text);
+        if (len + n < (int)sizeof(buf)) {
+            memcpy(buf + len, ev.text, (size_t)n);
+            len += n;
+            buf[len] = '\0';
+        }
+    } else if (ev.key >= 32 && ev.key <= 126) {
+        if (len + 1 < (int)sizeof(buf)) {
+            buf[len++] = (char)ev.key;
+            buf[len] = '\0';
+        }
+    }
+}
+```
+
+### 5.3 双语界面适配（简体中文 / English）与 ABI 缓冲区限制
+
+1. **启动与运行时同步**：在 `main()` 初始化时调用 `int zh = pxe_is_zh();`（系统默认即为简体中文 `1`）。用户在控制面板切换语言后，内核会向所有窗口投递 `PXE_EV_REDRAW`；在事件循环收到 `PXE_EV_REDRAW` 时重新比对 `pxe_is_zh()`，若发生变化则调用 `pxe_win_set_title()` 和 `pxe_win_set_menu()` 更新标题栏与菜单栏，并重绘界面。
+2. **注意 ABI 结构体字节长度上限**（UTF-8 中 1 个汉字占 **3 字节**，编译与赋值前请留足 `\0` 结尾）：
+   - `pxe_win_desc_t.title[48]`（约 15 个汉字以内）
+   - `pxe_menu_t.title[16]`（顶部菜单名，最多 **5 个汉字**）
+   - `pxe_menu_item_t.label[24]`（菜单项标签，最多 **7 个汉字**）
+   - `*.pxi` 清单中的静态窗口标题同样受编译期打包检查约束，建议在程序 `main()` 内根据 `pxe_is_zh()` 动态设置窗口标题以支持双语热切换。
+3. **第三方词库声明**：拼音词库转换与引擎构建规范见 [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)。

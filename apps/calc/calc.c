@@ -233,7 +233,8 @@ int main(int argc, char** argv) {
     desc.min_h = 160;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Calculator");
+    int zh = pxe_is_zh();
+    strcpy(desc.title, zh ? "计算器" : "Calculator");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -260,9 +261,15 @@ int main(int argc, char** argv) {
                 running = 0;
                 break;
             case PXE_EV_REDRAW:
-            case PXE_EV_ACTIVATE:
+            case PXE_EV_ACTIVATE: {
+                int new_zh = pxe_is_zh();
+                if (new_zh != zh) {
+                    zh = new_zh;
+                    pxe_win_set_title(win_id, zh ? "计算器" : "Calculator");
+                }
                 dirty = 1;
                 break;
+            }
             case PXE_EV_MOUSE_DOWN:
                 if (ev.buttons & PXE_BTN_LEFT) {
                     int hit = -1;

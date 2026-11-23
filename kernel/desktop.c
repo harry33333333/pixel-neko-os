@@ -706,6 +706,19 @@ void desktop_refresh(void) {
             copy_text(item->target, sizeof(item->target), item->path);
         }
         if (is_locked_shortcut(item->name)) item->locked = true;
+        if (settings_is_language_zh()) {
+            if (text_equal_ci(item->display_name, "File Management")) copy_text(item->display_name, sizeof(item->display_name), "文件管理");
+            else if (text_equal_ci(item->display_name, "About This Machine")) copy_text(item->display_name, sizeof(item->display_name), "关于本机");
+            else if (text_equal_ci(item->display_name, "Clock")) copy_text(item->display_name, sizeof(item->display_name), "时钟");
+            else if (text_equal_ci(item->display_name, "Calculator")) copy_text(item->display_name, sizeof(item->display_name), "计算器");
+            else if (text_equal_ci(item->display_name, "Control Panel")) copy_text(item->display_name, sizeof(item->display_name), "控制面板");
+            else if (text_equal_ci(item->display_name, "System Information")) copy_text(item->display_name, sizeof(item->display_name), "系统信息");
+            else if (text_equal_ci(item->display_name, "Pixel CPU Detect")) copy_text(item->display_name, sizeof(item->display_name), "CPU 检测");
+            else if (text_equal_ci(item->display_name, "Notepad")) copy_text(item->display_name, sizeof(item->display_name), "记事本");
+            else if (text_equal_ci(item->display_name, "Media Player")) copy_text(item->display_name, sizeof(item->display_name), "媒体播放器");
+            else if (text_equal_ci(item->display_name, "Image Viewer")) copy_text(item->display_name, sizeof(item->display_name), "图片查看器");
+            else if (text_equal_ci(item->display_name, "GAME")) copy_text(item->display_name, sizeof(item->display_name), "游戏");
+        }
         desktop_item_t* previous = old_item(item->name);
         if (previous && previous->kind == item->kind &&
             previous->icon_state == 1 &&

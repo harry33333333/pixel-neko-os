@@ -36,6 +36,7 @@
 #include "settings.h"
 #include "wm.h"
 #include "font.h"
+#include "ime.h"
 #include "power.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -783,6 +784,7 @@ void kmain(void) {
                blkdev_count(), g_partition_count);
     settings_init();
     font_cjk_init();
+    ime_init();
     log_disk_init();
     vfs_migrate_legacy_layout();
 

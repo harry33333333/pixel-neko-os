@@ -24,6 +24,8 @@ void settings_set_pattern(int pattern);
 void settings_set_clock_options(bool show_date, bool show_seconds);
 bool settings_get_clock_show_date(void);
 bool settings_get_clock_show_seconds(void);
+void settings_set_language_zh(bool zh);
+bool settings_is_language_zh(void);
 void settings_restore_default_wallpaper(void);
 void settings_set_wallpaper(const char* path, wallpaper_mode_t mode);
 void settings_set_wallpaper_mode(wallpaper_mode_t mode);

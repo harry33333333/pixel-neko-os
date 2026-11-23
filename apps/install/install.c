@@ -76,6 +76,7 @@ typedef struct {
     int skip_format;
     int reinstall_ack;
     int install_error;
+    int zh;
     uint8_t existing_on_disk[MAX_RAW_PARTS];
     uint8_t existing_on_target[MAX_RAW_PARTS];
     char existing_letter[MAX_RAW_PARTS];
@@ -442,64 +443,89 @@ static void render_step_welcome(const pxe_win_surface_t* surf, const installer_t
     pxe_draw_rect(surf, bx, by + 4, lw, bh - 12, RGB_COL(0x082F49));
     draw_neko_badge(surf, bx + (lw - 28) / 2, by + 48);
     pxe_draw_text(surf, bx + 20, by + 92, "Pixel Neko OS", RGB_COL(0xFFFFFF));
-    pxe_draw_text_small(surf, bx + 26, by + 116, "Snow Neko Edition", RGB_COL(0x7DD3FC));
+    pxe_draw_text_small(surf, bx + 26, by + 116,
+                        inst->zh ? "Snow Neko 发行版" : "Snow Neko Edition",
+                        RGB_COL(0x7DD3FC));
     pxe_draw_hline(surf, bx + 18, by + 140, lw - 36, RGB_COL(0x38BDF8));
     char bstr[40];
-    snprintf(bstr, sizeof(bstr), "Build %s",
-             inst->sysinfo.os_build[0] ? inst->sysinfo.os_build : "26A221a");
+    snprintf(bstr, sizeof(bstr), inst->zh ? "版本 %s" : "Build %s",
+             inst->sysinfo.os_build[0] ? inst->sysinfo.os_build : "26A280a");
     pxe_draw_text_small(surf, bx + 26, by + 156, bstr, RGB_COL(0xE0F2FE));
     char mstr[40];
-    snprintf(mstr, sizeof(mstr), "Boot CD: %c:\\",
+    snprintf(mstr, sizeof(mstr), inst->zh ? "引导光盘: %c:\\" : "Boot CD: %c:\\",
              inst->sysinfo.cdrom_drive ? inst->sysinfo.cdrom_drive : '-');
     pxe_draw_text_small(surf, bx + 26, by + 176, mstr, RGB_COL(0xBAE6FD));
 
     int rx = bx + lw + 22;
     int rw = bw - lw - 22;
-    pxe_draw_text(surf, rx, by + 8, "Welcome to Pixel Neko OS Setup", RGB_COL(0x0C4A6E));
+    pxe_draw_text(surf, rx, by + 8,
+                  inst->zh ? "欢迎使用 Pixel Neko OS 安装程序" : "Welcome to Pixel Neko OS Setup",
+                  RGB_COL(0x0C4A6E));
     pxe_draw_hline(surf, rx, by + 30, rw, RGB_COL(0xCBD5E1));
     pxe_draw_text_small(surf, rx, by + 44,
-                        "This guided wizard installs Pixel Neko OS onto an existing",
+                        inst->zh ? "本安装向导将引导您逐步把 Pixel Neko OS 安装到"
+                                 : "This guided wizard installs Pixel Neko OS onto an existing",
                         RGB_COL(0x334155));
     pxe_draw_text_small(surf, rx, by + 60,
-                        "fixed-disk partition cleanly step by step.",
+                        inst->zh ? "本地硬盘的现有分区中，并自动配置引导环境。"
+                                 : "fixed-disk partition cleanly step by step.",
                         RGB_COL(0x334155));
 
     pxe_fill_rect(surf, rx, by + 84, rw, 108, RGB_COL(0xF8FAFC));
     pxe_draw_rect(surf, rx, by + 84, rw, 108, RGB_COL(0xCBD5E1));
-    pxe_draw_text_small(surf, rx + 12, by + 94,  "Setup Steps Overview:", RGB_COL(0x0F172A));
-    pxe_draw_text_small(surf, rx + 12, by + 114, "1. Select destination disk & partition", RGB_COL(0x334155));
-    pxe_draw_text_small(surf, rx + 12, by + 132, "2. Check existing OS & select filesystem (FAT32/FAT16)", RGB_COL(0x334155));
-    pxe_draw_text_small(surf, rx + 12, by + 150, "3. Review configuration & install bootloader", RGB_COL(0x334155));
-    pxe_draw_text_small(surf, rx + 12, by + 168, "4. Reboot into standalone Pixel Neko OS", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 94,
+                        inst->zh ? "安装步骤概览:" : "Setup Steps Overview:", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, rx + 12, by + 114,
+                        inst->zh ? "1. 选择安装目标磁盘与分区"
+                                 : "1. Select destination disk & partition", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 132,
+                        inst->zh ? "2. 检测已有系统并选择文件系统 (FAT32 / FAT16)"
+                                 : "2. Check existing OS & select filesystem (FAT32/FAT16)", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 150,
+                        inst->zh ? "3. 确认安装摘要并部署系统与引导加载器"
+                                 : "3. Review configuration & install bootloader", RGB_COL(0x334155));
+    pxe_draw_text_small(surf, rx + 12, by + 168,
+                        inst->zh ? "4. 重启计算机进入本地安装的 Pixel Neko OS"
+                                 : "4. Reboot into standalone Pixel Neko OS", RGB_COL(0x334155));
 
     char sysline[96];
-    snprintf(sysline, sizeof(sysline), "Hardware: %u MB RAM | %dx%d | %s",
+    snprintf(sysline, sizeof(sysline),
+             inst->zh ? "硬件概况: %u MB 内存 | %dx%d | %s" : "Hardware: %u MB RAM | %dx%d | %s",
              inst->sysinfo.total_ram_mb, inst->sysinfo.screen_w, inst->sysinfo.screen_h,
-             inst->install_mode ? "Installer Mode" : "Live Session");
-    int maxc = rw / 6;
-    if (maxc > 4 && (int)strlen(sysline) > maxc) sysline[maxc] = '\0';
-    pxe_draw_text_small(surf, rx, by + 206, sysline, RGB_COL(0x475569));
+             inst->install_mode ? (inst->zh ? "安装模式" : "Installer Mode")
+                                : (inst->zh ? "Live 会话" : "Live Session"));
+    char sysclip[96];
+    utf8_clip_by_pixels(sysline, rw, 1, sysclip, sizeof(sysclip));
+    pxe_draw_text_small(surf, rx, by + 206, sysclip, RGB_COL(0x475569));
 
-    draw_nt6_btn(surf, l->wbtn_x, l->wbtn_y, l->wbtn_w, l->wbtn_h, "Install now >", 2, 1);
+    draw_nt6_btn(surf, l->wbtn_x, l->wbtn_y, l->wbtn_w, l->wbtn_h,
+                 inst->zh ? "立即安装 >" : "Install now >", 2, 1);
 }
 
 static void render_step_select(const pxe_win_surface_t* surf, const installer_t* inst,
                                const nt6_layout_t* l) {
     int bx = l->body_x, by = l->body_y;
-    pxe_draw_text(surf, bx, by, "Where do you want to install Pixel Neko OS?", RGB_COL(0x0C4A6E));
+    pxe_draw_text(surf, bx, by,
+                  inst->zh ? "您想将 Pixel Neko OS 安装到哪里?"
+                           : "Where do you want to install Pixel Neko OS?",
+                  RGB_COL(0x0C4A6E));
     pxe_draw_text_small(surf, bx, by + 24,
-                        "Select an existing disk partition. Partition geometry is preserved.",
+                        inst->zh ? "请选择目标磁盘分区。原有分区表结构将被保留。"
+                                 : "Select an existing disk partition. Partition geometry is preserved.",
                         RGB_COL(0x475569));
 
-    draw_nt6_btn(surf, l->init_x, l->init_y, l->init_w, l->init_h, "Init Disk", 0, 1);
-    draw_nt6_btn(surf, l->ref_x,  l->ref_y,  l->ref_w,  l->ref_h,  "Refresh",   0, 1);
+    draw_nt6_btn(surf, l->init_x, l->init_y, l->init_w, l->init_h,
+                 inst->zh ? "初始化磁盘" : "Init Disk", 0, 1);
+    draw_nt6_btn(surf, l->ref_x,  l->ref_y,  l->ref_w,  l->ref_h,
+                 inst->zh ? "刷新" : "Refresh",   0, 1);
 
     /* Table Column Header Bar */
     int hdr_y = l->list_y - 20;
     pxe_fill_rect(surf, l->list_x, hdr_y, l->list_w + SB_W, 20, RGB_COL(0xE2E8F0));
     pxe_draw_rect(surf, l->list_x, hdr_y, l->list_w + SB_W, 20, RGB_COL(0x94A3B8));
     pxe_draw_text_small(surf, l->list_x + 8, hdr_y + 6,
-                        "Part   Device       Size       FS      Drv  OS Status",
+                        inst->zh ? "分区   设备         容量       格式    盘符  系统状态"
+                                 : "Part   Device       Size       FS      Drv  OS Status",
                         RGB_COL(0x0F172A));
 
     pxe_fill_rect(surf, l->list_x, l->list_y, l->list_w, l->list_h, RGB_COL(0xFFFFFF));
@@ -507,9 +533,12 @@ static void render_step_select(const pxe_win_surface_t* surf, const installer_t*
 
     if (inst->part_count == 0) {
         pxe_draw_text_small(surf, l->list_x + 14, l->list_y + 28,
-                            "No writable fixed-disk partition found.", RGB_COL(0xB91C1C));
+                            inst->zh ? "未找到可写入的本地硬盘分区。"
+                                     : "No writable fixed-disk partition found.",
+                            RGB_COL(0xB91C1C));
         pxe_draw_text_small(surf, l->list_x + 14, l->list_y + 48,
-                            "If the VM disk is blank, click [Init Disk] and then [Refresh].",
+                            inst->zh ? "如果是全新空白虚拟磁盘，请先点击 [初始化磁盘]，再点击 [刷新]。"
+                                     : "If the VM disk is blank, click [Init Disk] and then [Refresh].",
                             RGB_COL(0x475569));
     } else {
         for (int i = 0; i < l->vis_rows; i++) {
@@ -523,13 +552,17 @@ static void render_step_select(const pxe_win_surface_t* surf, const installer_t*
             uint32_t rfg = sel ? RGB_COL(0xFFFFFF) : RGB_COL(0x0F172A);
             pxe_fill_rect(surf, l->list_x + 1, ry, l->list_w - 2, ROW_H, rbg);
 
-            char sz[16], drv[6], os_s[22], line[112];
+            char sz[16], drv[6], os_s[24], line[112];
             fmt_sectors(p->total_sectors, sz, sizeof(sz));
             if (p->mounted_letter) snprintf(drv, sizeof(drv), "%c:", p->mounted_letter);
             else snprintf(drv, sizeof(drv), "--");
-            if (inst->existing_on_target[idx]) snprintf(os_s, sizeof(os_s), "Existing OS");
-            else if (inst->existing_on_disk[idx]) snprintf(os_s, sizeof(os_s), "OS on Disk");
-            else snprintf(os_s, sizeof(os_s), "Clean/Other");
+            if (inst->existing_on_target[idx]) {
+                snprintf(os_s, sizeof(os_s), inst->zh ? "已有系统" : "Existing OS");
+            } else if (inst->existing_on_disk[idx]) {
+                snprintf(os_s, sizeof(os_s), inst->zh ? "磁盘含系统" : "OS on Disk");
+            } else {
+                snprintf(os_s, sizeof(os_s), inst->zh ? "空闲/其他" : "Clean/Other");
+            }
 
             snprintf(line, sizeof(line),
                      "D%dP%-2d  %-11.11s  %-9.9s  %-6.6s  %-3.3s  %s",
@@ -537,9 +570,9 @@ static void render_step_select(const pxe_win_surface_t* surf, const installer_t*
                      p->disk_name[0] ? p->disk_name : "Disk",
                      sz, p->fs_name[0] ? p->fs_name : "RAW",
                      drv, os_s);
-            int maxc = (l->list_w - 14) / 6;
-            if (maxc > 3 && (int)strlen(line) > maxc) line[maxc] = '\0';
-            pxe_draw_text_small(surf, l->list_x + 8, ry + 6, line, rfg);
+            char lclip[112];
+            utf8_clip_by_pixels(line, l->list_w - 14, 1, lclip, sizeof(lclip));
+            pxe_draw_text_small(surf, l->list_x + 8, ry + 5, lclip, rfg);
         }
     }
     pxe_draw_scrollbar(surf, l->list_x + l->list_w, l->list_y, SB_W, l->list_h,
@@ -554,16 +587,19 @@ static void render_step_select(const pxe_win_surface_t* surf, const installer_t*
             const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
             char d1[96], d2[96];
             snprintf(d1, sizeof(d1),
-                     "Selected: Disk %d Partition %d (%s) | Start LBA: %llu | Sectors: %llu",
+                     inst->zh ? "已选: 磁盘 %d 分区 %d (%s) | 起始 LBA: %llu | 扇区数: %llu"
+                              : "Selected: Disk %d Partition %d (%s) | Start LBA: %llu | Sectors: %llu",
                      p->disk_index, p->part_index, p->disk_name[0] ? p->disk_name : "HDD",
                      (unsigned long long)p->start_lba, (unsigned long long)p->total_sectors);
             if (inst->existing_on_disk[inst->sel_part]) {
                 snprintf(d2, sizeof(d2),
-                         "Notice: Existing Pixel Neko OS found on %c:\\ (Next shows warning).",
+                         inst->zh ? "提示: 在 %c:\\ 上检测到现有 Pixel Neko OS (下一步将弹出警告)。"
+                                  : "Notice: Existing Pixel Neko OS found on %c:\\ (Next shows warning).",
                          inst->existing_letter[inst->sel_part] ? inst->existing_letter[inst->sel_part] : '?');
             } else {
                 snprintf(d2, sizeof(d2),
-                         "All other partitions on this disk remain untouched.");
+                         inst->zh ? "此磁盘上的其余分区数据将保持原样，不会被修改。"
+                                  : "All other partitions on this disk remain untouched.");
             }
             pxe_draw_text_small(surf, l->body_x + 10, info_y + 10, d1, RGB_COL(0x0F172A));
             pxe_draw_text_small(surf, l->body_x + 10, info_y + 28, d2,
@@ -571,7 +607,8 @@ static void render_step_select(const pxe_win_surface_t* surf, const installer_t*
                                     ? RGB_COL(0xB45309) : RGB_COL(0x475569));
         } else {
             pxe_draw_text_small(surf, l->body_x + 10, info_y + 18,
-                                "Select a partition from the list above to continue.",
+                                inst->zh ? "请从上方列表中选择一个目标分区以继续安装。"
+                                         : "Select a partition from the list above to continue.",
                                 RGB_COL(0x64748B));
         }
     }
@@ -584,20 +621,24 @@ static void render_step_reinstall_warn(const pxe_win_surface_t* surf, const inst
     pxe_draw_rect(surf, bx, by + 6, bw, 72, RGB_COL(0xD97706));
     pxe_fill_rect(surf, bx + 16, by + 20, 28, 28, RGB_COL(0xD97706));
     pxe_draw_text(surf, bx + 26, by + 26, "!", RGB_COL(0xFFFFFF));
-    pxe_draw_text(surf, bx + 56, by + 18, "Existing Pixel Neko OS Detected", RGB_COL(0x92400E));
+    pxe_draw_text(surf, bx + 56, by + 18,
+                  inst->zh ? "检测到已安装的 Pixel Neko OS" : "Existing Pixel Neko OS Detected",
+                  RGB_COL(0x92400E));
     if (inst->sel_part >= 0 && inst->sel_part < inst->part_count) {
-        char sub[96];
+        char sub[112];
         char drv = inst->existing_letter[inst->sel_part]
                        ? inst->existing_letter[inst->sel_part] : '?';
         if (inst->existing_on_target[inst->sel_part]) {
             snprintf(sub, sizeof(sub),
-                     "Target Disk %d Partition %d already contains Pixel Neko OS (%c:\\).",
+                     inst->zh ? "目标磁盘 %d 分区 %d 已包含 Pixel Neko OS (%c:\\)。"
+                              : "Target Disk %d Partition %d already contains Pixel Neko OS (%c:\\).",
                      inst->parts[inst->sel_part].disk_index,
                      inst->parts[inst->sel_part].part_index,
                      drv);
         } else {
             snprintf(sub, sizeof(sub),
-                     "Another partition on Disk %d already contains Pixel Neko OS (%c:\\).",
+                     inst->zh ? "磁盘 %d 的其他分区中已包含 Pixel Neko OS (%c:\\)。"
+                              : "Another partition on Disk %d already contains Pixel Neko OS (%c:\\).",
                      inst->parts[inst->sel_part].disk_index,
                      drv);
         }
@@ -606,22 +647,29 @@ static void render_step_reinstall_warn(const pxe_win_surface_t* surf, const inst
 
     pxe_fill_rect(surf, bx, by + 94, bw, 152, RGB_COL(0xFFFFFF));
     pxe_draw_rect(surf, bx, by + 94, bw, 152, RGB_COL(0xCBD5E1));
-    pxe_draw_text_small(surf, bx + 16, by + 108, "Before continuing, please note:", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, bx + 16, by + 108,
+                        inst->zh ? "继续安装前请注意以下事项:" : "Before continuing, please note:",
+                        RGB_COL(0x0F172A));
     pxe_draw_text_small(surf, bx + 20, by + 132,
-                        "- Reinstalling will overwrite system binaries, APPS\\*.pxe, and PDEVICE\\*.pdv.",
+                        inst->zh ? "- 重新安装会覆盖系统核心文件、APPS\\*.pxe 与 PDEVICE\\*.pdv。"
+                                 : "- Reinstalling will overwrite system binaries, APPS\\*.pxe, and PDEVICE\\*.pdv.",
                         RGB_COL(0x334155));
     pxe_draw_text_small(surf, bx + 20, by + 154,
-                        "- Disk MBR/Limine Stage 2 bootloader will be updated on this disk.",
+                        inst->zh ? "- 该磁盘上的 MBR 与 Limine Stage 2 引导扇区将被更新。"
+                                 : "- Disk MBR/Limine Stage 2 bootloader will be updated on this disk.",
                         RGB_COL(0x334155));
     pxe_draw_text_small(surf, bx + 20, by + 176,
-                        "- Existing saved settings (\\system\\PIXEL.pse) may be reset or lost.",
+                        inst->zh ? "- 原先保存的系统设置 (\\system\\PIXEL.pse 等) 可能会被重置。"
+                                 : "- Existing saved settings (\\system\\PIXEL.pse) may be reset or lost.",
                         RGB_COL(0x334155));
     pxe_draw_text_small(surf, bx + 20, by + 198,
-                        "- Choosing Format on the next step erases ALL files on the selected partition.",
+                        inst->zh ? "- 若在下一步选择格式化分区，所选分区上的全部数据都将被清空。"
+                                 : "- Choosing Format on the next step erases ALL files on the selected partition.",
                         RGB_COL(0xB91C1C));
 
     pxe_draw_text_small(surf, bx, by + 262,
-                        "Click [< Back] to pick a different partition, or [Continue >] to proceed.",
+                        inst->zh ? "点击 [< 上一步] 更换其他分区，或点击 [继续 >] 执行安装。"
+                                 : "Click [< Back] to pick a different partition, or [Continue >] to proceed.",
                         RGB_COL(0x475569));
 }
 
@@ -659,43 +707,56 @@ static void render_step_format(const pxe_win_surface_t* surf, const installer_t*
     int en_skip = part_supports_skip_fmt(p);
 
     pxe_draw_text(surf, l->body_x, l->body_y,
-                  "Select Destination Filesystem", RGB_COL(0x0C4A6E));
+                  inst->zh ? "选择目标文件系统" : "Select Destination Filesystem", RGB_COL(0x0C4A6E));
     pxe_draw_text_small(surf, l->body_x, l->body_y + 22,
-                        "Choose whether to format the selected partition or keep existing data.",
+                        inst->zh ? "请选择是否格式化所选分区，或保留现有文件系统直接升级覆盖。"
+                                 : "Choose whether to format the selected partition or keep existing data.",
                         RGB_COL(0x475569));
 
     draw_format_card(surf, l->fcard_x, l->fcard_y0, l->fcard_w, l->fcard_h,
-                     "Format as FAT32 (Recommended)",
-                     en_f32 ? "Clean FAT32 format. Removes all existing files on partition."
-                            : "Partition is smaller than minimum 32 MB for FAT32.",
+                     inst->zh ? "格式化为 FAT32 (推荐)" : "Format as FAT32 (Recommended)",
+                     en_f32 ? (inst->zh ? "全新 FAT32 格式化，将清除该分区上的所有原有文件。"
+                                        : "Clean FAT32 format. Removes all existing files on partition.")
+                            : (inst->zh ? "当前分区小于 FAT32 最小容量要求 (32 MB)。"
+                                        : "Partition is smaller than minimum 32 MB for FAT32."),
                      (!inst->skip_format && inst->fs_choice == PART_FS_FAT32), en_f32);
 
     draw_format_card(surf, l->fcard_x, l->fcard_y1, l->fcard_w, l->fcard_h,
-                     "Format as FAT16 (Legacy Compatibility)",
-                     en_f16 ? "Classic FAT16 format (up to ~2 GB). Removes all files on partition."
-                            : "Partition exceeds ~2 GB FAT16 limit.",
+                     inst->zh ? "格式化为 FAT16 (传统兼容)" : "Format as FAT16 (Legacy Compatibility)",
+                     en_f16 ? (inst->zh ? "经典 FAT16 格式 (上限约 2 GB)，将清除该分区上的所有文件。"
+                                        : "Classic FAT16 format (up to ~2 GB). Removes all files on partition.")
+                            : (inst->zh ? "所选分区超过 FAT16 最大容量限制 (~2 GB)。"
+                                        : "Partition exceeds ~2 GB FAT16 limit."),
                      (!inst->skip_format && inst->fs_choice == PART_FS_FAT16), en_f16);
 
     draw_format_card(surf, l->fcard_x, l->fcard_y2, l->fcard_w, l->fcard_h,
-                     "Keep Existing Filesystem (Direct Release / Upgrade)",
-                     en_skip ? "Keeps existing FAT16/FAT32 volume and writes OS files directly."
-                             : "Requires an existing formatted FAT16 or FAT32 partition.",
+                     inst->zh ? "保留现有文件系统 (直接释放 / 升级安装)"
+                              : "Keep Existing Filesystem (Direct Release / Upgrade)",
+                     en_skip ? (inst->zh ? "保留现有 FAT16/FAT32 卷数据，直接写入系统文件。"
+                                         : "Keeps existing FAT16/FAT32 volume and writes OS files directly.")
+                             : (inst->zh ? "仅适用于已存在有效 FAT16 或 FAT32 文件系统的分区。"
+                                         : "Requires an existing formatted FAT16 or FAT32 partition."),
                      (inst->skip_format || inst->fs_choice == 0), en_skip);
 
-    pxe_draw_text_small(surf, l->body_x, l->lbl_y + 8, "Partition Label:", RGB_COL(0x0F172A));
+    pxe_draw_text_small(surf, l->body_x, l->lbl_y + 8,
+                        inst->zh ? "分区卷标:" : "Partition Label:", RGB_COL(0x0F172A));
     pxe_fill_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xF1F5F9));
     pxe_draw_rect(surf, l->lbl_x, l->lbl_y, l->lbl_w, l->lbl_h, RGB_COL(0xCBD5E1));
     pxe_draw_text_small(surf, l->lbl_x + 8, l->lbl_y + 8, inst->preserved_label, RGB_COL(0x334155));
     pxe_draw_text_small(surf, l->lbl_x + l->lbl_w + 12, l->lbl_y + 8,
-                        "(Existing label preserved, not modified)", RGB_COL(0x64748B));
+                        inst->zh ? "(保留原卷标，不做更改)" : "(Existing label preserved, not modified)",
+                        RGB_COL(0x64748B));
 }
 
 static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t* inst,
                                 const nt6_layout_t* l) {
     int bx = l->body_x, by = l->body_y, bw = l->body_w;
-    pxe_draw_text(surf, bx, by, "Ready to Install Pixel Neko OS", RGB_COL(0x0C4A6E));
+    pxe_draw_text(surf, bx, by,
+                  inst->zh ? "准备就绪，即将安装 Pixel Neko OS" : "Ready to Install Pixel Neko OS",
+                  RGB_COL(0x0C4A6E));
     pxe_draw_text_small(surf, bx, by + 22,
-                        "Review the installation summary below before modifying your disk.",
+                        inst->zh ? "在写入磁盘前，请核对下方安装配置摘要。"
+                                 : "Review the installation summary below before modifying your disk.",
                         RGB_COL(0x475569));
 
     pxe_fill_rect(surf, bx, by + 44, bw, 184, RGB_COL(0xFFFFFF));
@@ -705,33 +766,40 @@ static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t
         const pxe_r0_part_info_t* p = &inst->parts[inst->sel_part];
         char sz[16], r1[88], r2[88], r3[88], r4[88], r5[88];
         fmt_sectors(p->total_sectors, sz, sizeof(sz));
-        snprintf(r1, sizeof(r1), "Disk %d, Partition %d  (%s)",
+        snprintf(r1, sizeof(r1),
+                 inst->zh ? "磁盘 %d，分区 %d  (%s)" : "Disk %d, Partition %d  (%s)",
                  p->disk_index, p->part_index, p->disk_name[0] ? p->disk_name : "Fixed Disk");
-        snprintf(r2, sizeof(r2), "%s  (%llu sectors, Start LBA %llu)",
+        snprintf(r2, sizeof(r2),
+                 inst->zh ? "%s  (%llu 扇区, 起始 LBA %llu)" : "%s  (%llu sectors, Start LBA %llu)",
                  sz, (unsigned long long)p->total_sectors, (unsigned long long)p->start_lba);
         const char* fs_action =
-            (inst->fs_choice == 0) ? "Keep existing FAT filesystem (Skip Format)"
-                                   : (inst->fs_choice == PART_FS_FAT32 ? "Format as FAT32"
-                                                                       : "Format as FAT16");
+            (inst->fs_choice == 0)
+                ? (inst->zh ? "保留现有 FAT 文件系统 (跳过格式化)" : "Keep existing FAT filesystem (Skip Format)")
+                : (inst->fs_choice == PART_FS_FAT32
+                       ? (inst->zh ? "格式化为 FAT32" : "Format as FAT32")
+                       : (inst->zh ? "格式化为 FAT16" : "Format as FAT16"));
         snprintf(r3, sizeof(r3), "%s", fs_action);
         snprintf(r4, sizeof(r4), "%s", inst->preserved_label);
-        snprintf(r5, sizeof(r5), "Limine BIOS Stage 1/2 + Local Offline Boot Config");
+        snprintf(r5, sizeof(r5),
+                 inst->zh ? "Limine BIOS Stage 1/2 + 本地离线引导配置"
+                          : "Limine BIOS Stage 1/2 + Local Offline Boot Config");
 
         int y0 = by + 58;
-        pxe_draw_text_small(surf, bx + 16, y0 + 0,   "Target Partition:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 0,   inst->zh ? "目标分区:" : "Target Partition:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 0,  r1, RGB_COL(0x0F172A));
-        pxe_draw_text_small(surf, bx + 16, y0 + 28,  "Geometry / Size:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 28,  inst->zh ? "分区几何/大小:" : "Geometry / Size:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 28, r2, RGB_COL(0x0F172A));
-        pxe_draw_text_small(surf, bx + 16, y0 + 56,  "Filesystem Mode:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 56,  inst->zh ? "文件系统处理:" : "Filesystem Mode:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 56, r3,
                             inst->fs_choice == 0 ? RGB_COL(0x166534) : RGB_COL(0xB91C1C));
-        pxe_draw_text_small(surf, bx + 16, y0 + 84,  "Partition Label:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 84,  inst->zh ? "分区卷标:" : "Partition Label:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 84, r4, RGB_COL(0x0F172A));
-        pxe_draw_text_small(surf, bx + 16, y0 + 112, "Bootloader:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 112, inst->zh ? "引导加载器:" : "Bootloader:", RGB_COL(0x475569));
         pxe_draw_text_small(surf, bx + 150, y0 + 112, r5, RGB_COL(0x0F172A));
-        pxe_draw_text_small(surf, bx + 16, y0 + 140, "Payload Source:", RGB_COL(0x475569));
+        pxe_draw_text_small(surf, bx + 16, y0 + 140, inst->zh ? "安装源介质:" : "Payload Source:", RGB_COL(0x475569));
         char r6[64];
-        snprintf(r6, sizeof(r6), "Optical / Live Media (%c:\\payload)",
+        snprintf(r6, sizeof(r6),
+                 inst->zh ? "光盘 / Live 介质 (%c:\\payload)" : "Optical / Live Media (%c:\\payload)",
                  inst->sysinfo.cdrom_drive ? inst->sysinfo.cdrom_drive : '-');
         pxe_draw_text_small(surf, bx + 150, y0 + 140, r6, RGB_COL(0x0F172A));
     }
@@ -741,13 +809,15 @@ static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t
         pxe_fill_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xFEF2F2));
         pxe_draw_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xDC2626));
         pxe_draw_text_small(surf, bx + 12, nw_y + 16,
-                            "Warning: Clicking [Install] will FORMAT the selected partition and erase all data!",
+                            inst->zh ? "警告: 点击 [开始安装] 将格式化所选分区并清空其中所有数据!"
+                                     : "Warning: Clicking [Install] will FORMAT the selected partition and erase all data!",
                             RGB_COL(0x991B1B));
     } else {
         pxe_fill_rect(surf, bx, nw_y, bw, 42, RGB_COL(0xECFDF5));
         pxe_draw_rect(surf, bx, nw_y, bw, 42, RGB_COL(0x16A34A));
         pxe_draw_text_small(surf, bx + 12, nw_y + 16,
-                            "Existing FAT partition preserved. Click [Install] to release files & update boot.",
+                            inst->zh ? "现有 FAT 分区数据将被保留。点击 [开始安装] 部署系统文件与引导。"
+                                     : "Existing FAT partition preserved. Click [Install] to release files & update boot.",
                             RGB_COL(0x166534));
     }
 }
@@ -755,9 +825,12 @@ static void render_step_confirm(const pxe_win_surface_t* surf, const installer_t
 static void render_step_progress(const pxe_win_surface_t* surf, const installer_t* inst,
                                  const nt6_layout_t* l) {
     int bx = l->body_x, by = l->body_y, bw = l->body_w, bh = l->body_h;
-    pxe_draw_text(surf, bx, by, "Installing Pixel Neko OS...", RGB_COL(0x0C4A6E));
+    pxe_draw_text(surf, bx, by,
+                  inst->zh ? "正在安装 Pixel Neko OS..." : "Installing Pixel Neko OS...",
+                  RGB_COL(0x0C4A6E));
     pxe_draw_text_small(surf, bx, by + 22,
-                        "Your computer stays active during setup. Please do not power off.",
+                        inst->zh ? "正在写入系统与引导文件，安装完成前请勿关闭电源。"
+                                 : "Your computer stays active during setup. Please do not power off.",
                         RGB_COL(0x475569));
 
     static const char* const k_tasks[5] = {
@@ -766,6 +839,13 @@ static void render_step_progress(const pxe_win_surface_t* surf, const installer_
         "Copying kernel, system apps (.pxe) & drivers (.pdv)",
         "Deploying offline Limine boot configuration",
         "Installing Limine BIOS bootloader & verifying files"
+    };
+    static const char* const k_tasks_zh[5] = {
+        "正在准备并挂载目标分区",
+        "正在扫描安装介质文件 (\\payload)",
+        "正在复制内核、系统应用 (.pxe) 与驱动 (.pdv)",
+        "正在部署本地离线 Limine 引导配置",
+        "正在写入 Limine BIOS 引导并校验文件完整性"
     };
     static const int k_min_pct[5] = { 0, 18, 24, 68, 82 };
     static const int k_done_pct[5] = { 18, 24, 68, 82, 100 };
@@ -780,7 +860,8 @@ static void render_step_progress(const pxe_win_surface_t* surf, const installer_
         uint32_t col = done ? RGB_COL(0x15803D)
                             : (active ? RGB_COL(0x0B5ED7) : RGB_COL(0x94A3B8));
         pxe_draw_text_small(surf, bx + 14, ty, tag, col);
-        pxe_draw_text_small(surf, bx + 46, ty, k_tasks[i],
+        pxe_draw_text_small(surf, bx + 46, ty,
+                            inst->zh ? k_tasks_zh[i] : k_tasks[i],
                             done ? RGB_COL(0x166534)
                                  : (active ? RGB_COL(0x0F172A) : RGB_COL(0x64748B)));
     }
@@ -788,7 +869,8 @@ static void render_step_progress(const pxe_win_surface_t* surf, const installer_
     char pct_s[16];
     snprintf(pct_s, sizeof(pct_s), "%3d%%", inst->progress);
     pxe_draw_text_small(surf, bx, by + 162,
-                        inst->stage[0] ? inst->stage : "Working...", RGB_COL(0x0F172A));
+                        inst->stage[0] ? inst->stage : (inst->zh ? "正在处理..." : "Working..."),
+                        RGB_COL(0x0F172A));
     pxe_draw_text_small(surf, bx + bw - 30, by + 162, pct_s, RGB_COL(0x0F172A));
 
     int bar_y = by + 178;
@@ -833,19 +915,25 @@ static void render_step_complete(const pxe_win_surface_t* surf, const installer_
 
     if (ok) {
         pxe_draw_text(surf, bx + 60, by + 18,
-                      "Pixel Neko OS Installation Complete", RGB_COL(0x14532D));
+                      inst->zh ? "Pixel Neko OS 安装完成" : "Pixel Neko OS Installation Complete",
+                      RGB_COL(0x14532D));
         pxe_draw_text_small(surf, bx + 60, by + 44,
-                            "System files and Limine bootloader were written successfully.",
+                            inst->zh ? "系统文件与 Limine 引导程序已成功写入磁盘。"
+                                     : "System files and Limine bootloader were written successfully.",
                             RGB_COL(0x166534));
         pxe_draw_text_small(surf, bx + 60, by + 60,
-                            "Remove installation CD/ISO media before clicking [Reboot System].",
+                            inst->zh ? "请移除安装光盘/ISO 镜像后点击 [立即重启]。"
+                                     : "Remove installation CD/ISO media before clicking [Reboot System].",
                             RGB_COL(0x15803D));
     } else {
         char etitle[64];
-        snprintf(etitle, sizeof(etitle), "Installation Failed (Error %d)", inst->install_error);
+        snprintf(etitle, sizeof(etitle),
+                 inst->zh ? "安装失败 (错误 %d)" : "Installation Failed (Error %d)",
+                 inst->install_error);
         pxe_draw_text(surf, bx + 60, by + 18, etitle, RGB_COL(0x991B1B));
         pxe_draw_text_small(surf, bx + 60, by + 44,
-                            inst->stage[0] ? inst->stage : "Check installation log below.",
+                            inst->stage[0] ? inst->stage
+                                           : (inst->zh ? "请查看下方安装日志排查问题。" : "Check installation log below."),
                             RGB_COL(0xB91C1C));
     }
 
@@ -879,9 +967,11 @@ static void render_installer(const installer_t* inst) {
     /* Card top header */
     pxe_fill_rect(surf, l.card_x + 1, l.card_y + 1, l.card_w - 2, l.hdr_h, RGB_COL(0xFFFFFF));
     draw_neko_badge(surf, l.card_x + 14, l.card_y + 10);
-    pxe_draw_text(surf, l.card_x + 52, l.card_y + 8, "Install Pixel Neko OS", RGB_COL(0x0F172A));
+    pxe_draw_text(surf, l.card_x + 52, l.card_y + 8,
+                  inst->zh ? "安装 Pixel Neko OS" : "Install Pixel Neko OS", RGB_COL(0x0F172A));
     pxe_draw_text_small(surf, l.card_x + 52, l.card_y + 28,
-                        "Guided Setup Wizard (Ring 0)", RGB_COL(0x64748B));
+                        inst->zh ? "系统引导安装向导 (Ring 0)" : "Guided Setup Wizard (Ring 0)",
+                        RGB_COL(0x64748B));
 
     /* Two-phase NT6 setup progress breadcrumb bar */
     int sy = l.card_y + l.hdr_h;
@@ -892,14 +982,14 @@ static void render_installer(const installer_t* inst) {
     int phase_collect = (inst->step <= STEP_CONFIRM);
     int phase_install = (inst->step >= STEP_PROGRESS);
     pxe_draw_text_small(surf, l.card_x + 20, sy + 9,
-                        phase_collect ? "[*] 1. Collecting information"
-                                      : "[OK] 1. Collecting information",
+                        phase_collect ? (inst->zh ? "[*] 1. 收集信息" : "[*] 1. Collecting information")
+                                      : (inst->zh ? "[OK] 1. 收集信息" : "[OK] 1. Collecting information"),
                         phase_collect ? RGB_COL(0x0B5ED7) : RGB_COL(0x15803D));
     pxe_draw_text_small(surf, l.card_x + 250, sy + 9,
                         inst->step == STEP_COMPLETE && inst->install_error == 0
-                            ? "[OK] 2. Installing Pixel Neko OS"
-                            : (phase_install ? "[*] 2. Installing Pixel Neko OS"
-                                             : "[ ] 2. Installing Pixel Neko OS"),
+                            ? (inst->zh ? "[OK] 2. 正在安装 Pixel Neko OS" : "[OK] 2. Installing Pixel Neko OS")
+                            : (phase_install ? (inst->zh ? "[*] 2. 正在安装 Pixel Neko OS" : "[*] 2. Installing Pixel Neko OS")
+                                             : (inst->zh ? "[ ] 2. 正在安装 Pixel Neko OS" : "[ ] 2. Installing Pixel Neko OS")),
                         inst->step == STEP_COMPLETE && inst->install_error == 0
                             ? RGB_COL(0x15803D)
                             : (phase_install ? RGB_COL(0x0B5ED7) : RGB_COL(0x64748B)));
@@ -921,34 +1011,36 @@ static void render_installer(const installer_t* inst) {
 
     if (inst->step == STEP_WELCOME) {
         if (!inst->install_mode) {
-            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "Exit", 0, 1);
+            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "退出" : "Exit", 0, 1);
         }
-        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "下一步 >" : "Next >", 1, 1);
     } else if (inst->step == STEP_SELECT) {
-        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
-        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, inst->sel_part >= 0);
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "< 上一步" : "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "下一步 >" : "Next >", 1, inst->sel_part >= 0);
     } else if (inst->step == STEP_REINSTALL_WARN) {
-        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
-        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Continue >", 1, 1);
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "< 上一步" : "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "继续 >" : "Continue >", 1, 1);
     } else if (inst->step == STEP_FORMAT) {
-        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
-        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Next >", 1, 1);
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "< 上一步" : "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "下一步 >" : "Next >", 1, 1);
     } else if (inst->step == STEP_CONFIRM) {
-        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "< Back", 0, 1);
-        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Install", 2, 1);
+        draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "< 上一步" : "< Back", 0, 1);
+        draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "开始安装" : "Install", 2, 1);
     } else if (inst->step == STEP_PROGRESS) {
         pxe_draw_text_small(surf, l.card_x + 18, l.foot_y + 16,
-                            "Installing... Please wait until setup finishes.", RGB_COL(0xB91C1C));
+                            inst->zh ? "正在安装... 请耐心等待安装程序完成。"
+                                     : "Installing... Please wait until setup finishes.",
+                            RGB_COL(0xB91C1C));
     } else if (inst->step == STEP_COMPLETE) {
         if (inst->install_error == 0) {
             if (!inst->install_mode) {
-                draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, "Exit", 0, 1);
+                draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w, l.back_h, inst->zh ? "退出" : "Exit", 0, 1);
             }
-            draw_nt6_btn(surf, l.shut_x, l.shut_y, l.shut_w, l.shut_h, "Shut Down", 0, 1);
-            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Reboot System", 2, 1);
+            draw_nt6_btn(surf, l.shut_x, l.shut_y, l.shut_w, l.shut_h, inst->zh ? "立即关机" : "Shut Down", 0, 1);
+            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "立即重启" : "Reboot System", 2, 1);
         } else {
-            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w + 18, l.back_h, "< Retry Setup", 0, 1);
-            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, "Reboot System", 1, 1);
+            draw_nt6_btn(surf, l.back_x, l.back_y, l.back_w + 18, l.back_h, inst->zh ? "< 重试安装" : "< Retry Setup", 0, 1);
+            draw_nt6_btn(surf, l.next_x, l.next_y, l.next_w, l.next_h, inst->zh ? "立即重启" : "Reboot System", 1, 1);
         }
     }
 }
@@ -1511,7 +1603,8 @@ static void start_install(installer_t* inst) {
     } else {
         inst->state = STATE_ERROR;
         char est[64];
-        snprintf(est, sizeof(est), "Installation failed (code %d).", rc);
+        snprintf(est, sizeof(est),
+                 inst->zh ? "安装失败 (错误码 %d)。" : "Installation failed (code %d).", rc);
         snprintf(inst->stage, sizeof(inst->stage), "%s", est);
         pxe_beep();
     }
@@ -1691,13 +1784,16 @@ int main(int argc, char** argv) {
     inst->sel_part = -1;
     inst->state = STATE_IDLE;
     inst->step = STEP_WELCOME;
-    strcpy(inst->preserved_label, "Unlabeled (Preserved)");
-    strcpy(inst->stage, "Select a target partition and proceed step by step.");
+    inst->zh = pxe_is_zh();
+    strcpy(inst->preserved_label, inst->zh ? "无卷标 (保留)" : "Unlabeled (Preserved)");
+    strcpy(inst->stage, inst->zh ? "请选择目标分区并按步骤继续安装。"
+                                 : "Select a target partition and proceed step by step.");
 
     refresh_partitions(inst);
     inst->install_mode = (inst->sysinfo.boot_mode == 1) ? 1 : 0;
     if (!inst->install_mode) {
-        pxe_notify_banner("INSTALL is disabled in Local/Live mode");
+        pxe_notify_banner(inst->zh ? "本地/Live 模式下已禁用系统安装程序"
+                                   : "INSTALL is disabled in Local/Live mode");
         pxe_beep();
         free(inst);
         return 1;
@@ -1730,7 +1826,7 @@ int main(int argc, char** argv) {
         desc.flags = PXE_WIN_NO_CLOSE | PXE_WIN_CENTERED;
     }
     desc.format = PXE_CANVAS_RGB32;
-    strcpy(desc.title, "Install Pixel Neko OS");
+    strcpy(desc.title, inst->zh ? "Pixel Neko OS 安装程序" : "Install Pixel Neko OS");
 
     inst->win_id = pxe_win_create(&desc, &inst->surf);
     if (inst->win_id < 0) {
@@ -1753,7 +1849,16 @@ int main(int argc, char** argv) {
                     pxe_win_get_surface(inst->win_id, &inst->surf);
                     dirty = 1;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != inst->zh) {
+                        inst->zh = new_zh;
+                        pxe_win_set_title(inst->win_id,
+                                          inst->zh ? "Pixel Neko OS 安装程序" : "Install Pixel Neko OS");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;

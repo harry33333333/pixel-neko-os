@@ -307,6 +307,7 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     out->vram_bytes        = (uint64_t)gfx_accel_get_vram_size();
     out->clock_show_date    = (uint8_t)(settings_get_clock_show_date() ? 1 : 0);
     out->clock_show_seconds = (uint8_t)(settings_get_clock_show_seconds() ? 1 : 0);
+    out->ui_lang            = (uint8_t)(settings_is_language_zh() ? PXE_LANG_ZH : PXE_LANG_EN);
 
     static const int k_res_w[4] = { 640, 800, 1024, 1280 };
     static const int k_res_h[4] = { 480, 600,  768, 1024 };
@@ -543,6 +544,10 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             return 0;
         case PXE_CFG_SET_MOUSE_SPEED:
             settings_set_mouse_speed(arg0);
+            return 0;
+        case PXE_CFG_SET_LANG:
+            settings_set_language_zh(arg0 != 0);
+            wm_notify_media_changed();
             return 0;
         case PXE_CFG_SAVE_SETTINGS:
             return settings_save() ? 0 : -1;

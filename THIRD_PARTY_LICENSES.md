@@ -24,6 +24,9 @@ FreeBSD 源代码衍生；这些文件不应作为 FreeBSD 移植代码或 BSD-2
 - **minimp3**：CC0 / MIT 许可证。保留于 `drivers/audio/minimp3.h`。
 - **GNU Unifont (v16.0.02)**：SIL Open Font License 1.1 / GPLv2+ with Font Exception 双重许可。本项目仅依据 **SIL OFL 1.1** 使用其 16×16 点阵字形生成 `system/FONT_CJK.FNT` 与 `include/cjk_font_core.h`。
 - **Zpix (最像素, v3.3.0)**：SIL Open Font License 1.1 (`https://github.com/SolidZORO/zpix-pixel-font`)。用于生成 12×12 小号中文点阵字形至 `system/FONT_CJK.FNT` 与 `include/cjk_font_core.h`。
+- **Rime 核心引擎设计参考 (librime)**：BSD-3-Clause 许可（Copyright (c) 2014, RIME Developers，`https://github.com/rime/librime`）。`wm/ime.c` 与 `scripts/gen_ime_dict.py` 的拼音音节分词图（DAG）与维特比整句组词模型参考自 librime 设计（独立 C11 freestanding 实现，未直接编译链接上游 C++ 源码）。
+- **Rime 朙月拼音基础词库与八股文频率模型 (`rime-luna-pinyin`, `rime-essay`)**：LGPL-3.0 许可（RIME Developers，`https://github.com/rime/rime-luna-pinyin`、`https://github.com/rime/rime-essay`）。由 `scripts/gen_ime_dict.py` 预编译为系统外部数据词库文件 `system/IME.PNY` 及 `include/ime_core.h`。
+- **OpenCC 繁简转换映射表 (`TSCharacters.txt`, `TSPhrases.txt`)**：Apache-2.0 许可（BYVoid/OpenCC，`https://github.com/BYVoid/OpenCC`）。构建期用于将朙月拼音与八股文数据统一转换并筛选为匹配 `FONT_CJK.FNT` 的简体中文词条。
 
 ## 3. 宿主编译与镜像生成工具（不打入目标内核映像）
 - **GCC / Clang**：GPLv3 / Apache 2.0 with LLVM Exception。仅作为交叉构建工具，生成的目标代码不具传染性。

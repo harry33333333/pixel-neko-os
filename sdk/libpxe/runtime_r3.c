@@ -183,6 +183,19 @@ int pxe_mouse_set_speed(int speed) {
                               (long)speed, 0, 0);
 }
 
+int pxe_set_language(int lang) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_LANG,
+                              lang ? 1 : 0, 0, 0);
+}
+
+int pxe_is_zh(void) {
+    pxe_basic_sysinfo_t info;
+    if (pxe_sys_get_basic_info(&info) == 0) {
+        return info.ui_lang != PXE_LANG_EN;
+    }
+    return 1;
+}
+
 int pxe_settings_save(void) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SAVE_SETTINGS,
                               0, 0, 0);

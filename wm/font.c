@@ -457,21 +457,31 @@ void font_draw_text(unsigned char* vga, int x, int y, const char* text, unsigned
     }
 }
 
+static int line_has_non_ascii(const char* text)
+{
+    if (!text) return 0;
+    for (const char* p = text; *p && *p != '\n'; p++) {
+        if ((unsigned char)*p >= 0x80u) return 1;
+    }
+    return 0;
+}
+
 void font_draw_text_small(unsigned char* vga, int x, int y, const char* text, unsigned char fg)
 {
     if (!text) return;
     int cx = x;
-    int row_cjk = 0;
+    int row_cjk = line_has_non_ascii(text);
     while (*text) {
         uint32_t cp = utf8_decode_next(&text);
         if (cp == 0u) break;
         if (cp == '\n') {
-            y += row_cjk ? 13 : 9;
+            y += row_cjk ? 14 : 9;
             cx = x;
-            row_cjk = 0;
+            row_cjk = line_has_non_ascii(text);
             continue;
         }
-        font_draw_codepoint_small(vga, cx, y, cp, fg);
+        int draw_y = (cp < 0x80u && row_cjk) ? (y + 3) : y;
+        font_draw_codepoint_small(vga, cx, draw_y, cp, fg);
         if (cp < 0x80u) {
             cx += 6;
         } else {

@@ -340,3 +340,4 @@ int utf8_validate(const char* buf, size_t len) {
     }
     return 1;
 }
+

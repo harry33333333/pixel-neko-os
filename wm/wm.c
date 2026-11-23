@@ -30,6 +30,9 @@ static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "part.h"
 #include "desktop.h"
 #include "settings.h"
+#include "ime.h"
+
+#define WM_TR(zh, en) (settings_is_language_zh() ? (zh) : (en))
 
 extern int total_ram_mb;
 extern int usable_ram_mb;
@@ -311,6 +314,15 @@ static void notification_volume_span(int* out_x, int* out_width) {
     if (out_width) *out_width = 24;
 }
 
+static void notification_ime_span(int* out_x, int* out_width) {
+    int vol_x = 0;
+    notification_volume_span(&vol_x, NULL);
+    int x = vol_x - 40;
+    if (x < 18) x = 18;
+    if (out_x) *out_x = x;
+    if (out_width) *out_width = 36;
+}
+
 static void notification_volume_panel(int* out_x, int* out_y,
                                       int* out_width, int* out_height) {
     int icon_x = 0, icon_width = 0;
@@ -469,7 +481,7 @@ static void draw_volume_popup(unsigned char* v) {
         PUT_PIXEL(v, button_x, py, 0);
         PUT_PIXEL(v, button_x + 45, py, 0);
     }
-    font_draw_text(v, button_x + 7, button_y + 3, "Mute",
+    font_draw_text(v, button_x + 7, button_y + 3, WM_TR("静音", "Mute"),
                    audio_is_muted() ? 15 : 0);
 }
 
@@ -613,15 +625,24 @@ static unsigned char desktop_fallback_icon(const desktop_item_t* item) {
          item->target_kind == DESKTOP_TARGET_FOLDER)) {
         return 5;
     }
-    if (label_equals_ci(item->display_name, "About This Machine")) return 1;
-    if (label_equals_ci(item->display_name, "Clock")) return 2;
-    if (label_equals_ci(item->display_name, "Calculator")) return 4;
-    if (label_equals_ci(item->display_name, "Control Panel")) return 6;
-    if (label_equals_ci(item->display_name, "System Information")) return 7;
-    if (label_equals_ci(item->display_name, "Notepad")) return 3;
-    if (label_equals_ci(item->display_name, "Media Player")) return 10;
-    if (label_equals_ci(item->display_name, "Image Viewer")) return 9;
-    if (label_equals_ci(item->display_name, "File Management")) return 5;
+    if (label_equals_ci(item->display_name, "About This Machine") ||
+        label_equals_ci(item->name, "About This Machine.pnk")) return 1;
+    if (label_equals_ci(item->display_name, "Clock") ||
+        label_equals_ci(item->name, "Clock.pnk")) return 2;
+    if (label_equals_ci(item->display_name, "Calculator") ||
+        label_equals_ci(item->name, "Calculator.pnk")) return 4;
+    if (label_equals_ci(item->display_name, "Control Panel") ||
+        label_equals_ci(item->name, "Control Panel.pnk")) return 6;
+    if (label_equals_ci(item->display_name, "System Information") ||
+        label_equals_ci(item->name, "System Information.pnk")) return 7;
+    if (label_equals_ci(item->display_name, "Notepad") ||
+        label_equals_ci(item->name, "Notepad.pnk")) return 3;
+    if (label_equals_ci(item->display_name, "Media Player") ||
+        label_equals_ci(item->name, "Media Player.pnk")) return 10;
+    if (label_equals_ci(item->display_name, "Image Viewer") ||
+        label_equals_ci(item->name, "Image Viewer.pnk")) return 9;
+    if (label_equals_ci(item->display_name, "File Management") ||
+        label_equals_ci(item->name, "File Management.pnk")) return 5;
     return alternate[(unsigned char)item->display_name[0] %
                      (sizeof(alternate) / sizeof(alternate[0]))];
 }
@@ -829,26 +850,34 @@ static void draw_power_dialog(unsigned char* v)
     for(int x=dx+2;x<dx+dw-2;x++){PUT_PIXEL(v, x, dy+2, 15);PUT_PIXEL(v, x, dy+dh-3, 0);}
     for(int y=dy+2;y<dy+dh-2;y++){PUT_PIXEL(v, dx+2, y, 15);PUT_PIXEL(v, dx+dw-3, y, 0);}
     if (power_confirm == 1) {
-        font_draw_text(v,dx+60,dy+10,"Restart?",0);font_draw_text(v,dx+50,dy+28,"Are you sure?",0);
+        font_draw_text(v,dx+52,dy+10,WM_TR("重新启动？", "Restart?"),0);
+        font_draw_text(v,dx+46,dy+28,WM_TR("确定要重启吗？", "Are you sure?"),0);
     } else {
-        font_draw_text(v,dx+50,dy+10,"Shutdown?",0);font_draw_text(v,dx+50,dy+28,"Are you sure?",0);
+        font_draw_text(v,dx+52,dy+10,WM_TR("关闭系统？", "Shutdown?"),0);
+        font_draw_text(v,dx+46,dy+28,WM_TR("确定要关机吗？", "Are you sure?"),0);
     }
     int bx=dx+20,by=dy+48;
     for(int y=by;y<by+22;y++)for(int x=bx;x<bx+80;x++)PUT_PIXEL(v, x, y, power_cancel_pressed?0:7);
     for(int x=bx;x<bx+80;x++){PUT_PIXEL(v, x, by, power_cancel_pressed?0:15);PUT_PIXEL(v, x, by+21, power_cancel_pressed?15:0);}
     for(int y=by;y<by+22;y++){PUT_PIXEL(v, bx, y, power_cancel_pressed?0:15);PUT_PIXEL(v, bx+79, y, power_cancel_pressed?15:0);}
-    font_draw_text(v,bx+16,by+3,"Cancel",power_cancel_pressed?15:0);
-    
+    {
+        const char* cancel_lbl = WM_TR("取消", "Cancel");
+        font_draw_text(v, bx + (80 - font_text_width(cancel_lbl)) / 2, by + 3, cancel_lbl, power_cancel_pressed ? 15 : 0);
+    }
+
     bx=dx+110;
     for(int y=by;y<by+22;y++)for(int x=bx;x<bx+80;x++)PUT_PIXEL(v, x, y, power_ok_pressed?4:4);
     for(int x=bx;x<bx+80;x++){PUT_PIXEL(v, x, by, power_ok_pressed?0:12);PUT_PIXEL(v, x, by+21, power_ok_pressed?12:0);}
     for(int y=by;y<by+22;y++){PUT_PIXEL(v, bx, y, power_ok_pressed?0:12);PUT_PIXEL(v, bx+79, y, power_ok_pressed?12:0);}
-    font_draw_text(v,bx+32,by+3,"OK",15);
+    {
+        const char* ok_lbl = WM_TR("确定", "OK");
+        font_draw_text(v, bx + (80 - font_text_width(ok_lbl)) / 2, by + 3, ok_lbl, 15);
+    }
 }
 
 static void draw_uninit_disk_dialog(unsigned char* v)
 {
-    int dw = 260, dh = 86;
+    int dw = 280, dh = 86;
     int dx = (screen_w - dw) / 2;
     int dy = (screen_h - dh) / 2;
 
@@ -856,21 +885,27 @@ static void draw_uninit_disk_dialog(unsigned char* v)
     for(int y=dy+2;y<dy+dh-2;y++)for(int x=dx+2;x<dx+dw-2;x++)PUT_PIXEL(v, x, y, 7);
     for(int x=dx+2;x<dx+dw-2;x++){PUT_PIXEL(v, x, dy+2, 15);PUT_PIXEL(v, x, dy+dh-3, 0);}
     for(int y=dy+2;y<dy+dh-2;y++){PUT_PIXEL(v, dx+2, y, 15);PUT_PIXEL(v, dx+dw-3, y, 0);}
-    
-    font_draw_text(v, dx+26, dy+12, "Uninitialized Disk Detected", 0);
-    font_draw_text(v, dx+32, dy+28, "Initialize this drive now?", 0);
 
-    int cbx = dx + 20, oby = dy + 52;
+    font_draw_text(v, dx+24, dy+12, WM_TR("检测到未初始化磁盘", "Uninitialized Disk Detected"), 0);
+    font_draw_text(v, dx+32, dy+28, WM_TR("是否立即初始化该磁盘？", "Initialize this drive now?"), 0);
+
+    int cbx = dx + 24, oby = dy + 52;
     for(int y=oby;y<oby+22;y++)for(int x=cbx;x<cbx+100;x++)PUT_PIXEL(v, x, y, uninit_ignore_pressed?0:7);
     for(int x=cbx;x<cbx+100;x++){PUT_PIXEL(v, x, oby, uninit_ignore_pressed?0:15);PUT_PIXEL(v, x, oby+21, uninit_ignore_pressed?15:0);}
     for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, cbx, y, uninit_ignore_pressed?0:15);PUT_PIXEL(v, cbx+99, y, uninit_ignore_pressed?15:0);}
-    font_draw_text(v, cbx+28, oby+3, "Ignore", uninit_ignore_pressed?15:0);
+    {
+        const char* ign = WM_TR("忽略", "Ignore");
+        font_draw_text(v, cbx + (100 - font_text_width(ign)) / 2, oby + 3, ign, uninit_ignore_pressed ? 15 : 0);
+    }
 
-    int obx = dx + 140;
+    int obx = dx + 156;
     for(int y=oby;y<oby+22;y++)for(int x=obx;x<obx+100;x++)PUT_PIXEL(v, x, y, uninit_init_pressed?0:7);
     for(int x=obx;x<obx+100;x++){PUT_PIXEL(v, x, oby, uninit_init_pressed?0:15);PUT_PIXEL(v, x, oby+21, uninit_init_pressed?15:0);}
     for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, obx, y, uninit_init_pressed?0:15);PUT_PIXEL(v, obx+99, y, uninit_init_pressed?15:0);}
-    font_draw_text(v, obx+18, oby+3, "Initialize", uninit_init_pressed?15:0);
+    {
+        const char* ini = WM_TR("初始化", "Initialize");
+        font_draw_text(v, obx + (100 - font_text_width(ini)) / 2, oby + 3, ini, uninit_init_pressed ? 15 : 0);
+    }
 }
 
 static inline void put_rgb32_pixel(unsigned char* v, int px, int py, uint32_t rgb) {
@@ -1048,11 +1083,11 @@ static void draw_crash_dialog(unsigned char* v) {
     PUT_PIXEL(v, bx0+23, by0+3, 14); PUT_PIXEL(v, bx0+24, by0+2, 12);
     PUT_PIXEL(v, bx0+22, by0+2, 12); PUT_PIXEL(v, bx0+25, by0+4, 14);
 
-    font_draw_text(v, dx + 54, dy + 14, "Sorry, an application crashed.", 0);
+    font_draw_text(v, dx + 54, dy + 14, WM_TR("抱歉，应用程序发生崩溃。", "Sorry, an application crashed."), 0);
 
     char line1[64];
     line1[0] = '\0';
-    size_t p1 = crash_append_str(line1, sizeof(line1), 0, "App: ");
+    size_t p1 = crash_append_str(line1, sizeof(line1), 0, WM_TR("应用: ", "App: "));
     p1 = crash_append_str(line1, sizeof(line1), p1, crash_app_name);
     p1 = crash_append_str(line1, sizeof(line1), p1, " (PID ");
     p1 = crash_append_u32(line1, sizeof(line1), p1, crash_pid);
@@ -1110,8 +1145,8 @@ static void draw_r0_confirm_dialog(unsigned char* v) {
     for (int r = 7; r <= 15; r++) { PUT_PIXEL(v, tx0, ty0 + r, 0); PUT_PIXEL(v, tx0 + 1, ty0 + r, 0); }
     PUT_PIXEL(v, tx0, ty0 + 19, 0); PUT_PIXEL(v, tx0 + 1, ty0 + 19, 0);
 
-    font_draw_text(v, dx + 52, dy + 14, "Ring 0 Kernel Executable", 4);
-    font_draw_text(v, dx + 52, dy + 34, "Grant full Ring 0 hardware access?", 0);
+    font_draw_text(v, dx + 52, dy + 14, WM_TR("Ring 0 内核可执行程序", "Ring 0 Kernel Executable"), 4);
+    font_draw_text(v, dx + 52, dy + 34, WM_TR("是否授予完全 Ring 0 硬件权限？", "Grant full Ring 0 hardware access?"), 0);
 
     char disp_path[128];
     utf8_clip_by_pixels(r0_confirm_path, 340, 0, disp_path, sizeof(disp_path));
@@ -1121,13 +1156,19 @@ static void draw_r0_confirm_dialog(unsigned char* v) {
     for(int y=oby;y<oby+22;y++)for(int x=cbx;x<cbx+110;x++)PUT_PIXEL(v, x, y, r0_cancel_pressed?0:7);
     for(int x=cbx;x<cbx+110;x++){PUT_PIXEL(v, x, oby, r0_cancel_pressed?0:15);PUT_PIXEL(v, x, oby+21, r0_cancel_pressed?15:0);}
     for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, cbx, y, r0_cancel_pressed?0:15);PUT_PIXEL(v, cbx+109, y, r0_cancel_pressed?15:0);}
-    font_draw_text(v, cbx + 31, oby + 3, "Cancel", r0_cancel_pressed ? 15 : 0);
+    {
+        const char* cl = WM_TR("取消", "Cancel");
+        font_draw_text(v, cbx + (110 - font_text_width(cl)) / 2, oby + 3, cl, r0_cancel_pressed ? 15 : 0);
+    }
 
     int obx = dx + 210;
     for(int y=oby;y<oby+22;y++)for(int x=obx;x<obx+130;x++)PUT_PIXEL(v, x, y, 4);
     for(int x=obx;x<obx+130;x++){PUT_PIXEL(v, x, oby, r0_run_pressed?0:12);PUT_PIXEL(v, x, oby+21, r0_run_pressed?12:0);}
     for(int y=oby;y<oby+22;y++){PUT_PIXEL(v, obx, y, r0_run_pressed?0:12);PUT_PIXEL(v, obx+129, y, r0_run_pressed?12:0);}
-    font_draw_text(v, obx + 17, oby + 3, "Run (Ring 0)", 15);
+    {
+        const char* rl = WM_TR("运行 (Ring 0)", "Run (Ring 0)");
+        font_draw_text(v, obx + (130 - font_text_width(rl)) / 2, oby + 3, rl, 15);
+    }
 }
 
 static wm_dyn_win_t* get_active_pxe_menubar_win(void) {
@@ -1234,12 +1275,12 @@ static void draw_menubar(unsigned char* v)
         }
         if (menu_open) {
             if (menu_index == 4) {
-                draw_menu_popup(v, 4, 20, 172, 5*18+4);
-                font_draw_text(v, 10, 24, "About Pixel Neko", 0);
-                font_draw_text(v, 10, 24+18, "System Information", 0);
-                font_draw_text(v, 10, 24+36, "Task Manager", 0);
-                font_draw_text(v, 10, 24+54, "Restart Computer", 0);
-                font_draw_text(v, 10, 24+72, "Shut Down Computer", 0);
+                draw_menu_popup(v, 4, 20, 176, 5*18+4);
+                font_draw_text(v, 10, 24, WM_TR("关于 Pixel Neko", "About Pixel Neko"), 0);
+                font_draw_text(v, 10, 24+18, WM_TR("系统信息", "System Information"), 0);
+                font_draw_text(v, 10, 24+36, WM_TR("任务管理器", "Task Manager"), 0);
+                font_draw_text(v, 10, 24+54, WM_TR("重新启动计算机", "Restart Computer"), 0);
+                font_draw_text(v, 10, 24+72, WM_TR("关闭计算机", "Shut Down Computer"), 0);
             } else if (menu_index >= 0 && menu_index < mb->menu_count && menu_index < PXE_MAX_MENUS) {
                 const pxe_menu_t* pm = &mb->menus[menu_index];
                 int mx_pos = 0, mw = 0;
@@ -1249,7 +1290,7 @@ static void draw_menubar(unsigned char* v)
                 if (cnt > PXE_MAX_MENU_ITEMS) cnt = PXE_MAX_MENU_ITEMS;
                 draw_menu_popup(v, mx_pos - 4, 20, 176, cnt * 18 + 4);
                 if (pm->item_count <= 0) {
-                    font_draw_text(v, mx_pos + 4, 24, "(Empty)", 8);
+                    font_draw_text(v, mx_pos + 4, 24, WM_TR("(空)", "(Empty)"), 8);
                 } else {
                     for (int it = 0; it < cnt; it++) {
                         font_draw_text(v, mx_pos + 4, 24 + it * 18,
@@ -1266,50 +1307,70 @@ static void draw_menubar(unsigned char* v)
             for(int y=2; y<18; y++) for(int x=mx-4; x<mx+mw; x++) PUT_PIXEL(v, x, y, 1);
         }
         if (!install_mode) {
-            font_draw_text(v, 30, 2, "File", menu_index==0?15:0);
-            font_draw_text(v, 70, 2, "Edit", menu_index==1?15:0);
-            font_draw_text(v, 110, 2, "View", menu_index==2?15:0);
+            font_draw_text(v, 30, 2, WM_TR("文件", "File"), menu_index==0?15:0);
+            font_draw_text(v, 70, 2, WM_TR("编辑", "Edit"), menu_index==1?15:0);
+            font_draw_text(v, 110, 2, WM_TR("视图", "View"), menu_index==2?15:0);
         }
-        
+
         if (menu_index == 4) { // Apple Logo
             if (install_mode) {
-                draw_menu_popup(v, 4, 20, 172, 2*18+4);
-                font_draw_text(v, 10, 24, "Restart Computer", 0);
-                font_draw_text(v, 10, 24+18, "Shut Down Computer", 0);
+                draw_menu_popup(v, 4, 20, 176, 2*18+4);
+                font_draw_text(v, 10, 24, WM_TR("重新启动计算机", "Restart Computer"), 0);
+                font_draw_text(v, 10, 24+18, WM_TR("关闭计算机", "Shut Down Computer"), 0);
             } else {
-                draw_menu_popup(v, 4, 20, 172, 5*18+4);
-                font_draw_text(v, 10, 24, "About Pixel Neko", 0);
-                font_draw_text(v, 10, 24+18, "System Information", 0);
-                font_draw_text(v, 10, 24+36, "Task Manager", 0);
-                font_draw_text(v, 10, 24+54, "Restart Computer", 0);
-                font_draw_text(v, 10, 24+72, "Shut Down Computer", 0);
+                draw_menu_popup(v, 4, 20, 176, 5*18+4);
+                font_draw_text(v, 10, 24, WM_TR("关于 Pixel Neko", "About Pixel Neko"), 0);
+                font_draw_text(v, 10, 24+18, WM_TR("系统信息", "System Information"), 0);
+                font_draw_text(v, 10, 24+36, WM_TR("任务管理器", "Task Manager"), 0);
+                font_draw_text(v, 10, 24+54, WM_TR("重新启动计算机", "Restart Computer"), 0);
+                font_draw_text(v, 10, 24+72, WM_TR("关闭计算机", "Shut Down Computer"), 0);
             }
         } else if (!install_mode && menu_index == 0) { // File
             draw_menu_popup(v, 30, 20, 110, 1*18+4);
-            font_draw_text(v, 38, 24, "(Empty)", 8);
+            font_draw_text(v, 38, 24, WM_TR("(空)", "(Empty)"), 8);
         } else if (!install_mode && menu_index == 1) { // Edit
             draw_menu_popup(v, 66, 20, 120, 6*18+4);
-            font_draw_text(v, 74, 24, "Undo", 8);
-            font_draw_text(v, 74, 24+18, "Cut", 8);
-            font_draw_text(v, 74, 24+36, "Copy", 8);
-            font_draw_text(v, 74, 24+54, "Paste", 8);
-            font_draw_text(v, 74, 24+72, "Select All", 8);
-            font_draw_text(v, 74, 24+90, "Clear", 8);
+            font_draw_text(v, 74, 24, WM_TR("撤销", "Undo"), 8);
+            font_draw_text(v, 74, 24+18, WM_TR("剪切", "Cut"), 8);
+            font_draw_text(v, 74, 24+36, WM_TR("复制", "Copy"), 8);
+            font_draw_text(v, 74, 24+54, WM_TR("粘贴", "Paste"), 8);
+            font_draw_text(v, 74, 24+72, WM_TR("全选", "Select All"), 8);
+            font_draw_text(v, 74, 24+90, WM_TR("清除", "Clear"), 8);
         } else if (!install_mode && menu_index == 2) { // View
             draw_menu_popup(v, 106, 20, 160, 1*18+4);
-            font_draw_text(v, 114, 24, "Rearrange Desktop",
+            font_draw_text(v, 114, 24, WM_TR("重新排列桌面", "Rearrange Desktop"),
                            desktop_is_mutable() ? 0 : 8);
         }
     } else if (!install_mode) {
-        font_draw_text(v, 30, 2, "File", 0);
-        font_draw_text(v, 70, 2, "Edit", 0);
-        font_draw_text(v, 110, 2, "View", 0);
+        font_draw_text(v, 30, 2, WM_TR("文件", "File"), 0);
+        font_draw_text(v, 70, 2, WM_TR("编辑", "Edit"), 0);
+        font_draw_text(v, 110, 2, WM_TR("视图", "View"), 0);
     }
-    
+
     char clock_text[32];
     int clock_length = format_clock_text(clock_text, sizeof(clock_text));
     int clock_x = screen_w - clock_length * 8 - 10;
     if (clock_x < 24) clock_x = 24;
+    int ime_x = 0, ime_w = 0;
+    notification_ime_span(&ime_x, &ime_w);
+    {
+        bool zh = ime_is_enabled();
+        unsigned char bg = zh ? 1 : 7;
+        unsigned char fg = zh ? 15 : 0;
+        for (int yy = 2; yy < 18; yy++) {
+            for (int xx = ime_x; xx < ime_x + ime_w; xx++) PUT_PIXEL(v, xx, yy, bg);
+        }
+        for (int xx = ime_x; xx < ime_x + ime_w; xx++) {
+            PUT_PIXEL(v, xx, 2, 0);
+            PUT_PIXEL(v, xx, 17, 0);
+        }
+        for (int yy = 2; yy < 18; yy++) {
+            PUT_PIXEL(v, ime_x, yy, 0);
+            PUT_PIXEL(v, ime_x + ime_w - 1, yy, 0);
+        }
+        const char* tag = zh ? "[中]" : "[EN]";
+        font_draw_text(v, ime_x + (ime_w - font_text_width(tag)) / 2, 2, tag, fg);
+    }
     int volume_x = 0;
     notification_volume_span(&volume_x, NULL);
     draw_volume_icon(v, volume_x, 2);
@@ -1525,6 +1586,18 @@ void wm_draw(unsigned char* v){
         if(crash_dialog_active)  { draw_crash_dialog(v); }
         if(power_confirm)        { draw_power_dialog(v); }
         draw_desktop_context_menu(v);
+        if (ime_has_composition()) {
+            int ax = 16, ay = screen_h - 62;
+            int act = top_visible_win_id();
+            if (act >= WM_DYN_BASE && act < WM_DYN_BASE + WM_DYN_MAX &&
+                g_dyn_wins[act - WM_DYN_BASE].used) {
+                const wm_dyn_win_t* dw = &g_dyn_wins[act - WM_DYN_BASE];
+                ax = dw->x + 12;
+                ay = dw->y + dw->client_h + 22;
+                if (ay + 48 > screen_h) ay = dw->y + 24;
+            }
+            ime_draw_popup(v, ax, ay);
+        }
     }
     redraw=0;
 }
@@ -1557,18 +1630,18 @@ static void draw_desktop_context_menu(unsigned char* v) {
     if (desktop_menu_mode == 1) {
         desktop_item_t* item = desktop_get(desktop_menu_item);
         font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
-                       "Delete", item && item->locked ? 8 : 0);
+                       WM_TR("删除", "Delete"), item && item->locked ? 8 : 0);
         font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
-                       "Properties", 0);
+                       WM_TR("属性", "Properties"), 0);
     } else {
         font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
-                       desktop_is_mutable() ? "New Folder" : "Live: Read-only",
+                       desktop_is_mutable() ? WM_TR("新建文件夹", "New Folder") : WM_TR("实时模式: 只读", "Live: Read-only"),
                        desktop_is_mutable() ? 0 : 8);
         font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
-                       "Rearrange Desktop",
+                       WM_TR("重新排列桌面", "Rearrange Desktop"),
                        desktop_is_mutable() ? 0 : 8);
         font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 40,
-                       "Refresh", 0);
+                       WM_TR("刷新", "Refresh"), 0);
     }
 }
 
@@ -1681,6 +1754,44 @@ void wm_mouse_wheel(int mx, int my, int wheel) {
     }
 }
 
+static void wm_push_ime_commit(wm_dyn_win_t* dw, const char* utf8) {
+    if (!dw || !dw->used || dw->shaded || !utf8 || !utf8[0]) return;
+    if ((unsigned char)utf8[0] < 0x80u && utf8[1] == '\0') {
+        pxe_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = PXE_EV_KEY_DOWN;
+        ev.win_id = dw->win_id;
+        ev.key = (int)(unsigned char)utf8[0];
+        wm_dyn_push_event(dw, &ev);
+        return;
+    }
+    const char* p = utf8;
+    while (*p) {
+        char chunk[64];
+        size_t clen = 0;
+        while (*p) {
+            const char* prev = p;
+            (void)utf8_decode_next(&p);
+            size_t adv = (size_t)(p - prev);
+            if (clen + adv >= sizeof(chunk) - 1) {
+                p = prev;
+                break;
+            }
+            memcpy(chunk + clen, prev, adv);
+            clen += adv;
+        }
+        if (clen == 0) break;
+        chunk[clen] = '\0';
+        pxe_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = PXE_EV_KEY_DOWN;
+        ev.win_id = dw->win_id;
+        ev.key = PXE_KEY_UTF8;
+        memcpy(ev.text, chunk, clen + 1);
+        wm_dyn_push_event(dw, &ev);
+    }
+}
+
 void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_release)
 {
     static int last_processed_tick = 0;
@@ -1776,7 +1887,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         g_pxe_present_dirty = 0;
         if (redraw || !v || power_confirm || crash_dialog_active ||
             r0_confirm_active || uninit_dialog_active || menu_open ||
-            volume_popup_open || icon_dragging != -1 || opened_msg[0] != 0) {
+            volume_popup_open || icon_dragging != -1 || opened_msg[0] != 0 ||
+            ime_has_composition()) {
             redraw = 1;
             need_mr = 1;
         } else {
@@ -1974,10 +2086,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     }
 
     if(uninit_dialog_active){
-        int dw = 260, dh = 86;
+        int dw = 280, dh = 86;
         int dx = (screen_w - dw) / 2;
         int dy = (screen_h - dh) / 2;
-        int cbx = dx + 20, obx = dx + 140, oby = dy + 52;
+        int cbx = dx + 24, obx = dx + 156, oby = dy + 52;
 
         if(mb_press && mx>=cbx && mx<cbx+100 && my>=oby && my<oby+22){uninit_ignore_pressed=1;need_mr=1;}
         if(mb_release && uninit_ignore_pressed){uninit_ignore_pressed=0;
@@ -1998,7 +2110,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 }
                 uninit_dialog_active=0;
                 redraw=1;
-                show_opened("Disk Initialized");
+                show_opened(WM_TR("磁盘已初始化", "Disk Initialized"));
             } else {redraw=1;}
         }
         if(redraw) { need_mr=1; }
@@ -2013,7 +2125,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         bool inst_mode = ui_install_mode_requested();
         if (menu_index == 4) { // Apple Logo
             int item_count = inst_mode ? 2 : 5;
-            if (mx >= 4 && mx < 4 + 172 && my >= 20 && my < 20 + item_count*18 + 4) {
+            if (mx >= 4 && mx < 4 + 176 && my >= 20 && my < 20 + item_count*18 + 4) {
                 int item = (my - 24) / 18;
                 if (inst_mode) {
                     if (item == 0) { power_confirm = 1; }
@@ -2052,9 +2164,9 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (mx >= 106 && mx < 106 + 160 && my >= 20 && my < 20 + 1*18 + 4) {
                 if (desktop_is_mutable()) {
                     desktop_rearrange();
-                    show_opened("Desktop Rearranged");
+                    show_opened(WM_TR("已重新排列桌面", "Desktop Rearranged"));
                 } else {
-                    wm_notify_banner("Live Desktop is read-only");
+                    wm_notify_banner(WM_TR("实时模式桌面为只读", "Live Desktop is read-only"));
                 }
             }
         }
@@ -2066,9 +2178,17 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
 
     if(mb_press && my < 20) {
         bool inst_mode = ui_install_mode_requested();
+        int ime_x = 0, ime_width = 0;
+        notification_ime_span(&ime_x, &ime_width);
         int volume_x = 0, volume_width = 0;
         notification_volume_span(&volume_x, &volume_width);
-        if (mx >= volume_x && mx < volume_x + volume_width) {
+        if (mx >= ime_x && mx < ime_x + ime_width) {
+            ime_toggle();
+            menu_open = 0;
+            volume_popup_open = 0;
+            redraw = 1;
+            need_mr = 1;
+        } else if (mx >= volume_x && mx < volume_x + volume_width) {
             volume_popup_open = !volume_popup_open;
             volume_drag_active = 0;
             redraw = 1;
@@ -2147,7 +2267,24 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Keyboard input to active window (plus global shortcuts)
+    if (ime_has_composition() && mb_press) {
+        char commit[64];
+        if (ime_handle_mouse(mx, my, mb_press, commit, sizeof(commit))) {
+            if (commit[0] && active_win >= WM_DYN_BASE && active_win < WM_DYN_BASE + WM_DYN_MAX) {
+                wm_push_ime_commit(&g_dyn_wins[active_win - WM_DYN_BASE], commit);
+            }
+            redraw = 1;
+            need_mr = 1;
+            return;
+        }
+    }
+
+    // Keyboard input to active window (plus global shortcuts & IME)
+    if (keyboard_consume_ime_hotkey()) {
+        ime_toggle();
+        redraw = 1;
+        need_mr = 1;
+    }
     if (keyboard_consume_taskmgr_hotkey() && !ui_install_mode_requested()) {
         if (menu_open) {
             menu_open = 0;
@@ -2178,12 +2315,21 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 } else if (pxe_key >= INPUT_CODE_UP && pxe_key <= INPUT_CODE_DELETE) {
                     pxe_key = PXE_KEY_UP + (pxe_key - INPUT_CODE_UP);
                 }
+                int mods = keyboard_get_ctrl() ? PXE_MOD_CTRL : 0;
+                char ime_commit[80];
+                if (ime_process_key(key, mods, ime_commit, sizeof(ime_commit))) {
+                    if (ime_commit[0]) wm_push_ime_commit(dw, ime_commit);
+                    redraw = 1;
+                    need_mr = 1;
+                    key = keyboard_get_key();
+                    continue;
+                }
                 pxe_event_t ev;
                 memset(&ev, 0, sizeof(ev));
                 ev.type = PXE_EV_KEY_DOWN;
                 ev.win_id = dw->win_id;
                 ev.key = pxe_key;
-                ev.modifiers = keyboard_get_ctrl() ? PXE_MOD_CTRL : 0;
+                ev.modifiers = (uint32_t)mods;
                 wm_dyn_push_event(dw, &ev);
             }
         }
@@ -2208,9 +2354,9 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                                                      error, sizeof(error));
                     if (result != VFS_OK) {
                         wm_notify_banner(error[0] ? error :
-                                         "Unable to delete desktop item");
+                                         WM_TR("无法删除桌面项目", "Unable to delete desktop item"));
                     } else {
-                        show_opened("Moved to Trash");
+                        show_opened(WM_TR("已移除项目", "Moved to Trash"));
                     }
                 } else if (item == 1) {
                     desktop_item_t* selected = desktop_get(desktop_menu_item);
@@ -2220,21 +2366,21 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 char error[96] = { 0 };
                 if (desktop_create_folder(error, sizeof(error)) != VFS_OK) {
                     wm_notify_banner(error[0] ? error :
-                                     "Unable to create desktop folder");
+                                     WM_TR("无法创建桌面文件夹", "Unable to create desktop folder"));
                 } else {
-                    show_opened("Folder Created");
+                    show_opened(WM_TR("已创建文件夹", "Folder Created"));
                 }
             } else if (item == 1) {
                 if (desktop_is_mutable()) {
                     desktop_rearrange();
-                    show_opened("Desktop Rearranged");
+                    show_opened(WM_TR("已重新排列桌面", "Desktop Rearranged"));
                 } else {
-                    wm_notify_banner("Live Desktop is read-only");
+                    wm_notify_banner(WM_TR("实时模式桌面为只读", "Live Desktop is read-only"));
                 }
             } else if (item == 2) {
                 if (vfs_poll_media()) wm_notify_media_changed();
                 desktop_refresh();
-                show_opened("Desktop Refreshed");
+                show_opened(WM_TR("已刷新桌面", "Desktop Refreshed"));
             }
         }
         desktop_menu_mode = 0;

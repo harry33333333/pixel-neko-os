@@ -480,6 +480,7 @@ static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
         if (usage > 0xFFu) usage &= 0xFFu;
         if (usage) current_keys[key_count++] = (uint8_t)usage;
     }
+    if (key_count > 0) keyboard_note_usb_activity(1);
 
     int previous_count = 0;
     while (previous_count < HID_MAX_KEYS &&

@@ -34,3 +34,4 @@ void utf8_clip_by_pixels(const char* src, int max_pixels, int is_small_font,
 int utf8_validate(const char* buf, size_t len);
 
 #endif /* _UTF8_H */
+

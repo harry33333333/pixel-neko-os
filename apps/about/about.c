@@ -7,6 +7,7 @@
 static void render_about(const pxe_win_surface_t* surf,
                          const pxe_basic_sysinfo_t* info,
                          int ok_pressed) {
+    int zh = (info->ui_lang != PXE_LANG_EN);
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, PXE_COL_LIGHT_GRAY);
 
     /* Classic TBMK 4-square emblem */
@@ -46,30 +47,33 @@ static void render_about(const pxe_win_surface_t* surf,
     pxe_draw_text(surf, lx + 26, ly + 24, "K", PXE_COL_DARK_MAGENTA);
 
     char line[96];
-    snprintf(line, sizeof(line), "Codename %s",
+    snprintf(line, sizeof(line), zh ? "开发代号: %s" : "Codename %s",
              info->os_codename[0] ? info->os_codename : "Pixel Neko Next");
     pxe_draw_text(surf, 10, 44, line, PXE_COL_BLACK);
 
-    snprintf(line, sizeof(line), "Version %s",
+    snprintf(line, sizeof(line), zh ? "系统版本: %s" : "Version %s",
              info->os_build[0] ? info->os_build : "Unknown");
     pxe_draw_text(surf, 10, 64, line, PXE_COL_BLACK);
 
     pxe_draw_text(surf, 10, 84, "(C) 2026 Tairitsu_tty / XNZM", PXE_COL_BLACK);
 
-    pxe_draw_text(surf, 10, 104, "CPU:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 104, zh ? "处理器:" : "CPU:", PXE_COL_BLACK);
     char cpu_disp[64];
-    int max_chars = (surf->width - 58) / 8;
+    int cpu_x = zh ? 68 : 50;
+    int max_chars = (surf->width - cpu_x - 8) / 8;
     if (max_chars < 1) max_chars = 1;
     if (max_chars > (int)sizeof(cpu_disp) - 1) max_chars = (int)sizeof(cpu_disp) - 1;
     strncpy(cpu_disp, info->cpu_model[0] ? info->cpu_model : "x86_64", (size_t)max_chars);
     cpu_disp[max_chars] = '\0';
-    pxe_draw_text(surf, 50, 104, cpu_disp, PXE_COL_BLACK);
+    pxe_draw_text(surf, cpu_x, 104, cpu_disp, PXE_COL_BLACK);
 
-    snprintf(line, sizeof(line), "Total RAM: %u MB / Usable: %u MB",
+    snprintf(line, sizeof(line),
+             zh ? "物理内存: %u MB / 可用: %u MB" : "Total RAM: %u MB / Usable: %u MB",
              (unsigned)info->total_ram_mb, (unsigned)info->usable_ram_mb);
     pxe_draw_text(surf, 10, 124, line, PXE_COL_BLACK);
 
-    pxe_draw_button(surf, surf->width - 62, surf->height - 30, 50, 20, "OK", ok_pressed, 1);
+    pxe_draw_button(surf, surf->width - 62, surf->height - 30, 50, 20,
+                    zh ? "确定" : "OK", ok_pressed, 1);
 }
 
 int main(int argc, char** argv) {
@@ -86,7 +90,7 @@ int main(int argc, char** argv) {
     desc.min_h = 180;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "About");
+    strcpy(desc.title, pxe_is_zh() ? "关于本机" : "About");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -95,6 +99,8 @@ int main(int argc, char** argv) {
     pxe_basic_sysinfo_t info;
     memset(&info, 0, sizeof(info));
     pxe_sys_get_basic_info(&info);
+    int last_zh = (info.ui_lang != PXE_LANG_EN);
+    pxe_win_set_title(win_id, last_zh ? "关于本机" : "About");
 
     int ok_pressed = 0;
     render_about(&surf, &info, ok_pressed);
@@ -116,10 +122,16 @@ int main(int argc, char** argv) {
                 running = 0;
                 break;
             case PXE_EV_REDRAW:
-            case PXE_EV_ACTIVATE:
+            case PXE_EV_ACTIVATE: {
                 pxe_sys_get_basic_info(&info);
+                int now_zh = (info.ui_lang != PXE_LANG_EN);
+                if (now_zh != last_zh) {
+                    last_zh = now_zh;
+                    pxe_win_set_title(win_id, now_zh ? "关于本机" : "About");
+                }
                 dirty = 1;
                 break;
+            }
             case PXE_EV_KEY_DOWN:
                 if (ev.key == PXE_KEY_ENTER || ev.key == ' ' || ev.key == PXE_KEY_ESC) {
                     running = 0;

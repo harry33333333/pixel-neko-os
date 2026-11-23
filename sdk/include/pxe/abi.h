@@ -42,6 +42,11 @@
 #define PXE_KEY_PGUP         0x106
 #define PXE_KEY_PGDN         0x107
 #define PXE_KEY_DELETE       0x108
+#define PXE_KEY_UTF8         0x1020
+
+/* UI language IDs (pxe_basic_sysinfo_t.ui_lang) */
+#define PXE_LANG_EN          0
+#define PXE_LANG_ZH          1
 
 /* Canvas pixel format */
 #define PXE_CANVAS_PAL8      1u  /* 1 byte/pixel: 256-color classic palette */
@@ -197,7 +202,8 @@ typedef struct {
     char     audio_probe[48];
     uint8_t  clock_show_date;    /* 1 = show date */
     uint8_t  clock_show_seconds; /* 1 = show seconds */
-    uint16_t clock_pad;
+    uint8_t  ui_lang;            /* PXE_LANG_ZH (1) or PXE_LANG_EN (0) */
+    uint8_t  clock_pad;
 } pxe_basic_sysinfo_t;
 
 /* Display mode & capability query ABI */
@@ -251,6 +257,7 @@ typedef struct {
 #define PXE_CFG_SET_CLOCK_OPTIONS  9
 #define PXE_CFG_RESTORE_DEFAULT    10
 #define PXE_CFG_SYSTEM_REBOOT      11
+#define PXE_CFG_SET_LANG           12
 
 /* Filesystem directory & drive structures */
 typedef struct {

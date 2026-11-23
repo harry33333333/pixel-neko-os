@@ -17,6 +17,7 @@
 #define PSE_CLOCK_HIDE_SECONDS  0x02u
 #define PSE_VOLUME_VALID        0x04u
 #define PSE_VOLUME_MUTED        0x08u
+#define PSE_FLAG_LANG_EN        0x10u
 #define PSE_BOOT_CONFIG_MAX     32768
 
 typedef struct {
@@ -58,6 +59,7 @@ static char g_wallpaper_path[PSE_WALLPAPER_PATH_MAX];
 static bool g_missing_notice_logged = false;
 static bool g_clock_show_date = true;
 static bool g_clock_show_seconds = true;
+static bool g_lang_zh = true;
 
 static unsigned int copy_text(char* target, unsigned int capacity,
                               const char* source) {
@@ -458,6 +460,7 @@ void settings_init(void) {
     g_missing_notice_logged = false;
     g_clock_show_date = true;
     g_clock_show_seconds = true;
+    g_lang_zh = true;
 
     if (g_boot_mode != SETTINGS_BOOT_LOCAL) {
         log_printf("[SETTINGS] persistent config disabled in %s mode\n",
@@ -517,6 +520,8 @@ bool settings_load(void) {
         (records[selected].reserved[0] & PSE_CLOCK_HIDE_DATE) == 0;
     g_clock_show_seconds =
         (records[selected].reserved[0] & PSE_CLOCK_HIDE_SECONDS) == 0;
+    g_lang_zh =
+        (records[selected].reserved[0] & PSE_FLAG_LANG_EN) == 0;
     if (records[selected].reserved[0] & PSE_VOLUME_VALID) {
         int vol = (int)records[selected].reserved[1];
         if (vol < 0) vol = 0;
@@ -559,6 +564,14 @@ bool settings_get_clock_show_date(void) {
 
 bool settings_get_clock_show_seconds(void) {
     return g_clock_show_seconds;
+}
+
+void settings_set_language_zh(bool zh) {
+    g_lang_zh = zh;
+}
+
+bool settings_is_language_zh(void) {
+    return g_lang_zh;
 }
 
 void settings_restore_default_wallpaper(void) {
@@ -612,7 +625,8 @@ bool settings_save(void) {
         (g_clock_show_date ? 0u : PSE_CLOCK_HIDE_DATE) |
         (g_clock_show_seconds ? 0u : PSE_CLOCK_HIDE_SECONDS) |
         PSE_VOLUME_VALID |
-        (audio_is_muted() ? PSE_VOLUME_MUTED : 0u));
+        (audio_is_muted() ? PSE_VOLUME_MUTED : 0u) |
+        (g_lang_zh ? 0u : PSE_FLAG_LANG_EN));
     config.reserved[1] = (uint8_t)audio_get_master_volume();
     copy_text(config.wallpaper_path, sizeof(config.wallpaper_path),
               g_wallpaper_path);

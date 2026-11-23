@@ -43,6 +43,7 @@ typedef struct {
     uint64_t last_click_ticks;
     int last_click_row;
     char status_msg[48];
+    int zh;
 
     uint8_t* back_pixels;
     size_t back_cap;
@@ -58,12 +59,12 @@ static const char* state_short(uint8_t state) {
     }
 }
 
-static const char* sort_label(int sort_mode) {
+static const char* sort_label(int sort_mode, int zh) {
     switch (sort_mode) {
         case SORT_PID: return "PID";
         case SORT_CPU: return "CPU%";
-        case SORT_MEM: return "Mem";
-        default:       return "Default";
+        case SORT_MEM: return zh ? "内存" : "Mem";
+        default:       return zh ? "默认" : "Default";
     }
 }
 
@@ -261,11 +262,13 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     /* Top summary box */
     pxe_draw_bevel_box(surf, 8, 8, surf->width - 16, 50, 0, PXE_COL_WHITE);
 
-    snprintf(line, sizeof(line), "Tasks: %d | Drivers: %llu | CPU: %d%% | Sort: %s",
+    snprintf(line, sizeof(line),
+             st->zh ? "任务: %d | 驱动: %llu | CPU: %d%% | 排序: %s"
+                    : "Tasks: %d | Drivers: %llu | CPU: %d%% | Sort: %s",
              st->proc_count,
              (unsigned long long)st->mem.pdv_loaded_count,
              st->total_cpu_pct,
-             sort_label(st->sort_mode));
+             sort_label(st->sort_mode, st->zh));
     pxe_draw_text(surf, 16, 12, line, PXE_COL_DARK_BLUE);
 
     uint64_t total_mb = st->mem.total_bytes / (1024ULL * 1024ULL);
@@ -276,7 +279,9 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
                       : 0;
     if (mem_pct > 100) mem_pct = 100;
 
-    snprintf(line, sizeof(line), "Mem: %llu / %llu MB (%d%% used, %llu MB free)",
+    snprintf(line, sizeof(line),
+             st->zh ? "内存: %llu / %llu MB (已用 %d%%, 空闲 %llu MB)"
+                    : "Mem: %llu / %llu MB (%d%% used, %llu MB free)",
              (unsigned long long)used_mb,
              (unsigned long long)total_mb,
              mem_pct,
@@ -307,13 +312,13 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     pxe_draw_hline(surf, hx, hy + HEADER_H - 1, tw - 2, PXE_COL_DARK_GRAY);
 
     pxe_draw_text(surf, hx + 4,   hy + 1, "PID",   (st->sort_mode == SORT_PID) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 36,  hy + 1, "R",     PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 58,  hy + 1, "St",    PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 88,  hy + 1, "Win",   PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 36,  hy + 1, st->zh ? "环" : "R",     PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 58,  hy + 1, st->zh ? "状态" : "St",    PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 88,  hy + 1, st->zh ? "窗口" : "Win",   PXE_COL_BLACK);
     pxe_draw_text(surf, hx + 118, hy + 1, "CPU",   (st->sort_mode == SORT_CPU) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 158, hy + 1, "Ticks", PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 214, hy + 1, "Mem",   (st->sort_mode == SORT_MEM) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 272, hy + 1, "Image", PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 158, hy + 1, st->zh ? "时间片" : "Ticks", PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 214, hy + 1, st->zh ? "内存" : "Mem",   (st->sort_mode == SORT_MEM) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
+    pxe_draw_text(surf, hx + 272, hy + 1, st->zh ? "映像名" : "Image", PXE_COL_BLACK);
 
     int max_name_chars = (list_w - 276) / 8;
     if (max_name_chars < 6) max_name_chars = 6;
@@ -378,13 +383,14 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     int can_focus = (sel && sel->window_count > 0);
     int can_kill = is_proc_killable(st, sel);
 
-    pxe_draw_button(surf, b1x, by, b1w, bh, "Refresh",
+    pxe_draw_button(surf, b1x, by, b1w, bh, st->zh ? "刷新" : "Refresh",
                     (st->press_btn == 1 && st->hover_btn == 1), 1);
-    pxe_draw_button(surf, b2x, by, b2w, bh, "Switch To",
+    pxe_draw_button(surf, b2x, by, b2w, bh, st->zh ? "切换至" : "Switch To",
                     (can_focus && st->press_btn == 2 && st->hover_btn == 2), can_focus);
-    pxe_draw_button(surf, b3x, by, b3w, bh, "End Task",
+    pxe_draw_button(surf, b3x, by, b3w, bh, st->zh ? "结束任务" : "End Task",
                     (can_kill && st->press_btn == 3 && st->hover_btn == 3), can_kill);
-    pxe_draw_button(surf, b4x, by, b4w, bh, st->paused ? "Resume" : "Pause",
+    pxe_draw_button(surf, b4x, by, b4w, bh,
+                    st->paused ? (st->zh ? "继续" : "Resume") : (st->zh ? "暂停" : "Pause"),
                     (st->press_btn == 4 && st->hover_btn == 4), 1);
 
     if (surf->width >= 480 && st->status_msg[0]) {
@@ -399,7 +405,8 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
         if (dy < 4) dy = 4;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_RED);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Task Manager Warning", PXE_COL_WHITE);
+        pxe_draw_text(surf, dx + 8, dy + 3,
+                      st->zh ? "任务管理器警告" : "Task Manager Warning", PXE_COL_WHITE);
 
         /* Yellow warning triangle */
         for (int r = 0; r < 20; r++) {
@@ -413,21 +420,26 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
         pxe_fill_rect(surf, dx + 24, dy + 45, 2, 2, PXE_COL_BLACK);
 
         char tline[64];
-        snprintf(tline, sizeof(tline), "Terminate '%s' (PID %u)?",
-                 st->warn_target_name[0] ? st->warn_target_name : "System Process",
+        snprintf(tline, sizeof(tline),
+                 st->zh ? "确定结束 '%s' (PID %u)?" : "Terminate '%s' (PID %u)?",
+                 st->warn_target_name[0] ? st->warn_target_name : (st->zh ? "系统进程" : "System Process"),
                  (unsigned)st->warn_target_pid);
         pxe_draw_text_small(surf, dx + 44, dy + 28, tline, PXE_COL_DARK_RED);
         pxe_draw_text_small(surf, dx + 44, dy + 44,
-                            "WARNING: Terminating a system process", PXE_COL_BLACK);
+                            st->zh ? "警告: 强行结束系统进程可能导致"
+                                   : "WARNING: Terminating a system process", PXE_COL_BLACK);
         pxe_draw_text_small(surf, dx + 44, dy + 58,
-                            "causes undesired results including loss of", PXE_COL_BLACK);
+                            st->zh ? "未保存的数据丢失、界面卡死或系统"
+                                   : "causes undesired results including loss of", PXE_COL_BLACK);
         pxe_draw_text_small(surf, dx + 44, dy + 72,
-                            "data and system instability or freeze.", PXE_COL_BLACK);
+                            st->zh ? "不稳定等不可预期的后果。"
+                                   : "data and system instability or freeze.", PXE_COL_BLACK);
         pxe_draw_text_small(surf, dx + 44, dy + 86,
-                            "Are you sure you want to terminate it?", PXE_COL_DARK_BLUE);
+                            st->zh ? "确定要强行结束该进程吗?"
+                                   : "Are you sure you want to terminate it?", PXE_COL_DARK_BLUE);
 
-        pxe_draw_button(surf, dx + 74,  dy + 102, 92, 22, "Yes (End)", 0, 1);
-        pxe_draw_button(surf, dx + 194, dy + 102, 92, 22, "No (Cancel)", 0, 1);
+        pxe_draw_button(surf, dx + 74,  dy + 102, 92, 22, st->zh ? "是 (结束)" : "Yes (End)", 0, 1);
+        pxe_draw_button(surf, dx + 194, dy + 102, 92, 22, st->zh ? "否 (取消)" : "No (Cancel)", 0, 1);
     }
 }
 
@@ -465,13 +477,14 @@ static void render_taskmgr(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
 static void perform_focus(taskmgr_state_t* st) {
     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
     if (!sel || sel->window_count == 0) {
-        strcpy(st->status_msg, "No window");
+        strcpy(st->status_msg, st->zh ? "无窗口" : "No window");
         return;
     }
     if (pxe_r0_focus_process_window(sel->pid) == 0) {
-        snprintf(st->status_msg, sizeof(st->status_msg), "Switched PID %u", (unsigned)sel->pid);
+        snprintf(st->status_msg, sizeof(st->status_msg),
+                 st->zh ? "已切换 PID %u" : "Switched PID %u", (unsigned)sel->pid);
     } else {
-        strcpy(st->status_msg, "Switch failed");
+        strcpy(st->status_msg, st->zh ? "切换失败" : "Switch failed");
     }
 }
 
@@ -488,17 +501,18 @@ static void execute_kill_pid(taskmgr_state_t* st, uint32_t target_pid, const pxe
         return;
     }
     if (pxe_r0_kill_process(target_pid, -1) == 0) {
-        snprintf(st->status_msg, sizeof(st->status_msg), "Ended PID %u", (unsigned)target_pid);
+        snprintf(st->status_msg, sizeof(st->status_msg),
+                 st->zh ? "已结束 PID %u" : "Ended PID %u", (unsigned)target_pid);
         refresh_data(st, surf);
     } else {
-        strcpy(st->status_msg, "End failed");
+        strcpy(st->status_msg, st->zh ? "结束失败" : "End failed");
     }
 }
 
 static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
     if (!is_proc_killable(st, sel)) {
-        strcpy(st->status_msg, "Protected task");
+        strcpy(st->status_msg, st->zh ? "受保护的任务" : "Protected task");
         pxe_beep();
         return;
     }
@@ -515,7 +529,8 @@ static void perform_kill(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
 
 static void toggle_pause(taskmgr_state_t* st) {
     st->paused = !st->paused;
-    strcpy(st->status_msg, st->paused ? "Paused" : "Live 1Hz");
+    strcpy(st->status_msg, st->paused ? (st->zh ? "已暂停" : "Paused")
+                                      : (st->zh ? "实时 1Hz" : "Live 1Hz"));
 }
 
 static void set_sort_mode(taskmgr_state_t* st, int mode, const pxe_win_surface_t* surf) {
@@ -525,7 +540,8 @@ static void set_sort_mode(taskmgr_state_t* st, int mode, const pxe_win_surface_t
     reselect_pid(st);
     get_table_rect(surf, &tx, &ty, &tw, &th, &vis_rows);
     clamp_scroll(st, vis_rows);
-    snprintf(st->status_msg, sizeof(st->status_msg), "Sort: %s", sort_label(mode));
+    snprintf(st->status_msg, sizeof(st->status_msg),
+             st->zh ? "排序: %s" : "Sort: %s", sort_label(mode, st->zh));
 }
 
 static int hit_test_button(const pxe_win_surface_t* surf, int mx, int my) {
@@ -548,12 +564,45 @@ static void ensure_selected_visible(taskmgr_state_t* st, int vis_rows) {
     clamp_scroll(st, vis_rows);
 }
 
+static void sync_taskmgr_menu(int win_id, int zh) {
+    pxe_menu_bar_t mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.menu_count = 2;
+
+    strcpy(mb.menus[0].title, zh ? "任务" : "Task");
+    mb.menus[0].item_count = 3;
+    strcpy(mb.menus[0].items[0].label, zh ? "切换至" : "Switch To");
+    mb.menus[0].items[0].enabled = 1;
+    strcpy(mb.menus[0].items[1].label, zh ? "结束任务" : "End Task");
+    mb.menus[0].items[1].enabled = 1;
+    strcpy(mb.menus[0].items[2].label, zh ? "退出" : "Exit");
+    mb.menus[0].items[2].enabled = 1;
+
+    strcpy(mb.menus[1].title, zh ? "视图" : "View");
+    mb.menus[1].item_count = 6;
+    strcpy(mb.menus[1].items[0].label, zh ? "立即刷新" : "Refresh Now");
+    mb.menus[1].items[0].enabled = 1;
+    strcpy(mb.menus[1].items[1].label, zh ? "暂停/继续" : "Pause/Resume");
+    mb.menus[1].items[1].enabled = 1;
+    strcpy(mb.menus[1].items[2].label, zh ? "默认排序" : "Sort by Default");
+    mb.menus[1].items[2].enabled = 1;
+    strcpy(mb.menus[1].items[3].label, zh ? "按 PID 排序" : "Sort by PID");
+    mb.menus[1].items[3].enabled = 1;
+    strcpy(mb.menus[1].items[4].label, zh ? "按 CPU% 排序" : "Sort by CPU%");
+    mb.menus[1].items[4].enabled = 1;
+    strcpy(mb.menus[1].items[5].label, zh ? "按内存排序" : "Sort by Memory");
+    mb.menus[1].items[5].enabled = 1;
+
+    pxe_win_set_menu(win_id, &mb);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
     taskmgr_state_t* st = (taskmgr_state_t*)calloc(1, sizeof(taskmgr_state_t));
     if (!st) return 1;
+    st->zh = pxe_is_zh();
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -565,7 +614,7 @@ int main(int argc, char** argv) {
     desc.min_h = 240;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "Task Manager");
+    strcpy(desc.title, st->zh ? "任务管理器" : "Task Manager");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -574,41 +623,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pxe_menu_bar_t mb;
-    memset(&mb, 0, sizeof(mb));
-    mb.menu_count = 2;
-
-    strcpy(mb.menus[0].title, "Task");
-    mb.menus[0].item_count = 3;
-    strcpy(mb.menus[0].items[0].label, "Switch To");
-    mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, "End Task");
-    mb.menus[0].items[1].enabled = 1;
-    strcpy(mb.menus[0].items[2].label, "Exit");
-    mb.menus[0].items[2].enabled = 1;
-
-    strcpy(mb.menus[1].title, "View");
-    mb.menus[1].item_count = 6;
-    strcpy(mb.menus[1].items[0].label, "Refresh Now");
-    mb.menus[1].items[0].enabled = 1;
-    strcpy(mb.menus[1].items[1].label, "Pause/Resume");
-    mb.menus[1].items[1].enabled = 1;
-    strcpy(mb.menus[1].items[2].label, "Sort by Default");
-    mb.menus[1].items[2].enabled = 1;
-    strcpy(mb.menus[1].items[3].label, "Sort by PID");
-    mb.menus[1].items[3].enabled = 1;
-    strcpy(mb.menus[1].items[4].label, "Sort by CPU%");
-    mb.menus[1].items[4].enabled = 1;
-    strcpy(mb.menus[1].items[5].label, "Sort by Memory");
-    mb.menus[1].items[5].enabled = 1;
-
-    pxe_win_set_menu(win_id, &mb);
+    sync_taskmgr_menu(win_id, st->zh);
 
     st->win_id = win_id;
     st->self_pid = pxe_getpid();
     st->selected_idx = 0;
     st->last_click_row = -1;
-    strcpy(st->status_msg, "Live 1Hz");
+    strcpy(st->status_msg, st->zh ? "实时 1Hz" : "Live 1Hz");
     refresh_data(st, &surf);
     render_taskmgr(st, &surf);
 
@@ -627,6 +648,14 @@ int main(int argc, char** argv) {
                 running = 0;
                 break;
             } else if (ev.type == PXE_EV_REDRAW || ev.type == PXE_EV_ACTIVATE) {
+                if (ev.type == PXE_EV_REDRAW) {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != st->zh) {
+                        st->zh = new_zh;
+                        pxe_win_set_title(win_id, st->zh ? "任务管理器" : "Task Manager");
+                        sync_taskmgr_menu(win_id, st->zh);
+                    }
+                }
                 refresh_data(st, &surf);
                 dirty = 1;
             } else if (ev.type == PXE_EV_RESIZE) {
@@ -648,7 +677,7 @@ int main(int argc, char** argv) {
                         execute_kill_pid(st, pid, &surf);
                     } else if (pxe_point_in_rect(ev.x, ev.y, dx + 194, dy + 102, 92, 22)) {
                         st->warn_modal = 0;
-                        strcpy(st->status_msg, "Cancelled");
+                        strcpy(st->status_msg, st->zh ? "已取消" : "Cancelled");
                     }
                     dirty = 1;
                     continue;
@@ -704,9 +733,10 @@ int main(int argc, char** argv) {
                             st->last_click_ticks = now_t;
                             if (is_proc_killable(st, &st->procs[idx])) {
                                 snprintf(st->status_msg, sizeof(st->status_msg),
-                                         "PID %u selected", (unsigned)st->procs[idx].pid);
+                                         st->zh ? "已选中 PID %u" : "PID %u selected",
+                                         (unsigned)st->procs[idx].pid);
                             } else {
-                                strcpy(st->status_msg, "Protected task");
+                                strcpy(st->status_msg, st->zh ? "受保护的任务" : "Protected task");
                             }
                         }
                         dirty = 1;
@@ -728,7 +758,7 @@ int main(int argc, char** argv) {
                     st->hover_btn = 0;
                     if (act == 1) {
                         refresh_data(st, &surf);
-                        strcpy(st->status_msg, "Refreshed");
+                        strcpy(st->status_msg, st->zh ? "已刷新" : "Refreshed");
                     } else if (act == 2) {
                         perform_focus(st);
                     } else if (act == 3) {
@@ -752,7 +782,7 @@ int main(int argc, char** argv) {
                 } else if (ev.arg0 == 1) {
                     if (ev.arg1 == 0) {
                         refresh_data(st, &surf);
-                        strcpy(st->status_msg, "Refreshed");
+                        strcpy(st->status_msg, st->zh ? "已刷新" : "Refreshed");
                         dirty = 1;
                     } else if (ev.arg1 == 1) {
                         toggle_pause(st);
@@ -771,7 +801,7 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     } else if (ev.key == PXE_KEY_ESC || ev.key == 'n' || ev.key == 'N') {
                         st->warn_modal = 0;
-                        strcpy(st->status_msg, "Cancelled");
+                        strcpy(st->status_msg, st->zh ? "已取消" : "Cancelled");
                         dirty = 1;
                     }
                     continue;
@@ -816,7 +846,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 } else if (ev.key == 'r' || ev.key == 'R') {
                     refresh_data(st, &surf);
-                    strcpy(st->status_msg, "Refreshed");
+                    strcpy(st->status_msg, st->zh ? "已刷新" : "Refreshed");
                     dirty = 1;
                 } else if (ev.key == 'p' || ev.key == 'P') {
                     toggle_pause(st);

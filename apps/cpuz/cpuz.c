@@ -67,6 +67,7 @@ typedef struct {
 
     char notice[128];
     int notice_is_error;
+    int zh;
 } cpuz_app_t;
 
 static cpuz_app_t g_app;
@@ -75,6 +76,9 @@ static size_t g_report_length;
 
 static const char* const k_tab_names[TAB_COUNT] = {
     "CPU", "Caches", "Mainboard", "Memory", "Graphics", "About"
+};
+static const char* const k_tab_names_zh[TAB_COUNT] = {
+    "处理器", "缓存", "主板", "内存", "显卡", "关于"
 };
 
 static const int k_tab_x[TAB_COUNT] = { 8, 68, 138, 220, 286, 360 };
@@ -841,13 +845,15 @@ static void render_tabs(const pxe_win_surface_t* surf, const cpuz_app_t* app) {
             pxe_draw_hline(surf, k_tab_x[tab], y + h - 1, k_tab_w[tab],
                            PXE_COL_DARK_GRAY);
         }
-        int text_width = (int)strlen(k_tab_names[tab]) * 6;
+        const char* tname = app->zh ? k_tab_names_zh[tab] : k_tab_names[tab];
+        int text_width = pxe_text_width_small(tname);
         pxe_draw_text_small(surf, k_tab_x[tab] +
-                            (k_tab_w[tab] - text_width) / 2, y + 7,
-                            k_tab_names[tab],
+                            (k_tab_w[tab] - text_width) / 2, y + 6,
+                            tname,
                             active ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
     }
-    pxe_draw_button(surf, surf->width - 66, 6, 58, 22, "Refresh", 0, 1);
+    pxe_draw_button(surf, surf->width - 66, 6, 58, 22,
+                    app->zh ? "刷新" : "Refresh", 0, 1);
 }
 
 static void render_cpu(const pxe_win_surface_t* surf, cpuz_app_t* app) {
@@ -1199,10 +1205,12 @@ static void render_save_dialog(const pxe_win_surface_t* surf,
                        PXE_COL_LIGHT_GRAY);
     pxe_fill_rect(surf, x + 2, y + 2, SAVE_DIALOG_W - 4, 18,
                   PXE_COL_DARK_BLUE);
-    pxe_draw_text(surf, x + 8, y + 2, "Save Diagnostic Report",
+    pxe_draw_text(surf, x + 8, y + 2,
+                  app->zh ? "保存诊断报告" : "Save Diagnostic Report",
                   PXE_COL_WHITE);
     pxe_draw_text_small(surf, x + 14, y + 27,
-                        "Choose an absolute path ending in .TXT:",
+                        app->zh ? "请输入以 .TXT 结尾的完整绝对路径:"
+                                : "Choose an absolute path ending in .TXT:",
                         PXE_COL_BLACK);
 
     int field_x = x + 14;
@@ -1211,44 +1219,47 @@ static void render_save_dialog(const pxe_win_surface_t* surf,
     pxe_draw_bevel_box(surf, field_x, field_y, field_w, 26, 1,
                        PXE_COL_WHITE);
 
-    int visible_chars = (field_w - 12) / 6;
-    if (visible_chars < 1) visible_chars = 1;
-    int start = app->save_path_len > visible_chars ?
-                app->save_path_len - visible_chars : 0;
-    pxe_draw_text_small(surf, field_x + 6, field_y + 9,
-                        app->save_path + start, PXE_COL_BLACK);
-    int caret_x = field_x + 6 +
-                  (app->save_path_len - start) * 6;
+    const char* vis_p = app->save_path;
+    while (*vis_p && pxe_text_width_small(vis_p) > field_w - 14) {
+        (void)utf8_decode_next(&vis_p);
+    }
+    pxe_draw_text_small(surf, field_x + 6, field_y + 7, vis_p, PXE_COL_BLACK);
+    int caret_x = field_x + 6 + pxe_text_width_small(vis_p);
     if (caret_x >= field_x + field_w - 5) {
         caret_x = field_x + field_w - 5;
     }
     pxe_draw_vline(surf, caret_x, field_y + 8, 12, PXE_COL_BLACK);
 
     pxe_draw_text_small(surf, x + 14, y + 75,
-                        "Examples: C:\\CPU_DETECT.TXT  E:\\Logs\\CPU.TXT",
+                        app->zh ? "示例: C:\\CPU_DETECT.TXT  E:\\Logs\\CPU.TXT"
+                                : "Examples: C:\\CPU_DETECT.TXT  E:\\Logs\\CPU.TXT",
                         PXE_COL_DARK_GRAY);
     if (app->save_error[0]) {
         draw_clipped(surf, x + 14, y + 91, app->save_error,
                      PXE_COL_DARK_RED, SAVE_DIALOG_W - 28);
     } else {
         pxe_draw_text_small(surf, x + 14, y + 91,
-                            "Enter saves. Ctrl+V pastes. Esc cancels.",
+                            app->zh ? "Enter 保存 | Ctrl+V 粘贴 | Esc 取消"
+                                    : "Enter saves. Ctrl+V pastes. Esc cancels.",
                             PXE_COL_DARK_BLUE);
     }
     pxe_draw_button(surf, x + SAVE_DIALOG_W - 188, y + 113, 82, 24,
-                    "Save", 0, 1);
+                    app->zh ? "保存" : "Save", 0, 1);
     pxe_draw_button(surf, x + SAVE_DIALOG_W - 96, y + 113, 82, 24,
-                    "Cancel", 0, 1);
+                    app->zh ? "取消" : "Cancel", 0, 1);
 }
 
 static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
     int width = surf->width - 24;
     draw_group(surf, CONTENT_X, CONTENT_Y, width, 176,
-               "Pixel CPU Detect");
-    pxe_draw_text(surf, CONTENT_X + 14, CONTENT_Y + 26, APP_NAME,
+               app->zh ? "Pixel CPU 检测" : "Pixel CPU Detect");
+    pxe_draw_text(surf, CONTENT_X + 14, CONTENT_Y + 26,
+                  app->zh ? "Pixel CPU 检测工具" : APP_NAME,
                   PXE_COL_DARK_BLUE);
     char value[192];
-    snprintf(value, sizeof(value), "Version %s  |  Ring 0 CPUID inspector",
+    snprintf(value, sizeof(value),
+             app->zh ? "版本 %s  |  Ring 0 CPUID 硬件侦测"
+                     : "Version %s  |  Ring 0 CPUID inspector",
              APP_VERSION);
     pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 48, value,
                         PXE_COL_BLACK);
@@ -1260,25 +1271,29 @@ static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
     pxe_draw_hline(surf, CONTENT_X + 12, CONTENT_Y + 84, width - 24,
                    PXE_COL_DARK_GRAY);
     pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 98,
-                        "CPU recognition core: libcpuid 0.8.2",
+                        app->zh ? "CPU 识别核心: libcpuid 0.8.2"
+                                : "CPU recognition core: libcpuid 0.8.2",
                         PXE_COL_BLACK);
     pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 114,
                         "Copyright (c) Veselin Georgiev and contributors",
                         PXE_COL_DARK_GRAY);
     pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 130,
-                        "BSD-2-Clause open source component",
+                        app->zh ? "基于 BSD-2-Clause 开源协议"
+                                : "BSD-2-Clause open source component",
                         PXE_COL_DARK_GREEN);
     pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 150,
-                        "Report includes decoded data and raw CPUID leaves.",
+                        app->zh ? "报告包含已解码规格信息与原始 CPUID 寄存器页。"
+                                : "Report includes decoded data and raw CPUID leaves.",
                         PXE_COL_DARK_BLUE);
 
     pxe_draw_button(surf, surf->width - 198, surf->height - 58, 186, 26,
-                    "Save Report As...", 0, 1);
+                    app->zh ? "保存检测报告..." : "Save Report As...", 0, 1);
     char path[32];
     snprintf(path, sizeof(path), "%c:\\CPU_DETECT.TXT",
              app->basic.system_drive ? app->basic.system_drive : 'C');
     pxe_draw_text_small(surf, CONTENT_X + 2, surf->height - 82,
-                        "Default report path (editable):",
+                        app->zh ? "默认报告保存路径 (可修改):"
+                                : "Default report path (editable):",
                         PXE_COL_DARK_GRAY);
     pxe_draw_text_small(surf, CONTENT_X + 2, surf->height - 66,
                         path, PXE_COL_DARK_BLUE);
@@ -1293,12 +1308,14 @@ static void render_status(const pxe_win_surface_t* surf, cpuz_app_t* app) {
         copy_text(status, sizeof(status), app->notice);
         color = app->notice_is_error ? PXE_COL_DARK_RED : PXE_COL_DARK_GREEN;
     } else if (!app->identify_ok) {
-        snprintf(status, sizeof(status), "CPUID: %s",
-                 text_or(app->cpu_error, "identification failed"));
+        snprintf(status, sizeof(status),
+                 app->zh ? "CPUID: %s" : "CPUID: %s",
+                 text_or(app->cpu_error, app->zh ? "识别失败" : "identification failed"));
         color = PXE_COL_DARK_RED;
     } else {
         snprintf(status, sizeof(status),
-                 "%s | %d PCI devices | %d PDV drivers | libcpuid %s",
+                 app->zh ? "%s | %d 个 PCI 设备 | %d 个 PDV 驱动 | libcpuid %s"
+                         : "%s | %d PCI devices | %d PDV drivers | libcpuid %s",
                  text_or(app->cpu.cpu_codename, "x86-64 CPU"),
                  app->pci_count, app->pdv_count, LIBCPUID_VERSION);
     }
@@ -1345,6 +1362,7 @@ int main(int argc, char** argv) {
     memset(app, 0, sizeof(*app));
     app->tab = TAB_CPU;
     app->hypervisor = HYPERVISOR_UNKNOWN;
+    app->zh = pxe_is_zh();
     refresh_all(app);
     set_default_save_path(app);
 
@@ -1362,7 +1380,7 @@ int main(int argc, char** argv) {
     desc.min_h = 410;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    copy_text(desc.title, sizeof(desc.title), APP_NAME);
+    copy_text(desc.title, sizeof(desc.title), app->zh ? "CPU 检测" : APP_NAME);
 
     pxe_win_surface_t surface;
     memset(&surface, 0, sizeof(surface));
@@ -1381,7 +1399,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app->zh) {
+                        app->zh = new_zh;
+                        pxe_win_set_title(app->win_id, app->zh ? "CPU 检测" : APP_NAME);
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;
@@ -1438,9 +1464,14 @@ int main(int argc, char** argv) {
                             submit_save_report(app);
                         } else if (event.key == PXE_KEY_BACKSPACE) {
                             if (app->save_path_len > 0) {
-                                app->save_path[--app->save_path_len] = '\0';
+                                int d = utf8_prev_char_bytes(app->save_path, app->save_path_len);
+                                app->save_path_len -= d;
+                                app->save_path[app->save_path_len] = '\0';
                                 app->save_error[0] = '\0';
                             }
+                        } else if (event.key == PXE_KEY_UTF8 && event.text[0]) {
+                            append_save_path_text(app, event.text);
+                            app->save_error[0] = '\0';
                         } else if (event.modifiers & PXE_MOD_CTRL) {
                             if (event.key == 'v' || event.key == 'V') {
                                 paste_save_path(app);

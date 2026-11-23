@@ -44,7 +44,10 @@ typedef struct {
     int      back_h;
     int      back_pitch;
     size_t   back_cap;
+    int      zh;
 } player_t;
+
+#define PL_TR(pl, z, e) ((pl)->zh ? (z) : (e))
 
 static int has_audio_ext(const char* name) {
     const char* dot = strrchr(name, '.');
@@ -241,9 +244,9 @@ static void render_player_lcd_seek(const pxe_win_surface_t* surf, const player_t
 
     if (!pl->st.has_hardware) {
         uint32_t wc = ((pl->blink_tick / 10) & 1) ? PXE_COL_RED : PXE_COL_DARK_RED;
-        pxe_draw_text(surf, lcd_x + 12, lcd_y + 8, "[!] NO OUTPUT DEVICE", wc);
-        pxe_draw_text(surf, lcd_x + 12, lcd_y + 26, "Supported PCI Audio Card", PXE_COL_YELLOW);
-        pxe_draw_text_small(surf, lcd_x + 12, lcd_y + 48, "Hardware not detected on bus", PXE_COL_DARK_GRAY);
+        pxe_draw_text(surf, lcd_x + 12, lcd_y + 8, PL_TR(pl, "[!] 未检测到音频硬件", "[!] NO OUTPUT DEVICE"), wc);
+        pxe_draw_text(surf, lcd_x + 12, lcd_y + 26, PL_TR(pl, "需要兼容 PCI 声卡", "Supported PCI Audio Card"), PXE_COL_YELLOW);
+        pxe_draw_text_small(surf, lcd_x + 12, lcd_y + 48, PL_TR(pl, "总线上未找到声卡设备", "Hardware not detected on bus"), PXE_COL_DARK_GRAY);
     } else {
         const char* tag = "[STOP]";
         uint32_t tcol = PXE_COL_DARK_GRAY;
@@ -272,26 +275,42 @@ static void render_player_lcd_seek(const pxe_win_surface_t* surf, const player_t
         }
         pxe_draw_text_small(surf, lcd_x + 186, lcd_y + 9, dsp, PXE_COL_BLUE);
 
-        const char* title = pl->display_title[0] ? pl->display_title : "NekoPlayer ready";
-        int tlen = (int)strlen(title);
-        int max_c = (lcd_w - 14) / 8;
-        if (max_c < 10) max_c = 10;
-        if (tlen <= max_c) {
-            pxe_draw_text(surf, lcd_x + 6, lcd_y + 23, title, PXE_COL_WHITE);
+        const char* title = pl->display_title[0] ? pl->display_title
+                                                 : PL_TR(pl, "媒体播放器就绪", "NekoPlayer ready");
+        int max_px = lcd_w - 14;
+        if (max_px < 48) max_px = 48;
+        if (pxe_text_width_small(title) <= max_px) {
+            pxe_draw_text_small(surf, lcd_x + 6, lcd_y + 21, title, PXE_COL_WHITE);
         } else {
-            char mbuf[64];
-            if (max_c > (int)sizeof(mbuf) - 1) max_c = (int)sizeof(mbuf) - 1;
-            for (int ci = 0; ci < max_c; ci++) {
-                int idx = pl->marquee_pos + ci;
-                if (idx < tlen) mbuf[ci] = title[idx];
-                else if (idx < tlen + 4) mbuf[ci] = ' ';
-                else {
-                    int w = idx - (tlen + 4);
-                    mbuf[ci] = (w < tlen) ? title[w] : ' ';
-                }
+            const char* p = title;
+            int skip = pl->marquee_pos;
+            while (skip > 0 && *p) {
+                (void)utf8_decode_next(&p);
+                skip--;
             }
-            mbuf[max_c] = '\0';
-            pxe_draw_text(surf, lcd_x + 6, lcd_y + 23, mbuf, PXE_COL_WHITE);
+            char circ[280];
+            size_t ci = 0;
+            if (*p) {
+                size_t rem = strlen(p);
+                if (rem > sizeof(circ) - 6) rem = sizeof(circ) - 6;
+                memcpy(circ, p, rem);
+                ci = rem;
+            }
+            const char* sep = "    ";
+            for (int si = 0; si < 4 && ci < sizeof(circ) - 2; si++) {
+                if (skip > 0) { skip--; continue; }
+                circ[ci++] = sep[si];
+            }
+            size_t trem = strlen(title);
+            if (ci + trem >= sizeof(circ)) trem = sizeof(circ) - 1 - ci;
+            if (trem > 0) {
+                memcpy(circ + ci, title, trem);
+                ci += trem;
+            }
+            circ[ci] = '\0';
+            char mbuf[160];
+            utf8_clip_by_pixels(circ, max_px, 1, mbuf, sizeof(mbuf));
+            pxe_draw_text_small(surf, lcd_x + 6, lcd_y + 21, mbuf, PXE_COL_WHITE);
         }
 
         /* 10-band Spectrum Analyzer */
@@ -300,7 +319,7 @@ static void render_player_lcd_seek(const pxe_win_surface_t* surf, const player_t
             int val = pl->st.spectrum[bi];
             if (val > 15) val = 15;
             for (int seg = 0; seg < 15; seg++) {
-                int sy = lcd_y + 62 - seg * 2;
+                int sy = lcd_y + 64 - seg * 2;
                 uint32_t col = (seg < val)
                     ? ((seg < 8) ? PXE_COL_DARK_GREEN : (seg < 12) ? PXE_COL_YELLOW : PXE_COL_RED)
                     : PXE_COL_DARK_GRAY;
@@ -347,31 +366,36 @@ static void render_player_body(const pxe_win_surface_t* surf, const player_t* pl
     for (int i = 0; i < 7; i++) {
         int en = (i == 5) ? 1 : !dis;
         int prs = (pl->pressed_btn == i) || (i == 6 && pl->st.muted);
-        pxe_draw_button(surf, k_btn_x[i], 104, k_btn_w[i], 22, k_btn_lbl[i], prs, en);
+        const char* lbl = k_btn_lbl[i];
+        if (pl->zh && i == 5) lbl = "打开";
+        if (pl->zh && i == 6) lbl = "静音";
+        pxe_draw_button(surf, k_btn_x[i], 104, k_btn_w[i], 22, lbl, prs, en);
     }
 
     /* 4. Volume & Device info (y=134..168) */
     pxe_fill_rect(surf, 10, 134, 38, 16, PXE_COL_LIGHT_GRAY);
-    pxe_draw_text(surf, 10, 134, "VOL:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 134, PL_TR(pl, "音量", "VOL:"), PXE_COL_BLACK);
     pxe_draw_bevel_box(surf, 50, 137, 100, 10, 1, PXE_COL_BLACK);
     int vfill = ((pl->st.muted ? 0 : pl->st.volume) * 96 + 50) / 100;
     if (vfill > 0) pxe_fill_rect(surf, 52, 139, vfill, 6, pl->st.muted ? PXE_COL_DARK_GRAY : PXE_COL_GREEN);
     char vtxt[16];
-    snprintf(vtxt, sizeof(vtxt), "%d%%%s", pl->st.volume, pl->st.muted ? " [MUTE]" : "");
+    snprintf(vtxt, sizeof(vtxt), "%d%%%s", pl->st.volume,
+             pl->st.muted ? PL_TR(pl, " [静音]", " [MUTE]") : "");
     pxe_fill_rect(surf, 156, 135, 92, 14, PXE_COL_LIGHT_GRAY);
     pxe_draw_text_small(surf, 158, 139, vtxt, PXE_COL_BLACK);
 
     pxe_fill_rect(surf, 10, 154, surf->width - 20, 18, PXE_COL_LIGHT_GRAY);
-    char dev_str[80];
+    char dev_str[80], dev_clip[80];
     if (pl->st.has_hardware) {
-        snprintf(dev_str, sizeof(dev_str), "DEV: %s",
+        snprintf(dev_str, sizeof(dev_str), "%s: %s",
+                 PL_TR(pl, "设备", "DEV"),
                  pl->st.hw_name[0] ? pl->st.hw_name : "Audio DSP");
     } else {
-        snprintf(dev_str, sizeof(dev_str), "DEV: NO AUDIO HARDWARE");
+        snprintf(dev_str, sizeof(dev_str), "%s",
+                 PL_TR(pl, "设备: 无可用音频硬件", "DEV: NO AUDIO HARDWARE"));
     }
-    int max_dc = (surf->width - 28) / 6;
-    if (max_dc > 0 && (int)strlen(dev_str) > max_dc) dev_str[max_dc] = '\0';
-    pxe_draw_text_small(surf, 14, 159, dev_str, pl->st.has_hardware ? PXE_COL_BLACK : PXE_COL_DARK_RED);
+    utf8_clip_by_pixels(dev_str, surf->width - 28, 1, dev_clip, sizeof(dev_clip));
+    pxe_draw_text_small(surf, 14, 157, dev_clip, pl->st.has_hardware ? PXE_COL_BLACK : PXE_COL_DARK_RED);
 
     /* 5. Playlist panel (y=176..height-8) */
     int py = 176;
@@ -380,25 +404,26 @@ static void render_player_body(const pxe_win_surface_t* surf, const player_t* pl
         pxe_draw_bevel_box(surf, 10, py, surf->width - 20, ph, 1, PXE_COL_WHITE);
         int sbw = 14;
         int list_w = surf->width - 24 - sbw;
-        int vis = (ph - 4) / 14;
+        int vis = (ph - 4) / 16;
         if (vis < 1) vis = 1;
         if (pl->track_count == 0) {
             pxe_draw_text_small(surf, 18, py + 8,
-                                "No .wav/.mp3/.flac in playlist (click Open).", PXE_COL_DARK_GRAY);
+                                PL_TR(pl, "暂无音频文件 (点击“打开”浏览)",
+                                          "No .wav/.mp3/.flac in playlist (click Open)."),
+                                PXE_COL_DARK_GRAY);
         } else {
             for (int r = 0; r < vis; r++) {
                 int idx = pl->track_scroll + r;
                 if (idx >= pl->track_count) break;
-                int ry = py + 2 + r * 14;
+                int ry = py + 2 + r * 16;
                 int sel = (idx == pl->track_sel);
                 if (sel) {
-                    pxe_fill_rect(surf, 12, ry, list_w, 14, PXE_COL_BLUE);
+                    pxe_fill_rect(surf, 12, ry, list_w, 16, PXE_COL_BLUE);
                 }
-                char line[64];
+                char line[160], clipped[160];
                 snprintf(line, sizeof(line), "%02d. %s", idx + 1, pl->playlist[idx].name);
-                int max_lc = (list_w - 8) / 6;
-                if (max_lc > 0 && (int)strlen(line) > max_lc) line[max_lc] = '\0';
-                pxe_draw_text_small(surf, 16, ry + 3, line, sel ? PXE_COL_WHITE : PXE_COL_BLACK);
+                utf8_clip_by_pixels(line, list_w - 10, 1, clipped, sizeof(clipped));
+                pxe_draw_text_small(surf, 16, ry + 2, clipped, sel ? PXE_COL_WHITE : PXE_COL_BLACK);
             }
         }
         pxe_draw_scrollbar(surf, surf->width - 12 - sbw, py + 2, sbw, ph - 4,
@@ -412,15 +437,18 @@ static void render_player_body(const pxe_win_surface_t* surf, const player_t* pl
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Open Audio / Folder", PXE_COL_WHITE);
+        pxe_draw_text(surf, dx + 8, dy + 3,
+                      PL_TR(pl, "打开音频 / 目录", "Open Audio / Folder"), PXE_COL_WHITE);
         pxe_draw_bevel_box(surf, dx + 10, dy + 30, dw - 20, 22, 1, PXE_COL_WHITE);
-        int max_c = (dw - 28) / 6;
-        int start = (pl->open_len > max_c) ? (pl->open_len - max_c) : 0;
-        pxe_draw_text_small(surf, dx + 14, dy + 38, pl->open_input + start, PXE_COL_BLACK);
-        pxe_draw_vline(surf, dx + 14 + (pl->open_len - start) * 6, dy + 34, 14, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + 14,  dy + 62, 76, 22, "Play", 0, 1);
-        pxe_draw_button(surf, dx + 100, dy + 62, 92, 22, "Files...", 0, 1);
-        pxe_draw_button(surf, dx + 202, dy + 62, 74, 22, "Cancel", 0, 1);
+        const char* vis_in = pl->open_input;
+        while (*vis_in && pxe_text_width_small(vis_in) > dw - 30) {
+            (void)utf8_decode_next(&vis_in);
+        }
+        pxe_draw_text_small(surf, dx + 14, dy + 35, vis_in, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width_small(vis_in), dy + 34, 14, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + 14,  dy + 62, 76, 22, PL_TR(pl, "播放", "Play"), 0, 1);
+        pxe_draw_button(surf, dx + 100, dy + 62, 92, 22, PL_TR(pl, "文件...", "Files..."), 0, 1);
+        pxe_draw_button(surf, dx + 202, dy + 62, 74, 22, PL_TR(pl, "取消", "Cancel"), 0, 1);
     }
 }
 
@@ -484,6 +512,7 @@ int main(int argc, char** argv) {
     pl->seek_target_sec = -1;
     pl->track_sel = -1;
     pl->last_click_idx = -1;
+    pl->zh = pxe_is_zh();
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -495,7 +524,7 @@ int main(int argc, char** argv) {
     desc.min_h = 212;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "NekoPlayer");
+    strcpy(desc.title, PL_TR(pl, "媒体播放器", "NekoPlayer"));
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -506,9 +535,9 @@ int main(int argc, char** argv) {
 
     pxe_audio_get_status(&pl->st);
     if (!pl->st.has_hardware) {
-        strcpy(pl->display_title, "No Output Device");
+        strcpy(pl->display_title, PL_TR(pl, "无可用音频输出设备", "No Output Device"));
     } else {
-        strcpy(pl->display_title, "NekoPlayer ready. Open a file.");
+        strcpy(pl->display_title, PL_TR(pl, "媒体播放器已就绪", "NekoPlayer ready. Open a file."));
     }
 
     if (argc > 1 && argv[1] && argv[1][0]) {
@@ -535,6 +564,11 @@ int main(int argc, char** argv) {
             } else if (ev.type == PXE_EV_RESIZE) {
                 if (pxe_win_get_surface(win_id, &surf) == 0) dirty = 1;
             } else if (ev.type == PXE_EV_REDRAW) {
+                int new_zh = pxe_is_zh();
+                if (new_zh != pl->zh) {
+                    pl->zh = new_zh;
+                    pxe_win_set_title(win_id, PL_TR(pl, "媒体播放器", "NekoPlayer"));
+                }
                 dirty = 1;
             } else if (ev.type == PXE_EV_ACTIVATE) {
                 if (ev.text[0]) play_track(pl, ev.text);
@@ -550,7 +584,17 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     } else if (ev.key == PXE_KEY_BACKSPACE) {
                         if (pl->open_len > 0) {
-                            pl->open_input[--pl->open_len] = '\0';
+                            int d = utf8_prev_char_bytes(pl->open_input, pl->open_len);
+                            pl->open_len -= d;
+                            pl->open_input[pl->open_len] = '\0';
+                            dirty = 1;
+                        }
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        int tl = (int)strlen(ev.text);
+                        if (pl->open_len + tl < 250) {
+                            memcpy(pl->open_input + pl->open_len, ev.text, (size_t)tl);
+                            pl->open_len += tl;
+                            pl->open_input[pl->open_len] = '\0';
                             dirty = 1;
                         }
                     } else if (ev.key >= 32 && ev.key <= 126 && pl->open_len < 250) {
@@ -697,7 +741,7 @@ int main(int argc, char** argv) {
                 int py = 176, ph = surf.height - py - 8;
                 if (ph >= 28 && pxe_point_in_rect(mx, my, 10, py, surf.width - 20, ph)) {
                     int sbw = 14;
-                    int vis = (ph - 4) / 14;
+                    int vis = (ph - 4) / 16;
                     if (vis < 1) vis = 1;
                     int max_scr = (pl->track_count > vis) ? (pl->track_count - vis) : 0;
                     if (mx >= surf.width - 12 - sbw) {
@@ -707,7 +751,7 @@ int main(int argc, char** argv) {
                             if (pl->track_scroll < max_scr) pl->track_scroll++;
                         }
                     } else if (pl->track_count > 0) {
-                        int idx = pl->track_scroll + (my - (py + 2)) / 14;
+                        int idx = pl->track_scroll + (my - (py + 2)) / 16;
                         if (idx >= 0 && idx < pl->track_count) {
                             uint64_t now = pxe_get_ticks();
                             if (idx == pl->last_click_idx && (now - pl->last_click_ticks) < 40) {
@@ -758,12 +802,16 @@ int main(int argc, char** argv) {
             pl->blink_tick++;
             if ((pl->blink_tick % 10) == 0) lcd_dirty = 1;
         } else if (pl->st.state == 1 && now_tick >= next_anim_tick) {
-            int tlen = (int)strlen(pl->display_title);
-            if (tlen > 28) {
+            int max_px = surf.width - 34;
+            if (max_px < 48) max_px = 48;
+            if (pxe_text_width_small(pl->display_title) > max_px) {
+                int cp_cnt = 0;
+                const char* p = pl->display_title;
+                while (*p) { (void)utf8_decode_next(&p); cp_cnt++; }
                 pl->marquee_tick++;
                 if ((pl->marquee_tick % 2) == 0) {
                     pl->marquee_pos++;
-                    if (pl->marquee_pos >= tlen + 4) pl->marquee_pos = 0;
+                    if (pl->marquee_pos >= cp_cnt + 4) pl->marquee_pos = 0;
                     lcd_dirty = 1;
                 }
             }

@@ -48,8 +48,19 @@ typedef struct {
     int wp_modal;
     char wp_path[128];
     int wp_len;
-    char notice[56];
+    char notice[80];
+    int zh;
 } cpanel_t;
+
+#define CP_TR(cp, zh_s, en_s) ((cp)->zh ? (zh_s) : (en_s))
+
+static const char* k_pat_names_zh[6] = {
+    "0: 50% 网点", "1: 斜纹纹理", "2: 微点阵",
+    "3: 砖格纹理", "4: 石板灰", "5: 纯灰背景"
+};
+static const char* k_bpp_names_zh[4] = {
+    "32位 (真彩色)", "24位 (真彩色)", "16位 (增强色)", "8位 (256色)"
+};
 
 static uint8_t bpp_idx_to_mask(int b_idx) {
     if (b_idx == 0) return PXE_DISP_BPP_32;
@@ -130,6 +141,7 @@ static void clamp_res_scroll(cpanel_t* cp) {
 
 static void sync_from_sysinfo(cpanel_t* cp) {
     pxe_sys_get_basic_info(&cp->info);
+    cp->zh = (cp->info.ui_lang != PXE_LANG_EN);
     if (pxe_display_get_caps(&cp->caps) != 0 || cp->caps.mode_count <= 0) {
         memset(&cp->caps, 0, sizeof(cp->caps));
         cp->caps.struct_size = sizeof(cp->caps);
@@ -225,7 +237,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, PXE_COL_LIGHT_GRAY);
 
     /* 1. Mouse Speed Slider (y=12) */
-    pxe_draw_text(surf, 10, 10, "Mouse Speed:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 10, CP_TR(cp, "鼠标速度:", "Mouse Speed:"), PXE_COL_BLACK);
     int mx_tx = 126, mx_ty = 15;
     pxe_draw_bevel_box(surf, mx_tx, mx_ty, 100, 6, 1, PXE_COL_DARK_GRAY);
     for (int i = 0; i < 5; i++) {
@@ -239,7 +251,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     pxe_draw_text_small(surf, 236, 14, sp_str, PXE_COL_BLACK);
 
     /* 2. Master Volume Slider (y=36) */
-    pxe_draw_text(surf, 10, 34, "Sound Vol:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 34, CP_TR(cp, "系统音量:", "Sound Vol:"), PXE_COL_BLACK);
     int vx_tx = 126, vx_ty = 39;
     pxe_draw_bevel_box(surf, vx_tx, vx_ty, 100, 8, 1, PXE_COL_BLACK);
     int fill_w = (cp->volume * 96 + 50) / 100;
@@ -249,7 +261,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     pxe_draw_text_small(surf, 236, 38, v_str, PXE_COL_BLACK);
 
     /* 3. Resolution & Color Depth (y=60, 86) */
-    pxe_draw_text(surf, 10, 60, "Resolution:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 60, CP_TR(cp, "屏幕分辨率:", "Resolution:"), PXE_COL_BLACK);
     char res_lbl[32];
     if (cp->sel_res >= 0 && cp->sel_res < cp->caps.mode_count) {
         snprintf(res_lbl, sizeof(res_lbl), "%u x %u%s",
@@ -262,48 +274,58 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     }
     draw_combo(surf, 126, 58, 204, 20, res_lbl);
 
-    pxe_draw_text(surf, 10, 86, "Color Depth:", PXE_COL_BLACK);
-    draw_combo(surf, 126, 84, 204, 20, k_bpp_names[cp->sel_bpp]);
+    pxe_draw_text(surf, 10, 86, CP_TR(cp, "颜色深度:", "Color Depth:"), PXE_COL_BLACK);
+    draw_combo(surf, 126, 84, 204, 20,
+               cp->zh ? k_bpp_names_zh[cp->sel_bpp] : k_bpp_names[cp->sel_bpp]);
 
     /* 4. Desktop Pattern (y=114) */
-    pxe_draw_text(surf, 10, 114, "Pattern:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 114, CP_TR(cp, "桌面图案:", "Pattern:"), PXE_COL_BLACK);
     pxe_draw_button(surf, 126, 112, 22, 20, "<", 0, 1);
     pxe_draw_button(surf, 308, 112, 22, 20, ">", 0, 1);
     pxe_draw_bevel_box(surf, 150, 112, 156, 20, 1, PXE_COL_WHITE);
-    pxe_draw_text_small(surf, 158, 119, k_pat_names[cp->pattern], PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 158, 116,
+                        cp->zh ? k_pat_names_zh[cp->pattern] : k_pat_names[cp->pattern],
+                        PXE_COL_BLACK);
 
     /* 5. Wallpaper Mode / Clear / Browse (y=142) */
-    pxe_draw_text(surf, 10, 142, "Wallpaper:", PXE_COL_BLACK);
+    pxe_draw_text(surf, 10, 142, CP_TR(cp, "桌面壁纸:", "Wallpaper:"), PXE_COL_BLACK);
     if (cp->info.wallpaper_active) {
         int m = (int)cp->info.wallpaper_mode;
-        draw_mode_btn(surf, 96,  140, 34, 20, "Fill", m == 0);
-        draw_mode_btn(surf, 132, 140, 32, 20, "Fit",  m == 1);
-        draw_mode_btn(surf, 166, 140, 40, 20, "Strt", m == 2);
-        draw_mode_btn(surf, 208, 140, 34, 20, "Tile", m == 3);
-        draw_mode_btn(surf, 244, 140, 40, 20, "Cntr", m == 4);
-        draw_mode_btn(surf, 286, 140, 30, 20, "Off",  0);
-        draw_mode_btn(surf, 318, 140, 34, 20, "Path", 0);
+        draw_mode_btn(surf, 96,  140, 34, 20, CP_TR(cp, "填充", "Fill"), m == 0);
+        draw_mode_btn(surf, 132, 140, 32, 20, CP_TR(cp, "适应", "Fit"),  m == 1);
+        draw_mode_btn(surf, 166, 140, 40, 20, CP_TR(cp, "拉伸", "Strt"), m == 2);
+        draw_mode_btn(surf, 208, 140, 34, 20, CP_TR(cp, "平铺", "Tile"), m == 3);
+        draw_mode_btn(surf, 244, 140, 40, 20, CP_TR(cp, "居中", "Cntr"), m == 4);
+        draw_mode_btn(surf, 286, 140, 30, 20, CP_TR(cp, "关闭", "Off"),  0);
+        draw_mode_btn(surf, 318, 140, 34, 20, CP_TR(cp, "路径", "Path"), 0);
     } else {
-        pxe_draw_text_small(surf, 96, 146, "None (Pattern Active)", PXE_COL_DARK_GRAY);
-        draw_mode_btn(surf, 270, 140, 80, 20, "Set File..", 0);
+        pxe_draw_text_small(surf, 96, 144,
+                            CP_TR(cp, "无 (当前使用图案)", "None (Pattern Active)"),
+                            PXE_COL_DARK_GRAY);
+        draw_mode_btn(surf, 270, 140, 80, 20, CP_TR(cp, "选择文件..", "Set File.."), 0);
     }
 
     /* 6. Default appearance and top-bar clock */
-    draw_mode_btn(surf, 96, 168, 102, 20, "Default Wall", 0);
-    draw_mode_btn(surf, 204, 168, 56, 20, "Date",
+    draw_mode_btn(surf, 96, 168, 102, 20, CP_TR(cp, "默认壁纸", "Default Wall"), 0);
+    draw_mode_btn(surf, 204, 168, 56, 20, CP_TR(cp, "日期", "Date"),
                   cp->info.clock_show_date ? 1 : 0);
-    draw_mode_btn(surf, 264, 168, 74, 20, "Seconds",
+    draw_mode_btn(surf, 264, 168, 74, 20, CP_TR(cp, "显示秒", "Seconds"),
                   cp->info.clock_show_seconds ? 1 : 0);
 
+    /* 6b. System Language Switch (y=194) */
+    pxe_draw_text(surf, 10, 196, CP_TR(cp, "界面语言:", "Language:"), PXE_COL_BLACK);
+    draw_mode_btn(surf, 126, 194, 88, 20, "简体中文", cp->zh ? 1 : 0);
+    draw_mode_btn(surf, 222, 194, 88, 20, "English",  cp->zh ? 0 : 1);
+
     /* 7. Driver / VRAM / Persistence info */
-    pxe_draw_hline(surf, 10, 194, surf->width - 20, PXE_COL_DARK_GRAY);
-    pxe_draw_hline(surf, 10, 195, surf->width - 20, PXE_COL_WHITE);
+    pxe_draw_hline(surf, 10, 220, surf->width - 20, PXE_COL_DARK_GRAY);
+    pxe_draw_hline(surf, 10, 221, surf->width - 20, PXE_COL_WHITE);
 
     const char* drv_name = cp->caps.driver_name[0]
         ? cp->caps.driver_name
         : (cp->info.gfx_backend[0] ? cp->info.gfx_backend : "Framebuffer");
-    pxe_draw_text_small(surf, 10, 202, "Display:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 202, drv_name,
+    pxe_draw_text_small(surf, 10, 228, CP_TR(cp, "显示适配器:", "Display:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 228, drv_name,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
 
@@ -311,17 +333,20 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     char cap_line[64];
     format_vram_str(cp->caps.vram_bytes, vram_str, sizeof(vram_str));
     if (cp->caps.flags & PXE_DISP_FLAG_UNLIMITED_RES) {
-        snprintf(cap_line, sizeof(cap_line), "VRAM:%s  Max:%dx%d  Min:640x480",
+        snprintf(cap_line, sizeof(cap_line),
+                 cp->zh ? "显存:%s  上限:%dx%d" : "VRAM:%s  Max:%dx%d  Min:640x480",
                  vram_str, cp->caps.max_w, cp->caps.max_h);
     } else if (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) {
-        snprintf(cap_line, sizeof(cap_line), "Fixed Scanout (No Modeset): %dx%d",
+        snprintf(cap_line, sizeof(cap_line),
+                 cp->zh ? "固定扫描输出: %dx%d" : "Fixed Scanout (No Modeset): %dx%d",
                  cp->caps.current_w, cp->caps.current_h);
     } else {
-        snprintf(cap_line, sizeof(cap_line), "Fixed GOP/VBE LFB: %dx%d",
+        snprintf(cap_line, sizeof(cap_line),
+                 cp->zh ? "固定帧缓冲: %dx%d" : "Fixed GOP/VBE LFB: %dx%d",
                  cp->caps.current_w, cp->caps.current_h);
     }
-    pxe_draw_text_small(surf, 10, 220, "Limits:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 220, cap_line,
+    pxe_draw_text_small(surf, 10, 246, CP_TR(cp, "能力限制:", "Limits:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 246, cap_line,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_BLACK : PXE_COL_BROWN);
 
@@ -333,28 +358,35 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
              (sel_mask & PXE_DISP_BPP_16) ? "16b " : "",
              (sel_mask & PXE_DISP_BPP_24) ? "24b " : "",
              (sel_mask & PXE_DISP_BPP_32) ? "32b"  : "",
-             (sel_mask == 0) ? "None" : "");
-    pxe_draw_text_small(surf, 10, 238, "BPP Mode:", PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 70, 238, bpp_line, PXE_COL_DARK_BLUE);
+             (sel_mask == 0) ? CP_TR(cp, "无", "None") : "");
+    pxe_draw_text_small(surf, 10, 264, CP_TR(cp, "支持色深:", "BPP Mode:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 264, bpp_line, PXE_COL_DARK_BLUE);
 
     if (cp->notice[0]) {
-        pxe_draw_text_small(surf, 10, 260, cp->notice, PXE_COL_DARK_GREEN);
+        pxe_draw_text_small(surf, 10, 286, cp->notice, PXE_COL_DARK_GREEN);
     } else if (!cp->info.settings_writable) {
-        pxe_draw_text_small(surf, 10, 260, "Live Mode: settings apply for this session", PXE_COL_BROWN);
+        pxe_draw_text_small(surf, 10, 286,
+                            CP_TR(cp, "实时模式: 设置仅在本次会话生效",
+                                      "Live Mode: settings apply for this session"),
+                            PXE_COL_BROWN);
     } else {
-        pxe_draw_text_small(surf, 10, 260, "Changes persist to SYSTEM.PSE", PXE_COL_DARK_GRAY);
+        pxe_draw_text_small(surf, 10, 286,
+                            CP_TR(cp, "设置变更将持久保存至 SYSTEM.PSE",
+                                      "Changes persist to SYSTEM.PSE"),
+                            PXE_COL_DARK_GRAY);
     }
 
-    /* 8. Bottom Actions (y=286) */
+    /* 8. Bottom Actions (y=312) */
     if (cp->revert_sec > 0) {
         char rbuf[32];
-        snprintf(rbuf, sizeof(rbuf), "Revert in %2ds...", cp->revert_sec);
-        pxe_draw_text(surf, 12, 290, rbuf, PXE_COL_DARK_RED);
-        pxe_draw_button(surf, 188, 286, 156, 24, "Keep (OK)", 0, 1);
+        snprintf(rbuf, sizeof(rbuf),
+                 CP_TR(cp, "%2d 秒后还原...", "Revert in %2ds..."), cp->revert_sec);
+        pxe_draw_text(surf, 12, 316, rbuf, PXE_COL_DARK_RED);
+        pxe_draw_button(surf, 188, 312, 156, 24, CP_TR(cp, "保留更改", "Keep (OK)"), 0, 1);
     } else {
-        pxe_draw_button(surf, 10,  286, 108, 24, "Apply Mode", 0, 1);
-        pxe_draw_button(surf, 126, 286, 108, 24, "Save (.pse)", 0, 1);
-        pxe_draw_button(surf, 242, 286, 108, 24, "OK", 0, 1);
+        pxe_draw_button(surf, 10,  312, 108, 24, CP_TR(cp, "应用模式", "Apply Mode"), 0, 1);
+        pxe_draw_button(surf, 126, 312, 108, 24, CP_TR(cp, "保存 (.pse)", "Save (.pse)"), 0, 1);
+        pxe_draw_button(surf, 242, 312, 108, 24, CP_TR(cp, "确定", "OK"), 0, 1);
     }
 
     /* 9. Open Dropdowns on top */
@@ -396,15 +428,15 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
             if (i == cp->sel_bpp && sup) {
                 pxe_fill_rect(surf, dx + 1, iy, dw - 2, 18, PXE_COL_BLUE);
             }
-            char ubuf[32];
-            const char* lbl = k_bpp_names[i];
+            const char* lbl = cp->zh ? k_bpp_names_zh[i] : k_bpp_names[i];
             if (!sup) {
-                snprintf(ubuf, sizeof(ubuf), "%d-bit (Unsupported)", k_bpps[i]);
+                snprintf(ubuf, sizeof(ubuf),
+                         cp->zh ? "%d位 (不支持)" : "%d-bit (Unsupported)", k_bpps[i]);
                 lbl = ubuf;
             }
             uint32_t fg = !sup ? PXE_COL_DARK_GRAY :
                           (i == cp->sel_bpp ? PXE_COL_WHITE : PXE_COL_BLACK);
-            pxe_draw_text_small(surf, dx + 6, iy + 5, lbl, fg);
+            pxe_draw_text_small(surf, dx + 6, iy + 4, lbl, fg);
         }
     }
 
@@ -415,15 +447,17 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Set Wallpaper", PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 10, dy + 26, "BMP / PNG / JPG:", PXE_COL_BLACK);
+        pxe_draw_text(surf, dx + 8, dy + 3, CP_TR(cp, "设置壁纸", "Set Wallpaper"), PXE_COL_WHITE);
+        pxe_draw_text_small(surf, dx + 10, dy + 25, "BMP / PNG / JPG:", PXE_COL_BLACK);
         pxe_draw_bevel_box(surf, dx + 10, dy + 38, dw - 20, 20, 1, PXE_COL_WHITE);
-        int max_c = (dw - 28) / 6;
-        int start = (cp->wp_len > max_c) ? (cp->wp_len - max_c) : 0;
-        pxe_draw_text_small(surf, dx + 14, dy + 45, cp->wp_path + start, PXE_COL_BLACK);
-        pxe_draw_vline(surf, dx + 14 + (cp->wp_len - start) * 6, dy + 42, 12, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + 54, dy + 66, 72, 22, "Apply", 0, 1);
-        pxe_draw_button(surf, dx + 154, dy + 66, 72, 22, "Cancel", 0, 1);
+        const char* vis = cp->wp_path;
+        while (*vis && pxe_text_width_small(vis) > dw - 30) {
+            (void)utf8_decode_next(&vis);
+        }
+        pxe_draw_text_small(surf, dx + 14, dy + 42, vis, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width_small(vis), dy + 42, 12, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + 54, dy + 66, 72, 22, CP_TR(cp, "应用", "Apply"), 0, 1);
+        pxe_draw_button(surf, dx + 154, dy + 66, 72, 22, CP_TR(cp, "取消", "Cancel"), 0, 1);
     }
 
     if (cp->restart_confirm) {
@@ -432,18 +466,22 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Restart Required", PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 12, dy + 28,
-                            "The selected display mode needs a restart.", PXE_COL_BLACK);
+        pxe_draw_text(surf, dx + 8, dy + 3, CP_TR(cp, "需要重启", "Restart Required"), PXE_COL_WHITE);
+        pxe_draw_text_small(surf, dx + 12, dy + 26,
+                            CP_TR(cp, "所选显示模式需要重启生效。",
+                                      "The selected display mode needs a restart."),
+                            PXE_COL_BLACK);
         char mode_line[48];
-        snprintf(mode_line, sizeof(mode_line), "%d x %d, %d-bit",
+        snprintf(mode_line, sizeof(mode_line),
+                 cp->zh ? "%d x %d, %d位色深" : "%d x %d, %d-bit",
                  cp->pending_w, cp->pending_h, cp->pending_bpp);
-        pxe_draw_text_small(surf, dx + 12, dy + 44, mode_line, PXE_COL_DARK_BLUE);
-        pxe_draw_text_small(surf, dx + 12, dy + 58,
-                            "Restart now? Cancel keeps the current mode.",
+        pxe_draw_text_small(surf, dx + 12, dy + 42, mode_line, PXE_COL_DARK_BLUE);
+        pxe_draw_text_small(surf, dx + 12, dy + 56,
+                            CP_TR(cp, "立即重启？取消将保持当前模式。",
+                                      "Restart now? Cancel keeps the current mode."),
                             PXE_COL_DARK_GRAY);
-        pxe_draw_button(surf, dx + 50, dy + 76, 86, 22, "Restart", 0, 1);
-        pxe_draw_button(surf, dx + 164, dy + 76, 86, 22, "Cancel", 0, 1);
+        pxe_draw_button(surf, dx + 50, dy + 76, 86, 22, CP_TR(cp, "立即重启", "Restart"), 0, 1);
+        pxe_draw_button(surf, dx + 164, dy + 76, 86, 22, CP_TR(cp, "取消", "Cancel"), 0, 1);
     }
 }
 
@@ -529,12 +567,12 @@ int main(int argc, char** argv) {
     desc.x = 120;
     desc.y = 48;
     desc.w = 360;
-    desc.h = 330;
+    desc.h = 356;
     desc.min_w = 360;
-    desc.min_h = 330;
+    desc.min_h = 356;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Control Panel");
+    strcpy(desc.title, pxe_is_zh() ? "控制面板" : "Control Panel");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -543,6 +581,7 @@ int main(int argc, char** argv) {
     cpanel_t cp;
     memset(&cp, 0, sizeof(cp));
     sync_from_sysinfo(&cp);
+    pxe_win_set_title(win_id, cp.zh ? "控制面板" : "Control Panel");
     snprintf(cp.wp_path, sizeof(cp.wp_path), "%c:\\WALLPAPER.BMP",
              cp.info.system_drive ? cp.info.system_drive : 'C');
     cp.wp_len = (int)strlen(cp.wp_path);
@@ -562,6 +601,7 @@ int main(int argc, char** argv) {
                 running = 0;
                 break;
             } else if (ev.type == PXE_EV_REDRAW || ev.type == PXE_EV_ACTIVATE) {
+                int old_zh = cp.zh;
                 int old_w = cp.info.screen_w;
                 int old_h = cp.info.screen_h;
                 int old_bpp = cp.info.screen_bpp;
@@ -569,6 +609,9 @@ int main(int argc, char** argv) {
                 int old_sel_bpp = cp.sel_bpp;
                 int old_scroll = cp.res_scroll;
                 sync_from_sysinfo(&cp);
+                if (cp.zh != old_zh) {
+                    pxe_win_set_title(win_id, cp.zh ? "控制面板" : "Control Panel");
+                }
                 if (cp.info.screen_w == old_w &&
                     cp.info.screen_h == old_h &&
                     cp.info.screen_bpp == old_bpp &&
@@ -654,7 +697,17 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 } else if (ev.key == PXE_KEY_BACKSPACE) {
                     if (cp.wp_len > 0) {
-                        cp.wp_path[--cp.wp_len] = '\0';
+                        int d = utf8_prev_char_bytes(cp.wp_path, cp.wp_len);
+                        cp.wp_len -= d;
+                        cp.wp_path[cp.wp_len] = '\0';
+                        dirty = 1;
+                    }
+                } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                    int tl = (int)strlen(ev.text);
+                    if (cp.wp_len + tl < 120) {
+                        memcpy(cp.wp_path + cp.wp_len, ev.text, (size_t)tl);
+                        cp.wp_len += tl;
+                        cp.wp_path[cp.wp_len] = '\0';
                         dirty = 1;
                     }
                 } else if (ev.key >= 32 && ev.key <= 126 && cp.wp_len < 120) {
@@ -965,9 +1018,29 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
+                /* Language selector (y=194) */
+                if (pxe_point_in_rect(mx, my, 126, 194, 88, 20)) {
+                    pxe_set_language(PXE_LANG_ZH);
+                    pxe_settings_save();
+                    sync_from_sysinfo(&cp);
+                    pxe_win_set_title(win_id, "控制面板");
+                    snprintf(cp.notice, sizeof(cp.notice), "界面语言已切换为简体中文。");
+                    dirty = 1;
+                    continue;
+                }
+                if (pxe_point_in_rect(mx, my, 222, 194, 88, 20)) {
+                    pxe_set_language(PXE_LANG_EN);
+                    pxe_settings_save();
+                    sync_from_sysinfo(&cp);
+                    pxe_win_set_title(win_id, "Control Panel");
+                    snprintf(cp.notice, sizeof(cp.notice), "UI language set to English.");
+                    dirty = 1;
+                    continue;
+                }
+
                 /* Bottom actions */
                 if (cp.revert_sec > 0) {
-                    if (pxe_point_in_rect(mx, my, 188, 286, 156, 24)) {
+                    if (pxe_point_in_rect(mx, my, 188, 312, 156, 24)) {
                         cp.revert_sec = 0;
                         if (cp.pending_reboot) {
                             cp.restart_confirm = 1;
@@ -978,28 +1051,31 @@ int main(int argc, char** argv) {
                                 pxe_settings_save();
                                 sync_from_sysinfo(&cp);
                                 snprintf(cp.notice, sizeof(cp.notice),
-                                         "Display mode confirmed.");
+                                         CP_TR(&cp, "显示模式已确认保存。", "Display mode confirmed."));
                             } else {
                                 pxe_beep();
                                 snprintf(cp.notice, sizeof(cp.notice),
-                                         "Could not persist the display mode.");
+                                         CP_TR(&cp, "无法持久化保存显示模式。",
+                                                    "Could not persist the display mode."));
                             }
                         }
                         dirty = 1;
                     }
                 } else {
-                    if (pxe_point_in_rect(mx, my, 10, 286, 108, 24)) {
+                    if (pxe_point_in_rect(mx, my, 10, 312, 108, 24)) {
                         start_apply_mode(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 126, 286, 108, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 126, 312, 108, 24)) {
                         if (pxe_settings_save() == 0) {
-                            snprintf(cp.notice, sizeof(cp.notice), "Saved settings to .pse.");
+                            snprintf(cp.notice, sizeof(cp.notice),
+                                     CP_TR(&cp, "已保存设置到 .pse 文件。", "Saved settings to .pse."));
                         } else {
                             pxe_beep();
-                            snprintf(cp.notice, sizeof(cp.notice), "Save failed (read-only medium?).");
+                            snprintf(cp.notice, sizeof(cp.notice),
+                                     CP_TR(&cp, "保存失败 (当前介质只读?)。", "Save failed (read-only medium?)."));
                         }
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 242, 286, 108, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 242, 312, 108, 24)) {
                         int tw = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
                                  ? (int)cp.caps.modes[cp.sel_res].width : cp.info.screen_w;
                         int th = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)

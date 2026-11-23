@@ -49,10 +49,14 @@ typedef struct {
     int  load_modal;
     char load_path[128];
     int  load_len;
+    int  zh;
 } sysinfo_app_t;
 
 static const char* k_tab_names[TAB_COUNT] = {
     "Overview", "PCI Bus", "USB", "Drives", "Drivers (.pdv)"
+};
+static const char* k_tab_names_zh[TAB_COUNT] = {
+    "概览", "PCI 总线", "USB 设备", "磁盘", "驱动 (.pdv)"
 };
 
 static const int k_tab_x[TAB_COUNT] = { 8, 86, 160, 214, 286 };
@@ -206,51 +210,59 @@ static void render_overview(const pxe_win_surface_t* surf, const sysinfo_app_t* 
     int rw = surf->width - 36;
 
     pxe_draw_text(surf, x, y, s->info.os_name[0] ? s->info.os_name : "Pixel Neko OS", PXE_COL_DARK_BLUE);
-    snprintf(buf, sizeof(buf), "Build %s (%s) [Ring 0 App]",
+    snprintf(buf, sizeof(buf),
+             s->zh ? "构建版本 %s (%s) [Ring 0 特权应用]" : "Build %s (%s) [Ring 0 App]",
              s->info.os_build[0] ? s->info.os_build : "unknown",
              s->info.os_codename[0] ? s->info.os_codename : "Darwin");
     pxe_draw_text_small(surf, x, y + 18, buf, PXE_COL_BLACK);
 
     if (s->info.boot_mode == 2) {
-        snprintf(buf, sizeof(buf), "Local Installed Disk (%c:\\) | CD: %c:\\",
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "本地已安装磁盘 (%c:\\) | 光驱: %c:\\" : "Local Installed Disk (%c:\\) | CD: %c:\\",
                  s->info.system_drive ? s->info.system_drive : 'C',
                  s->info.cdrom_drive ? s->info.cdrom_drive : '-');
     } else if (s->info.boot_mode == 1) {
-        snprintf(buf, sizeof(buf), "Installer Environment (Live CD %c:\\)",
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "安装环境 (Live CD %c:\\)" : "Installer Environment (Live CD %c:\\)",
                  s->info.cdrom_drive ? s->info.cdrom_drive : (s->info.system_drive ? s->info.system_drive : 'D'));
     } else {
-        snprintf(buf, sizeof(buf), "Live CD Mode (%c:\\)",
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "Live CD 模式 (%c:\\)" : "Live CD Mode (%c:\\)",
                  s->info.cdrom_drive ? s->info.cdrom_drive : (s->info.system_drive ? s->info.system_drive : 'D'));
     }
-    draw_kv(surf, x, y + 34, "Boot Mode:", buf, PXE_COL_BLACK);
+    draw_kv(surf, x, y + 34, s->zh ? "启动模式:" : "Boot Mode:", buf, PXE_COL_BLACK);
 
     pxe_draw_hline(surf, x, y + 48, rw, PXE_COL_DARK_GRAY);
     y += 56;
 
-    draw_kv(surf, x, y, "Processor:",
+    draw_kv(surf, x, y, s->zh ? "处理器:" : "Processor:",
             s->info.cpu_model[0] ? s->info.cpu_model : "x86_64 Compatible CPU", PXE_COL_BLACK);
     snprintf(buf, sizeof(buf), "%s | %u MHz | flags=0x%X",
              s->info.cpu_vendor[0] ? s->info.cpu_vendor : "Unknown",
              (unsigned)s->info.cpu_freq_mhz,
              (unsigned)s->info.cpu_flags);
-    draw_kv(surf, x, y + 16, "CPU Clock:", buf, PXE_COL_BLACK);
-    draw_kv(surf, x, y + 32, "CPU Features:", s->cpu_features, PXE_COL_DARK_GREEN);
+    draw_kv(surf, x, y + 16, s->zh ? "CPU 频率:" : "CPU Clock:", buf, PXE_COL_BLACK);
+    draw_kv(surf, x, y + 32, s->zh ? "CPU 特性:" : "CPU Features:", s->cpu_features, PXE_COL_DARK_GREEN);
 
     pxe_draw_hline(surf, x, y + 46, rw, PXE_COL_DARK_GRAY);
     y += 54;
 
-    snprintf(buf, sizeof(buf), "%u MB Total | %u MB Usable | %u MB Free",
+    snprintf(buf, sizeof(buf),
+             s->zh ? "总计 %u MB | 可用 %u MB | 空闲 %u MB"
+                   : "%u MB Total | %u MB Usable | %u MB Free",
              (unsigned)s->info.total_ram_mb,
              (unsigned)s->info.usable_ram_mb,
              (unsigned)s->info.free_ram_mb);
-    draw_kv(surf, x, y, "Physical RAM:", buf, PXE_COL_BLACK);
+    draw_kv(surf, x, y, s->zh ? "物理内存:" : "Physical RAM:", buf, PXE_COL_BLACK);
 
-    snprintf(buf, sizeof(buf), "%llu free / %llu total pages | Procs: %llu | PDVs: %llu",
+    snprintf(buf, sizeof(buf),
+             s->zh ? "空闲 %llu / 总计 %llu 页 | 进程: %llu | PDV: %llu"
+                   : "%llu free / %llu total pages | Procs: %llu | PDVs: %llu",
              (unsigned long long)s->mem.free_pages,
              (unsigned long long)s->mem.total_pages,
              (unsigned long long)s->mem.process_count,
              (unsigned long long)s->mem.pdv_loaded_count);
-    draw_kv(surf, x, y + 16, "Kernel Pages:", buf, PXE_COL_BLACK);
+    draw_kv(surf, x, y + 16, s->zh ? "内核分页:" : "Kernel Pages:", buf, PXE_COL_BLACK);
 
     pxe_draw_hline(surf, x, y + 30, rw, PXE_COL_DARK_GRAY);
     y += 38;
@@ -258,36 +270,45 @@ static void render_overview(const pxe_win_surface_t* surf, const sysinfo_app_t* 
     char vram_str[24];
     fmt_kb(s->info.vram_bytes / 1024ull, vram_str, sizeof(vram_str));
     if (s->disp.struct_size == sizeof(s->disp)) {
-        snprintf(buf, sizeof(buf), "%dx%d @ %dbpp | VRAM %s | Max %dx%d",
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "%dx%d @ %dbpp | 显存 %s | 最大 %dx%d"
+                       : "%dx%d @ %dbpp | VRAM %s | Max %dx%d",
                  s->info.screen_w, s->info.screen_h, s->info.screen_bpp,
                  vram_str, s->disp.max_w, s->disp.max_h);
     } else {
-        snprintf(buf, sizeof(buf), "%dx%d @ %dbpp | VRAM %s | %s",
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "%dx%d @ %dbpp | 显存 %s | %s"
+                       : "%dx%d @ %dbpp | VRAM %s | %s",
                  s->info.screen_w, s->info.screen_h, s->info.screen_bpp,
                  vram_str,
                  s->info.gfx_backend[0] ? s->info.gfx_backend : "Framebuffer");
     }
-    draw_kv(surf, x, y, "Display:", buf, PXE_COL_BLACK);
+    draw_kv(surf, x, y, s->zh ? "显示输出:" : "Display:", buf, PXE_COL_BLACK);
 
-    snprintf(buf, sizeof(buf), "2D:%s | Drv:%s | %s",
-             s->info.gfx_is_2d_hw ? "Yes" : "No",
-             (s->disp.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) ? "Active" : "Fallback",
+    snprintf(buf, sizeof(buf),
+             s->zh ? "2D:%s | 驱动:%s | %s" : "2D:%s | Drv:%s | %s",
+             s->info.gfx_is_2d_hw ? (s->zh ? "是" : "Yes") : (s->zh ? "否" : "No"),
+             (s->disp.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
+                 ? (s->zh ? "已激活" : "Active")
+                 : (s->zh ? "回退" : "Fallback"),
              s->info.gfx_status[0] ? s->info.gfx_status
                                    : (s->info.gfx_fallback[0] ? s->info.gfx_fallback : "OK"));
-    draw_kv(surf, x, y + 16, "Gfx Accel:", buf,
+    draw_kv(surf, x, y + 16, s->zh ? "图形加速:" : "Gfx Accel:", buf,
             s->info.gfx_is_2d_hw ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
 
     snprintf(buf, sizeof(buf), "%s | %s%s",
-             s->info.has_audio_hw ? "Present" : "None",
-             s->info.audio_backend[0] ? s->info.audio_backend : "No Codec",
-             s->info.audio_muted ? " [Muted]" : "");
-    draw_kv(surf, x, y + 32, "Audio HW:", buf, PXE_COL_BLACK);
+             s->info.has_audio_hw ? (s->zh ? "已检测到" : "Present") : (s->zh ? "无" : "None"),
+             s->info.audio_backend[0] ? s->info.audio_backend : (s->zh ? "无声卡" : "No Codec"),
+             s->info.audio_muted ? (s->zh ? " [静音]" : " [Muted]") : "");
+    draw_kv(surf, x, y + 32, s->zh ? "音频硬件:" : "Audio HW:", buf, PXE_COL_BLACK);
     if (s->info.audio_probe[0]) {
-        draw_kv(surf, x, y + 48, "Audio Probe:", s->info.audio_probe, PXE_COL_DARK_GRAY);
+        draw_kv(surf, x, y + 48, s->zh ? "音频探测:" : "Audio Probe:", s->info.audio_probe, PXE_COL_DARK_GRAY);
     }
 
     pxe_draw_hline(surf, x, y + 64, rw, PXE_COL_DARK_GRAY);
-    snprintf(buf, sizeof(buf), "Devices: %d PCI | %d USB | %d Drives | %d PDV Drivers",
+    snprintf(buf, sizeof(buf),
+             s->zh ? "设备统计: %d PCI | %d USB | %d 磁盘 | %d PDV 驱动"
+                   : "Devices: %d PCI | %d USB | %d Drives | %d PDV Drivers",
              s->pci_count, s->usb_count, s->drive_count, s->pdv_count);
     pxe_draw_text_small(surf, x, y + 74, buf, PXE_COL_DARK_BLUE);
 }
@@ -324,9 +345,12 @@ static void render_table(const pxe_win_surface_t* surf, const sysinfo_app_t* s) 
     int sel = s->selected[s->tab];
 
     if (count == 0) {
-        const char* empty_msg = "No entries reported.";
-        if (s->tab == TAB_USB) empty_msg = "No USB devices connected / enumerated.";
-        else if (s->tab == TAB_PDV) empty_msg = "No .pdv drivers loaded. Click Rescan PDEVICE\\.";
+        const char* empty_msg = s->zh ? "暂无记录。" : "No entries reported.";
+        if (s->tab == TAB_USB) {
+            empty_msg = s->zh ? "未连接或未枚举到 USB 设备。" : "No USB devices connected / enumerated.";
+        } else if (s->tab == TAB_PDV) {
+            empty_msg = s->zh ? "未加载 .pdv 驱动，请点击“重新扫描 PDEVICE\\”。" : "No .pdv drivers loaded. Click Rescan PDEVICE\\.";
+        }
         pxe_draw_text_small(surf, lx + 12, ly + 16, empty_msg, PXE_COL_DARK_GRAY);
     }
 
@@ -380,17 +404,17 @@ static void render_table(const pxe_win_surface_t* surf, const sysinfo_app_t* s) 
                      d->version_str[0] ? d->version_str : "-",
                      (unsigned)d->rx_pages, (unsigned)d->ro_pages, (unsigned)d->rw_pages);
         }
-        int maxc = (lw - 12) / 6;
-        if (maxc > 3 && (int)strlen(line) > maxc) line[maxc] = '\0';
-        pxe_draw_text_small(surf, lx + 6, ry + 4, line, fg);
+        char lclip[128];
+        utf8_clip_by_pixels(line, lw - 12, 1, lclip, sizeof(lclip));
+        pxe_draw_text_small(surf, lx + 6, ry + 4, lclip, fg);
     }
 
     pxe_draw_scrollbar(surf, lx + lw, ly, SB_W, lh, scroll, vis, count);
 
     if (s->tab == TAB_PDV) {
         int by = ly + lh + 6;
-        pxe_draw_button(surf, 10,  by, 134, 22, "Rescan PDEVICE\\", 0, 1);
-        pxe_draw_button(surf, 152, by, 104, 22, "Load .pdv...", 0, 1);
+        pxe_draw_button(surf, 10,  by, 134, 22, s->zh ? "扫描 PDEVICE\\" : "Rescan PDEVICE\\", 0, 1);
+        pxe_draw_button(surf, 152, by, 104, 22, s->zh ? "加载 .pdv..." : "Load .pdv...", 0, 1);
     }
 }
 
@@ -410,11 +434,12 @@ static void render_sysinfo(const pxe_win_surface_t* surf, const sysinfo_app_t* s
         if (!active) {
             pxe_draw_hline(surf, k_tab_x[t], ty + th - 1, k_tab_w[t], PXE_COL_DARK_GRAY);
         }
-        int tw = (int)strlen(k_tab_names[t]) * 6;
-        pxe_draw_text_small(surf, k_tab_x[t] + (k_tab_w[t] - tw) / 2, ty + 7,
-                            k_tab_names[t], active ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
+        const char* tlbl = s->zh ? k_tab_names_zh[t] : k_tab_names[t];
+        int tw = pxe_text_width_small(tlbl);
+        pxe_draw_text_small(surf, k_tab_x[t] + (k_tab_w[t] - tw) / 2, ty + 5,
+                            tlbl, active ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
     }
-    pxe_draw_button(surf, surf->width - 74, 6, 66, 22, "Refresh", 0, 1);
+    pxe_draw_button(surf, surf->width - 74, 6, 66, 22, s->zh ? "刷新" : "Refresh", 0, 1);
 
     /* Main frame */
     int fx = 6, fy = 30, fw = surf->width - 12, fh = surf->height - 56;
@@ -448,14 +473,17 @@ static void render_sysinfo(const pxe_win_surface_t* surf, const sysinfo_app_t* s
                  d->provider[0] ? d->provider : "Unknown",
                  (unsigned long long)d->base_virt);
     } else if (s->tab == TAB_PDV) {
-        snprintf(status, sizeof(status), "Loaded .pdv drivers: %d (source: PDEVICE\\)", s->pdv_count);
+        snprintf(status, sizeof(status),
+                 s->zh ? "已加载 .pdv 驱动: %d (目录: PDEVICE\\)" : "Loaded .pdv drivers: %d (source: PDEVICE\\)",
+                 s->pdv_count);
     } else {
-        snprintf(status, sizeof(status), "Ring 0 Privileged Diagnostics | Items: %d",
+        snprintf(status, sizeof(status),
+                 s->zh ? "Ring 0 特权硬件诊断 | 项目数: %d" : "Ring 0 Privileged Diagnostics | Items: %d",
                  s->tab == TAB_OVERVIEW ? 1 : tab_item_count(s, s->tab));
     }
-    int maxs = (surf->width - 16) / 6;
-    if (maxs > 3 && (int)strlen(status) > maxs) status[maxs] = '\0';
-    pxe_draw_text_small(surf, 8, sy + 6, status, scol);
+    char sclip[112];
+    utf8_clip_by_pixels(status, surf->width - 16, 1, sclip, sizeof(sclip));
+    pxe_draw_text_small(surf, 8, sy + 6, sclip, scol);
 
     /* Load .pdv modal */
     if (s->load_modal) {
@@ -464,15 +492,20 @@ static void render_sysinfo(const pxe_win_surface_t* surf, const sysinfo_app_t* s
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-        pxe_draw_text(surf, dx + 8, dy + 3, "Load .pdv Driver", PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 10, dy + 25, "VFS path (e.g. C:\\PDEVICE\\DRIVER.PDV):", PXE_COL_BLACK);
+        pxe_draw_text(surf, dx + 8, dy + 3,
+                      s->zh ? "加载 .pdv 驱动" : "Load .pdv Driver", PXE_COL_WHITE);
+        pxe_draw_text_small(surf, dx + 10, dy + 23,
+                            s->zh ? "VFS 路径 (例如 C:\\PDEVICE\\DRIVER.PDV):"
+                                  : "VFS path (e.g. C:\\PDEVICE\\DRIVER.PDV):", PXE_COL_BLACK);
         pxe_draw_bevel_box(surf, dx + 10, dy + 38, dw - 20, 22, 1, PXE_COL_WHITE);
-        int maxc = (dw - 28) / 8;
-        int start = (s->load_len > maxc) ? (s->load_len - maxc) : 0;
-        pxe_draw_text(surf, dx + 14, dy + 41, s->load_path + start, PXE_COL_BLACK);
-        pxe_draw_vline(surf, dx + 14 + (s->load_len - start) * 8, dy + 41, 16, PXE_COL_BLACK);
-        pxe_draw_button(surf, dx + 68,  dy + 68, 76, 22, "Load", 0, 1);
-        pxe_draw_button(surf, dx + 166, dy + 68, 76, 22, "Cancel", 0, 1);
+        const char* vis_p = s->load_path;
+        while (*vis_p && pxe_text_width(vis_p) > dw - 28) {
+            (void)utf8_decode_next(&vis_p);
+        }
+        pxe_draw_text(surf, dx + 14, dy + 41, vis_p, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width(vis_p), dy + 41, 16, PXE_COL_BLACK);
+        pxe_draw_button(surf, dx + 68,  dy + 68, 76, 22, s->zh ? "加载" : "Load", 0, 1);
+        pxe_draw_button(surf, dx + 166, dy + 68, 76, 22, s->zh ? "取消" : "Cancel", 0, 1);
     }
 }
 
@@ -480,7 +513,7 @@ static void submit_load_pdv(sysinfo_app_t* s) {
     s->load_modal = 0;
     if (s->load_path[0] == '\0') {
         s->notice_is_err = 1;
-        snprintf(s->notice, sizeof(s->notice), "Empty .pdv path.");
+        snprintf(s->notice, sizeof(s->notice), s->zh ? ".pdv 路径为空。" : "Empty .pdv path.");
         pxe_beep();
         return;
     }
@@ -488,13 +521,19 @@ static void submit_load_pdv(sysinfo_app_t* s) {
     refresh_all(s);
     if (rc == 0) {
         s->notice_is_err = 0;
-        snprintf(s->notice, sizeof(s->notice), "Loaded driver (%d total active).", s->pdv_count);
+        snprintf(s->notice, sizeof(s->notice),
+                 s->zh ? "驱动已加载 (当前共 %d 个活动)。" : "Loaded driver (%d total active).",
+                 s->pdv_count);
     } else if (rc > 0) {
         s->notice_is_err = 0;
-        snprintf(s->notice, sizeof(s->notice), "Driver already loaded or skipped (%d active).", s->pdv_count);
+        snprintf(s->notice, sizeof(s->notice),
+                 s->zh ? "驱动已加载或被跳过 (%d 个活动)。" : "Driver already loaded or skipped (%d active).",
+                 s->pdv_count);
     } else {
         s->notice_is_err = 1;
-        snprintf(s->notice, sizeof(s->notice), "Load failed (err=%d). Check path / PDV1 / HW match.", rc);
+        snprintf(s->notice, sizeof(s->notice),
+                 s->zh ? "加载失败 (错误=%d)，请检查路径/PDV1/硬件匹配。" : "Load failed (err=%d). Check path / PDV1 / HW match.",
+                 rc);
         pxe_beep();
     }
 }
@@ -504,10 +543,14 @@ static void do_rescan_pdevice(sysinfo_app_t* s) {
     refresh_all(s);
     if (rc >= 0) {
         s->notice_is_err = 0;
-        snprintf(s->notice, sizeof(s->notice), "PDEVICE\\ rescan complete (%d new, %d active).", rc, s->pdv_count);
+        snprintf(s->notice, sizeof(s->notice),
+                 s->zh ? "PDEVICE\\ 扫描完成 (新增 %d，共 %d 个活动)。" : "PDEVICE\\ rescan complete (%d new, %d active).",
+                 rc, s->pdv_count);
     } else {
         s->notice_is_err = 1;
-        snprintf(s->notice, sizeof(s->notice), "PDEVICE\\ rescan failed (err=%d).", rc);
+        snprintf(s->notice, sizeof(s->notice),
+                 s->zh ? "PDEVICE\\ 扫描失败 (错误=%d)。" : "PDEVICE\\ rescan failed (err=%d).",
+                 rc);
         pxe_beep();
     }
 }
@@ -527,6 +570,7 @@ int main(int argc, char** argv) {
     snprintf(s->load_path, sizeof(s->load_path), "%c:\\PDEVICE\\", drv);
     s->load_len = (int)strlen(s->load_path);
 
+    s->zh = (s->info.ui_lang != PXE_LANG_EN);
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     desc.x = 68;
@@ -537,7 +581,7 @@ int main(int argc, char** argv) {
     desc.min_h = 360;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "System Information");
+    strcpy(desc.title, s->zh ? "系统信息" : "System Information");
 
     pxe_win_surface_t surf;
     s->win_id = pxe_win_create(&desc, &surf);
@@ -557,7 +601,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != s->zh) {
+                        s->zh = new_zh;
+                        pxe_win_set_title(s->win_id, s->zh ? "系统信息" : "System Information");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;
@@ -698,7 +750,18 @@ int main(int argc, char** argv) {
                         } else if (ev.key == PXE_KEY_ENTER) {
                             submit_load_pdv(s);
                         } else if (ev.key == PXE_KEY_BACKSPACE) {
-                            if (s->load_len > 0) s->load_path[--s->load_len] = '\0';
+                            if (s->load_len > 0) {
+                                int d = utf8_prev_char_bytes(s->load_path, s->load_len);
+                                s->load_len -= d;
+                                s->load_path[s->load_len] = '\0';
+                            }
+                        } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                            int n = (int)strlen(ev.text);
+                            if (s->load_len + n < 120) {
+                                memcpy(s->load_path + s->load_len, ev.text, (size_t)n);
+                                s->load_len += n;
+                                s->load_path[s->load_len] = '\0';
+                            }
                         } else if (ev.key >= 32 && ev.key <= 126 && s->load_len < 120) {
                             s->load_path[s->load_len++] = (char)ev.key;
                             s->load_path[s->load_len] = '\0';

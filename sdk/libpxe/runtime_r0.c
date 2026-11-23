@@ -123,6 +123,19 @@ int pxe_mouse_set_speed(int speed) {
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_MOUSE_SPEED, speed, 0, (const char*)0) : -1;
 }
 
+int pxe_set_language(int lang) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SET_LANG, lang ? 1 : 0, 0, (const char*)0) : -1;
+}
+
+int pxe_is_zh(void) {
+    pxe_basic_sysinfo_t info;
+    if (pxe_sys_get_basic_info(&info) == 0) {
+        return info.ui_lang != PXE_LANG_EN;
+    }
+    return 1;
+}
+
 int pxe_settings_save(void) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SAVE_SETTINGS, 0, 0, (const char*)0) : -1;

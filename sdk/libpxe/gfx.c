@@ -472,27 +472,36 @@ void pxe_draw_text(const pxe_win_surface_t* surf, int x, int y, const char* text
     }
 }
 
+static int pxe_line_has_non_ascii(const char* text) {
+    if (!text) return 0;
+    for (const char* p = text; *p && *p != '\n'; p++) {
+        if ((unsigned char)*p >= 0x80u) return 1;
+    }
+    return 0;
+}
+
 void pxe_draw_text_small(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg) {
     if (!text) return;
     int cx = x;
-    int row_cjk = 0;
+    int row_cjk = pxe_line_has_non_ascii(text);
     while (*text) {
         uint32_t cp = utf8_decode_next(&text);
         if (cp == 0u) break;
         if (cp == '\n') {
-            y += row_cjk ? 13 : 9;
+            y += row_cjk ? 14 : 9;
             cx = x;
-            row_cjk = 0;
+            row_cjk = pxe_line_has_non_ascii(text);
             continue;
         }
         if (cp < 0x80u) {
+            int dy = row_cjk ? (y + 3) : y;
             const uint8_t* glyph = s_font_small[cp];
             for (int row = 0; row < 7; row++) {
                 uint8_t line = glyph[row];
                 if (!line) continue;
                 for (int col = 0; col < 5; col++) {
                     if (line & (0x80u >> col)) {
-                        pxe_put_pixel(surf, cx + col, y + row, fg);
+                        pxe_put_pixel(surf, cx + col, dy + row, fg);
                     }
                 }
             }

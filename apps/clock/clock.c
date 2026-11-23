@@ -28,10 +28,24 @@ static void render_clock(const pxe_win_surface_t* surf,
     }
 }
 
+static void sync_clock_menu(int win_id, int zh) {
+    pxe_menu_bar_t mb;
+    memset(&mb, 0, sizeof(mb));
+    mb.menu_count = 1;
+    strcpy(mb.menus[0].title, zh ? "时钟" : "Clock");
+    mb.menus[0].item_count = 2;
+    strcpy(mb.menus[0].items[0].label, zh ? "切换日期显示" : "Toggle Date");
+    mb.menus[0].items[0].enabled = 1;
+    strcpy(mb.menus[0].items[1].label, zh ? "退出" : "Exit");
+    mb.menus[0].items[1].enabled = 1;
+    pxe_win_set_menu(win_id, &mb);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
+    int zh = pxe_is_zh();
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     desc.x = 100;
@@ -42,22 +56,13 @@ int main(int argc, char** argv) {
     desc.min_h = 70;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
-    strcpy(desc.title, "Clock");
+    strcpy(desc.title, zh ? "桌面时钟" : "Clock");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
     if (win_id < 0) return 1;
 
-    pxe_menu_bar_t mb;
-    memset(&mb, 0, sizeof(mb));
-    mb.menu_count = 1;
-    strcpy(mb.menus[0].title, "Clock");
-    mb.menus[0].item_count = 2;
-    strcpy(mb.menus[0].items[0].label, "Toggle Date");
-    mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, "Exit");
-    mb.menus[0].items[1].enabled = 1;
-    pxe_win_set_menu(win_id, &mb);
+    sync_clock_menu(win_id, zh);
 
     pxe_rtc_time_t rtc;
     memset(&rtc, 0, sizeof(rtc));
@@ -79,6 +84,12 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_REDRAW || ev.type == PXE_EV_ACTIVATE) {
+                int new_zh = pxe_is_zh();
+                if (new_zh != zh) {
+                    zh = new_zh;
+                    sync_clock_menu(win_id, zh);
+                    pxe_win_set_title(win_id, zh ? "桌面时钟" : "Clock");
+                }
                 dirty = 1;
             } else if (ev.type == PXE_EV_MENU && ev.arg0 == 0) {
                 if (ev.arg1 == 0) {

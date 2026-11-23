@@ -9,6 +9,9 @@ static bool g_caps = false;
 static bool g_extended = false;
 static uint8_t g_e1_remaining = 0;
 static volatile int g_taskmgr_hotkey = 0;
+static volatile int g_ime_toggle_hotkey = 0;
+static bool g_ime_chord_seen = false;
+static bool g_ime_chord_tainted = false;
 
 static int g_key_queue[64];
 static volatile uint32_t g_key_head = 0;
@@ -68,8 +71,32 @@ void keyboard_init(void) {
     g_extended = false;
     g_e1_remaining = 0;
     g_taskmgr_hotkey = 0;
+    g_ime_toggle_hotkey = 0;
+    g_ime_chord_seen = false;
+    g_ime_chord_tainted = false;
     g_key_head = 0;
     g_key_tail = 0;
+}
+
+static void keyboard_update_ime_chord(bool non_mod_key) {
+    bool ctrl = g_ps2_ctrl || g_usb_ctrl;
+    bool shift = g_ps2_shift || g_usb_shift;
+    if (non_mod_key) {
+        g_ime_chord_seen = false;
+        if (ctrl || shift) g_ime_chord_tainted = true;
+        return;
+    }
+    if (ctrl && shift) {
+        if (!g_ime_chord_tainted) g_ime_chord_seen = true;
+    } else {
+        if (g_ime_chord_seen && !g_ime_chord_tainted) {
+            g_ime_toggle_hotkey = 1;
+        }
+        g_ime_chord_seen = false;
+        if (!ctrl && !shift) {
+            g_ime_chord_tainted = false;
+        }
+    }
 }
 
 void keyboard_handle_byte(uint8_t scancode) {
@@ -92,7 +119,11 @@ void keyboard_handle_byte(uint8_t scancode) {
 
     if (g_extended) {
         switch (code) {
-            case 0x1D: g_ps2_ctrl = !release; break;
+            case 0x1D:
+                g_ps2_ctrl = !release;
+                keyboard_update_ime_chord(false);
+                g_extended = false;
+                return;
             case 0x38: break;
             case 0x48: translated = INPUT_CODE_UP; break;
             case 0x50: translated = INPUT_CODE_DOWN; break;
@@ -111,15 +142,19 @@ void keyboard_handle_byte(uint8_t scancode) {
             case 0x2A:
             case 0x36:
                 g_ps2_shift = !release;
-                break;
+                keyboard_update_ime_chord(false);
+                return;
             case 0x1D:
                 g_ps2_ctrl = !release;
-                break;
+                keyboard_update_ime_chord(false);
+                return;
             case 0x38:
-                break;
+                keyboard_update_ime_chord(true);
+                return;
             case 0x3A:
                 if (!release) g_caps = !g_caps;
-                break;
+                keyboard_update_ime_chord(true);
+                return;
             default:
                 translated = translate(code);
                 break;
@@ -127,6 +162,7 @@ void keyboard_handle_byte(uint8_t scancode) {
     }
 
     if (!translated) return;
+    if (!release) keyboard_update_ime_chord(true);
     if (!release && translated == INPUT_CODE_ESCAPE &&
         keyboard_get_ctrl() && keyboard_get_shift()) {
         g_taskmgr_hotkey = 1;
@@ -153,15 +189,27 @@ int keyboard_get_shift(void) {
 void keyboard_set_usb_modifiers(int ctrl, int shift) {
     g_usb_ctrl = (ctrl != 0);
     g_usb_shift = (shift != 0);
+    keyboard_update_ime_chord(false);
+}
+
+void keyboard_note_usb_activity(int has_keys) {
+    if (has_keys) keyboard_update_ime_chord(true);
 }
 
 void keyboard_notify_taskmgr_hotkey(void) {
     g_taskmgr_hotkey = 1;
+    keyboard_update_ime_chord(true);
 }
 
 int keyboard_consume_taskmgr_hotkey(void) {
     int v = g_taskmgr_hotkey;
     g_taskmgr_hotkey = 0;
+    return v;
+}
+
+int keyboard_consume_ime_hotkey(void) {
+    int v = g_ime_toggle_hotkey;
+    g_ime_toggle_hotkey = 0;
     return v;
 }
 
