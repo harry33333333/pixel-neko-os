@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "string.h"
 #include "log.h"
+#include "input.h"
 #include "neko_abi.h"
 
 #define NKPY_MAGIC          0x59504B4Eu /* "NKPY" */
@@ -402,7 +403,7 @@ static void rebuild_candidates_from_pny(void) {
             if (ph->utf8_offset + ph->utf8_len > pool_max) continue;
             int end_pos = match_phrase_syls(syl_pool + ph->syl_offset, (int)ph->syl_len, j, NULL);
             if (end_pos >= exact_end) {
-                add_candidate(utf8_pool + ph->utf8_off, (int)ph->utf8_len, (uint8_t)g_raw_len);
+                add_candidate(utf8_pool + ph->utf8_offset, (int)ph->utf8_len, (uint8_t)g_raw_len);
             }
         }
     }
@@ -436,7 +437,7 @@ static void rebuild_candidates_from_pny(void) {
                         if (get_syl_str((int)sids[t])[0] != g_raw[t]) { ok = false; break; }
                     }
                     if (ok && ph->utf8_offset + ph->utf8_len <= pool_max) {
-                        add_candidate(utf8_pool + ph->utf8_off, (int)ph->utf8_len, (uint8_t)g_raw_len);
+                        add_candidate(utf8_pool + ph->utf8_offset, (int)ph->utf8_len, (uint8_t)g_raw_len);
                     }
                 }
             }
@@ -456,7 +457,7 @@ static void rebuild_candidates_from_pny(void) {
             if (ph->utf8_offset + ph->utf8_len > pool_max) continue;
             int end_pos = match_phrase_syls(syl_pool + ph->syl_offset, (int)ph->syl_len, j, NULL);
             if (end_pos > 0 && end_pos < exact_end) {
-                add_candidate(utf8_pool + ph->utf8_off, (int)ph->utf8_len, (uint8_t)end_pos);
+                add_candidate(utf8_pool + ph->utf8_offset, (int)ph->utf8_len, (uint8_t)end_pos);
             }
         }
     }
@@ -470,7 +471,7 @@ static void rebuild_candidates_from_pny(void) {
         for (uint32_t si = s_beg; si < s_end && g_cand_count < IME_MAX_CANDS; si++) {
             const nkpy_single_t* ch = &singles[si];
             if (ch->utf8_offset + ch->utf8_len <= pool_max) {
-                add_candidate(utf8_pool + ch->utf8_off, (int)ch->utf8_len, (uint8_t)slen0);
+                add_candidate(utf8_pool + ch->utf8_offset, (int)ch->utf8_len, (uint8_t)slen0);
             }
         }
     }
@@ -486,7 +487,7 @@ static void rebuild_candidates_from_pny(void) {
                 for (uint32_t si = s_beg; si < lim && g_cand_count < IME_MAX_CANDS; si++) {
                     const nkpy_single_t* ch = &singles[si];
                     if (ch->utf8_offset + ch->utf8_len <= pool_max) {
-                        add_candidate(utf8_pool + ch->utf8_off, (int)ch->utf8_len, (uint8_t)g_raw_len);
+                        add_candidate(utf8_pool + ch->utf8_offset, (int)ch->utf8_len, (uint8_t)g_raw_len);
                     }
                 }
             }
@@ -785,6 +786,23 @@ int ime_handle_mouse(int mx, int my, int mb_press, char* out_commit, size_t out_
     return 1;
 }
 
+static int append_uint_str(char* dst, int val) {
+    char tmp[12];
+    int t = 0;
+    if (val <= 0) {
+        dst[0] = '0';
+        return 1;
+    }
+    while (val > 0 && t < 11) {
+        tmp[t++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    for (int i = 0; i < t; i++) {
+        dst[i] = tmp[t - 1 - i];
+    }
+    return t;
+}
+
 void ime_draw_popup(unsigned char* v, int anchor_x, int anchor_y) {
     if (!v || !g_ime_enabled || g_raw_len == 0) {
         g_popup_w = 0;
@@ -802,7 +820,12 @@ void ime_draw_popup(unsigned char* v, int anchor_x, int anchor_y) {
     int row_w = 14;
     for (int i = 0; i < on_page; i++) {
         const ime_cand_t* c = &g_cands[page_start + i];
-        snprintf(labels[i], sizeof(labels[i]), "%d.%s", i + 1, c->text);
+        labels[i][0] = (char)('1' + i);
+        labels[i][1] = '.';
+        size_t cl = strlen(c->text);
+        if (cl > sizeof(labels[i]) - 3) cl = sizeof(labels[i]) - 3;
+        memcpy(labels[i] + 2, c->text, cl);
+        labels[i][2 + cl] = '\0';
         row_w += font_text_width(labels[i]) + 10;
     }
     int top_w = font_text_width(g_raw) + 84;
@@ -846,8 +869,16 @@ void ime_draw_popup(unsigned char* v, int anchor_x, int anchor_y) {
 
     int total_pages = (g_cand_count + IME_PAGE_SIZE - 1) / IME_PAGE_SIZE;
     if (total_pages < 1) total_pages = 1;
-    char pind[20];
-    snprintf(pind, sizeof(pind), "< %d/%d >", g_cand_page + 1, total_pages);
+    char pind[24];
+    int pi = 0;
+    pind[pi++] = '<';
+    pind[pi++] = ' ';
+    pi += append_uint_str(pind + pi, g_cand_page + 1);
+    pind[pi++] = '/';
+    pi += append_uint_str(pind + pi, total_pages);
+    pind[pi++] = ' ';
+    pind[pi++] = '>';
+    pind[pi] = '\0';
     int piw = font_text_width_small(pind);
     font_draw_text_small(v, px + pw - piw - 8, py + 7, pind, 8);
 
