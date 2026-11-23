@@ -3,128 +3,73 @@
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
 > **Pixel Neko OS (Version Darwin 26A280b - Codename Snow Neko)**
-> 现代化 64 位模块化宏内核与复古像素桌面操作系统
+> 现代化 64 位模块化宏内核与复古像素桌面操作系统（完整支持简体中文 / English 双语与拼音输入法）
 
 ---
 
 ## 🌟 核心理念与技术纲领
 
-Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模式）**与**经典复古桌面交互（Classic Mac OS 9 / Win 3.1 像素艺术风格）**的独立操作系统。
+Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模式）**与**经典复古桌面交互（Classic Mac OS 9 / Win 3.1 / Windows 风格）**的独立操作系统。
 
-### 1. 引导与体系结构革新
-- **Limine v8.x 双模引导**：原生支持现代 UEFI 固件与传统 Legacy BIOS (El Torito Hybrid MBR/GPT ISO)，完全脱离 GPL 限制。
+### 1. 引导与内核体系结构
+- **Limine v8.x 双模引导**：原生支持现代 UEFI 固件与传统 Legacy BIOS (El Torito Hybrid MBR/GPT ISO)，提供 Live Desktop、Graphical Installer、Safe Mode（`nopdv=1` 跳过外部 `.pdv` 并回退安全显示模式）与 Safe Graphics 引导入口。
 - **64 位长模式与特权级隔离**：建立规范的 Ring 0 内核态与 Ring 3 用户态隔离，支持 4 级分页虚拟内存（PML4）与安全 Checked HHDM 映射。
 - **严密系统调用安全边界**：
   - 在 `SYSRET` 前严格校验用户 RIP 与用户 RSP 是否为规范地址（Canonical）且位于合法用户低半区空间（`< 0x0000800000000000`）。
   - 强制校验 CS/SS 选择子 RPL 为 3，严格限制 RFLAGS 掩码（IOPL 强制为 0、IF 强制置位、拦截 NT 任务嵌套与 VM 虚拟8086模式）。
   - 违规调用统一触发 `.bad_return` 安全路径，终止非法进程并由调度器通过 `IRETQ` 硬件安全返回。详情参阅 [`docs/SECURITY.md`](docs/SECURITY.md)。
-- **Double Fault 独立 IST 虚拟栈**：为 CPU 异常提供独立虚拟栈与 Guard Page 防御，杜绝 Triple Fault 硬件重启。
-- **NMI 安全机制**：采用 System V ABI 高速系统调用流水线与三窗口 Paranoid NMI 安全判定。
-- **双特权环原生应用体系（`*.pxe`）**：提供统一 `sdk/` 工具链（Ring 3 W^X 隔离与 System Bomb 崩溃隔离窗；Ring 0 高半区 PIE 特权运行环境），全部系统工具打包于 `APPS\*.pxe`（含 `taskmgr.pxe` 任务管理器）。详情参阅 [`docs/executable_develop.md`](docs/executable_develop.md)。
+- **Double Fault 独立 IST 虚拟栈与 NMI 防护**：为 CPU 异常提供独立虚拟栈与 Guard Page 防御，杜绝 Triple Fault 硬件重启；采用 System V ABI 高速系统调用流水线与三窗口 Paranoid NMI 安全判定。
+- **双特权环原生应用体系（`*.pxe`）**：提供统一 `sdk/` 工具链（Ring 3 W^X 隔离与 System Bomb 崩溃隔离窗；Ring 0 高半区 PIE 特权运行环境），系统工具打包于 `APPS\*.pxe`。详情参阅 [`docs/executable_develop.md`](docs/executable_develop.md)。
 - **自包含可加载驱动体系（`*.pdv`）**：采用 DDK 隔离的独立可重定位 ELF64 驱动模块部署于 `PDEVICE\`，按硬件 PCI/类别按需加载与去重。详情参阅 [`docs/driver_develop.md`](docs/driver_develop.md)。
-- **现代中断体系**：支持 LAPIC、IOAPIC、MADT ISO 中断重定向、ACPI `_PIC`/`_PRT` INTx→GSI 与 PCI shared IRQ 路由（MSI/MSI-X 消息中断规划中）。
+- **现代中断与电源控制**：支持 LAPIC、IOAPIC、MADT ISO 中断重定向、ACPI `_PIC`/`_PRT` INTx→GSI、PCI shared IRQ 路由与 ACPI S5 软关机（参阅 [`docs/ACPI_S5.md`](docs/ACPI_S5.md)）。
 
-### 2. 视觉盛宴：开机动画、动态显示能力与复古像素 UI
-- **Windows XP 风格开机界面与滚动进度条**：纯黑背景开机画卷，居中呈现四色复古 Pixel Neko 徽标，搭配三段式微光高亮蓝色流动滑块进度条（Marquee Progress Bar）。
-- **精简 Limine 引导菜单**：提供 Live Desktop、Graphical Installer 以及 Safe Mode（`nopdv=1` 跳过外部 `.pdv` 并安全回退至 `1024×768×16b`）与 Safe Graphics 恢复入口。
-- **动态分辨率、VRAM 精确探测与显存 WC 加速**：
-  - 由已加载显卡 `.pdv`（如 `vmwgfx`、`mach64`、`nvg7x`）动态枚举分辨率与 `8/16/24/32-bit` 色深能力，彻底移除硬编码上限；VMware 模式下兼容 SVGA II 2D（放宽 `BAR1` 探测）与 SVGA3D Screen Target（`STDU`）。
-  - 结合显存 PAT Write-Combining 纯写脏矩形双缓冲与 64 MiB `SHM` 共享窗口画布槽，支持控制面板可滚动高分辨率选择（含滑块滚动条）且无撕裂卡顿。
-- **经典内置应用程序（`APPS\*.pxe`）**：`files`（文件管理器）、`notepad`（文本编辑器）、`calc`（简易计算器）、`cpanel`（控制面板）、`player`（多媒体音乐播放器）、`viewer`（图片查看器）、`clock`（数字时钟）、`about`（关于）、`sysinfo`（系统与驱动诊断）、`cpuz`（Pixel CPU Detect，Ring 0 处理器检测器）、`taskmgr`（Ring 0 任务管理器）、`install`（图形化离线安装器）。Puzzle、Solitaire、Gomoku、Aero Chess、2048、Minesweeper 与 Reversi 统一位于根目录 `GAME\`。
-- **持久化 Windows 风格桌面（`Desktop\`）**：桌面文件直接存放在系统盘 `Desktop\` 中，应用默认以 `*.pnk` 快捷方式出现，桌面隐藏后缀并绘制右下角快捷箭头；`.desktop-layout` 保存全部图标位置。文件管理与关于本机快捷方式锁定，`APPS\`、`PDEVICE\`、`boot\`、`system\` 等系统文件禁止删除或重命名。Live 模式使用只读桌面，不会读取本地系统盘的桌面。
+### 2. 简体中文国际化、字体与拼音输入法
+- **完整双语与热切换**：系统默认以简体中文启动，支持在控制面板中一键切换 **简体中文 / English** 并持久化保存至 `.pse`，开机加载画面、桌面、顶部状态栏、全部内置应用与游戏均可实时同步切换。
+- **UTF-8 内核与点阵字库引擎**：内置内存常驻的 `system/FONT_CJK.FNT` 字库，支持 `8×16` ASCII + `12×12` 中日韩点阵字模混排（`5×7` 小字体行自动基线居中对齐），提供按像素宽度度量与完整 UTF-8 字符边界截断工具。
+- **内置拼音输入法（IME）**：
+  - 词库 `system/IME.PNY` 基于 Rime 朙月拼音与八股文模型预先编译并常驻物理内存，支持全拼、简拼、词组与整句联想、候选翻页及中文标点输入。
+  - 支持与 Windows 7 一致的 **`Ctrl+Shift`** 快捷键切换中/英文输入状态，顶部状态栏实时显示 `[中]` / `[EN]` 指示器并支持点击切换。
 
-### 26A232c 桌面与硬件兼容修复
-- 自动图标右边距由 104px 收紧到 72px，多列间距由 184px 收紧到 96px，贴近 Windows 桌面参考布局。
-- 已有 `PNK_LAYOUT2` 自动图标会在启动时自动迁移到新间距。
-- xHCI ERST 段表设置 Change 位，修复 Intel H610 上事件环首次回卷后 HID 中断事件不再被回收、鼠标约 15–30 秒后停止的问题。
-- 桌面图标缓存跨目录刷新保留；图标加载失败时按应用使用不同 fallback，不再全部显示为 Control Panel。
-- 桌面名称每行最多 7 个英文字符，超过两行时第二行以 `...` 省略。
-- `GAME\` 新增 `2048.pxe`、`minesweeper.pxe` 与 `othello.pxe`（Reversi）；Live ISO、安装负载和现有系统升级均会自动包含。
-- Live 快捷方式统一经系统应用解析器启动，Ring 0 系统应用使用显式受信任路径，修复 Live 下点击快捷方式直接崩溃的问题。
-- 桌面长名称按 Windows 风格显示为两行，超过第二行容量后使用 `...` 省略。
-- 控制面板新增恢复默认壁纸、日期显示开关和秒钟显示开关；默认同时显示日期与秒钟。
-- 文件管理器新增 Cut 剪切/移动，支持工具栏、右键菜单和 `Ctrl+X`。
-- ASUS P7H55-M LE / Intel H55：枚举全部 AHCI 控制器，并在 AHCI 已注册设备但无法取得可读卷时回退到 ATA PIO；不再以“块设备数量非零”误判存储成功。
-- USB 启动：支持 USB 混合 ISO 的原生 ISO9660 挂载与 512/2048 字节扇区转换；EHCI/UHCI/OHCI 枚举失败可重试，USB BOT 正确处理短传输、CSW residue 与设备就绪延迟。
+### 3. 图形显示、开机画面与桌面环境
+- **开机画面与双语加载**：纯黑背景 Windows XP 风格四色徽标与三段式微光流动进度条，随后进入支持简体中文/英文的内核与扩展初始化加载界面。
+- **EDID 解析与动态分辨率/色深切换**：
+  - 启动时优先解析 UEFI GOP / Legacy VBE 获取的 EDID 1.3/1.4 时序（含 Established/Standard/DTD 与常见 CEA-861 模式），EDID 缺失时回退固件模式表。
+  - 由已加载显卡 `.pdv` 动态枚举分辨率与 `8/16/24/32-bit` 色深，结合动态 PAT Write-Combining 显存窗口双缓冲与 64 MiB `SHM` 共享窗口画布槽实现无撕裂流畅刷新：
+    - **NVIDIA**：支持 G72/G73 与 GeForce GTX 1060 3GB (`10DE:1C02`, GP106 Pascal)，支持运行时两级 VPLL/PCRTC/RAMDAC 无重启模式切换与同步极性配置。
+    - **ATI Mach64 / 3D Rage II+DVD**：支持内部 PLL、CRTC、`32-qword` Display FIFO 水位线校准与晶振自动标定，按 2MB/4MB 真实显存过滤并运行时切换模式。
+    - **VMware SVGA II / SVGA3D**：支持完整虚拟模式列表、2D 加速与 Screen Target (`STDU`)。
+    - 通用 LFB / 回退路径提供安全兼容模式，需重启切换时先弹出确认框。
+- **持久化 Windows 风格桌面（`Desktop\`）**：
+  - 桌面直接映射系统盘 `Desktop\` 目录中的 `*.pnk` 快捷方式（自动隐藏后缀并绘制右下角快捷箭头），图标坐标由 `.desktop-layout` 持久化保存，支持自动对齐布局与自由拖拽；`文件管理` 与 `关于本机` 等系统关键快捷方式及 `APPS\`、`PDEVICE\`、`boot\`、`system\` 目录受保护禁止删除或重命名。Live 模式使用只读桌面，不读写本地系统盘。
+  - 壁纸支持平铺、拉伸与置中（1:1 原始像素）模式，并支持一键恢复默认壁纸。
+  - 顶部状态栏提供日期/秒钟独立开关、输入法状态指示，以及 Windows XP 风格音量弹出面板（支持滑块拖拽、独立静音按钮与滚轮 5% 步进调节）。
+  - 全局支持 **`Ctrl+Shift+Esc`** 快捷键呼出或聚焦任务管理器；鼠标滚轮全面统一为 Windows 方向（`PXE_EV_MOUSE_WHEEL`）。
 
-### 26A235a Pixel CPU Detect
-- 新增 Ring 0 系统应用 `APPS\cpuz.pxe`，窗口标题为 **Pixel CPU Detect**，提供 CPU、缓存、主板 PCI 拓扑、内存、显卡与关于六个页面。
-- CPU 型号、代号、Family/Model/Stepping、指令集、核心/线程与缓存拓扑来自裁剪后的 **libcpuid 0.8.2**；保留 Intel、AMD、Centaur 的 x86 识别数据库，不携带 Windows/Linux MSR 驱动、文件序列化器或 ARM 后端。
-- 新增 freestanding PXE 兼容层，将内存与字符串操作接到 `pxe/mem.h` / `pxe/str.h`；线程错误状态改为静态变量，CPU 亲和性接口在 Ring 0 构建中安全禁用。
-- `About` 页面新增 **Save Report As...** 对话框，用户可输入或粘贴任意合法绝对路径，将完整解码信息、PCI/PDV/内存状态及原始 CPUID 叶数据保存为 `*.TXT`，便于真机排障。
-- 桌面默认新增 `Pixel CPU Detect.pnk`，文件管理器管理入口与关于本机入口继续锁定；现有系统升级后也会自动补齐该快捷方式。
-- libcpuid 的 BSD-2-Clause 版权与许可证记录已加入 `THIRD_PARTY_LICENSES.md`。
+### 4. 内置应用程序与游戏生态
+- **系统应用（`APPS\*.pxe`）**：
+  - `files`（文件管理器）：支持多盘符浏览、长文件名、复制/剪切/粘贴/重命名/新建文件夹/删除/属性查看、磁盘弹出与文件关联启动。
+  - `notepad`（记事本）：完整接入 UTF-8 与拼音输入法（`PXE_KEY_UTF8`），支持中文编辑与滚轮浏览。
+  - `cpanel`（控制面板）：配置屏幕分辨率/色深、桌面壁纸模式、顶栏时钟选项、系统音量及简体中文/英文界面语言。
+  - `player`（媒体播放器）：支持 WAV、FLAC 与 MP3 解码播放与播放列表控制。
+  - `viewer`（图片查看器）、`calc`（计算器）、`clock`（数字时钟）、`about`（关于本机）。
+  - `cpuz`（Pixel CPU Detect，Ring 0）：基于裁剪版 libcpuid 0.8.2 的处理器、缓存、PCI 拓扑、内存、显卡检测工具，支持将完整诊断报告导出为 `*.TXT`。
+  - `sysinfo`（系统信息，Ring 0）：查看系统资源、PCI/USB 设备及已加载 `.pdv` 驱动，支持手动加载与重扫 `PDEVICE\`。
+  - `taskmgr`（任务管理器，Ring 0）：实时监控并管理运行进程与内存，支持终止系统核心进程的风险警告确认（终止 `idle` 将触发蓝屏停机）。
+  - `install`（图形化离线安装器，Ring 0）：仅在安装引导模式下运行，支持全新安装或保留文件系统的升级安装。
+- **内置游戏（`GAME\*.pxe`）**：
+  - 全部 7 款游戏均支持简体中文/英文实时切换：`puzzle`（数字推盘）、`solitaire`（纸牌接龙）、`gomoku`（五子棋）、`aerochess`（飞行棋）、`2048`（2048 数字方块）、`minesweeper`（扫雷，含难度与音效设置）、`othello`（黑白棋）。
 
-### 26A250a 真机输入/音频、桌面命中与显示模式修复
-- 修复 ASUS P7H55-M LE 等真实 ATA/ATAPI 平台上的周期性卡顿：桌面不再每秒遍历 FAT 并重读全部快捷方式，VFS 也不再每秒对光驱发送阻塞式 `TEST UNIT READY`；Desktop 文件操作通过变更通知触发一次同步刷新，介质改为用户刷新时检查。
-- 修复桌面图标点击范围硬编码为 10 项的问题。CPU 检测器、Sysinfo 以及之后新增的所有桌面项目现在都会使用实时项目数量进行命中测试。
-- 新增共享显示模式目录，优先读取 Limine 从 **UEFI GOP / Legacy VBE+EDID** 获取的 EDID 1.3/1.4 时序，并解析 Established Timings、Standard Timings、DTD 与常见 CEA-861 HDMI 模式；EDID 缺失时回退到固件模式表。
-- Live、安装器、本机启动以及所有安全模式统一使用 `800x600x16` 作为 Limine 初始扫描输出，确保开机进度条和所有真机使用相同的兼容模式；桌面内仍可根据 EDID/固件模式目录切换更高逻辑分辨率。
-- NVIDIA G7x 与 ATI Mach64 不再把启动分辨率当作最大分辨率，而是按 EDID/固件模式列表过滤。ATI 2MB 可显示 `1024x768x16`，4MB 可继续使用其显存允许的更高模式；VMware SVGA 保持原有完整虚拟模式列表且不依赖 EDID。
+### 5. 全栈 USB 架构与外设输入
+- **全速域控制器支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
+- **现代芯片组与实体机适配**：针对 Intel 600 系列（如 H610）等现代主板实施根集线器端口强制复位、xHCI ERST Change 位正确维护、USB Hub 复位与 `HUB_PORT_ENABLE` 验证及 USB BOT 短传输/残留字节容错；同时保留 PS/2 键鼠（含 IntelliMouse 滚轮）硬件兜底。详情参阅 [`docs/USB.md`](docs/USB.md)。
 
-### 26A261a 真实分辨率、通知区音量与鼠标滚轮
-- 物理 NVIDIA/ATI 驱动不再把大画布缩放到旧扫描输出。控制面板选择模式后，`Keep` 会保存真实 Limine 启动分辨率并重启，由 GOP/VBE 重新点亮目标模式；VMware 等支持运行时硬件 modeset 的驱动仍然即时切换。
-- 通知区在时钟左侧新增音量状态，显示 `VOL nn%` 或 `MUTE`；点击可切换静音，鼠标位于音量区域时滚轮可按 5% 调节。
-- 输入系统新增 `PXE_EV_MOUSE_WHEEL` 事件，使用 `ev.arg0` 传递滚轮增量，不改变既有 `pxe_event_t` 布局。
-- USB HID 与 IntelliMouse 兼容 PS/2 鼠标均支持滚轮；文件管理器、Notepad、Sysinfo 和 Control Panel 的分辨率列表已接入上下滚动。
-
-### 26A262a Mach64/G7x 无重启模式切换与 XP 音量面板
-- ATI Mach64/Rage II 驱动现在直接编程内部 PLL、CRTC、pitch 与像素格式；2MB 与 4MB 显存分别按真实容量过滤可用模式。
-- NVIDIA G72/G73 驱动现在使用 two-stage VPLL、PCRTC 与 RAMDAC 完成运行时分辨率/色深切换，并保留失败回滚。
-- EDID Detailed Timing Descriptor 的 pixel clock、blanking、sync 起止位置与极性已完整传递到 PDV；经典 800x600、1024x768 等模式使用内置 VESA/DMT 时序。
-- 通用 LFB 与 Intel 回退路径仅提供 `800x600x16`、`1024x768x16`。必须重启时先显示确认框，拒绝后保持当前分辨率与色深且不写入启动配置。
-- 通知区喇叭图标改为 Windows XP 风格弹出面板，包含可拖拽音量滑杆和独立 Mute 按钮；图标区域滚轮继续支持快速调节。
-
-### 26A262b 实体机 NVIDIA 模式切换修复
-- 修复 NVIDIA G7x 的 VGA CRTC 写入路径：改用 BAR0 `0x601000` MMIO 镜像，头 1 使用 `0x2000` 偏移，确保 CRTC 时序与 PLL 同步更新，不再出现只改像素时钟导致的“超出显示屏能力上限”。
-- 修复运行时帧缓冲 WC 窗口只按启动 `800x600x16` 大小映射的问题。`fb_set_surface()` 现在会在新 pitch/height 下重新映射完整专用 PAT WC 窗口，避免切换后访问 `0xffff9000...` 越界并触发 `#PF` 与自动重启。
-- 模式切换前增加 VBlank 等待，并在写入后校验水平总长、扩展水平高位、pitch 与像素模式；G7x 模式日志增加 pixel clock 和完整同步时序，便于后续实体机诊断。
-
-### 26A262c 实体机 NVIDIA 同步极性修复
-- 修复 G7x 只更新 CRTC 和 PLL、却没有更新 VGA PVIO Misc Output 同步极性的问题。`1024x768@60` 需要负 H/V 同步，而启动的 `800x600@60` 为正 H/V；极性未切换会让部分显示器直接提示“超出最高显示上限”。
-- 运行时模式切换现在同步写入 VGA Misc Output、Sequencer 和 Graphics 寄存器，并在日志中记录 `VGA misc output old -> new`、H/V 极性以及 CRTC 是否处于 DFP/TV 从模式。
-- 继续保留 BAR0 MMIO CRTC、VPLL、动态 WC 窗口和 VBlank/回读保护。
-
-### 26A262d 实体机 NVIDIA 模式切换提交修复
-- 修复 Sequencer Reset 寄存器被错误写成 `0` 导致同步复位未释放的问题；现在与 X.Org `vgaHW` 一致，不再写 Sequencer 0，只更新 Sequencer 1–4。
-- 修复 G7x 在部分实体板上把 CRTC pitch/pixel 只读镜像值不一致误判为切换失败的问题。水平总长与扩展高位仍作为回滚依据，pitch/pixel 改为诊断日志，不再阻止有效的 CRTC/PLL 切换。
-- 新增完整 CRTC 回读日志，包含实际值、期望值和 advisory mismatch 提示。
-
-### 26A262e 实体机 NVIDIA PCIO 16 位端口偏移与无重启切换修复
-- 修复 `nvidia_crtc_index_port()` 与 `nvidia_vga_status_port()` 返回类型误写为 `unsigned char` 导致 `0x03D4` / `0x03DA` 被 8 位截断为 `0xD4` / `0xDA` 的问题；此前 `PCIO` (`BAR0 + 0x601000`) 读写全部落在 `0x6010D4` 未映射区并读回 `0x00`，导致运行时切换分辨率被误判失败并回滚。
-- 修复 VGA Attribute Controller (`0x03C0`) 数据写入端口及双头 `NV_HEAD_STRIDE` (`0x2000`)，并在读取/保存 CRTC 状态前先解锁 `CR1F` (`0x57`) 与选择目标头 `CR44`。
-- 控制面板点击 `Keep (OK)` 确认已生效的硬件模式时不再重复触发二次 CRTC/PLL 重编程，后备缓冲页数计算同步按 64 字节对齐 pitch 分配。
-
-### 26A263a ATI Mach64 显示 FIFO/CRTC 修复、音量完全同步、Windows 滚轮方向与安装器模式门控
-- 修复 ATI 3D Rage II+DVD (`1002:4755`, Mach64 GT-B) 切换分辨率时屏幕分成 8 条竖向重复条带与花屏的问题：
-  - 修复 `CRTC_OFF_PITCH` (`0x0014`) 的 `CRTC_PITCH` 位移（由 `<< 20` 修正为 bits 31:22 的 `<< 22`）与单位（8 像素为单位 `w >> 3`，行距 `pitch = w * (bpp / 8)`）。
-  - 修复 `CLOCK_CNTL` (`0x0090`) 误写 32 位 `0x73` 触发 `CLOCK_DIV` 4 分频的问题，改用 8 位写入 `0x43` (`VCLK3 | CLOCK_STROBE`)。
-  - 新增 Mach64 VT/GT/GT-B 内部 32-qword Display FIFO 水位线计算（`DSP_CONFIG` `0x0020` 与 `DSP_ON_OFF` `0x0024`）、晶振频率自动校准（`14.318 MHz` / `29.499 MHz`）与 VCO 锁定区间 `[128, 255]` 反馈分频。
-- 修复 Control Panel (`cpanel.pxe`) 与顶部音量面板、内核音频引擎及 `.pse` 持久化的音量完全同步：拖动或滚轮调节音量、静音切换及重启后均保持 1:1 双向同步。
-- 统一 USB HID 与 PS/2 IntelliMouse 鼠标滚轮方向为 Windows 标准方向（向上滚动向上翻页/增加音量，向下滚动向下翻页/减小音量）。
-- 在正常硬盘启动（`mode=local`）与 Live 桌面模式（`mode=live`）下禁止启动 `INSTALL` (`install.pxe`)，仅允许在图形化安装引导模式（`mode=install`）下运行。
-
-### 26A270a 壁纸置中模式、Ctrl+Shift+Esc 任务管理器与 NVIDIA GTX 1060 3GB 驱动
-- 系统壁纸设置新增**置中（不缩放，`WP_MODE_CENTER`）**模式：控制面板（`cpanel.pxe`）新增 `Cntr` 按钮，壁纸以 1:1 原始像素居中显示，并同步写入 `.pse` 持久化配置。
-- 新增 **`Ctrl+Shift+Esc`** 全局快捷键（兼容 PS/2 与 USB HID 键盘），随时呼出或聚焦任务管理器（`taskmgr.pxe`）。
-- 任务管理器（`taskmgr.pxe`）支持终止 `idle`（`PID 0`）与 `kwm_compositor` 等系统核心进程（与 Windows XP 一致，终止前弹出风险警告弹窗，确认终止 `idle` 后触发 `STOP: 0x000000F4 CRITICAL_OBJECT_TERMINATION` 蓝屏停机）。
-- `nvg7x`（v1.2.0）新增对 **NVIDIA GeForce GTX 1060 3GB (`10DE:1C02`, GP106-300-A1, Subvendor `Colorful` `7377:0000`, 3072 MB GDDR5 192-bit)** 及 GP106 Pascal 显卡的驱动支持，兼容传统 Legacy BIOS (VBE) 与 UEFI (GOP) 双引导环境，自动识别 NVDisplay 架构与 3072 MB 显存，且完全不影响现有 G72/G73、ATI Mach64 与 VMware SVGA 驱动。
-
-### 3. 全栈 USB 架构与现代芯片组兼容
-- **全速域硬件支持**：覆盖 USB 1.1 (UHCI/OHCI)、USB 2.0 (EHCI)、USB 3.0 (xHCI)。
-- **现代芯片组与实体机适配**：针对 Intel 600 系列（如铭瑄 H610M-D）等现代主板实施根集线器端口强制复位（PR），将 BIOS 已使能端口强拉回默认地址 0 态，彻底解决进系统后 USB 鼠标无法移动的难题；屏蔽旧版芯片组路由寄存器误写，并引入端口退避重试。
-- **USB 集线器（Hub）规范化使能**：严格复位完成检测，显式验证 `HUB_PORT_ENABLE`（位 1）状态，杜绝复位失败场景下的假使能与总线阻塞。详情参阅 [`docs/USB.md`](docs/USB.md)。
-- **容灾机制**：保留最稳定可靠的 PS/2 键鼠硬件兜底。
-
-### 4. 统一 64 位音频引擎与抗卡顿流调度
+### 6. 统一 64 位音频引擎与抗卡顿流调度
 - **多硬件驱动支持（`PDV_CLASS_AUDIO`）**：原生 `.pdv` 驱动支持 Intel High Definition Audio (HDAudio Azalia)、AC'97 2.3、Ensoniq AudioPCI / Creative Sound Blaster PCI (ES1371 / `ct4810`，支持 PCI IRQ 9 中断续传双半区 DMA)、C-Media CMI8738 及 PC Speaker；音频随播放进程退出或终止自动释放停止。
-- **多格式解码**：支持 WAV (PCM 8/16/24-bit 智能降采样)、FLAC 无损及 MP3 (基于 minimp3 引擎，强化 16 字节栈与内存对齐，彻底消除硬件 SSE `#GP` 异常)。
-- **抗卡顿与低延迟缓冲架构**：采用 256 KiB 大容量 PCM 环形缓冲队列、2 的幂次快速位掩码寻址、向量化批量 `memcpy` 内存传输、播放前预填充 2 个 DMA 半缓冲，以及在调度器空闲线程（Idle Loop）与屏幕刷新切片多点轮询，确保重度 UI 交互下音频平滑无卡顿。详情参阅 [`docs/AUDIO.md`](docs/AUDIO.md)。
+- **多格式解码与低延迟缓冲**：支持 WAV (PCM 8/16/24-bit 智能降采样)、FLAC 无损及 MP3 (minimp3 16 字节栈/内存对齐)；采用 256 KiB PCM 环形缓冲队列、预填充双 DMA 半缓冲及空闲循环多点轮询。详情参阅 [`docs/AUDIO.md`](docs/AUDIO.md)。
 
-### 5. 存储堆栈与用户数据安全防线
+### 7. 存储堆栈与用户数据安全防线
 - **未初始化磁盘保护机制**：面对全新或未分区的硬盘，内核严禁静默自动分区与格式化，通过窗口管理器交互式弹窗向用户请求显式授权，防止误抹除数据。
-- **多文件系统与路径导航**：全面支持 MBR/GPT、FAT12/16/32（长文件名）、exFAT、ISO9660/Joliet，修复文件管理器深层目录双击进出与路径解析。详情参阅 [`docs/STORAGE.md`](docs/STORAGE.md)。
-- **软盘与 ISA DMA**：内置 8237 通道 2 和 FDC 驱动，A:/B: 按物理软驱 0/1 映射，按 FAT12 BPB 识别实际容量；空驱不显示盘符，支持换盘、弹出和重新插入。
+- **多文件系统与软盘驱动**：全面支持 MBR/GPT、FAT12/16/32（UTF-8 VFAT 长文件名）、exFAT（UTF-16LE 长文件名）、ISO9660/Joliet（512/2048 字节扇区转换）与 8237 DMA 软盘驱动器（A:/B: 换盘与弹出检测）。详情参阅 [`docs/STORAGE.md`](docs/STORAGE.md)。
 
 ---
 
@@ -132,25 +77,25 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 
 ### 本地编译（Linux / Docker / WSL2）
 ```bash
-# 依赖工具：gcc, nasm, xorriso, mtools
+# 依赖工具：gcc, nasm, xorriso, mtools, python3
 make iso
 ```
 
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A270a.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A280b.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A270a.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A280b.iso -m 512M -serial stdio -boot d
 ```
 
-### P6 自动化测试套件
-`scripts/qemu_smoke_test.sh` 执行完整的桌面引导、多控制器热插拔与安装器全流程测试：
+### 自动化冒烟测试
+`scripts/qemu_smoke_test.sh` 执行桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A270a.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A280b.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
@@ -165,11 +110,12 @@ bash scripts/qemu_smoke_test.sh pixel-neko-os_26A270a.iso
 - [系统调用安全边界与特权隔离](docs/SECURITY.md)
 - [存储驱动模型与未初始化磁盘策略](docs/STORAGE.md)
 - [P6 离线安装器与独立引导](docs/P6_INSTALLER.md)
-- [26A270a 持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [持久化桌面、快捷方式与 Live 只读规则](docs/DESKTOP.md)
+- [ACPI S5 软关机说明](docs/ACPI_S5.md)
 
 ---
 
 ## 📜 许可证
 
 - **内核与用户态核心**：[MIT License](LICENSE)
-- **第三方开源组件与驱动清单**：详情参阅 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
+- **第三方开源组件、词库与驱动清单**：详情参阅 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
