@@ -20,6 +20,8 @@
 #define INPUT_CODE_PAGE_UP     0x1006
 #define INPUT_CODE_PAGE_DOWN   0x1007
 #define INPUT_CODE_DELETE      0x1008
+#define INPUT_CODE_F2          0x1009
+#define INPUT_CODE_F5          0x100A
 
 #define INPUT_MOUSE_LEFT      0x01
 #define INPUT_MOUSE_RIGHT     0x02

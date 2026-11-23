@@ -85,6 +85,7 @@ typedef struct {
     uint64_t       cdrom_extent_lba;
     void*          fat_handle;
     void*          exfat_handle;
+    void*          proc_buf;
     unsigned int   cached_sec_lba;
     int            has_cached_sec;
     unsigned char  sec_cache[2048];

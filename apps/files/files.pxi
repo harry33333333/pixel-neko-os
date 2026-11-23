@@ -8,9 +8,9 @@ subsystem      = GUI
 flags          = SINGLE_INST | RESIZABLE
 stack_size     = 64K
 heap_init_size = 256K
-def_w          = 500
-def_h          = 340
-min_w          = 380
+def_w          = 540
+def_h          = 350
+min_w          = 420
 min_h          = 220
 
 [icon]

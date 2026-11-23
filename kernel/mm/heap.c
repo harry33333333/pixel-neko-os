@@ -140,3 +140,17 @@ void kfree(void* ptr) {
         }
     }
 }
+
+void kheap_get_stats(size_t* total_bytes, size_t* used_bytes, size_t* free_bytes) {
+    size_t tot = 0, used = 0, fre = 0;
+    heap_block_t* curr = g_heap_start;
+    while (curr && curr->magic == HEAP_MAGIC) {
+        tot += sizeof(heap_block_t) + curr->size;
+        if (curr->is_free) fre += curr->size;
+        else used += curr->size;
+        curr = curr->next;
+    }
+    if (total_bytes) *total_bytes = tot;
+    if (used_bytes) *used_bytes = used;
+    if (free_bytes) *free_bytes = fre;
+}

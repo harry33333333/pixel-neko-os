@@ -16,6 +16,7 @@ void pxe_draw_vline(const pxe_win_surface_t* surf, int x, int y, int h, uint32_t
 
 /* Classic 8x16 and 5x7 Pixel Neko bitmap font rendering (with UTF-8 / CJK support) */
 void pxe_draw_char(const pxe_win_surface_t* surf, int x, int y, char c, uint32_t fg);
+void pxe_draw_codepoint(const pxe_win_surface_t* surf, int x, int y, uint32_t cp, uint32_t fg);
 void pxe_draw_text(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg);
 void pxe_draw_text_small(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg);
 int  pxe_text_width(const char* text);

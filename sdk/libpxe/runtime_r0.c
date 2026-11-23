@@ -84,6 +84,43 @@ int pxe_system_reboot(void) {
                                    (const char*)0) : -1;
 }
 
+int pxe_system_shutdown(void) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SYSTEM_SHUTDOWN, 0, 0,
+                                   (const char*)0) : -1;
+}
+
+int pxe_kill_pid(uint32_t pid) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_KILL_PID, (int)pid, 0,
+                                   (const char*)0) : -1;
+}
+
+int pxe_beep_tone(int freq_hz, int duration_ms) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_BEEP_TONE, freq_hz, duration_ms,
+                                   (const char*)0) : -1;
+}
+
+int pxe_desktop_shell_ctl(int op) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_DESKTOP_SHELL, op, 0,
+                                   (const char*)0) : -1;
+}
+
+int pxe_ime_set_cursor_pos(int client_x, int client_y) {
+    int xy = (client_x & 0xFFFF) | ((client_y & 0xFFFF) << 16);
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_SET_IME_POS, xy, 0,
+                                   (const char*)0) : -1;
+}
+
+int pxe_notify_desktop(void) {
+    return (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_NOTIFY_DESKTOP, 0, 0,
+                                   (const char*)0) : -1;
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_PATTERN, pattern, 0, (const char*)0) : -1;

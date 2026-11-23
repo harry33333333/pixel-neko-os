@@ -3,11 +3,14 @@
 #include "apic.h"
 #include "ata.h"
 #include "cdda_dec.h"
+#include "desktop.h"
 #include "exfat.h"
 #include "fat.h"
+#include "heap.h"
 #include "iso9660.h"
 #include "limine.h"
 #include "log.h"
+#include "procfs.h"
 #include "settings.h"
 #include "string.h"
 #include "usb_storage.h"
@@ -27,7 +30,8 @@ typedef enum {
     VFS_FS_FAT,
     VFS_FS_EXFAT,
     VFS_FS_ISO,
-    VFS_FS_CDDA
+    VFS_FS_CDDA,
+    VFS_FS_PROC
 } vfs_filesystem_kind_t;
 
 static vfs_filesystem_kind_t g_filesystem_kind[26];
@@ -877,6 +881,10 @@ static void iso_list_entry(const iso_file_info_t* info) {
 
 int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
     if (!path) return VFS_ERR_NOT_FOUND;
+    char proc_rel[64];
+    if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
+        return procfs_list_dir(proc_rel, callback);
+    }
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive) return VFS_ERR_NO_DRIVE;
     if (!drive->is_supported) return VFS_ERR_UNSUPPORTED;
@@ -924,6 +932,10 @@ int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
 
 int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
     if (!path || !out_entry) return VFS_ERR_NOT_FOUND;
+    char proc_rel[64];
+    if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
+        return procfs_find_file(proc_rel, out_entry);
+    }
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     memset(out_entry, 0, sizeof(*out_entry));
@@ -983,6 +995,16 @@ int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
 int vfs_read_file(const char* path, unsigned char* buffer,
                   unsigned int max_size) {
     if (!path || !buffer) return VFS_ERR_NOT_FOUND;
+    char proc_rel[64];
+    if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
+        size_t plen = 0;
+        char* pbuf = procfs_generate_node(proc_rel, &plen);
+        if (!pbuf) return VFS_ERR_NOT_FOUND;
+        unsigned int copy_n = (plen > (size_t)max_size) ? max_size : (unsigned int)plen;
+        if (copy_n > 0) memcpy(buffer, pbuf, copy_n);
+        kfree(pbuf);
+        return (int)copy_n;
+    }
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     switch (g_filesystem_kind[drive->letter - 'A']) {
@@ -1034,15 +1056,15 @@ int vfs_write_file(const char* path, const unsigned char* buffer,
     if (drive->is_readonly) return VFS_ERR_READONLY;
     if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
     if (log_disk_is_protected_path(path, false)) return VFS_ERR_PROTECTED;
+    int res = VFS_ERR_READONLY;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
-        return fat_write_file(path, buffer, size) == 0 ? VFS_OK : VFS_ERR_IO;
+        res = fat_write_file(path, buffer, size) == 0 ? VFS_OK : VFS_ERR_IO;
+    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        res = exfat_write_file(&g_exfat_filesystems[drive->letter - 'A'],
+                               path, buffer, size) == 0 ? VFS_OK : VFS_ERR_IO;
     }
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
-        return exfat_write_file(&g_exfat_filesystems[drive->letter - 'A'],
-                                path, buffer, size) == 0 ? VFS_OK :
-               VFS_ERR_IO;
-    }
-    return VFS_ERR_READONLY;
+    if (res == VFS_OK) desktop_notify_path_changed(path);
+    return res;
 }
 
 int vfs_mkdir(const char* path) {
@@ -1051,15 +1073,16 @@ int vfs_mkdir(const char* path) {
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
     if (drive->is_readonly) return VFS_ERR_READONLY;
     if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
+    int res = VFS_ERR_UNSUPPORTED;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
-        return fat_create_dir(path) == 0 ? VFS_OK : VFS_ERR_IO;
+        res = fat_create_dir(path) == 0 ? VFS_OK : VFS_ERR_IO;
+    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        res = exfat_mkdir(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
+                  ? VFS_OK
+                  : VFS_ERR_IO;
     }
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
-        return exfat_mkdir(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
-                   ? VFS_OK
-                   : VFS_ERR_IO;
-    }
-    return VFS_ERR_UNSUPPORTED;
+    if (res == VFS_OK) desktop_notify_path_changed(path);
+    return res;
 }
 
 int vfs_unlink(const char* path) {
@@ -1069,15 +1092,16 @@ int vfs_unlink(const char* path) {
     if (drive->is_readonly) return VFS_ERR_READONLY;
     if (vfs_live_desktop_locked(path)) return VFS_ERR_READONLY;
     if (vfs_path_is_protected(path)) return VFS_ERR_PROTECTED;
+    int res = VFS_ERR_UNSUPPORTED;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
-        return fat_delete(path) == 0 ? VFS_OK : VFS_ERR_IO;
+        res = fat_delete(path) == 0 ? VFS_OK : VFS_ERR_IO;
+    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        res = exfat_unlink(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
+                  ? VFS_OK
+                  : VFS_ERR_IO;
     }
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
-        return exfat_unlink(&g_exfat_filesystems[drive->letter - 'A'], path) == 0
-                   ? VFS_OK
-                   : VFS_ERR_IO;
-    }
-    return VFS_ERR_UNSUPPORTED;
+    if (res == VFS_OK) desktop_notify_path_changed(path);
+    return res;
 }
 
 int vfs_rename(const char* old_path, const char* new_path) {
@@ -1093,16 +1117,20 @@ int vfs_rename(const char* old_path, const char* new_path) {
         vfs_path_is_protected(new_path)) {
         return VFS_ERR_PROTECTED;
     }
+    int res = VFS_ERR_UNSUPPORTED;
     if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_FAT) {
-        return fat_rename(old_path, new_path) == 0 ? VFS_OK : VFS_ERR_IO;
+        res = fat_rename(old_path, new_path) == 0 ? VFS_OK : VFS_ERR_IO;
+    } else if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
+        res = exfat_rename(&g_exfat_filesystems[drive->letter - 'A'],
+                           old_path, new_path) == 0
+                  ? VFS_OK
+                  : VFS_ERR_IO;
     }
-    if (g_filesystem_kind[drive->letter - 'A'] == VFS_FS_EXFAT) {
-        return exfat_rename(&g_exfat_filesystems[drive->letter - 'A'],
-                            old_path, new_path) == 0
-                   ? VFS_OK
-                   : VFS_ERR_IO;
+    if (res == VFS_OK) {
+        desktop_notify_path_changed(old_path);
+        desktop_notify_path_changed(new_path);
     }
-    return VFS_ERR_UNSUPPORTED;
+    return res;
 }
 
 static int remove_legacy_system_file(const char* path) {
@@ -1201,6 +1229,17 @@ int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     if (!path || !stream) return -1;
     memset(stream, 0, sizeof(*stream));
     copy_text(stream->path, sizeof(stream->path), path);
+    char proc_rel[64];
+    if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
+        size_t plen = 0;
+        char* pbuf = procfs_generate_node(proc_rel, &plen);
+        if (!pbuf) return -1;
+        stream->size = plen;
+        stream->fs_kind = VFS_FS_PROC;
+        stream->proc_buf = pbuf;
+        stream->is_open = 1;
+        return 0;
+    }
     vfs_dirent_t entry;
     if (vfs_find_file(path, &entry) != 0 || entry.is_dir) return -1;
     stream->size = entry.size;
@@ -1261,6 +1300,12 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
     if (stream->current_offset >= stream->size) return 0;
     uint64_t remaining = stream->size - stream->current_offset;
     if (size > remaining) size = (unsigned int)remaining;
+    if (stream->fs_kind == VFS_FS_PROC && stream->proc_buf) {
+        memcpy(buffer, (const uint8_t*)stream->proc_buf + stream->current_offset,
+               size);
+        stream->current_offset += size;
+        return (int)size;
+    }
     vfs_drive_t* drive = vfs_get_drive(stream->path[0]);
     if (!drive) return -1;
     int result = -1;
@@ -1347,6 +1392,10 @@ void vfs_stream_close(vfs_stream_t* stream) {
     if (stream->exfat_handle) {
         exfat_close((exfat_handle_t*)stream->exfat_handle);
         stream->exfat_handle = NULL;
+    }
+    if (stream->proc_buf) {
+        kfree(stream->proc_buf);
+        stream->proc_buf = NULL;
     }
     stream->is_open = 0;
 }

@@ -42,6 +42,8 @@
 #define PXE_KEY_PGUP         0x106
 #define PXE_KEY_PGDN         0x107
 #define PXE_KEY_DELETE       0x108
+#define PXE_KEY_F2           0x109
+#define PXE_KEY_F5           0x10A
 #define PXE_KEY_UTF8         0x1020
 
 /* UI language IDs (pxe_basic_sysinfo_t.ui_lang) */
@@ -91,7 +93,7 @@ typedef struct {
     uint32_t modifiers;  /* PXE_MOD_* mask */
     int32_t  arg0;       /* Menu index; wheel delta for PXE_EV_MOUSE_WHEEL */
     int32_t  arg1;       /* Menu item index for PXE_EV_MENU */
-    char     text[64];   /* Optional payload (e.g. argv[1] on PXE_EV_ACTIVATE) */
+    char     text[256];  /* Optional payload (e.g. argv[1] on PXE_EV_ACTIVATE) */
 } pxe_event_t;
 
 typedef struct {
@@ -258,6 +260,12 @@ typedef struct {
 #define PXE_CFG_RESTORE_DEFAULT    10
 #define PXE_CFG_SYSTEM_REBOOT      11
 #define PXE_CFG_SET_LANG           12
+#define PXE_CFG_SYSTEM_SHUTDOWN    13
+#define PXE_CFG_KILL_PID           14
+#define PXE_CFG_BEEP_TONE          15
+#define PXE_CFG_DESKTOP_SHELL      16
+#define PXE_CFG_SET_IME_POS        17
+#define PXE_CFG_NOTIFY_DESKTOP     18
 
 /* Filesystem directory & drive structures */
 typedef struct {

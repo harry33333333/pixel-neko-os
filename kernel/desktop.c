@@ -137,6 +137,8 @@ static const desktop_default_t g_defaults[] = {
       DESKTOP_TARGET_APP, false },
     { "Image Viewer.pnk", "Image Viewer", "\\APPS\\viewer.pxe",
       DESKTOP_TARGET_APP, false },
+    { "Command Prompt.pnk", "Command Prompt", "\\APPS\\cmd.pxe",
+      DESKTOP_TARGET_APP, false },
     { "GAME.pnk", "GAME", "\\GAME", DESKTOP_TARGET_FOLDER, false }
 };
 
@@ -150,6 +152,7 @@ static char g_game_dir[40];
 static char g_layout_path[64];
 static bool g_mutable;
 static bool g_initialized;
+static volatile bool g_shell_active = true;
 static volatile bool g_refresh_requested;
 
 static char lower_ascii(char value) {
@@ -717,6 +720,7 @@ void desktop_refresh(void) {
             else if (text_equal_ci(item->display_name, "Notepad")) copy_text(item->display_name, sizeof(item->display_name), "记事本");
             else if (text_equal_ci(item->display_name, "Media Player")) copy_text(item->display_name, sizeof(item->display_name), "媒体播放器");
             else if (text_equal_ci(item->display_name, "Image Viewer")) copy_text(item->display_name, sizeof(item->display_name), "图片查看器");
+            else if (text_equal_ci(item->display_name, "Command Prompt")) copy_text(item->display_name, sizeof(item->display_name), "命令提示符");
             else if (text_equal_ci(item->display_name, "GAME")) copy_text(item->display_name, sizeof(item->display_name), "游戏");
         }
         desktop_item_t* previous = old_item(item->name);
@@ -773,8 +777,25 @@ void desktop_refresh(void) {
     if (layout_changed && g_mutable) save_layout();
 }
 
+bool desktop_shell_is_active(void) {
+    return g_shell_active;
+}
+
+void desktop_shell_set_active(bool active) {
+    if (ui_install_mode_requested()) {
+        g_shell_active = false;
+        return;
+    }
+    if (g_shell_active == active) return;
+    g_shell_active = active;
+    if (active && g_initialized) {
+        g_refresh_requested = true;
+    }
+    wm_request_desktop_redraw();
+}
+
 bool desktop_poll(void) {
-    if (!g_initialized || !g_refresh_requested) return false;
+    if (!g_initialized || !g_shell_active || !g_refresh_requested) return false;
     g_refresh_requested = false;
     desktop_refresh();
     return true;
@@ -911,6 +932,139 @@ static bool launch_files_for(const char* path) {
     return pxe_launch_builtin_app("files.pxe", path, false) >= 0;
 }
 
+static bool lookup_assoc_in_ini(const char* ini, int len, const char* ext,
+                                char* app_out, size_t app_cap) {
+    int pos = 0;
+    while (pos < len) {
+        while (pos < len && (ini[pos] == '\r' || ini[pos] == '\n' ||
+                             ini[pos] == ' ' || ini[pos] == '\t')) {
+            pos++;
+        }
+        int line_start = pos;
+        while (pos < len && ini[pos] != '\r' && ini[pos] != '\n') pos++;
+        int line_end = pos;
+        if (line_end <= line_start) continue;
+        if (ini[line_start] == '#' || ini[line_start] == ';' ||
+            ini[line_start] == '[') {
+            continue;
+        }
+        int eq = -1;
+        for (int i = line_start; i < line_end; i++) {
+            if (ini[i] == '=') { eq = i; break; }
+        }
+        if (eq <= line_start || eq + 1 >= line_end) continue;
+        int k_end = eq;
+        while (k_end > line_start &&
+               (ini[k_end - 1] == ' ' || ini[k_end - 1] == '\t')) {
+            k_end--;
+        }
+        char key[32];
+        size_t kl = (size_t)(k_end - line_start);
+        if (kl >= sizeof(key)) kl = sizeof(key) - 1;
+        memcpy(key, ini + line_start, kl);
+        key[kl] = '\0';
+        if (!text_equal_ci(key, ext)) continue;
+
+        int v_start = eq + 1;
+        while (v_start < line_end &&
+               (ini[v_start] == ' ' || ini[v_start] == '\t')) {
+            v_start++;
+        }
+        int v_end = line_end;
+        while (v_end > v_start &&
+               (ini[v_end - 1] == ' ' || ini[v_end - 1] == '\t')) {
+            v_end--;
+        }
+        if (v_end <= v_start) return false;
+        size_t vl = (size_t)(v_end - v_start);
+        if (vl >= app_cap) vl = app_cap - 1;
+        memcpy(app_out, ini + v_start, vl);
+        app_out[vl] = '\0';
+        return app_out[0] != '\0';
+    }
+    return false;
+}
+
+static bool launch_associated_file(const char* path) {
+    if (!path || !path[0]) return false;
+    const char* name = strrchr(path, '\\');
+    const char* slash = strrchr(path, '/');
+    if (slash && (!name || slash > name)) name = slash;
+    name = name ? name + 1 : path;
+    const char* dot = strrchr(name, '.');
+    if (!dot || !dot[1]) return launch_files_for(path);
+
+    const char* ext = dot + 1;
+    if (text_equal_ci(ext, "pxe")) {
+        return launch_system_app_path(path);
+    }
+
+    char drives[26];
+    int dn = 0;
+    char sdrv = settings_get_system_drive();
+    if (sdrv) drives[dn++] = sdrv;
+    char ldrv = find_local_drive();
+    if (ldrv) {
+        bool dup = false;
+        for (int i = 0; i < dn; i++) if (drives[i] == ldrv) dup = true;
+        if (!dup) drives[dn++] = ldrv;
+    }
+    char live_drv = find_live_drive();
+    if (live_drv) {
+        bool dup = false;
+        for (int i = 0; i < dn; i++) if (drives[i] == live_drv) dup = true;
+        if (!dup) drives[dn++] = live_drv;
+    }
+    for (char d = 'C'; d <= 'Z' && dn < 26; d++) {
+        bool dup = false;
+        for (int i = 0; i < dn; i++) if (drives[i] == d) dup = true;
+        if (!dup) drives[dn++] = d;
+    }
+
+    char* ini_buf = (char*)kmalloc(2048);
+    if (ini_buf) {
+        for (int i = 0; i < dn; i++) {
+            char ini_path[48];
+            make_drive_path(ini_path, sizeof(ini_path), drives[i],
+                            "\\system\\assoc.ini");
+            int n = vfs_read_file(ini_path, (unsigned char*)ini_buf, 2047);
+            if (n > 0) {
+                ini_buf[n] = '\0';
+                char app_name[64] = { 0 };
+                if (lookup_assoc_in_ini(ini_buf, n, ext, app_name,
+                                        sizeof(app_name))) {
+                    kfree(ini_buf);
+                    return pxe_launch_builtin_app(app_name, path, false) >= 0;
+                }
+            }
+        }
+        kfree(ini_buf);
+    }
+
+    const char* fallback = NULL;
+    if (text_equal_ci(ext, "pat")) {
+        fallback = "cmd.pxe";
+    } else if (text_equal_ci(ext, "txt") || text_equal_ci(ext, "log") ||
+               text_equal_ci(ext, "ini") || text_equal_ci(ext, "conf") ||
+               text_equal_ci(ext, "cfg") || text_equal_ci(ext, "md") ||
+               text_equal_ci(ext, "pxi") || text_equal_ci(ext, "c") ||
+               text_equal_ci(ext, "h")) {
+        fallback = "notepad.pxe";
+    } else if (text_equal_ci(ext, "bmp") || text_equal_ci(ext, "png") ||
+               text_equal_ci(ext, "jpg") || text_equal_ci(ext, "jpeg") ||
+               text_equal_ci(ext, "tga")) {
+        fallback = "viewer.pxe";
+    } else if (text_equal_ci(ext, "wav") || text_equal_ci(ext, "mp3") ||
+               text_equal_ci(ext, "flac") || text_equal_ci(ext, "cda")) {
+        fallback = "player.pxe";
+    }
+
+    if (fallback) {
+        return pxe_launch_builtin_app(fallback, path, false) >= 0;
+    }
+    return launch_files_for(path);
+}
+
 void desktop_open_item(int index) {
     desktop_item_t* item = desktop_get(index);
     if (!item) return;
@@ -924,14 +1078,14 @@ void desktop_open_item(int index) {
         } else if (ends_with_ci(item->target, ".pxe")) {
             (void)launch_system_app_path(item->target);
         } else {
-            (void)launch_files_for(item->target);
+            (void)launch_associated_file(item->target);
         }
         return;
     }
     if (ends_with_ci(item->path, ".pxe")) {
         (void)launch_system_app_path(item->path);
     } else {
-        (void)launch_files_for(item->path);
+        (void)launch_associated_file(item->path);
     }
 }
 
@@ -1019,6 +1173,346 @@ int desktop_create_folder(char* error, size_t error_capacity) {
             snprintf(error, error_capacity, "Could not create a folder.");
         }
         return created;
+    }
+    desktop_refresh();
+    save_layout();
+    return VFS_OK;
+}
+
+const char* desktop_get_dir_path(void) {
+    return g_desktop_dir;
+}
+
+int desktop_rename_item(int index, const char* new_name, char* error,
+                        size_t error_capacity) {
+    if (!g_mutable) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Desktop is read-only in Live mode.");
+        }
+        return VFS_ERR_READONLY;
+    }
+    desktop_item_t* item = desktop_get(index);
+    if (!item || !new_name || !new_name[0]) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Invalid item name.");
+        }
+        return VFS_ERR_INVAL;
+    }
+    if (item->locked || vfs_path_is_protected(item->path)) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Protected desktop item cannot be renamed.");
+        }
+        return VFS_ERR_ACCESS;
+    }
+    for (const char* p = new_name; *p; p++) {
+        if (*p == '\\' || *p == '/' || *p == ':') {
+            if (error && error_capacity) {
+                snprintf(error, error_capacity, "Name cannot contain path separators.");
+            }
+            return VFS_ERR_INVAL;
+        }
+    }
+
+    char final_name[128];
+    copy_text(final_name, sizeof(final_name), new_name);
+    if (item->kind == DESKTOP_ITEM_SHORTCUT && !ends_with_ci(final_name, ".pnk")) {
+        size_t len = strlen(final_name);
+        if (len + 4 < sizeof(final_name)) {
+            copy_text(final_name + len, sizeof(final_name) - len, ".pnk");
+        }
+    }
+    if (strcmp(final_name, item->name) == 0) return VFS_OK;
+
+    char new_path[256];
+    join_path(new_path, sizeof(new_path), g_desktop_dir, final_name);
+    if (!text_equal_ci(final_name, item->name) && path_exists_assume(new_path)) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Target name already exists.");
+        }
+        return VFS_ERR_EXIST;
+    }
+
+    char old_name[128];
+    copy_text(old_name, sizeof(old_name), item->name);
+    int rc = vfs_rename(item->path, new_path);
+    if (rc != VFS_OK) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Could not rename item.");
+        }
+        return rc;
+    }
+
+    for (int i = 0; i < g_layout_count; i++) {
+        if (text_equal_ci(g_layout[i].name, old_name)) {
+            copy_text(g_layout[i].name, sizeof(g_layout[i].name), final_name);
+            break;
+        }
+    }
+    desktop_refresh();
+    save_layout();
+    return VFS_OK;
+}
+
+int desktop_create_text_file(char* error, size_t error_capacity) {
+    if (!g_mutable) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Desktop is read-only in Live mode.");
+        }
+        return VFS_ERR_READONLY;
+    }
+    char path[256];
+    char name[64];
+    int created = VFS_ERR_EXIST;
+    for (int suffix = 0; suffix < 32; suffix++) {
+        if (suffix == 0) {
+            copy_text(name, sizeof(name), "New Text.txt");
+        } else {
+            snprintf(name, sizeof(name), "New Text %d.txt", suffix + 1);
+        }
+        join_path(path, sizeof(path), g_desktop_dir, name);
+        if (path_exists_assume(path)) continue;
+        created = vfs_write_file(path, (const unsigned char*)"", 0);
+        break;
+    }
+    if (created != VFS_OK) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Could not create text file.");
+        }
+        return created;
+    }
+    desktop_refresh();
+    save_layout();
+    return VFS_OK;
+}
+
+int desktop_clipboard_copy_cut(int index, bool is_cut) {
+    desktop_item_t* item = desktop_get(index);
+    if (!item) return VFS_ERR_INVAL;
+    if (is_cut && (!g_mutable || item->locked ||
+                   vfs_path_is_protected(item->path))) {
+        return VFS_ERR_ACCESS;
+    }
+    char buf[320];
+    snprintf(buf, sizeof(buf), "%s%s",
+             is_cut ? "@PXEFM:CUT|" : "@PXEFM:COPY|", item->path);
+    return pxe_kern_clipboard_op(1, buf, strlen(buf) + 1);
+}
+
+bool desktop_clipboard_can_paste(void) {
+    char buf[320];
+    memset(buf, 0, sizeof(buf));
+    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) != 0 || !buf[0]) {
+        return false;
+    }
+    return strncmp(buf, "@PXEFM:COPY|", 12) == 0 ||
+           strncmp(buf, "@PXEFM:CUT|", 11) == 0;
+}
+
+typedef struct {
+    int count;
+    char names[64][128];
+    bool dirs[64];
+} desk_copy_list_t;
+
+static desk_copy_list_t* g_desk_copy_scan = NULL;
+
+static void desk_copy_collect_cb(const vfs_dirent_t* entry) {
+    desk_copy_list_t* list = g_desk_copy_scan;
+    if (!list || !entry || !entry->name[0] || list->count >= 64) return;
+    if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
+        return;
+    }
+    copy_text(list->names[list->count], sizeof(list->names[list->count]),
+              entry->name);
+    list->dirs[list->count] = (entry->is_dir != 0);
+    list->count++;
+}
+
+static int desk_copy_file_vfs(const char* src, const char* dst) {
+    vfs_stream_t* in = (vfs_stream_t*)kmalloc(sizeof(vfs_stream_t));
+    vfs_stream_t* out = (vfs_stream_t*)kmalloc(sizeof(vfs_stream_t));
+    uint8_t* buf = (uint8_t*)kmalloc(4096);
+    if (!in || !out || !buf) {
+        if (in) kfree(in);
+        if (out) kfree(out);
+        if (buf) kfree(buf);
+        return VFS_ERR_NOMEM;
+    }
+    memset(in, 0, sizeof(*in));
+    memset(out, 0, sizeof(*out));
+    int rc = vfs_stream_open(src, in);
+    if (rc != VFS_OK) {
+        kfree(in); kfree(out); kfree(buf);
+        return rc;
+    }
+    rc = vfs_stream_create(dst, out);
+    if (rc != VFS_OK) {
+        vfs_stream_close(in);
+        kfree(in); kfree(out); kfree(buf);
+        return rc;
+    }
+    while (in->current_offset < in->size) {
+        int n = vfs_stream_read(in, buf, 4096);
+        if (n < 0) { rc = n; break; }
+        if (n == 0) break;
+        int w = vfs_stream_write(out, buf, (unsigned int)n);
+        if (w < n) { rc = VFS_ERR_IO; break; }
+    }
+    vfs_stream_close(out);
+    vfs_stream_close(in);
+    kfree(in);
+    kfree(out);
+    kfree(buf);
+    return rc;
+}
+
+static int desk_copy_dir_vfs(const char* src_dir, const char* dst_dir,
+                             int depth) {
+    if (depth > 16) return VFS_ERR_INVAL;
+    if (!path_exists_assume(dst_dir)) {
+        int mk = vfs_mkdir(dst_dir);
+        if (mk != VFS_OK && !path_exists_assume(dst_dir)) return mk;
+    }
+    desk_copy_list_t* list = (desk_copy_list_t*)kmalloc(sizeof(*list));
+    if (!list) return VFS_ERR_NOMEM;
+    memset(list, 0, sizeof(*list));
+    g_desk_copy_scan = list;
+    int rc = vfs_list_dir(src_dir, desk_copy_collect_cb);
+    g_desk_copy_scan = NULL;
+    if (rc != VFS_OK) {
+        kfree(list);
+        return rc;
+    }
+    for (int i = 0; i < list->count; i++) {
+        char csrc[256], cdst[256];
+        join_path(csrc, sizeof(csrc), src_dir, list->names[i]);
+        join_path(cdst, sizeof(cdst), dst_dir, list->names[i]);
+        if (list->dirs[i]) {
+            rc = desk_copy_dir_vfs(csrc, cdst, depth + 1);
+        } else {
+            rc = desk_copy_file_vfs(csrc, cdst);
+        }
+        if (rc != VFS_OK) break;
+    }
+    kfree(list);
+    return rc;
+}
+
+static int desk_unlink_recursive(const char* target, bool is_dir, int depth) {
+    if (depth > 16) return VFS_ERR_INVAL;
+    if (!is_dir) return vfs_unlink(target);
+    desk_copy_list_t* list = (desk_copy_list_t*)kmalloc(sizeof(*list));
+    if (!list) return VFS_ERR_NOMEM;
+    memset(list, 0, sizeof(*list));
+    g_desk_copy_scan = list;
+    int rc = vfs_list_dir(target, desk_copy_collect_cb);
+    g_desk_copy_scan = NULL;
+    if (rc == VFS_OK) {
+        for (int i = 0; i < list->count; i++) {
+            char child[256];
+            join_path(child, sizeof(child), target, list->names[i]);
+            (void)desk_unlink_recursive(child, list->dirs[i], depth + 1);
+        }
+    }
+    kfree(list);
+    return vfs_unlink(target);
+}
+
+int desktop_clipboard_paste(char* error, size_t error_capacity) {
+    if (!g_mutable) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Desktop is read-only in Live mode.");
+        }
+        return VFS_ERR_READONLY;
+    }
+    char buf[320];
+    memset(buf, 0, sizeof(buf));
+    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) != 0 || !buf[0]) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Clipboard is empty.");
+        }
+        return VFS_ERR_NOENT;
+    }
+    bool is_cut = false;
+    const char* src = NULL;
+    if (strncmp(buf, "@PXEFM:COPY|", 12) == 0) {
+        src = buf + 12;
+    } else if (strncmp(buf, "@PXEFM:CUT|", 11) == 0) {
+        is_cut = true;
+        src = buf + 11;
+    } else {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "No file on clipboard.");
+        }
+        return VFS_ERR_INVAL;
+    }
+    if (!src[0]) return VFS_ERR_INVAL;
+
+    vfs_dirent_t st;
+    memset(&st, 0, sizeof(st));
+    if (vfs_find_file(src, &st) != VFS_OK) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Source item not found.");
+        }
+        return VFS_ERR_NOENT;
+    }
+
+    const char* base = strrchr(src, '\\');
+    const char* slash = strrchr(src, '/');
+    if (slash && (!base || slash > base)) base = slash;
+    base = base ? base + 1 : src;
+
+    char dst[256];
+    join_path(dst, sizeof(dst), g_desktop_dir, base);
+    if (text_equal_ci(src, dst) && is_cut) {
+        char empty = 0;
+        pxe_kern_clipboard_op(1, &empty, 1);
+        return VFS_OK;
+    }
+    if (path_exists_assume(dst)) {
+        char stem[96], ext[32], alt[128];
+        copy_text(stem, sizeof(stem), base);
+        ext[0] = '\0';
+        if (!st.is_dir) {
+            char* dot = strrchr(stem, '.');
+            if (dot && dot != stem) {
+                copy_text(ext, sizeof(ext), dot);
+                *dot = '\0';
+            }
+        }
+        for (int n = 1; n <= 32; n++) {
+            if (n == 1) snprintf(alt, sizeof(alt), "%s_copy%s", stem, ext);
+            else snprintf(alt, sizeof(alt), "%s_copy%d%s", stem, n, ext);
+            join_path(dst, sizeof(dst), g_desktop_dir, alt);
+            if (!path_exists_assume(dst)) break;
+        }
+        if (path_exists_assume(dst)) {
+            if (error && error_capacity) {
+                snprintf(error, error_capacity, "Destination already exists.");
+            }
+            return VFS_ERR_EXIST;
+        }
+    }
+
+    int rc = VFS_OK;
+    if (is_cut && vfs_rename(src, dst) == VFS_OK) {
+        rc = VFS_OK;
+    } else {
+        rc = st.is_dir ? desk_copy_dir_vfs(src, dst, 0)
+                       : desk_copy_file_vfs(src, dst);
+        if (rc == VFS_OK && is_cut) {
+            (void)desk_unlink_recursive(src, st.is_dir != 0, 0);
+        }
+    }
+    if (rc != VFS_OK) {
+        if (error && error_capacity) {
+            snprintf(error, error_capacity, "Paste operation failed.");
+        }
+        return rc;
+    }
+    if (is_cut) {
+        char empty = 0;
+        pxe_kern_clipboard_op(1, &empty, 1);
     }
     desktop_refresh();
     save_layout();

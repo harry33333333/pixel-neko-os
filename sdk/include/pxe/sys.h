@@ -30,6 +30,12 @@ int      pxe_set_language(int lang);
 int      pxe_is_zh(void);
 int      pxe_settings_save(void);
 int      pxe_system_reboot(void);
+int      pxe_system_shutdown(void);
+int      pxe_kill_pid(uint32_t pid);
+int      pxe_beep_tone(int freq_hz, int duration_ms);
+int      pxe_desktop_shell_ctl(int op);
+int      pxe_ime_set_cursor_pos(int client_x, int client_y);
+int      pxe_notify_desktop(void);
 
 #endif /* _PXE_SYS_H */
 

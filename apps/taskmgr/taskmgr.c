@@ -40,6 +40,9 @@ typedef struct {
     int warn_modal;
     uint32_t warn_target_pid;
     char warn_target_name[32];
+    int new_task_modal;
+    char new_task_input[160];
+    int new_task_len;
     uint64_t last_click_ticks;
     int last_click_row;
     char status_msg[48];
@@ -237,18 +240,16 @@ static void compute_buttons(const pxe_win_surface_t* surf,
                             int* b2x, int* b2w,
                             int* b3x, int* b3w,
                             int* b4x, int* b4w,
+                            int* b5x, int* b5w,
                             int* by, int* bh) {
     (void)surf;
     *by = surf->height - 38;
     *bh = 24;
-    *b1x = 8;
-    *b1w = 72;
-    *b2x = 86;
-    *b2w = 84;
-    *b3x = 176;
-    *b3w = 80;
-    *b4x = 262;
-    *b4w = 72;
+    *b1x = 8;   *b1w = 56;
+    *b2x = 68;  *b2w = 72;
+    *b3x = 144; *b3w = 74;
+    *b4x = 222; *b4w = 56;
+    *b5x = 282; *b5w = 90;
 }
 
 static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_state_t* st) {
@@ -376,8 +377,8 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
                        th - HEADER_H - 1, st->scroll_offset, vis_rows, st->proc_count);
 
     /* Action buttons */
-    int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, by, bh;
-    compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &by, &bh);
+    int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, b5x, b5w, by, bh;
+    compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &b5x, &b5w, &by, &bh);
 
     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
     int can_focus = (sel && sel->window_count > 0);
@@ -392,9 +393,43 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     pxe_draw_button(surf, b4x, by, b4w, bh,
                     st->paused ? (st->zh ? "继续" : "Resume") : (st->zh ? "暂停" : "Pause"),
                     (st->press_btn == 4 && st->hover_btn == 4), 1);
+    pxe_draw_button(surf, b5x, by, b5w, bh, st->zh ? "新任务..." : "New Task...",
+                    (st->press_btn == 5 && st->hover_btn == 5), 1);
 
-    if (surf->width >= 480 && st->status_msg[0]) {
-        pxe_draw_text_small(surf, b4x + b4w + 10, by + 8, st->status_msg, PXE_COL_DARK_BLUE);
+    if (surf->width >= 500 && st->status_msg[0]) {
+        pxe_draw_text_small(surf, b5x + b5w + 8, by + 8, st->status_msg, PXE_COL_DARK_BLUE);
+    }
+
+    if (st->new_task_modal) {
+        int dw = 368, dh = 136;
+        int dx = (surf->width - dw) / 2;
+        int dy = (surf->height - dh) / 2;
+        if (dx < 4) dx = 4;
+        if (dy < 4) dy = 4;
+        pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
+        pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
+        pxe_draw_text(surf, dx + 8, dy + 3,
+                      st->zh ? "创建新任务" : "Create New Task", PXE_COL_WHITE);
+
+        pxe_draw_text_small(surf, dx + 14, dy + 28,
+                            st->zh ? "输入程序名或路径 (如 cmd, files, notepad):"
+                                   : "Type program name or path (e.g. cmd, files):",
+                            PXE_COL_BLACK);
+        pxe_draw_text_small(surf, dx + 14, dy + 42,
+                            st->zh ? "提示: 输入 file/files 可恢复桌面或打开文件管理器"
+                                   : "Tip: file/files restores Desktop Shell or opens Files",
+                            PXE_COL_DARK_GRAY);
+
+        int bx = dx + 14, by_in = dy + 58, bw = dw - 28, bh_in = 24;
+        pxe_draw_bevel_box(surf, bx, by_in, bw, bh_in, 1, PXE_COL_WHITE);
+        pxe_draw_text(surf, bx + 6, by_in + 4, st->new_task_input, PXE_COL_BLACK);
+        int cx = bx + 6 + pxe_text_width(st->new_task_input);
+        if (cx < bx + bw - 4) {
+            pxe_fill_rect(surf, cx, by_in + 4, 2, 16, PXE_COL_DARK_BLUE);
+        }
+
+        pxe_draw_button(surf, dx + 82,  dy + 98, 92, 24, st->zh ? "确定" : "OK", 0, 1);
+        pxe_draw_button(surf, dx + 194, dy + 98, 92, 24, st->zh ? "取消" : "Cancel", 0, 1);
     }
 
     if (st->warn_modal) {
@@ -544,13 +579,144 @@ static void set_sort_mode(taskmgr_state_t* st, int mode, const pxe_win_surface_t
              st->zh ? "排序: %s" : "Sort: %s", sort_label(mode, st->zh));
 }
 
+static int tm_resolve_app(const char* name, char* out, size_t cap) {
+    pxe_basic_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
+    pxe_sys_get_basic_info(&info);
+
+    char drives[26];
+    int dn = 0;
+    if (info.boot_mode == 2) {
+        if (info.system_drive) drives[dn++] = info.system_drive;
+        if (info.cdrom_drive && info.cdrom_drive != info.system_drive) drives[dn++] = info.cdrom_drive;
+    } else {
+        if (info.cdrom_drive) drives[dn++] = info.cdrom_drive;
+        if (info.system_drive && info.system_drive != info.cdrom_drive) drives[dn++] = info.system_drive;
+    }
+    pxe_drive_info_t all_d[24];
+    int adn = pxe_get_drives(all_d, 24);
+    for (int i = 0; i < adn; i++) {
+        if (all_d[i].present && all_d[i].mounted) {
+            int seen = 0;
+            for (int j = 0; j < dn; j++) {
+                if (drives[j] == all_d[i].letter) { seen = 1; break; }
+            }
+            if (!seen && dn < 26) drives[dn++] = all_d[i].letter;
+        }
+    }
+
+    char with_ext[96];
+    const char* dot = strrchr(name, '.');
+    if (dot) snprintf(with_ext, sizeof(with_ext), "%s", name);
+    else snprintf(with_ext, sizeof(with_ext), "%s.pxe", name);
+
+    pxe_dirent_t de;
+    for (int i = 0; i < dn; i++) {
+        snprintf(out, cap, "%c:\\APPS\\%s", drives[i], with_ext);
+        if (pxe_stat(out, &de) == 0 && !de.is_dir) return 0;
+        snprintf(out, cap, "%c:\\GAME\\%s", drives[i], with_ext);
+        if (pxe_stat(out, &de) == 0 && !de.is_dir) return 0;
+    }
+    return -1;
+}
+
+static void launch_new_task_cmd(taskmgr_state_t* st, const char* raw) {
+    char buf[160];
+    snprintf(buf, sizeof(buf), "%s", raw ? raw : "");
+    char* p = buf;
+    while (*p == ' ' || *p == '\t') p++;
+    size_t bl = strlen(p);
+    while (bl > 0 && (p[bl - 1] == ' ' || p[bl - 1] == '\t')) p[--bl] = '\0';
+    if (!p[0]) return;
+
+    /* Split command token and optional tail argument */
+    char cmd_tok[128];
+    char* rest = NULL;
+    if (p[0] == '"') {
+        p++;
+        size_t ci = 0;
+        while (*p && *p != '"' && ci + 1 < sizeof(cmd_tok)) cmd_tok[ci++] = *p++;
+        cmd_tok[ci] = '\0';
+        if (*p == '"') p++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p) rest = p;
+    } else {
+        size_t ci = 0;
+        while (*p && *p != ' ' && *p != '\t' && ci + 1 < sizeof(cmd_tok)) cmd_tok[ci++] = *p++;
+        cmd_tok[ci] = '\0';
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p) rest = p;
+    }
+
+    if (strcasecmp(cmd_tok, "file") == 0 || strcasecmp(cmd_tok, "files") == 0 ||
+        strcasecmp(cmd_tok, "file.pxe") == 0 || strcasecmp(cmd_tok, "files.pxe") == 0 ||
+        strcasecmp(cmd_tok, "explorer") == 0 || strcasecmp(cmd_tok, "explorer.exe") == 0) {
+        if (!pxe_desktop_shell_ctl(0)) {
+            pxe_desktop_shell_ctl(1);
+            strcpy(st->status_msg, st->zh ? "桌面已启动" : "Desktop Started");
+            return;
+        }
+        char fpath[128];
+        if (tm_resolve_app("files.pxe", fpath, sizeof(fpath)) == 0) {
+            const char* argv[2] = { fpath, rest };
+            if (pxe_spawn(fpath, rest ? 2 : 1, argv) >= 0) {
+                strcpy(st->status_msg, st->zh ? "已打开文件管理器" : "File Manager Opened");
+                return;
+            }
+        }
+        strcpy(st->status_msg, st->zh ? "启动文件管理器失败" : "Launch files failed");
+        pxe_beep();
+        return;
+    }
+
+    const char* mapped = cmd_tok;
+    if (strcasecmp(cmd_tok, "terminal") == 0 || strcasecmp(cmd_tok, "cmd.exe") == 0) mapped = "cmd.pxe";
+    else if (strcasecmp(cmd_tok, "control") == 0) mapped = "cpanel.pxe";
+
+    /* If ends with .pat, launch cmd.pxe /c <target> */
+    const char* dot = strrchr(mapped, '.');
+    if (dot && strcasecmp(dot, ".pat") == 0) {
+        char cpath[128];
+        if (tm_resolve_app("cmd.pxe", cpath, sizeof(cpath)) == 0) {
+            const char* argv[3] = { cpath, "/c", p };
+            if (pxe_spawn(cpath, 3, argv) >= 0) {
+                strcpy(st->status_msg, st->zh ? "已启动脚本" : "Script started");
+                return;
+            }
+        }
+    }
+
+    char target[160];
+    pxe_dirent_t de;
+    if (strchr(mapped, ':') || strchr(mapped, '\\') || strchr(mapped, '/')) {
+        snprintf(target, sizeof(target), "%s", mapped);
+        if (pxe_stat(target, &de) != 0 && !dot) {
+            snprintf(target, sizeof(target), "%s.pxe", mapped);
+        }
+    } else if (tm_resolve_app(mapped, target, sizeof(target)) != 0) {
+        strcpy(st->status_msg, st->zh ? "找不到程序" : "Program not found");
+        pxe_beep();
+        return;
+    }
+
+    const char* argv[2] = { target, rest };
+    if (pxe_spawn(target, rest ? 2 : 1, argv) >= 0) {
+        snprintf(st->status_msg, sizeof(st->status_msg),
+                 st->zh ? "已启动: %s" : "Started: %s", cmd_tok);
+    } else {
+        strcpy(st->status_msg, st->zh ? "启动失败" : "Launch failed");
+        pxe_beep();
+    }
+}
+
 static int hit_test_button(const pxe_win_surface_t* surf, int mx, int my) {
-    int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, by, bh;
-    compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &by, &bh);
+    int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, b5x, b5w, by, bh;
+    compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &b5x, &b5w, &by, &bh);
     if (pxe_point_in_rect(mx, my, b1x, by, b1w, bh)) return 1;
     if (pxe_point_in_rect(mx, my, b2x, by, b2w, bh)) return 2;
     if (pxe_point_in_rect(mx, my, b3x, by, b3w, bh)) return 3;
     if (pxe_point_in_rect(mx, my, b4x, by, b4w, bh)) return 4;
+    if (pxe_point_in_rect(mx, my, b5x, by, b5w, bh)) return 5;
     return 0;
 }
 
@@ -570,13 +736,15 @@ static void sync_taskmgr_menu(int win_id, int zh) {
     mb.menu_count = 2;
 
     strcpy(mb.menus[0].title, zh ? "任务" : "Task");
-    mb.menus[0].item_count = 3;
-    strcpy(mb.menus[0].items[0].label, zh ? "切换至" : "Switch To");
+    mb.menus[0].item_count = 4;
+    strcpy(mb.menus[0].items[0].label, zh ? "运行新任务..." : "New Task...");
     mb.menus[0].items[0].enabled = 1;
-    strcpy(mb.menus[0].items[1].label, zh ? "结束任务" : "End Task");
+    strcpy(mb.menus[0].items[1].label, zh ? "切换至" : "Switch To");
     mb.menus[0].items[1].enabled = 1;
-    strcpy(mb.menus[0].items[2].label, zh ? "退出" : "Exit");
+    strcpy(mb.menus[0].items[2].label, zh ? "结束任务" : "End Task");
     mb.menus[0].items[2].enabled = 1;
+    strcpy(mb.menus[0].items[3].label, zh ? "退出" : "Exit");
+    mb.menus[0].items[3].enabled = 1;
 
     strcpy(mb.menus[1].title, zh ? "视图" : "View");
     mb.menus[1].item_count = 6;
@@ -665,6 +833,23 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
+                if (st->new_task_modal) {
+                    int dw = 368, dh = 136;
+                    int dx = (surf.width - dw) / 2;
+                    int dy = (surf.height - dh) / 2;
+                    if (dx < 4) dx = 4;
+                    if (dy < 4) dy = 4;
+                    if (pxe_point_in_rect(ev.x, ev.y, dx + 82, dy + 98, 92, 24)) {
+                        st->new_task_modal = 0;
+                        launch_new_task_cmd(st, st->new_task_input);
+                        refresh_data(st, &surf);
+                    } else if (pxe_point_in_rect(ev.x, ev.y, dx + 194, dy + 98, 92, 24)) {
+                        st->new_task_modal = 0;
+                        strcpy(st->status_msg, st->zh ? "已取消" : "Cancelled");
+                    }
+                    dirty = 1;
+                    continue;
+                }
                 if (st->warn_modal) {
                     int dw = 360, dh = 132;
                     int dx = (surf.width - dw) / 2;
@@ -685,7 +870,7 @@ int main(int argc, char** argv) {
                 int hit = hit_test_button(&surf, ev.x, ev.y);
                 if (hit != 0) {
                     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
-                    int ok = (hit == 1 || hit == 4) ||
+                    int ok = (hit == 1 || hit == 4 || hit == 5) ||
                              (hit == 2 && sel && sel->window_count > 0) ||
                              (hit == 3 && is_proc_killable(st, sel));
                     if (ok) {
@@ -765,18 +950,27 @@ int main(int argc, char** argv) {
                         perform_kill(st, &surf);
                     } else if (act == 4) {
                         toggle_pause(st);
+                    } else if (act == 5) {
+                        st->new_task_modal = 1;
+                        st->new_task_input[0] = '\0';
+                        st->new_task_len = 0;
                     }
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_MENU) {
                 if (ev.arg0 == 0) {
                     if (ev.arg1 == 0) {
-                        perform_focus(st);
+                        st->new_task_modal = 1;
+                        st->new_task_input[0] = '\0';
+                        st->new_task_len = 0;
                         dirty = 1;
                     } else if (ev.arg1 == 1) {
-                        perform_kill(st, &surf);
+                        perform_focus(st);
                         dirty = 1;
                     } else if (ev.arg1 == 2) {
+                        perform_kill(st, &surf);
+                        dirty = 1;
+                    } else if (ev.arg1 == 3) {
                         running = 0;
                     }
                 } else if (ev.arg0 == 1) {
@@ -793,6 +987,52 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if (ev.type == PXE_EV_KEY_DOWN) {
+                if (st->new_task_modal) {
+                    if (ev.key == PXE_KEY_ENTER) {
+                        st->new_task_modal = 0;
+                        launch_new_task_cmd(st, st->new_task_input);
+                        refresh_data(st, &surf);
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_ESC) {
+                        st->new_task_modal = 0;
+                        strcpy(st->status_msg, st->zh ? "已取消" : "Cancelled");
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_BACKSPACE) {
+                        while (st->new_task_len > 0 &&
+                               ((uint8_t)st->new_task_input[st->new_task_len - 1] & 0xC0u) == 0x80u) {
+                            st->new_task_len--;
+                        }
+                        if (st->new_task_len > 0) st->new_task_len--;
+                        st->new_task_input[st->new_task_len] = '\0';
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        size_t tl = strlen(ev.text);
+                        if ((size_t)st->new_task_len + tl < sizeof(st->new_task_input)) {
+                            memcpy(st->new_task_input + st->new_task_len, ev.text, tl);
+                            st->new_task_len += (int)tl;
+                            st->new_task_input[st->new_task_len] = '\0';
+                            dirty = 1;
+                        }
+                    } else if ((ev.modifiers & PXE_MOD_CTRL) && (ev.key == 'v' || ev.key == 'V' || ev.key == 22)) {
+                        char cb[128];
+                        int n = pxe_clipboard_get(cb, sizeof(cb));
+                        if (n > 0) {
+                            for (int i = 0; i < n && (size_t)st->new_task_len + 1 < sizeof(st->new_task_input); i++) {
+                                if (cb[i] != '\r' && cb[i] != '\n') {
+                                    st->new_task_input[st->new_task_len++] = cb[i];
+                                }
+                            }
+                            st->new_task_input[st->new_task_len] = '\0';
+                            dirty = 1;
+                        }
+                    } else if (ev.key >= 32 && ev.key <= 126 &&
+                               st->new_task_len + 1 < (int)sizeof(st->new_task_input)) {
+                        st->new_task_input[st->new_task_len++] = (char)ev.key;
+                        st->new_task_input[st->new_task_len] = '\0';
+                        dirty = 1;
+                    }
+                    continue;
+                }
                 if (st->warn_modal) {
                     if (ev.key == PXE_KEY_ENTER || ev.key == 'y' || ev.key == 'Y') {
                         uint32_t pid = st->warn_target_pid;
@@ -853,6 +1093,11 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 } else if (ev.key == 's' || ev.key == 'S') {
                     set_sort_mode(st, (st->sort_mode + 1) % 4, &surf);
+                    dirty = 1;
+                } else if (ev.key == 'n' || ev.key == 'N') {
+                    st->new_task_modal = 1;
+                    st->new_task_input[0] = '\0';
+                    st->new_task_len = 0;
                     dirty = 1;
                 } else if (ev.key == PXE_KEY_ESC) {
                     running = 0;

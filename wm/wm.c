@@ -68,6 +68,7 @@ static int desktop_menu_item = -1;
 static int desktop_menu_x;
 static int desktop_menu_y;
 static void draw_desktop_context_menu(unsigned char* v);
+static void draw_desktop_rename_dialog(unsigned char* v);
 // Track previous click release for double-click timing (separate from visual selection)
 static int last_click_icon_prev = -1, last_click_time_prev = 0;
 
@@ -170,6 +171,10 @@ static char r0_confirm_path[128];
 static char r0_confirm_arg1[128];
 static int r0_confirm_has_arg1 = 0;
 
+static int g_ime_anchor_win = -1;
+static int g_ime_anchor_x = -1;
+static int g_ime_anchor_y = -1;
+
 static int z_order[WM_Z_COUNT] = {
     100, 101, 102, 103, 104, 105, 106, 107,
     108, 109, 110, 111, 112, 113, 114, 115,
@@ -218,6 +223,13 @@ static int alt_tab_active=0;
 static int alt_tab_win_ids[WM_DYN_MAX];
 static int alt_tab_count=0;
 static int alt_tab_sel=0;
+static int desktop_focused=0;
+static int desktop_rename_active=0;
+static int desktop_rename_idx=-1;
+static char desktop_rename_buf[128];
+static int desktop_rename_len=0;
+static int desktop_rename_ok_pressed=0;
+static int desktop_rename_cancel_pressed=0;
 
 static void icon(unsigned char* v, int x, int y, int desktop_index,
                  unsigned char bg, const char* lb, int sel, bool shortcut);
@@ -1688,7 +1700,7 @@ void wm_draw(unsigned char* v){
                 }
             }
         }
-        if (!ui_install_mode_requested()) {
+        if (!ui_install_mode_requested() && desktop_shell_is_active()) {
             int num_icons = desktop_count();
             for (int i = 0; i < num_icons; i++) {
                 desktop_item_t* item = desktop_get(i);
@@ -1700,7 +1712,9 @@ void wm_draw(unsigned char* v){
             }
         }
         draw_all(v);
-        draw_menubar(v);
+        if (desktop_shell_is_active()) {
+            draw_menubar(v);
+        }
         if (!uninit_dialog_checked && !ui_install_mode_requested()) {
             uninit_dialog_checked = 1;
             if (part_get_uninit_disk() != NULL) {
@@ -1711,19 +1725,34 @@ void wm_draw(unsigned char* v){
         if(r0_confirm_active)    { draw_r0_confirm_dialog(v); }
         if(crash_dialog_active)  { draw_crash_dialog(v); }
         if(power_confirm)        { draw_power_dialog(v); }
-        draw_desktop_context_menu(v);
+        if (desktop_shell_is_active()) {
+            draw_desktop_context_menu(v);
+        }
+        if (desktop_rename_active) {
+            draw_desktop_rename_dialog(v);
+        }
         if (alt_tab_active) {
             draw_alt_tab_switcher(v);
         }
         if (ime_has_composition()) {
             int ax = 16, ay = screen_h - 62;
-            int act = top_visible_win_id();
-            if (act >= WM_DYN_BASE && act < WM_DYN_BASE + WM_DYN_MAX &&
-                g_dyn_wins[act - WM_DYN_BASE].used) {
-                const wm_dyn_win_t* dw = &g_dyn_wins[act - WM_DYN_BASE];
-                ax = dw->x + 12;
-                ay = dw->y + dw->client_h + 22;
-                if (ay + 48 > screen_h) ay = dw->y + 24;
+            if (desktop_rename_active) {
+                ax = (screen_w - 300) / 2 + 16;
+                ay = (screen_h - 110) / 2 + 64;
+            } else {
+                int act = top_visible_win_id();
+                if (act >= WM_DYN_BASE && act < WM_DYN_BASE + WM_DYN_MAX &&
+                    g_dyn_wins[act - WM_DYN_BASE].used) {
+                    const wm_dyn_win_t* dw = &g_dyn_wins[act - WM_DYN_BASE];
+                    if (g_ime_anchor_win == act && g_ime_anchor_x >= 0 && g_ime_anchor_y >= 0) {
+                        ax = dw->x + 1 + g_ime_anchor_x;
+                        ay = dw->y + 19 + g_ime_anchor_y;
+                    } else {
+                        ax = dw->x + 12;
+                        ay = dw->y + dw->client_h + 22;
+                        if (ay + 48 > screen_h) ay = dw->y + 24;
+                    }
+                }
             }
             ime_draw_popup(v, ax, ay);
         }
@@ -1750,27 +1779,189 @@ static void open_icon_app(int clicked_icon) {
     need_mr = 1;
 }
 
+static void desktop_open_cmd_dir(const char* dir_path) {
+    const char* target = (dir_path && dir_path[0]) ? dir_path : desktop_get_dir_path();
+    desktop_focused = 0;
+    if (pxe_launch_builtin_app("cmd.pxe", target, false) < 0) {
+        wm_notify_banner(WM_TR("无法启动命令提示符", "Failed to start Command Prompt"));
+    }
+}
+
+static void desktop_begin_rename(int idx) {
+    if (!desktop_is_mutable()) {
+        wm_notify_banner(WM_TR("实时模式桌面为只读", "Live Desktop is read-only"));
+        return;
+    }
+    desktop_item_t* item = desktop_get(idx);
+    if (!item) return;
+    if (item->locked || vfs_path_is_protected(item->path)) {
+        wm_notify_banner(WM_TR("受保护的桌面项目无法重命名", "Protected desktop item cannot be renamed"));
+        return;
+    }
+    desktop_rename_active = 1;
+    desktop_rename_idx = idx;
+    desktop_rename_ok_pressed = 0;
+    desktop_rename_cancel_pressed = 0;
+    const char* src_name = (item->kind == DESKTOP_ITEM_SHORTCUT)
+                               ? item->display_name
+                               : item->name;
+    strncpy(desktop_rename_buf, src_name, sizeof(desktop_rename_buf) - 1);
+    desktop_rename_buf[sizeof(desktop_rename_buf) - 1] = '\0';
+    desktop_rename_len = (int)strlen(desktop_rename_buf);
+    redraw = 1;
+    need_mr = 1;
+}
+
+static void desktop_commit_rename(void) {
+    char error[96] = { 0 };
+    int rc = desktop_rename_item(desktop_rename_idx, desktop_rename_buf,
+                                 error, sizeof(error));
+    desktop_rename_active = 0;
+    desktop_rename_idx = -1;
+    desktop_rename_ok_pressed = 0;
+    desktop_rename_cancel_pressed = 0;
+    if (rc != VFS_OK) {
+        wm_notify_banner(error[0] ? error : WM_TR("重命名失败", "Rename failed"));
+    } else {
+        show_opened(WM_TR("已重命名项目", "Item Renamed"));
+    }
+    redraw = 1;
+    need_mr = 1;
+}
+
+static void draw_desktop_rename_dialog(unsigned char* v) {
+    if (!desktop_rename_active) return;
+    int dw = 300, dh = 112;
+    int dx = (screen_w - dw) / 2;
+    int dy = (screen_h - dh) / 2;
+    for (int y = dy + 2; y < dy + dh + 2 && y < screen_h; y++) {
+        for (int x = dx + 2; x < dx + dw + 2 && x < screen_w; x++) {
+            PUT_PIXEL(v, x, y, 0);
+        }
+    }
+    for (int y = dy; y < dy + dh; y++) {
+        for (int x = dx; x < dx + dw; x++) {
+            PUT_PIXEL(v, x, y, 7);
+        }
+    }
+    for (int x = dx; x < dx + dw; x++) {
+        PUT_PIXEL(v, x, dy, 0);
+        PUT_PIXEL(v, x, dy + dh - 1, 0);
+        if (x > dx && x < dx + dw - 1) {
+            PUT_PIXEL(v, x, dy + 1, 15);
+            PUT_PIXEL(v, x, dy + dh - 2, 8);
+        }
+    }
+    for (int y = dy; y < dy + dh; y++) {
+        PUT_PIXEL(v, dx, y, 0);
+        PUT_PIXEL(v, dx + dw - 1, y, 0);
+        if (y > dy && y < dy + dh - 1) {
+            PUT_PIXEL(v, dx + 1, y, 15);
+            PUT_PIXEL(v, dx + dw - 2, y, 8);
+        }
+    }
+    for (int y = dy + 2; y < dy + 20; y++) {
+        for (int x = dx + 2; x < dx + dw - 2; x++) {
+            PUT_PIXEL(v, x, y, 1);
+        }
+    }
+    font_draw_text(v, dx + 10, dy + 4,
+                   WM_TR("重命名桌面项目", "Rename Desktop Item"), 15);
+
+    int ix = dx + 14, iy = dy + 36, iw = dw - 28, ih = 22;
+    for (int y = iy; y < iy + ih; y++) {
+        for (int x = ix; x < ix + iw; x++) {
+            PUT_PIXEL(v, x, y, 15);
+        }
+    }
+    for (int x = ix; x < ix + iw; x++) {
+        PUT_PIXEL(v, x, iy, 0);
+        PUT_PIXEL(v, x, iy + ih - 1, 0);
+    }
+    for (int y = iy; y < iy + ih; y++) {
+        PUT_PIXEL(v, ix, y, 0);
+        PUT_PIXEL(v, ix + iw - 1, y, 0);
+    }
+    font_draw_text(v, ix + 5, iy + 4, desktop_rename_buf, 0);
+    int cur_x = ix + 5 + font_text_width(desktop_rename_buf);
+    if (cur_x < ix + iw - 4) {
+        for (int y = iy + 3; y < iy + ih - 3; y++) PUT_PIXEL(v, cur_x, y, 0);
+    }
+
+    int oby = dy + 74;
+    int cbx = dx + 46, obx = dx + 164;
+    for (int y = oby; y < oby + 22; y++) {
+        for (int x = cbx; x < cbx + 90; x++) {
+            PUT_PIXEL(v, x, y, desktop_rename_cancel_pressed ? 8 : 7);
+        }
+        for (int x = obx; x < obx + 90; x++) {
+            PUT_PIXEL(v, x, y, desktop_rename_ok_pressed ? 0 : 1);
+        }
+    }
+    for (int x = cbx; x < cbx + 90; x++) {
+        PUT_PIXEL(v, x, oby, desktop_rename_cancel_pressed ? 0 : 15);
+        PUT_PIXEL(v, x, oby + 21, desktop_rename_cancel_pressed ? 15 : 0);
+    }
+    for (int y = oby; y < oby + 22; y++) {
+        PUT_PIXEL(v, cbx, y, desktop_rename_cancel_pressed ? 0 : 15);
+        PUT_PIXEL(v, cbx + 89, y, desktop_rename_cancel_pressed ? 15 : 0);
+    }
+    for (int x = obx; x < obx + 90; x++) {
+        PUT_PIXEL(v, x, oby, 0);
+        PUT_PIXEL(v, x, oby + 21, 0);
+    }
+    for (int y = oby; y < oby + 22; y++) {
+        PUT_PIXEL(v, obx, y, 0);
+        PUT_PIXEL(v, obx + 89, y, 0);
+    }
+    const char* cl = WM_TR("取消", "Cancel");
+    const char* ol = WM_TR("确定", "OK");
+    font_draw_text(v, cbx + (90 - font_text_width(cl)) / 2, oby + 4,
+                   cl, desktop_rename_cancel_pressed ? 15 : 0);
+    font_draw_text(v, obx + (90 - font_text_width(ol)) / 2, oby + 4,
+                   ol, 15);
+}
+
 static void draw_desktop_context_menu(unsigned char* v) {
     if (!desktop_menu_mode) return;
-    int width = 150;
-    int rows = desktop_menu_mode == 1 ? 2 : 3;
+    int width = desktop_menu_mode == 1 ? 170 : 176;
+    int rows = 7;
     int height = rows * 18 + 4;
     draw_menu_popup(v, desktop_menu_x, desktop_menu_y, width, height);
+    bool mut = desktop_is_mutable();
     if (desktop_menu_mode == 1) {
         desktop_item_t* item = desktop_get(desktop_menu_item);
-        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
-                       WM_TR("删除", "Delete"), item && item->locked ? 8 : 0);
-        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
-                       WM_TR("属性", "Properties"), 0);
+        bool locked = !mut || !item || item->locked || vfs_path_is_protected(item->path);
+        const char* labels[7] = {
+            WM_TR("打开", "Open"),
+            WM_TR("在此打开 CMD", "Open CMD Here"),
+            WM_TR("剪切", "Cut"),
+            WM_TR("复制", "Copy"),
+            WM_TR("重命名...", "Rename..."),
+            WM_TR("删除", "Delete"),
+            WM_TR("属性", "Properties")
+        };
+        for (int r = 0; r < 7; r++) {
+            int disabled = ((r == 2 || r == 4 || r == 5) && locked) ? 1 : 0;
+            font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4 + r * 18,
+                           labels[r], disabled ? 8 : 0);
+        }
     } else {
-        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4,
-                       desktop_is_mutable() ? WM_TR("新建文件夹", "New Folder") : WM_TR("实时模式: 只读", "Live: Read-only"),
-                       desktop_is_mutable() ? 0 : 8);
-        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 22,
-                       WM_TR("重新排列桌面", "Rearrange Desktop"),
-                       desktop_is_mutable() ? 0 : 8);
-        font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 40,
-                       WM_TR("刷新", "Refresh"), 0);
+        bool can_paste = mut && desktop_clipboard_can_paste();
+        const char* labels[7] = {
+            WM_TR("粘贴", "Paste"),
+            mut ? WM_TR("新建文件夹", "New Folder") : WM_TR("实时模式: 只读", "Live: Read-only"),
+            WM_TR("新建文本文档", "New Text File"),
+            WM_TR("在此打开 CMD", "Open CMD Here"),
+            WM_TR("在文件管理打开", "Open in Files"),
+            WM_TR("重新排列桌面", "Rearrange Desktop"),
+            WM_TR("刷新", "Refresh")
+        };
+        int dis[7] = { !can_paste, !mut, !mut, 0, 0, !mut, 0 };
+        for (int r = 0; r < 7; r++) {
+            font_draw_text(v, desktop_menu_x + 8, desktop_menu_y + 4 + r * 18,
+                           labels[r], dis[r] ? 8 : 0);
+        }
     }
 }
 
@@ -2106,10 +2297,12 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     }
                     int tx = screen_w - new_width - 10;
                     if (tx < 24) tx = 24;
-                    draw_ime_indicator(v);
-                    draw_volume_icon(v, volume_x, 2);
-                    font_draw_text(v, tx, 2, next_clock, 0);
-                    wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
+                    if (desktop_shell_is_active()) {
+                        draw_ime_indicator(v);
+                        draw_volume_icon(v, volume_x, 2);
+                        font_draw_text(v, tx, 2, next_clock, 0);
+                        wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
+                    }
                 } else {
                     redraw = 1;
                 }
@@ -2118,6 +2311,22 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     sizeof(last_clock_text) - 1);
             last_clock_text[sizeof(last_clock_text) - 1] = '\0';
         }
+    }
+
+    /* Highest-priority emergency Task Manager hotkey (Ctrl+Shift+Esc),
+     * always works even across crash/modal dialogs or when Desktop Shell is down. */
+    if (keyboard_consume_taskmgr_hotkey() && !ui_install_mode_requested()) {
+        power_confirm = 0;
+        crash_dialog_active = 0;
+        r0_confirm_active = 0;
+        uninit_dialog_active = 0;
+        menu_open = 0;
+        desktop_menu_mode = 0;
+        alt_tab_active = 0;
+        pxe_launch_builtin_app("taskmgr.pxe", NULL, true);
+        redraw = 1;
+        need_mr = 1;
+        return;
     }
 
     if(power_confirm){
@@ -2253,7 +2462,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
     wm_dyn_win_t* pxe_mb_win = (!ui_install_mode_requested()) ? get_active_pxe_menubar_win() : NULL;
 
     // Menu bar interaction
-    if (menu_open && mb_press) {
+    if (desktop_shell_is_active() && menu_open && mb_press) {
         bool inst_mode = ui_install_mode_requested();
         if (menu_index == 4) { // Apple Logo
             int item_count = inst_mode ? 2 : 5;
@@ -2308,7 +2517,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         return;
     }
 
-    if(mb_press && my < 20) {
+    if (desktop_shell_is_active() && mb_press && my < 20) {
         bool inst_mode = ui_install_mode_requested();
         int ime_x = 0, ime_width = 0;
         notification_ime_span(&ime_x, &ime_width);
@@ -2498,14 +2707,129 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
         if (key == 27 && keyboard_get_ctrl() && keyboard_get_shift() &&
             !ui_install_mode_requested()) {
-            if (menu_open) {
-                menu_open = 0;
-                redraw = 1;
-                need_mr = 1;
-            }
+            power_confirm = 0;
+            crash_dialog_active = 0;
+            r0_confirm_active = 0;
+            uninit_dialog_active = 0;
+            menu_open = 0;
+            desktop_menu_mode = 0;
+            desktop_rename_active = 0;
+            alt_tab_active = 0;
+            redraw = 1;
+            need_mr = 1;
             pxe_launch_builtin_app("taskmgr.pxe", NULL, true);
             key = keyboard_get_key();
             continue;
+        }
+        if (desktop_rename_active) {
+            if (key == 27) {
+                desktop_rename_active = 0;
+                desktop_rename_idx = -1;
+                redraw = 1;
+                need_mr = 1;
+            } else if (key == INPUT_CODE_ENTER || key == '\n' || key == '\r') {
+                desktop_commit_rename();
+            } else if (key == '\b' || key == 127) {
+                while (desktop_rename_len > 0) {
+                    uint8_t ch = (uint8_t)desktop_rename_buf[desktop_rename_len - 1];
+                    desktop_rename_len--;
+                    desktop_rename_buf[desktop_rename_len] = '\0';
+                    if ((ch & 0xC0) != 0x80) break;
+                }
+                redraw = 1;
+                need_mr = 1;
+            } else {
+                int mods = keyboard_get_ctrl() ? PXE_MOD_CTRL : 0;
+                char ime_commit[80];
+                if (ime_process_key(key, mods, ime_commit, sizeof(ime_commit))) {
+                    size_t ilen = strlen(ime_commit);
+                    if (ilen > 0 && desktop_rename_len + (int)ilen < (int)sizeof(desktop_rename_buf) - 1) {
+                        memcpy(desktop_rename_buf + desktop_rename_len, ime_commit, ilen);
+                        desktop_rename_len += (int)ilen;
+                        desktop_rename_buf[desktop_rename_len] = '\0';
+                    }
+                    redraw = 1;
+                    need_mr = 1;
+                } else if (key >= 32 && key < 127 &&
+                           desktop_rename_len < (int)sizeof(desktop_rename_buf) - 2) {
+                    desktop_rename_buf[desktop_rename_len++] = (char)key;
+                    desktop_rename_buf[desktop_rename_len] = '\0';
+                    redraw = 1;
+                    need_mr = 1;
+                }
+            }
+            key = keyboard_get_key();
+            continue;
+        }
+        if ((desktop_focused || active_win < 0) &&
+            desktop_shell_is_active() && !ui_install_mode_requested()) {
+            int mods = keyboard_get_ctrl() ? PXE_MOD_CTRL : 0;
+            bool handled_desk = false;
+            if (key == INPUT_CODE_F5) {
+                if (vfs_poll_media()) wm_notify_media_changed();
+                desktop_refresh();
+                show_opened(WM_TR("已刷新桌面", "Desktop Refreshed"));
+                handled_desk = true;
+            } else if (key == INPUT_CODE_F2 && last_click_icon >= 0) {
+                desktop_begin_rename(last_click_icon);
+                handled_desk = true;
+            } else if (key == INPUT_CODE_DELETE && last_click_icon >= 0) {
+                char error[96] = { 0 };
+                int rc = desktop_delete_item(last_click_icon, error, sizeof(error));
+                if (rc != VFS_OK) {
+                    wm_notify_banner(error[0] ? error : WM_TR("无法删除桌面项目", "Unable to delete desktop item"));
+                } else {
+                    last_click_icon = -1;
+                    last_click_icon_prev = -1;
+                    show_opened(WM_TR("已删除项目", "Item Deleted"));
+                }
+                handled_desk = true;
+            } else if ((key == INPUT_CODE_ENTER || key == '\n' || key == '\r') &&
+                       last_click_icon >= 0) {
+                open_icon_app(last_click_icon);
+                handled_desk = true;
+            } else if ((mods & PXE_MOD_CTRL) &&
+                       (key == 'c' || key == 'C' || key == 3) &&
+                       last_click_icon >= 0) {
+                if (desktop_clipboard_copy_cut(last_click_icon, false) == 0) {
+                    show_opened(WM_TR("已复制项目", "Copied"));
+                }
+                handled_desk = true;
+            } else if ((mods & PXE_MOD_CTRL) &&
+                       (key == 'x' || key == 'X' || key == 24) &&
+                       last_click_icon >= 0) {
+                if (desktop_clipboard_copy_cut(last_click_icon, true) == 0) {
+                    show_opened(WM_TR("已剪切项目", "Cut"));
+                } else {
+                    wm_notify_banner(WM_TR("受保护项目或实时模式不可剪切", "Protected item or read-only Live mode"));
+                }
+                handled_desk = true;
+            } else if ((mods & PXE_MOD_CTRL) &&
+                       (key == 'v' || key == 'V' || key == 22)) {
+                char error[96] = { 0 };
+                int rc = desktop_clipboard_paste(error, sizeof(error));
+                if (rc == VFS_OK) {
+                    show_opened(WM_TR("已粘贴到桌面", "Pasted to Desktop"));
+                } else if (rc != VFS_ERR_NOENT && rc != VFS_ERR_INVAL) {
+                    wm_notify_banner(error[0] ? error : WM_TR("粘贴失败", "Paste failed"));
+                }
+                handled_desk = true;
+            } else if ((key == INPUT_CODE_DOWN || key == INPUT_CODE_RIGHT ||
+                        key == INPUT_CODE_UP || key == INPUT_CODE_LEFT) &&
+                       desktop_count() > 0) {
+                int cnt = desktop_count();
+                int step = (key == INPUT_CODE_DOWN || key == INPUT_CODE_RIGHT) ? 1 : -1;
+                if (last_click_icon < 0) last_click_icon = 0;
+                else last_click_icon = (last_click_icon + step + cnt) % cnt;
+                last_click_icon_prev = last_click_icon;
+                handled_desk = true;
+            }
+            if (handled_desk) {
+                redraw = 1;
+                need_mr = 1;
+                key = keyboard_get_key();
+                continue;
+            }
         }
         if (active_win >= WM_DYN_BASE && active_win < WM_DYN_BASE + WM_DYN_MAX) {
             wm_dyn_win_t* dw = &g_dyn_wins[active_win - WM_DYN_BASE];
@@ -2513,6 +2837,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 int pxe_key = key;
                 if (pxe_key == INPUT_CODE_ENTER) {
                     pxe_key = PXE_KEY_ENTER;
+                } else if (pxe_key == INPUT_CODE_F2) {
+                    pxe_key = PXE_KEY_F2;
+                } else if (pxe_key == INPUT_CODE_F5) {
+                    pxe_key = PXE_KEY_F5;
                 } else if (pxe_key >= INPUT_CODE_UP && pxe_key <= INPUT_CODE_DELETE) {
                     pxe_key = PXE_KEY_UP + (pxe_key - INPUT_CODE_UP);
                 }
@@ -2542,14 +2870,67 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         need_mr = 1;
     }
 
+    if (desktop_rename_active) {
+        int dw = 300, dh = 112;
+        int dx = (screen_w - dw) / 2;
+        int dy = (screen_h - dh) / 2;
+        int oby = dy + 74;
+        int cbx = dx + 46, obx = dx + 164;
+        if (mb_press & INPUT_MOUSE_LEFT) {
+            desktop_rename_cancel_pressed = (mx >= cbx && mx < cbx + 90 && my >= oby && my < oby + 22);
+            desktop_rename_ok_pressed = (mx >= obx && mx < obx + 90 && my >= oby && my < oby + 22);
+            redraw = 1;
+            need_mr = 1;
+        } else if (mb_release & INPUT_MOUSE_LEFT) {
+            int was_cancel = desktop_rename_cancel_pressed;
+            int was_ok = desktop_rename_ok_pressed;
+            desktop_rename_cancel_pressed = 0;
+            desktop_rename_ok_pressed = 0;
+            if (was_cancel && mx >= cbx && mx < cbx + 90 && my >= oby && my < oby + 22) {
+                desktop_rename_active = 0;
+                desktop_rename_idx = -1;
+            } else if (was_ok && mx >= obx && mx < obx + 90 && my >= oby && my < oby + 22) {
+                desktop_commit_rename();
+            }
+            redraw = 1;
+            need_mr = 1;
+        }
+        return;
+    }
+
     if (desktop_menu_mode && mb_press) {
-        int rows = desktop_menu_mode == 1 ? 2 : 3;
-        if (mx >= desktop_menu_x && mx < desktop_menu_x + 150 &&
+        int width = desktop_menu_mode == 1 ? 170 : 176;
+        int rows = 7;
+        if (mx >= desktop_menu_x && mx < desktop_menu_x + width &&
             my >= desktop_menu_y &&
             my < desktop_menu_y + rows * 18 + 4) {
             int item = (my - desktop_menu_y - 4) / 18;
             if (desktop_menu_mode == 1) {
+                desktop_item_t* selected = desktop_get(desktop_menu_item);
                 if (item == 0) {
+                    open_icon_app(desktop_menu_item);
+                } else if (item == 1) {
+                    const char* cdir = desktop_get_dir_path();
+                    if (selected && (selected->kind == DESKTOP_ITEM_FOLDER ||
+                                     selected->target_kind == DESKTOP_TARGET_FOLDER)) {
+                        cdir = (selected->kind == DESKTOP_ITEM_FOLDER)
+                                   ? selected->path
+                                   : selected->target;
+                    }
+                    desktop_open_cmd_dir(cdir);
+                } else if (item == 2) {
+                    if (desktop_clipboard_copy_cut(desktop_menu_item, true) == 0) {
+                        show_opened(WM_TR("已剪切项目", "Cut"));
+                    } else {
+                        wm_notify_banner(WM_TR("受保护项目或实时模式不可剪切", "Protected item or read-only Live mode"));
+                    }
+                } else if (item == 3) {
+                    if (desktop_clipboard_copy_cut(desktop_menu_item, false) == 0) {
+                        show_opened(WM_TR("已复制项目", "Copied"));
+                    }
+                } else if (item == 4) {
+                    desktop_begin_rename(desktop_menu_item);
+                } else if (item == 5) {
                     char error[96] = { 0 };
                     int result = desktop_delete_item(desktop_menu_item,
                                                      error, sizeof(error));
@@ -2557,31 +2938,59 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                         wm_notify_banner(error[0] ? error :
                                          WM_TR("无法删除桌面项目", "Unable to delete desktop item"));
                     } else {
-                        show_opened(WM_TR("已移除项目", "Moved to Trash"));
+                        show_opened(WM_TR("已删除项目", "Item Deleted"));
+                    }
+                } else if (item == 6) {
+                    if (selected) {
+                        char prop[320];
+                        snprintf(prop, sizeof(prop), "%s | %s",
+                                 selected->display_name,
+                                 selected->target[0] ? selected->target : selected->path);
+                        wm_notify_banner(prop);
+                    }
+                }
+            } else {
+                if (item == 0) {
+                    char error[96] = { 0 };
+                    int rc = desktop_clipboard_paste(error, sizeof(error));
+                    if (rc == VFS_OK) {
+                        show_opened(WM_TR("已粘贴到桌面", "Pasted to Desktop"));
+                    } else {
+                        wm_notify_banner(error[0] ? error : WM_TR("粘贴失败", "Paste failed"));
                     }
                 } else if (item == 1) {
-                    desktop_item_t* selected = desktop_get(desktop_menu_item);
-                    if (selected) wm_notify_banner(selected->path);
+                    char error[96] = { 0 };
+                    if (desktop_create_folder(error, sizeof(error)) != VFS_OK) {
+                        wm_notify_banner(error[0] ? error :
+                                         WM_TR("无法创建桌面文件夹", "Unable to create desktop folder"));
+                    } else {
+                        show_opened(WM_TR("已创建文件夹", "Folder Created"));
+                    }
+                } else if (item == 2) {
+                    char error[96] = { 0 };
+                    if (desktop_create_text_file(error, sizeof(error)) != VFS_OK) {
+                        wm_notify_banner(error[0] ? error :
+                                         WM_TR("无法创建文本文档", "Unable to create text file"));
+                    } else {
+                        show_opened(WM_TR("已新建文本文档", "Text File Created"));
+                    }
+                } else if (item == 3) {
+                    desktop_open_cmd_dir(desktop_get_dir_path());
+                } else if (item == 4) {
+                    desktop_focused = 0;
+                    pxe_launch_builtin_app("files.pxe", desktop_get_dir_path(), false);
+                } else if (item == 5) {
+                    if (desktop_is_mutable()) {
+                        desktop_rearrange();
+                        show_opened(WM_TR("已重新排列桌面", "Desktop Rearranged"));
+                    } else {
+                        wm_notify_banner(WM_TR("实时模式桌面为只读", "Live Desktop is read-only"));
+                    }
+                } else if (item == 6) {
+                    if (vfs_poll_media()) wm_notify_media_changed();
+                    desktop_refresh();
+                    show_opened(WM_TR("已刷新桌面", "Desktop Refreshed"));
                 }
-            } else if (item == 0) {
-                char error[96] = { 0 };
-                if (desktop_create_folder(error, sizeof(error)) != VFS_OK) {
-                    wm_notify_banner(error[0] ? error :
-                                     WM_TR("无法创建桌面文件夹", "Unable to create desktop folder"));
-                } else {
-                    show_opened(WM_TR("已创建文件夹", "Folder Created"));
-                }
-            } else if (item == 1) {
-                if (desktop_is_mutable()) {
-                    desktop_rearrange();
-                    show_opened(WM_TR("已重新排列桌面", "Desktop Rearranged"));
-                } else {
-                    wm_notify_banner(WM_TR("实时模式桌面为只读", "Live Desktop is read-only"));
-                }
-            } else if (item == 2) {
-                if (vfs_poll_media()) wm_notify_media_changed();
-                desktop_refresh();
-                show_opened(WM_TR("已刷新桌面", "Desktop Refreshed"));
             }
         }
         desktop_menu_mode = 0;
@@ -2878,6 +3287,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 }
 
                 if (top_id >= WM_DYN_BASE && top_id < WM_DYN_BASE + WM_DYN_MAX) {
+                    desktop_focused = 0;
                     wm_dyn_win_t* dw = &g_dyn_wins[top_id - WM_DYN_BASE];
                     if (dw->used) {
                         g_pxe_capture_win = top_id;
@@ -2896,7 +3306,8 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
 
         // Clicked on desktop background (not inside any window)
-        if (!ui_install_mode_requested()) {
+        if (!ui_install_mode_requested() && desktop_shell_is_active()) {
+            desktop_focused = 1;
             int total_icons = desktop_count();
             int clicked_icon = -1;
             for (int i = total_icons - 1; i >= 0; i--) {
@@ -2908,11 +3319,15 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
             if (mb_press & INPUT_MOUSE_RIGHT) {
                 desktop_menu_mode = clicked_icon != -1 ? 1 : 2;
                 desktop_menu_item = clicked_icon;
+                if (clicked_icon != -1) {
+                    last_click_icon = clicked_icon;
+                }
                 desktop_menu_x = mx;
                 desktop_menu_y = my;
-                int menu_rows = desktop_menu_mode == 1 ? 2 : 3;
-                if (desktop_menu_x + 150 > screen_w) {
-                    desktop_menu_x = screen_w - 150;
+                int menu_w = desktop_menu_mode == 1 ? 170 : 176;
+                int menu_rows = 7;
+                if (desktop_menu_x + menu_w > screen_w) {
+                    desktop_menu_x = screen_w - menu_w;
                 }
                 if (desktop_menu_y + menu_rows * 18 + 4 > screen_h) {
                     desktop_menu_y = screen_h - (menu_rows * 18 + 4);
@@ -3147,6 +3562,7 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
 
     irq_flags = wm_irq_save();
     bring_to_top(dw->win_id);
+    desktop_focused = 0;
     wm_irq_restore(irq_flags);
 
     wm_dyn_push_simple(dw, PXE_EV_REDRAW);
@@ -3329,6 +3745,19 @@ int wm_pxe_focus_pid(uint32_t pid, const char* activate_arg) {
     return focused ? 0 : -1;
 }
 
+void wm_set_ime_cursor(uint32_t owner_pid, int client_x, int client_y) {
+    uint64_t flags = wm_irq_save();
+    int act = top_visible_win_id();
+    if (act >= WM_DYN_BASE && act < WM_DYN_BASE + WM_DYN_MAX &&
+        g_dyn_wins[act - WM_DYN_BASE].used &&
+        g_dyn_wins[act - WM_DYN_BASE].owner_pid == owner_pid) {
+        g_ime_anchor_win = act;
+        g_ime_anchor_x = client_x;
+        g_ime_anchor_y = client_y;
+    }
+    wm_irq_restore(flags);
+}
+
 void wm_notify_banner(const char* msg) {
     if (!msg) return;
     uint64_t flags = wm_irq_save();
@@ -3358,6 +3787,18 @@ void wm_notify_app_crash(uint32_t pid, const char* app_name, const char* exc_nam
     g_pxe_layout_dirty = 1;
     g_pxe_present_dirty = 1;
     wm_irq_restore(flags);
+    if (app_name) {
+        for (const char* c = app_name; *c; c++) {
+            if ((c[0] == 'f' || c[0] == 'F') &&
+                (c[1] == 'i' || c[1] == 'I') &&
+                (c[2] == 'l' || c[2] == 'L') &&
+                (c[3] == 'e' || c[3] == 'E') &&
+                (c[4] == 's' || c[4] == 'S' || c[4] == '.')) {
+                desktop_shell_set_active(false);
+                break;
+            }
+        }
+    }
     speaker_beep();
 }
 

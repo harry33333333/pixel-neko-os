@@ -12,6 +12,7 @@
 #include "vfs.h"
 #include "wm.h"
 #include "pxe.h"
+#include "desktop.h"
 
 #define USER_HEAP_DEFAULT_BASE  0x0000000010000000ULL
 #define USER_HEAP_DEFAULT_LIMIT 0x0000000200000000ULL
@@ -632,6 +633,20 @@ int process_kill(uint32_t pid, int exit_code) {
     bool was_compositor = (target->main_thread && target->main_thread->is_compositor);
     if (target->is_system_daemon && !was_compositor) {
         return -1;
+    }
+
+    {
+        const char* p = target->exe_path[0] ? target->exe_path : target->name;
+        for (const char* c = p; *c; c++) {
+            if ((c[0] == 'f' || c[0] == 'F') &&
+                (c[1] == 'i' || c[1] == 'I') &&
+                (c[2] == 'l' || c[2] == 'L') &&
+                (c[3] == 'e' || c[3] == 'E') &&
+                (c[4] == 's' || c[4] == 'S' || c[4] == '.')) {
+                desktop_shell_set_active(false);
+                break;
+            }
+        }
     }
 
     process_cleanup_runtime_resources(target);

@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A281b"
+    BUILD_ID="26A300a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -69,7 +69,7 @@ cp "${GAME_FILES[@]}" iso_root/GAME/
 cp "${GAME_FILES[@]}" iso_root/payload/GAME/
 
 # Copy modular built-in system applications (*.pxe in APPS\) for Live CD and offline installer payload
-REQUIRED_APPS=(about clock calc notepad cpanel player viewer files sysinfo cpuz taskmgr install)
+REQUIRED_APPS=(about clock calc notepad cpanel cmd player viewer files sysinfo cpuz taskmgr install)
 for app_name in "${REQUIRED_APPS[@]}"; do
     app_pxe="build/apps/${app_name}.pxe"
     if [ ! -f "${app_pxe}" ]; then

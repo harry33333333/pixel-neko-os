@@ -451,6 +451,14 @@ static void pxe_draw_cjk_12(const pxe_win_surface_t* surf, int x, int y,
     }
 }
 
+void pxe_draw_codepoint(const pxe_win_surface_t* surf, int x, int y, uint32_t cp, uint32_t fg) {
+    if (cp < 0x80u) {
+        pxe_draw_char(surf, x, y, (char)cp, fg);
+    } else {
+        pxe_draw_cjk_16(surf, x, y, cp, fg);
+    }
+}
+
 void pxe_draw_text(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg) {
     if (!text) return;
     int cx = x;

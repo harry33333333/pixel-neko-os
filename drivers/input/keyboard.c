@@ -166,6 +166,12 @@ void keyboard_handle_byte(uint8_t scancode) {
                 if (!release) g_caps = !g_caps;
                 keyboard_update_ime_chord(true);
                 return;
+            case 0x3C:
+                translated = INPUT_CODE_F2;
+                break;
+            case 0x3F:
+                translated = INPUT_CODE_F5;
+                break;
             default:
                 translated = translate(code);
                 break;

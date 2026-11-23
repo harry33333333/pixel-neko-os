@@ -395,6 +395,8 @@ static uint32_t hid_usage_to_ascii(uint8_t usage, bool shift, bool caps) {
         case 0x4B: return INPUT_CODE_PAGE_UP;
         case 0x4E: return INPUT_CODE_PAGE_DOWN;
         case 0x4C: return INPUT_CODE_DELETE;
+        case 0x3B: return INPUT_CODE_F2;
+        case 0x3E: return INPUT_CODE_F5;
         default: return 0;
     }
 }

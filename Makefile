@@ -6,8 +6,8 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 281
-PIXEL_NEKO_BUILD_SUFFIX ?= b
+PIXEL_NEKO_BUILD_NUMBER ?= 300
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -106,6 +106,7 @@ C_SRCS   = kernel/core/main.c \
            fs/exfat.c \
            fs/iso9660.c \
            fs/format.c \
+           fs/procfs.c \
            fs/vfs.c \
            fs/p5_test.c \
            drivers/acpi/acpi.c \
@@ -159,7 +160,7 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
 
 # Built-in Modular PXE Applications (*.pxe in APPS\)
 APPS_OUT_DIR = build/apps
-APPS_PXE_NAMES = about clock calc notepad cpanel player viewer files sysinfo cpuz taskmgr install
+APPS_PXE_NAMES = about clock calc notepad cpanel cmd player viewer files sysinfo cpuz taskmgr install
 APPS_PXE_TARGETS = $(patsubst %,$(APPS_OUT_DIR)/%.pxe,$(APPS_PXE_NAMES))
 
 # Default games live in GAME\ so system applications and user games have

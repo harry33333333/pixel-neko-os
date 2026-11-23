@@ -38,6 +38,8 @@ typedef struct {
 void desktop_init(void);
 void desktop_refresh(void);
 void desktop_notify_path_changed(const char* path);
+bool desktop_shell_is_active(void);
+void desktop_shell_set_active(bool active);
 bool desktop_poll(void);
 void desktop_on_resolution_change(int width, int height);
 int desktop_count(void);
@@ -49,5 +51,11 @@ void desktop_rearrange(void);
 bool desktop_set_position(int index, int x, int y);
 int desktop_delete_item(int index, char* error, size_t error_capacity);
 int desktop_create_folder(char* error, size_t error_capacity);
+const char* desktop_get_dir_path(void);
+int desktop_rename_item(int index, const char* new_name, char* error, size_t error_capacity);
+int desktop_create_text_file(char* error, size_t error_capacity);
+int desktop_clipboard_copy_cut(int index, bool is_cut);
+bool desktop_clipboard_can_paste(void);
+int desktop_clipboard_paste(char* error, size_t error_capacity);
 
 #endif

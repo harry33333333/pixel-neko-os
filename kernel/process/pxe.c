@@ -3,6 +3,7 @@
 #include "blkdev.h"
 #include "boot_framebuffer.h"
 #include "cpu.h"
+#include "desktop.h"
 #include "format.h"
 #include "gfx_accel.h"
 #include "heap.h"
@@ -487,7 +488,11 @@ static int pxe_display_mode_request(int width, int height, int bpp,
 }
 
 int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char* str_arg) {
-    if (proc && proc->exec_ring == 3 && !(proc->pxe_flags & PXE_FLAG_SYS_SETTINGS)) {
+    bool is_unpriv_ok = (cmd == PXE_CFG_SET_IME_POS ||
+                         cmd == PXE_CFG_NOTIFY_DESKTOP ||
+                         (cmd == PXE_CFG_DESKTOP_SHELL && arg0 == 0));
+    if (!is_unpriv_ok && proc && proc->exec_ring == 3 &&
+        !(proc->pxe_flags & PXE_FLAG_SYS_SETTINGS)) {
         return -NEKO_EPERM;
     }
     switch (cmd) {
@@ -558,6 +563,31 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             return 0;
         case PXE_CFG_SAVE_SETTINGS:
             return settings_save() ? 0 : -1;
+        case PXE_CFG_SYSTEM_SHUTDOWN:
+            sys_shutdown();
+            return 0;
+        case PXE_CFG_KILL_PID:
+            return process_kill((uint32_t)arg0, -1);
+        case PXE_CFG_BEEP_TONE: {
+            unsigned int f = (arg0 >= 20 && arg0 <= 20000) ? (unsigned int)arg0 : 880u;
+            unsigned int d = (arg1 >= 10 && arg1 <= 5000) ? (unsigned int)arg1 : 120u;
+            speaker_play(f, d);
+            return 0;
+        }
+        case PXE_CFG_DESKTOP_SHELL:
+            if (arg0 == 1) desktop_shell_set_active(true);
+            else if (arg0 == 2) desktop_shell_set_active(false);
+            return desktop_shell_is_active() ? 1 : 0;
+        case PXE_CFG_SET_IME_POS: {
+            int cx = (int)(int16_t)(arg0 & 0xFFFF);
+            int cy = (int)(int16_t)((arg0 >> 16) & 0xFFFF);
+            wm_set_ime_cursor(proc ? proc->pid : 0u, cx, cy);
+            return 0;
+        }
+        case PXE_CFG_NOTIFY_DESKTOP:
+            desktop_refresh();
+            wm_request_desktop_redraw();
+            return 0;
         default:
             return -NEKO_EINVAL;
     }

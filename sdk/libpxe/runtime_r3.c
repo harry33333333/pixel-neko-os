@@ -201,6 +201,37 @@ int pxe_settings_save(void) {
                               0, 0, 0);
 }
 
+int pxe_system_shutdown(void) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SYSTEM_SHUTDOWN,
+                              0, 0, 0);
+}
+
+int pxe_kill_pid(uint32_t pid) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_KILL_PID,
+                              (long)pid, 0, 0);
+}
+
+int pxe_beep_tone(int freq_hz, int duration_ms) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_BEEP_TONE,
+                              (long)freq_hz, (long)duration_ms, 0);
+}
+
+int pxe_desktop_shell_ctl(int op) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_DESKTOP_SHELL,
+                              (long)op, 0, 0);
+}
+
+int pxe_ime_set_cursor_pos(int client_x, int client_y) {
+    int xy = (client_x & 0xFFFF) | ((client_y & 0xFFFF) << 16);
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_IME_POS,
+                              (long)xy, 0, 0);
+}
+
+int pxe_notify_desktop(void) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_NOTIFY_DESKTOP,
+                              0, 0, 0);
+}
+
 /* =========================================================================
  * Userland Heap Allocator (<pxe/mem.h>) backed by NEKO_SYSCALL_SBRK
  * ========================================================================= */

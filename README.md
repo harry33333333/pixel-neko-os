@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A281b - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A300a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统（完整支持简体中文 / English 双语与拼音输入法）
 
 ---
@@ -47,7 +47,8 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 
 ### 4. 内置应用程序与游戏生态
 - **系统应用（`APPS\*.pxe`）**：
-  - `files`（文件管理器）：支持多盘符浏览、长文件名、文件夹递归复制、复制/剪切/粘贴/重命名/新建文件夹/删除/属性查看、磁盘弹出，以及基于 `system\assoc.ini` 与 `pxe_resource_t.ext_assoc` 的动态文件关联和右键“打开方式...”自定义默认程序。
+  - `files`（文件管理器）：支持多盘符浏览、长文件名、文件夹递归复制、复制/剪切/粘贴/重命名/新建文件夹/删除/属性查看、右键一键打开 CMD 或发送到桌面、磁盘弹出，以及基于 `system\assoc.ini` 与 `pxe_resource_t.ext_assoc` 的动态文件关联和右键“打开方式...”自定义默认程序；与桌面双向共享剪贴板及实时同步，支持独立桌面壳生命周期。
+  - `cmd`（命令提示符）：Ring 3 终端与批处理解释器，支持可调窗口尺寸与 500 行回滚缓冲、CJK 等宽双字宽显示、ANSI 16 色、管道 `|` / 重定向 `>` / `>>` / 环境变量、`*.pat` 批处理脚本（`.pat` 关联至 `cmd.pxe`）以及核内只读 `\PROC\` 虚拟文件系统查询。
   - `notepad`（记事本）：完整接入 UTF-8 与拼音输入法（`PXE_KEY_UTF8`），支持中文编辑与滚轮浏览。
   - `cpanel`（控制面板）：配置屏幕分辨率/色深、桌面壁纸模式、顶栏时钟选项、系统音量及简体中文/英文界面语言。
   - `player`（媒体播放器）：支持 WAV、FLAC 与 MP3 解码播放与播放列表控制。
@@ -84,18 +85,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A281b.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A300a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A281b.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A300a.iso -m 512M -serial stdio -boot d
 ```
 
 ### 自动化冒烟测试
 `scripts/qemu_smoke_test.sh` 执行桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A281b.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A300a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。
