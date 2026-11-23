@@ -69,8 +69,8 @@ typedef struct {
 
     int        modal;
     int        modal_is_err;
-    char       modal_title[32];
-    char       modal_msg[96];
+    char       modal_title[48];
+    char       modal_msg[128];
     char       modal_input[128];
     int        modal_len;
     char       modal_target_path[256];
@@ -267,7 +267,8 @@ static void load_directory(fm_t* fm) {
     int n = pxe_listdir(fm->current_path, raw, 256);
     if (n < 0) {
         free(raw);
-        show_msg(fm, "Read Error", "Cannot read drive or directory.", 1);
+        show_msg(fm, FM_TR(fm, "读取错误", "Read Error"),
+                 FM_TR(fm, "无法读取该驱动器或目录。", "Cannot read drive or directory."), 1);
         if (strlen(fm->current_path) <= 3) {
             fm->current_path[0] = '\0';
             load_directory(fm);
@@ -334,7 +335,8 @@ static void open_entry(fm_t* fm, int idx) {
 
     const char* ext = strrchr(e->name, '.');
     if (!ext) {
-        show_msg(fm, "Open File", "No file association for this file.", 1);
+        show_msg(fm, FM_TR(fm, "打开文件", "Open File"),
+                 FM_TR(fm, "此文件没有关联的打开程序。", "No file association for this file."), 1);
         return;
     }
 
@@ -343,14 +345,17 @@ static void open_entry(fm_t* fm, int idx) {
             pxe_basic_sysinfo_t info;
             memset(&info, 0, sizeof(info));
             if (pxe_sys_get_basic_info(&info) == 0 && info.boot_mode != 1) {
-                show_msg(fm, "Installer Disabled",
-                         "INSTALL cannot be launched in Local or Live mode.", 1);
+                show_msg(fm, FM_TR(fm, "安装程序已禁用", "Installer Disabled"),
+                         FM_TR(fm, "本地或实时模式下无法运行系统安装程序。",
+                               "INSTALL cannot be launched in Local or Live mode."), 1);
                 return;
             }
         }
         int pid = pxe_spawn(full, 0, NULL);
         if (pid < 0) {
-            show_msg(fm, "PXE Launch Failed", "Invalid, corrupted, or blocked .pxe.", 1);
+            show_msg(fm, FM_TR(fm, "启动失败", "PXE Launch Failed"),
+                     FM_TR(fm, "无效、已损坏或被拦截的 .pxe 程序。",
+                           "Invalid, corrupted, or blocked .pxe."), 1);
         }
         return;
     }
@@ -379,7 +384,9 @@ static void open_entry(fm_t* fm, int idx) {
             }
         }
         if (!target[0]) {
-            show_msg(fm, "Shortcut Error", "The .pnk target is missing.", 1);
+            show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                     FM_TR(fm, "缺少 .pnk 快捷方式目标路径。",
+                           "The .pnk target is missing."), 1);
             return;
         }
         if (target[0] && target[1] != ':') {
@@ -391,8 +398,9 @@ static void open_entry(fm_t* fm, int idx) {
                               (info.system_drive ? info.system_drive :
                                info.cdrom_drive);
             if (!boot_drive) {
-                show_msg(fm, "Shortcut Error",
-                         "Cannot resolve the shortcut system drive.", 1);
+                show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                         FM_TR(fm, "无法解析快捷方式所在系统盘符。",
+                               "Cannot resolve the shortcut system drive."), 1);
                 return;
             }
             snprintf(resolved, sizeof(resolved), "%c:%s", boot_drive,
@@ -402,19 +410,25 @@ static void open_entry(fm_t* fm, int idx) {
         }
         pxe_dirent_t target_stat;
         if (pxe_stat(target, &target_stat) != 0) {
-            show_msg(fm, "Shortcut Error", "The shortcut target no longer exists.", 1);
+            show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                     FM_TR(fm, "快捷方式指向的目标已不存在。",
+                           "The shortcut target no longer exists."), 1);
             return;
         }
         if (target_stat.is_dir) {
             char files_path[128];
             if (resolve_app_path("files.pxe", files_path,
                                  sizeof(files_path)) != 0) {
-                show_msg(fm, "Shortcut Error", "File Manager is unavailable.", 1);
+                show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                         FM_TR(fm, "文件管理程序不可用。",
+                               "File Manager is unavailable."), 1);
                 return;
             }
             const char* argv[2] = { files_path, target };
             if (pxe_spawn(files_path, 2, argv) < 0) {
-                show_msg(fm, "Shortcut Error", "Folder could not be opened.", 1);
+                show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                         FM_TR(fm, "无法打开目标文件夹。",
+                               "Folder could not be opened."), 1);
             }
         } else {
             char canonical[128];
@@ -423,8 +437,9 @@ static void open_entry(fm_t* fm, int idx) {
             else base++;
             if (text_contains_ci(target, "\\APPS\\")) {
                 if (resolve_app_path(base, canonical, sizeof(canonical)) != 0) {
-                    show_msg(fm, "Shortcut Error",
-                             "The system application is unavailable.", 1);
+                    show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                             FM_TR(fm, "系统应用程序不可用。",
+                                   "The system application is unavailable."), 1);
                     return;
                 }
             } else {
@@ -434,22 +449,25 @@ static void open_entry(fm_t* fm, int idx) {
                 pxe_basic_sysinfo_t info;
                 memset(&info, 0, sizeof(info));
                 if (pxe_sys_get_basic_info(&info) == 0 && info.boot_mode != 1) {
-                    show_msg(fm, "Installer Disabled",
-                             "INSTALL cannot be launched in Local or Live mode.", 1);
+                    show_msg(fm, FM_TR(fm, "安装程序已禁用", "Installer Disabled"),
+                             FM_TR(fm, "本地或实时模式下无法运行系统安装程序。",
+                                   "INSTALL cannot be launched in Local or Live mode."), 1);
                     return;
                 }
             }
             if (pxe_spawn(canonical, 0, NULL) < 0) {
-                show_msg(fm, "Shortcut Error",
-                         "PXE shortcut could not be launched.", 1);
+                show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
+                         FM_TR(fm, "无法启动 .pnk 快捷方式目标。",
+                               "PXE shortcut could not be launched."), 1);
             }
         }
         return;
     }
 
     if (strcasecmp(ext, ".pdv") == 0) {
-        show_msg(fm, "Device Driver (.pdv)",
-                 "Copy .pdv to SYSTEM:\\PDEVICE\\ or load in SysInfo.", 0);
+        show_msg(fm, FM_TR(fm, "设备驱动程序 (.pdv)", "Device Driver (.pdv)"),
+                 FM_TR(fm, "请复制到 SYSTEM:\\PDEVICE\\ 或在系统信息中加载。",
+                       "Copy .pdv to SYSTEM:\\PDEVICE\\ or load in SysInfo."), 0);
         return;
     }
 
@@ -469,19 +487,25 @@ static void open_entry(fm_t* fm, int idx) {
     }
 
     if (!helper) {
-        show_msg(fm, "Open File", "No application associated with this type.", 1);
+        show_msg(fm, FM_TR(fm, "打开文件", "Open File"),
+                 FM_TR(fm, "没有与该文件类型关联的应用程序。",
+                       "No application associated with this type."), 1);
         return;
     }
 
     char app_path[128];
     if (resolve_app_path(helper, app_path, sizeof(app_path)) != 0) {
-        show_msg(fm, "Missing Application", "Cannot find app in APPS\\ folder.", 1);
+        show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
+                 FM_TR(fm, "在 APPS\\ 目录中找不到对应程序。",
+                       "Cannot find app in APPS\\ folder."), 1);
         return;
     }
 
     const char* argv[2] = { app_path, full };
     if (pxe_spawn(app_path, 2, argv) < 0) {
-        show_msg(fm, "Launch Failed", "Could not start associated application.", 1);
+        show_msg(fm, FM_TR(fm, "启动失败", "Launch Failed"),
+                 FM_TR(fm, "无法启动关联的应用程序。",
+                       "Could not start associated application."), 1);
     }
 }
 
@@ -512,16 +536,16 @@ static void action_properties(fm_t* fm, int idx) {
     const fm_entry_t* e = &fm->entries[idx];
     if (e->is_parent) return;
     if (e->is_dir) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Folder: %.28s", e->name);
-        show_msg(fm, "Properties", msg, 0);
+        char msg[128];
+        snprintf(msg, sizeof(msg), FM_TR(fm, "文件夹: %.48s", "Folder: %.28s"), e->name);
+        show_msg(fm, FM_TR(fm, "属性", "Properties"), msg, 0);
         return;
     }
-    char hsz[24], msg[96];
+    char hsz[24], msg[128];
     fmt_bytes(e->size, hsz, sizeof(hsz));
-    snprintf(msg, sizeof(msg), "%.16s | %s (%llu B)",
+    snprintf(msg, sizeof(msg), "%.24s | %s (%llu B)",
              e->name, hsz, (unsigned long long)e->size);
-    show_msg(fm, "File Properties", msg, 0);
+    show_msg(fm, FM_TR(fm, "文件属性", "File Properties"), msg, 0);
 }
 
 static void copy_progress_cb(uint64_t copied, uint64_t total) {
@@ -537,7 +561,9 @@ static void copy_progress_cb(uint64_t copied, uint64_t total) {
     int dy = (s->height - dh) / 2;
     pxe_draw_bevel_box(s, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
     pxe_fill_rect(s, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
-    pxe_draw_text_small(s, dx + 8, dy + 7, "Copying File...", PXE_COL_WHITE);
+    pxe_draw_text_small(s, dx + 8, dy + 7,
+                        pxe_is_zh() ? "正在复制文件..." : "Copying File...",
+                        PXE_COL_WHITE);
     pxe_draw_text_small(s, dx + 10, dy + 26, g_prog_title, PXE_COL_BLACK);
 
     int bar_w = dw - 20;
@@ -558,11 +584,15 @@ static void copy_progress_cb(uint64_t copied, uint64_t total) {
 static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     if (!fm->has_clip || fm->current_path[0] == '\0') return;
     if (fm->clip_is_dir && !fm->clip_is_cut) {
-        show_msg(fm, "Paste Error", "Folder copy is not supported directly.", 1);
+        show_msg(fm, FM_TR(fm, "粘贴错误", "Paste Error"),
+                 FM_TR(fm, "暂不支持直接复制整个文件夹。",
+                       "Folder copy is not supported directly."), 1);
         return;
     }
     if (drive_is_readonly(fm->current_path[0])) {
-        show_msg(fm, "Read-Only Drive", "Cannot paste onto a read-only drive.", 1);
+        show_msg(fm, FM_TR(fm, "只读驱动器", "Read-Only Drive"),
+                 FM_TR(fm, "无法粘贴到只读驱动器上。",
+                       "Cannot paste onto a read-only drive."), 1);
         return;
     }
 
@@ -571,7 +601,9 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     if (strcasecmp(dst, fm->clip_path) == 0) {
         if (fm->clip_is_cut) {
             fm->has_clip = 0;
-            show_msg(fm, "Move", "The item is already in this folder.", 0);
+            show_msg(fm, FM_TR(fm, "移动", "Move"),
+                     FM_TR(fm, "该项目已经位于当前目录中。",
+                           "The item is already in this folder."), 0);
             return;
         }
         char alt[128];
@@ -582,19 +614,23 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     if (fm->clip_is_cut) {
         pxe_dirent_t existing;
         if (pxe_stat(dst, &existing) == 0) {
-            show_msg(fm, "Move Failed",
-                     "A file or folder with that name already exists.", 1);
+            show_msg(fm, FM_TR(fm, "移动失败", "Move Failed"),
+                     FM_TR(fm, "目标目录已存在同名文件或文件夹。",
+                           "A file or folder with that name already exists."), 1);
             return;
         }
         if (pxe_rename(fm->clip_path, dst) != 0) {
-            show_msg(fm, "Move Failed",
-                     "Cut/paste failed (read-only or protected item).", 1);
+            show_msg(fm, FM_TR(fm, "移动失败", "Move Failed"),
+                     FM_TR(fm, "移动失败（只读或受保护的系统项目）。",
+                           "Cut/paste failed (read-only or protected item)."), 1);
             return;
         }
         fm->has_clip = 0;
         fm->clip_is_cut = 0;
         load_directory(fm);
-        show_msg(fm, "Move Complete", "Item moved to this folder.", 0);
+        show_msg(fm, FM_TR(fm, "移动完成", "Move Complete"),
+                 FM_TR(fm, "项目已成功移动到当前目录。",
+                       "Item moved to this folder."), 0);
         return;
     }
 
@@ -607,7 +643,9 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     g_prog_surf = NULL;
 
     if (rc != 0) {
-        show_msg(fm, "Paste Failed", "Copy error (disk full / >4GB FAT32 limit).", 1);
+        show_msg(fm, FM_TR(fm, "粘贴失败", "Paste Failed"),
+                 FM_TR(fm, "复制失败（磁盘已满或超出 FAT32 单文件上限）。",
+                       "Copy error (disk full / >4GB FAT32 limit)."), 1);
         return;
     }
     fm->clip_is_cut = 0;
@@ -673,11 +711,13 @@ static void action_eject(fm_t* fm) {
         }
     }
     if (!letter) {
-        show_msg(fm, "Eject", "Select a floppy or optical drive.", 1);
+        show_msg(fm, FM_TR(fm, "弹出", "Eject"),
+                 FM_TR(fm, "请选择一个软驱或光驱设备。", "Select a floppy or optical drive."), 1);
         return;
     }
     if (pxe_eject_drive(letter) != 0) {
-        show_msg(fm, "Eject Failed", "Drive does not support eject.", 1);
+        show_msg(fm, FM_TR(fm, "弹出失败", "Eject Failed"),
+                 FM_TR(fm, "该驱动器不支持弹出操作。", "Drive does not support eject."), 1);
         return;
     }
     fm->current_path[0] = '\0';
@@ -687,7 +727,9 @@ static void action_eject(fm_t* fm) {
 static void submit_modal(fm_t* fm) {
     if (fm->modal == MODAL_RENAME) {
         if (fm->modal_len <= 0 || strchr(fm->modal_input, '\\') || strchr(fm->modal_input, '/')) {
-            show_msg(fm, "Rename Failed", "Enter a valid filename without slashes.", 1);
+            show_msg(fm, FM_TR(fm, "重命名失败", "Rename Failed"),
+                     FM_TR(fm, "请输入不含斜杠的有效文件名。",
+                           "Enter a valid filename without slashes."), 1);
             return;
         }
         char new_full[256];
@@ -696,24 +738,30 @@ static void submit_modal(fm_t* fm) {
         int renamed = pxe_rename(fm->modal_target_path, new_full);
         if (renamed != 0) {
             if (renamed == -8) {
-                show_msg(fm, "Protected System File",
-                         "Required system files and locked shortcuts cannot be renamed.", 1);
+                show_msg(fm, FM_TR(fm, "受保护的系统文件", "Protected System File"),
+                         FM_TR(fm, "系统关键文件与锁定快捷方式不可重命名。",
+                               "Required system files and locked shortcuts cannot be renamed."), 1);
             } else {
-                show_msg(fm, "Rename Failed", "Name collision or I/O error.", 1);
+                show_msg(fm, FM_TR(fm, "重命名失败", "Rename Failed"),
+                         FM_TR(fm, "文件名冲突或磁盘 I/O 错误。",
+                               "Name collision or I/O error."), 1);
             }
             return;
         }
         load_directory(fm);
     } else if (fm->modal == MODAL_MKDIR) {
         if (fm->modal_len <= 0 || strchr(fm->modal_input, '\\') || strchr(fm->modal_input, '/')) {
-            show_msg(fm, "New Folder Failed", "Enter a valid folder name.", 1);
+            show_msg(fm, FM_TR(fm, "新建失败", "New Folder Failed"),
+                     FM_TR(fm, "请输入有效的文件夹名称。", "Enter a valid folder name."), 1);
             return;
         }
         char full[256];
         join_path(full, sizeof(full), fm->current_path, fm->modal_input);
         fm->modal = MODAL_NONE;
         if (pxe_mkdir(full) != 0) {
-            show_msg(fm, "New Folder Failed", "Folder exists or disk full.", 1);
+            show_msg(fm, FM_TR(fm, "新建失败", "New Folder Failed"),
+                     FM_TR(fm, "文件夹已存在或磁盘空间已满。",
+                           "Folder exists or disk full."), 1);
             return;
         }
         load_directory(fm);
@@ -722,11 +770,13 @@ static void submit_modal(fm_t* fm) {
         int deleted = pxe_unlink(fm->modal_target_path);
         if (deleted != 0) {
             if (deleted == -8) {
-                show_msg(fm, "Protected System File",
-                         "Required system software and locked shortcuts cannot be deleted.", 1);
+                show_msg(fm, FM_TR(fm, "受保护的系统文件", "Protected System File"),
+                         FM_TR(fm, "系统关键程序与锁定快捷方式不可删除。",
+                               "Required system software and locked shortcuts cannot be deleted."), 1);
             } else {
-                show_msg(fm, "Delete Failed",
-                         "Folder non-empty, read-only, or protected.", 1);
+                show_msg(fm, FM_TR(fm, "删除失败", "Delete Failed"),
+                         FM_TR(fm, "目录非空、驱动器只读或项目受保护。",
+                               "Folder non-empty, read-only, or protected."), 1);
             }
             return;
         }
@@ -917,17 +967,20 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         pxe_draw_button(surf, dx + 46,  dy + 66, 72, 22, FM_TR(fm, "确定", "OK"), 0, 1);
         pxe_draw_button(surf, dx + 142, dy + 66, 72, 22, FM_TR(fm, "取消", "Cancel"), 0, 1);
     } else if (fm->modal == MODAL_CONFIRM_DEL) {
-        int dw = 260, dh = 86;
+        int dw = 280, dh = 86;
+        if (dw > surf->width - 12) dw = surf->width - 12;
         int dx = (surf->width - dw) / 2;
         int dy = (surf->height - dh) / 2;
         pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
         pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_RED);
         pxe_draw_text(surf, dx + 8, dy + 3, fm->modal_title, PXE_COL_WHITE);
-        pxe_draw_text_small(surf, dx + 12, dy + 30, fm->modal_msg, PXE_COL_BLACK);
+        char mclip[128];
+        utf8_clip_by_pixels(fm->modal_msg, dw - 24, 1, mclip, sizeof(mclip));
+        pxe_draw_text_small(surf, dx + 12, dy + 30, mclip, PXE_COL_BLACK);
         pxe_draw_button(surf, dx + 46,  dy + 54, 72, 22, FM_TR(fm, "删除", "Delete"), 0, 1);
         pxe_draw_button(surf, dx + 142, dy + 54, 72, 22, FM_TR(fm, "取消", "Cancel"), 0, 1);
     } else if (fm->modal == MODAL_MSG) {
-        int dw = 300, dh = 88;
+        int dw = 340, dh = 88;
         if (dw > surf->width - 12) dw = surf->width - 12;
         int dx = (surf->width - dw) / 2;
         int dy = (surf->height - dh) / 2;
@@ -937,7 +990,9 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         pxe_draw_text(surf, dx + 19, dy + 15, fm->modal_is_err ? "!" : "i", PXE_COL_WHITE);
         pxe_draw_text(surf, dx + 42, dy + 13, fm->modal_title,
                       fm->modal_is_err ? PXE_COL_DARK_RED : PXE_COL_DARK_BLUE);
-        pxe_draw_text_small(surf, dx + 42, dy + 34, fm->modal_msg, PXE_COL_BLACK);
+        char mclip[128];
+        utf8_clip_by_pixels(fm->modal_msg, dw - 52, 1, mclip, sizeof(mclip));
+        pxe_draw_text_small(surf, dx + 42, dy + 34, mclip, PXE_COL_BLACK);
         pxe_draw_button(surf, dx + dw / 2 - 32, dy + 56, 64, 22, FM_TR(fm, "确定", "OK"), 0, 1);
     }
 }

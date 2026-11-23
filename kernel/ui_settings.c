@@ -471,6 +471,22 @@ void settings_init(void) {
     if (!find_system_partition()) {
         log_printf("[SETTINGS] local boot has no writable installed system "
                    "partition; persistence disabled\n");
+        return;
+    }
+
+    pse_config_t records[2];
+    bool valid0 = read_slot(0, &records[0]);
+    bool valid1 = read_slot(1, &records[1]);
+    int sel = -1;
+    if (valid0 && valid1) {
+        sel = (records[1].sequence > records[0].sequence) ? 1 : 0;
+    } else if (valid0) {
+        sel = 0;
+    } else if (valid1) {
+        sel = 1;
+    }
+    if (sel >= 0) {
+        g_lang_zh = (records[sel].reserved[0] & PSE_FLAG_LANG_EN) == 0;
     }
 }
 

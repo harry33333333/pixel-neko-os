@@ -116,6 +116,9 @@ static const diff_def_t k_diffs[3] = {
     { "Intermediate", 16, 16, 40 },
     { "Expert",       30, 16, 99 }
 };
+static const char* const k_diff_names_zh[3] = {
+    "初级", "中级", "高级"
+};
 
 typedef struct {
     int difficulty;
@@ -159,6 +162,7 @@ typedef struct {
     char                cfg_path[24];
     int                 cfg_ready;
     int                 cfg_writable;
+    int                 zh;
 } mines_app_t;
 
 static void settings_defaults(mines_settings_t* s) {
@@ -532,9 +536,8 @@ static void draw_circle_outline(const pxe_win_surface_t* surf, int cx, int cy,
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -824,19 +827,22 @@ static void render_game(const pxe_win_surface_t* surf, const mines_app_t* app) {
 
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, COL_BG);
 
-    pxe_draw_text(surf, 12, 9, "MINESWEEPER", COL_BLACK);
+    pxe_draw_text(surf, 12, 9, app->zh ? "扫雷" : "MINESWEEPER", COL_BLACK);
 
     char status[64];
     uint32_t status_color = COL_BLACK;
     if (g->game_over && g->won) {
-        snprintf(status, sizeof(status), "You Win! %ds", g->elapsed_sec);
+        snprintf(status, sizeof(status),
+                 app->zh ? "扫雷成功! 用时 %ds" : "You Win! %ds", g->elapsed_sec);
         status_color = COL_WIN;
     } else if (g->game_over) {
-        snprintf(status, sizeof(status), "Boom! Ctrl+N to retry");
+        snprintf(status, sizeof(status), "%s",
+                 app->zh ? "踩雷了! Ctrl+N 重试" : "Boom! Ctrl+N to retry");
         status_color = COL_LOSE;
     } else {
         snprintf(status, sizeof(status), "%s %dx%d (%d)",
-                 d->name, g->cols, g->rows, g->mines);
+                 app->zh ? k_diff_names_zh[app->settings.difficulty] : d->name,
+                 g->cols, g->rows, g->mines);
     }
     pxe_draw_text_small(surf, 12, 32, status, status_color);
 
@@ -844,18 +850,19 @@ static void render_game(const pxe_win_surface_t* surf, const mines_app_t* app) {
     char time_txt[4];
     format_counter(g->mines - g->flags, mines_txt);
     format_counter(g->elapsed_sec, time_txt);
-    draw_led_box(surf, MINE_BOX_X, MINE_BOX_Y, "MINES", mines_txt);
-    draw_led_box(surf, TIME_BOX_X, TIME_BOX_Y, "TIME", time_txt);
+    draw_led_box(surf, MINE_BOX_X, MINE_BOX_Y, app->zh ? "雷数" : "MINES", mines_txt);
+    draw_led_box(surf, TIME_BOX_X, TIME_BOX_Y, app->zh ? "时间" : "TIME", time_txt);
 
     draw_face_button(surf, app);
 
     pxe_draw_button(surf, SET_BTN_X, SET_BTN_Y, SET_BTN_W, SET_BTN_H,
-                    "Settings", app->press_action == ACT_SETTINGS, 1);
+                    app->zh ? "设置" : "Settings", app->press_action == ACT_SETTINGS, 1);
 
     draw_board(surf, app);
 
     draw_text_center(surf, WIN_W / 2, FOOTER_Y,
-                     "Left: Reveal  Right: Flag  Ctrl+N: New  Ctrl+S: Settings",
+                     app->zh ? "左键: 翻开  右键: 标旗  Ctrl+N: 新游戏  Ctrl+S: 设置"
+                             : "Left: Reveal  Right: Flag  Ctrl+N: New  Ctrl+S: Settings",
                      COL_MUTED, 1);
 
     if (app->settings_open) {
@@ -898,9 +905,10 @@ static void draw_settings_dialog(const pxe_win_surface_t* surf,
     pxe_fill_rect(surf, DLG_X + 3, DLG_Y + 3, DLG_W - 6,
                   DLG_TITLE_H - 3, COL_TITLEBAR);
     draw_text_center(surf, DLG_X + DLG_W / 2, DLG_Y + 6,
-                     "SETTINGS", COL_WHITE, 0);
+                     app->zh ? "游戏设置" : "SETTINGS", COL_WHITE, 0);
 
-    pxe_draw_text(surf, DLG_X + 20, DLG_Y + 38, "Difficulty", COL_BLACK);
+    pxe_draw_text(surf, DLG_X + 20, DLG_Y + 38,
+                  app->zh ? "难度选择" : "Difficulty", COL_BLACK);
 
     for (int i = 0; i < 3; i++) {
         int y = DLG_DIFF_Y(i);
@@ -908,10 +916,12 @@ static void draw_settings_dialog(const pxe_win_surface_t* surf,
             draw_sunken_box(surf, DLG_X + 14, y - 2, DLG_W - 28, 22, COL_BG);
         }
         draw_radio(surf, DLG_X + 30, y + 8, app->draft.difficulty == i);
-        pxe_draw_text(surf, DLG_X + 46, y, k_diffs[i].name, COL_BLACK);
+        pxe_draw_text(surf, DLG_X + 46, y,
+                      app->zh ? k_diff_names_zh[i] : k_diffs[i].name, COL_BLACK);
 
-        char info[32];
-        snprintf(info, sizeof(info), "%d x %d, %d mines",
+        char info[40];
+        snprintf(info, sizeof(info),
+                 app->zh ? "%d x %d 格, %d 个地雷" : "%d x %d, %d mines",
                  k_diffs[i].cols, k_diffs[i].rows, k_diffs[i].mines);
         pxe_draw_text_small(surf, DLG_X + 160, y + 4, info, COL_MUTED);
     }
@@ -927,13 +937,13 @@ static void draw_settings_dialog(const pxe_win_surface_t* surf,
 
         if (i == 0) {
             checked = app->draft.safe_first;
-            label = "Safe first click";
+            label = app->zh ? "首次点击安全" : "Safe first click";
         } else if (i == 1) {
             checked = app->draft.question_marks;
-            label = "Question marks";
+            label = app->zh ? "允许标问号 (?)" : "Question marks";
         } else {
             checked = app->draft.sound;
-            label = "Sound effects";
+            label = app->zh ? "开启音效提示" : "Sound effects";
         }
 
         if (app->press_action == action) {
@@ -944,12 +954,13 @@ static void draw_settings_dialog(const pxe_win_surface_t* surf,
     }
 
     draw_text_center(surf, DLG_X + DLG_W / 2, DLG_Y + 224,
-                     "Applying starts a new game", COL_MUTED, 1);
+                     app->zh ? "应用设置将开始新一局游戏" : "Applying starts a new game",
+                     COL_MUTED, 1);
 
     pxe_draw_button(surf, DLG_APPLY_X, DLG_APPLY_Y, DLG_BTN_W, DLG_BTN_H,
-                    "Apply", app->press_action == ACT_APPLY, 1);
+                    app->zh ? "应用" : "Apply", app->press_action == ACT_APPLY, 1);
     pxe_draw_button(surf, DLG_CANCEL_X, DLG_CANCEL_Y, DLG_BTN_W, DLG_BTN_H,
-                    "Cancel", app->press_action == ACT_CANCEL, 1);
+                    app->zh ? "取消" : "Cancel", app->press_action == ACT_CANCEL, 1);
 }
 
 static int settings_hit_test(const mines_app_t* app, int x, int y) {
@@ -1171,7 +1182,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Minesweeper");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "扫雷" : "Minesweeper");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -1179,6 +1191,7 @@ int main(int argc, char** argv) {
 
     mines_app_t app;
     memset(&app, 0, sizeof(app));
+    app.zh = init_zh;
     settings_defaults(&app.settings);
 
     app.sysinfo_ok = (pxe_sys_get_basic_info(&app.sysinfo) == 0);
@@ -1214,7 +1227,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app.zh) {
+                        app.zh = new_zh;
+                        pxe_win_set_title(win_id, app.zh ? "扫雷" : "Minesweeper");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;

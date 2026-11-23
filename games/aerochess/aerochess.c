@@ -92,6 +92,7 @@ static const int k_home[4][6][2] = {
 };
 
 static const char* k_name[4] = { "RED", "GREEN", "YELLOW", "BLUE" };
+static const char* k_name_zh[4] = { "红方", "绿方", "黄方", "蓝方" };
 
 static const uint32_t k_color[4] = {
     RGB(220, 40, 40),
@@ -120,12 +121,13 @@ typedef struct {
     int      game_over;
     int      winner;
     int      new_pressed;
-    char     notice[64];
+    char     notice[96];
 } aero_game_t;
 
 typedef struct {
     aero_game_t game;
     uint32_t    rng;
+    int         zh;
 } aero_app_t;
 
 static void base_origin(int player, int* bx, int* by) {
@@ -167,7 +169,8 @@ static void game_new(aero_app_t* app) {
     }
     g->turn = 0;
     g->winner = -1;
-    snprintf(g->notice, sizeof(g->notice), "RED's turn - click Roll");
+    snprintf(g->notice, sizeof(g->notice),
+             app->zh ? "红方回合 - 请点击投骰" : "RED's turn - click Roll");
 }
 
 static void compute_legal(aero_app_t* app) {
@@ -246,10 +249,10 @@ static int move_plane(aero_app_t* app, int plane_idx) {
     if (pos > 56) return 0;
     g->plane[player][plane_idx] = pos;
 
-    if (launched) append_msg(msg, sizeof(msg), "Launched! ");
-    if (jumped) append_msg(msg, sizeof(msg), "Jump +4! ");
-    if (captured > 0) append_msg(msg, sizeof(msg), "Captured! ");
-    if (pos == 56) append_msg(msg, sizeof(msg), "HOME! ");
+    if (launched) append_msg(msg, sizeof(msg), app->zh ? "起飞! " : "Launched! ");
+    if (jumped) append_msg(msg, sizeof(msg), app->zh ? "跳跃 +4! " : "Jump +4! ");
+    if (captured > 0) append_msg(msg, sizeof(msg), app->zh ? "击落敌机! " : "Captured! ");
+    if (pos == 56) append_msg(msg, sizeof(msg), app->zh ? "抵达终点! " : "HOME! ");
 
     if (all_home(g, player)) {
         g->game_over = 1;
@@ -257,18 +260,22 @@ static int move_plane(aero_app_t* app, int plane_idx) {
         g->rolled = 0;
         g->dice = 0;
         g->legal_count = 0;
-        snprintf(g->notice, sizeof(g->notice), "%s wins!", k_name[player]);
+        snprintf(g->notice, sizeof(g->notice),
+                 app->zh ? "%s获胜!" : "%s wins!",
+                 app->zh ? k_name_zh[player] : k_name[player]);
         pxe_beep();
         return 1;
     }
 
     int extra = (dice == 6);
     if (extra) {
-        append_msg(msg, sizeof(msg), "Roll again!");
+        append_msg(msg, sizeof(msg), app->zh ? "再投一次!" : "Roll again!");
     } else {
         g->turn = (g->turn + 1) % 4;
         if (msg[0] == '\0') {
-            snprintf(msg, sizeof(msg), "%s's turn", k_name[g->turn]);
+            snprintf(msg, sizeof(msg),
+                     app->zh ? "%s回合" : "%s's turn",
+                     app->zh ? k_name_zh[g->turn] : k_name[g->turn]);
         }
     }
 
@@ -294,15 +301,18 @@ static void finish_roll(aero_app_t* app) {
 
     if (g->legal_count == 0) {
         int next = (g->turn + 1) % 4;
-        snprintf(g->notice, sizeof(g->notice), "No moves - %s's turn",
-                 k_name[next]);
+        snprintf(g->notice, sizeof(g->notice),
+                 app->zh ? "无子可走 - %s回合" : "No moves - %s's turn",
+                 app->zh ? k_name_zh[next] : k_name[next]);
         g->turn = next;
         g->rolled = 0;
         g->dice = 0;
     } else if (g->dice == 6) {
-        snprintf(g->notice, sizeof(g->notice), "Rolled 6 - launch or move");
+        snprintf(g->notice, sizeof(g->notice), "%s",
+                 app->zh ? "掷出 6 点 - 可起飞或移动棋子" : "Rolled 6 - launch or move");
     } else {
-        snprintf(g->notice, sizeof(g->notice), "Click a highlighted plane");
+        snprintf(g->notice, sizeof(g->notice), "%s",
+                 app->zh ? "请点击高亮显示的棋子" : "Click a highlighted plane");
     }
 }
 
@@ -381,9 +391,8 @@ static void plane_screen_pos(const aero_app_t* app, int player, int plane_idx,
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -557,7 +566,7 @@ static void draw_board(const pxe_win_surface_t* surf, const aero_app_t* app) {
     int cy = GRID_Y + 7 * CELL_SIZE + CELL_SIZE / 2;
     draw_disc(surf, cx, cy, 18, COL_CENTER);
     draw_circle_outline(surf, cx, cy, 18, COL_CENTER_TEXT);
-    draw_text_center(surf, cx, cy - 3, "HOME", COL_CENTER_TEXT, 1);
+    draw_text_center(surf, cx, cy - 5, app->zh ? "终点" : "HOME", COL_CENTER_TEXT, 1);
 
     for (int p = 0; p < 4; p++) {
         for (int j = 0; j < 6; j++) {
@@ -583,23 +592,30 @@ static void render_game(const pxe_win_surface_t* surf, const aero_app_t* app) {
 
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, COL_BG);
 
-    pxe_draw_text(surf, 12, 6, "AERO CHESS", COL_TEXT);
-    pxe_draw_text_small(surf, 12, 26, "Roll the dice", COL_SUBTITLE);
+    pxe_draw_text(surf, 12, 6, app->zh ? "飞行棋" : "AERO CHESS", COL_TEXT);
+    pxe_draw_text_small(surf, 12, 26,
+                        app->zh ? "投骰子出发" : "Roll the dice", COL_SUBTITLE);
 
     draw_sunken_box(surf, TURN_X, TURN_Y, TURN_W, TURN_H, COL_DICE_FACE);
 
     char turn_text[40];
     int show_player = g->turn;
+    const char* pname = app->zh ? k_name_zh[show_player] : k_name[show_player];
     if (g->game_over && g->winner >= 0) {
         show_player = g->winner;
-        snprintf(turn_text, sizeof(turn_text), "%s WINS!", k_name[g->winner]);
+        pname = app->zh ? k_name_zh[g->winner] : k_name[g->winner];
+        snprintf(turn_text, sizeof(turn_text),
+                 app->zh ? "%s获胜!" : "%s WINS!", pname);
     } else if (g->rolling) {
-        snprintf(turn_text, sizeof(turn_text), "ROLLING...");
+        snprintf(turn_text, sizeof(turn_text), "%s",
+                 app->zh ? "投骰中..." : "ROLLING...");
     } else if (g->rolled) {
-        snprintf(turn_text, sizeof(turn_text), "%s ROLLED %d",
-                 k_name[g->turn], g->dice);
+        snprintf(turn_text, sizeof(turn_text),
+                 app->zh ? "%s掷出 %d" : "%s ROLLED %d",
+                 pname, g->dice);
     } else {
-        snprintf(turn_text, sizeof(turn_text), "%s'S TURN", k_name[g->turn]);
+        snprintf(turn_text, sizeof(turn_text),
+                 app->zh ? "%s回合" : "%s'S TURN", pname);
     }
     draw_text_center(surf, TURN_X + TURN_W / 2, TURN_Y + 9,
                      turn_text, k_color[show_player], 0);
@@ -612,25 +628,27 @@ static void render_game(const pxe_win_surface_t* surf, const aero_app_t* app) {
     }
 
     pxe_draw_button(surf, ROLL_X, ROLL_Y, ROLL_W, ROLL_H,
-                    "Roll", 0, can_roll ? 1 : 0);
+                    app->zh ? "投骰" : "Roll", 0, can_roll ? 1 : 0);
     pxe_draw_button(surf, NEW_BTN_X, NEW_BTN_Y, NEW_BTN_W, NEW_BTN_H,
-                    "New Game", g->new_pressed, 1);
+                    app->zh ? "新游戏" : "New Game", g->new_pressed, 1);
 
     draw_board(surf, app);
 
     const char* footer;
     uint32_t footer_color = COL_SUBTITLE;
     if (g->game_over) {
-        footer = g->notice[0] ? g->notice : "Game over - Ctrl+N: New Game";
+        footer = g->notice[0] ? g->notice
+                              : (app->zh ? "游戏结束 - Ctrl+N: 新游戏" : "Game over - Ctrl+N: New Game");
         if (g->winner >= 0) footer_color = k_color[g->winner];
     } else if (g->rolling) {
-        footer = "Rolling the dice...";
+        footer = app->zh ? "正在投掷骰子..." : "Rolling the dice...";
     } else if (g->rolled) {
-        footer = "Click a highlighted plane";
+        footer = app->zh ? "请点击高亮显示的棋子" : "Click a highlighted plane";
     } else if (g->notice[0]) {
         footer = g->notice;
     } else {
-        footer = "Click Roll, then click a highlighted plane    Ctrl+N: New Game";
+        footer = app->zh ? "点击投骰子再移动高亮棋子    Ctrl+N: 新游戏"
+                         : "Click Roll, then click a highlighted plane    Ctrl+N: New Game";
     }
     draw_text_center(surf, WIN_W / 2, FOOTER_Y, footer, footer_color, 1);
 }
@@ -745,7 +763,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Aero Chess");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "飞行棋" : "Aero Chess");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -753,6 +772,7 @@ int main(int argc, char** argv) {
 
     aero_app_t app;
     memset(&app, 0, sizeof(app));
+    app.zh = init_zh;
     uint64_t seed = pxe_get_ticks();
     app.rng = (uint32_t)seed ^ (uint32_t)(seed >> 32) ^
               ((uint32_t)pxe_getpid() * 2654435761u);
@@ -773,7 +793,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app.zh) {
+                        app.zh = new_zh;
+                        pxe_win_set_title(win_id, app.zh ? "飞行棋" : "Aero Chess");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;

@@ -75,6 +75,7 @@ typedef struct {
     int      best_dirty;
     int      new_pressed;
     int      keep_pressed;
+    int      zh;
     uint32_t rng;
 } game2048_t;
 
@@ -307,9 +308,8 @@ static int move_board(game2048_t* g, int dir) {
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -382,7 +382,7 @@ static void draw_action_button(const pxe_win_surface_t* surf, int x, int y,
     pxe_draw_vline(surf, x + w - 1, y, h,
                    pressed ? COL_BTN_LIGHT : COL_BTN_DARK);
 
-    int tw = (int)strlen(label) * 8;
+    int tw = pxe_text_width(label);
     int tx = x + (w - tw) / 2 + (pressed ? 1 : 0);
     int ty = y + (h - 16) / 2 + (pressed ? 1 : 0);
     pxe_draw_text(surf, tx, ty, label, COL_LIGHT_TEXT);
@@ -396,25 +396,27 @@ static void draw_overlay(const pxe_win_surface_t* surf, const game2048_t* g) {
 
     if (g->won && !g->keep_going) {
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 82,
-                         "You Win!", COL_TITLE, 0);
+                         g->zh ? "恭喜获胜!" : "You Win!", COL_TITLE, 0);
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 112,
-                         "You reached 2048!", COL_MUTED, 1);
+                         g->zh ? "成功合成 2048!" : "You reached 2048!", COL_MUTED, 1);
         draw_action_button(surf, KEEP_BTN_X, KEEP_BTN_Y,
-                           KEEP_BTN_W, KEEP_BTN_H, "Keep Going",
+                           KEEP_BTN_W, KEEP_BTN_H,
+                           g->zh ? "继续挑战" : "Keep Going",
                            g->keep_pressed);
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 208,
-                         "Click or press any key", COL_MUTED, 1);
+                         g->zh ? "点击或按任意键继续" : "Click or press any key", COL_MUTED, 1);
     } else if (g->game_over) {
-        char buf[32];
+        char buf[40];
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 88,
-                         "Game Over", COL_TITLE, 0);
-        snprintf(buf, sizeof(buf), "Score: %d", g->score);
+                         g->zh ? "游戏结束" : "Game Over", COL_TITLE, 0);
+        snprintf(buf, sizeof(buf), g->zh ? "最终得分: %d" : "Score: %d", g->score);
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 120, buf,
                          COL_MUTED, 0);
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 158,
-                         "Press Ctrl+N or click New Game", COL_MUTED, 1);
+                         g->zh ? "按 Ctrl+N 或点击新游戏" : "Press Ctrl+N or click New Game",
+                         COL_MUTED, 1);
         draw_text_center(surf, WIN_W / 2, BOARD_Y + 178,
-                         "to try again", COL_MUTED, 1);
+                         g->zh ? "重新开始挑战" : "to try again", COL_MUTED, 1);
     }
 }
 
@@ -423,10 +425,10 @@ static void render_game(const pxe_win_surface_t* surf, const game2048_t* g) {
 
     pxe_draw_text(surf, BOARD_X, 14, "2048", COL_TITLE);
     pxe_draw_text_small(surf, BOARD_X, 33,
-                        "Join tiles to 2048!", COL_MUTED);
+                        g->zh ? "合并方块直到 2048!" : "Join tiles to 2048!", COL_MUTED);
 
-    draw_score_box(surf, SCORE_X, SCORE_Y, "SCORE", g->score);
-    draw_score_box(surf, BEST_X, SCORE_Y, "BEST", g->best);
+    draw_score_box(surf, SCORE_X, SCORE_Y, g->zh ? "得分" : "SCORE", g->score);
+    draw_score_box(surf, BEST_X, SCORE_Y, g->zh ? "最高" : "BEST", g->best);
 
     pxe_fill_rect(surf, BOARD_X, BOARD_Y, BOARD_PX, BOARD_PX, COL_BOARD);
     for (int r = 0; r < BOARD_N; r++) {
@@ -442,9 +444,11 @@ static void render_game(const pxe_win_surface_t* surf, const game2048_t* g) {
                   BOARD_PX + 4, BOARD_PX + 4, COL_BOARD);
 
     draw_text_center(surf, WIN_W / 2, FOOTER_Y,
-                     "Arrows/WASD: Move   Ctrl+N: New Game", COL_MUTED, 1);
+                     g->zh ? "方向键/WASD: 移动   Ctrl+N: 新游戏"
+                           : "Arrows/WASD: Move   Ctrl+N: New Game", COL_MUTED, 1);
     draw_action_button(surf, NEW_BTN_X, NEW_BTN_Y,
-                       NEW_BTN_W, NEW_BTN_H, "New Game", g->new_pressed);
+                       NEW_BTN_W, NEW_BTN_H,
+                       g->zh ? "新游戏" : "New Game", g->new_pressed);
 
     if ((g->won && !g->keep_going) || g->game_over) {
         draw_overlay(surf, g);
@@ -509,7 +513,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "2048");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "2048 数字方块" : "2048");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -520,6 +525,7 @@ int main(int argc, char** argv) {
 
     game2048_t game;
     game_init(&game);
+    game.zh = init_zh;
 
     render_game(&surf, &game);
     pxe_win_present(win_id);
@@ -536,7 +542,15 @@ int main(int argc, char** argv) {
             case PXE_EV_CLOSE:
                 running = 0;
                 break;
-            case PXE_EV_REDRAW:
+            case PXE_EV_REDRAW: {
+                int new_zh = pxe_is_zh();
+                if (new_zh != game.zh) {
+                    game.zh = new_zh;
+                    pxe_win_set_title(win_id, game.zh ? "2048 数字方块" : "2048");
+                }
+                dirty = 1;
+                break;
+            }
             case PXE_EV_ACTIVATE:
                 dirty = 1;
                 break;

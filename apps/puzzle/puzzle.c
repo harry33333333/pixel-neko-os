@@ -11,6 +11,7 @@ typedef struct {
     int      moves;
     int      is_won;
     int      new_pressed;
+    int      zh;
     uint32_t rng;
 } puzzle_state_t;
 
@@ -118,14 +119,14 @@ static void render_puzzle(const pxe_win_surface_t* surf, const puzzle_state_t* s
     puzzle_layout(surf, &start_x, &start_y, &btn_x, &btn_y);
 
     if (st->is_won) {
-        const char* msg = "SOLVED! CONGRATULATIONS!";
-        int tx = (surf->width - (int)strlen(msg) * 8) / 2;
+        const char* msg = st->zh ? "通关成功! 恭喜!" : "SOLVED! CONGRATULATIONS!";
+        int tx = (surf->width - pxe_text_width(msg)) / 2;
         if (tx < 4) tx = 4;
         pxe_draw_text(surf, tx, 6, msg, PXE_COL_DARK_GREEN);
     } else {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Moves: %d", st->moves);
-        int tx = (surf->width - (int)strlen(buf) * 8) / 2;
+        snprintf(buf, sizeof(buf), st->zh ? "步数: %d" : "Moves: %d", st->moves);
+        int tx = (surf->width - pxe_text_width(buf)) / 2;
         pxe_draw_text(surf, tx, 6, buf, PXE_COL_BLACK);
     }
 
@@ -148,12 +149,17 @@ static void render_puzzle(const pxe_win_surface_t* surf, const puzzle_state_t* s
         }
     }
 
-    pxe_draw_button(surf, btn_x, btn_y, 88, 22, "New Game", st->new_pressed, 1);
+    pxe_draw_button(surf, btn_x, btn_y, 88, 22,
+                    st->zh ? "新游戏" : "New Game", st->new_pressed, 1);
 }
 
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
+
+    puzzle_state_t st;
+    memset(&st, 0, sizeof(st));
+    st.zh = pxe_is_zh();
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
@@ -165,14 +171,12 @@ int main(int argc, char** argv) {
     desc.min_h = 200;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "15-Puzzle");
+    strcpy(desc.title, st.zh ? "数字推盘" : "15-Puzzle");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
     if (win_id < 0) return 1;
 
-    puzzle_state_t st;
-    memset(&st, 0, sizeof(st));
     st.rng = 123456789u;
     puzzle_shuffle(&st);
 
@@ -194,7 +198,15 @@ int main(int argc, char** argv) {
             case PXE_EV_CLOSE:
                 running = 0;
                 break;
-            case PXE_EV_REDRAW:
+            case PXE_EV_REDRAW: {
+                int new_zh = pxe_is_zh();
+                if (new_zh != st.zh) {
+                    st.zh = new_zh;
+                    pxe_win_set_title(win_id, st.zh ? "数字推盘" : "15-Puzzle");
+                }
+                dirty = 1;
+                break;
+            }
             case PXE_EV_ACTIVATE:
                 dirty = 1;
                 break;

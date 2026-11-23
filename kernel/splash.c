@@ -10,6 +10,7 @@
 #include "vfs.h"
 #include "mouse.h"
 #include "gfx_accel.h"
+#include "settings.h"
 #include "version.h"
 
 #ifndef NULL
@@ -349,9 +350,12 @@ static void splash_draw_welcome_backdrop(unsigned char* v,
     PUT_PIXEL(v, bx + 17, by + 19, 0);  // Nose
 
     // Title and system info
+    bool zh = settings_is_language_zh();
     font_draw_text(v, win_x + 68, win_y + 16, "Pixel Neko OS", 0);
-    font_draw_text(v, win_x + 68, win_y + 32, "Version " KERNEL_BUILD, 0);
-    font_draw_text(v, win_x + 68, win_y + 48, "64-Bit Graphical Operating System", 8);
+    font_draw_text(v, win_x + 68, win_y + 32,
+                   zh ? ("版本 " KERNEL_BUILD) : ("Version " KERNEL_BUILD), 0);
+    font_draw_text(v, win_x + 68, win_y + 48,
+                   zh ? "64位图形操作系统" : "64-Bit Graphical Operating System", 8);
     font_draw_text(v, win_x + 68, win_y + 64, "(C) 2026 Tairitsu_tty / XNZM", 8);
 
     // Beveled horizontal separator line
@@ -362,7 +366,8 @@ static void splash_draw_welcome_backdrop(unsigned char* v,
 
     // Extension parade container line at screen bottom
     int parade_y = screen_h - 30;
-    font_draw_text(v, 16, parade_y - 12, "Extensions Loaded:", 8);
+    font_draw_text(v, 16, parade_y - 12,
+                   zh ? "已加载系统扩展:" : "Extensions Loaded:", 8);
 
     *out_win_x = win_x;
     *out_win_y = win_y;
@@ -405,15 +410,24 @@ void splash_run(void)
     copy_fullscreen_to_lfb(v);
 
     // Boot Steps Table - tuned to ~3.0s total with ~340-380ms per step
+    bool zh = settings_is_language_zh();
     boot_step_t steps[8] = {
-        { "Initializing processor...", cpu_model_string, 0, 15, 340, NULL },
-        { "Verifying memory map...", "Physical Page Bitmap OK", 1, 28, 340, NULL },
-        { "Scanning PCI bus & 2D Accelerator...", "VMware SVGA II / ATI / VBE", 2, 42, 360, gfx_accel_init },
-        { "Configuring PS/2 keyboard buffer...", "IRQ1 Remapped", 3, 56, 340, NULL },
-        { "Initializing PS/2 mouse streaming...", "Auxiliary Device Enabled", 4, 70, 360, mouse_init },
-        { "Probing ATA IDE storage & partitions...", "Master/Slave Drive Check", 5, 82, 380, NULL },
-        { "Mounting drives & volumes (VFS)...", "Virtual File System Ready", 6, 92, 380, run_vfs_init },
-        { "Loading desktop environment...", "Window Manager Ready", 7, 100, 360, wm_init }
+        { zh ? "正在初始化处理器..." : "Initializing processor...",
+          cpu_model_string, 0, 15, 340, NULL },
+        { zh ? "正在校验物理内存映射..." : "Verifying memory map...",
+          zh ? "物理页位图就绪" : "Physical Page Bitmap OK", 1, 28, 340, NULL },
+        { zh ? "正在扫描 PCI 总线与 2D 加速卡..." : "Scanning PCI bus & 2D Accelerator...",
+          "VMware SVGA II / ATI / VBE", 2, 42, 360, gfx_accel_init },
+        { zh ? "正在配置 PS/2 键盘缓冲区..." : "Configuring PS/2 keyboard buffer...",
+          zh ? "IRQ1 中断已重映射" : "IRQ1 Remapped", 3, 56, 340, NULL },
+        { zh ? "正在初始化 PS/2 鼠标流..." : "Initializing PS/2 mouse streaming...",
+          zh ? "辅助输入设备已启用" : "Auxiliary Device Enabled", 4, 70, 360, mouse_init },
+        { zh ? "正在探测磁盘存储与分区..." : "Probing ATA IDE storage & partitions...",
+          zh ? "主从驱动器检测完成" : "Master/Slave Drive Check", 5, 82, 380, NULL },
+        { zh ? "正在挂载驱动器与卷 (VFS)..." : "Mounting drives & volumes (VFS)...",
+          zh ? "虚拟文件系统已就绪" : "Virtual File System Ready", 6, 92, 380, run_vfs_init },
+        { zh ? "正在加载桌面环境..." : "Loading desktop environment...",
+          zh ? "窗口管理器已就绪" : "Window Manager Ready", 7, 100, 360, wm_init }
     };
 
     int current_percent = 5;
@@ -521,7 +535,8 @@ void splash_run(void)
                 PUT_PIXEL(v, px, py, color);
             }
         }
-        font_draw_text(v, win_x + 20, win_y + 142, "Starting desktop...", 0);
+        font_draw_text(v, win_x + 20, win_y + 142,
+                       zh ? "正在启动桌面..." : "Starting desktop...", 0);
         copy_rect_to_lfb(v, win_x + 14, win_y + 94, win_w - 28, win_h - 100);
         sleep_ms(350);
     }

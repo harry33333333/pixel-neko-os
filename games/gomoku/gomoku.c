@@ -82,6 +82,7 @@ typedef struct {
 
 typedef struct {
     gomoku_game_t game;
+    int           zh;
 } gomoku_app_t;
 
 static const int k_dirs[4][2] = {
@@ -291,9 +292,8 @@ static void game_new(gomoku_app_t* app) {
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -403,10 +403,11 @@ static void render_game(const pxe_win_surface_t* surf, const gomoku_app_t* app) 
 
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, COL_BG);
 
-    pxe_draw_text(surf, 12, 6, "GOMOKU", COL_TITLE);
+    pxe_draw_text(surf, 12, 6, app->zh ? "五子棋" : "GOMOKU", COL_TITLE);
 
     char sub[48];
-    snprintf(sub, sizeof(sub), "Five in a Row  Moves: %d", g->moves);
+    snprintf(sub, sizeof(sub),
+             app->zh ? "五子连珠  步数: %d" : "Five in a Row  Moves: %d", g->moves);
     pxe_draw_text_small(surf, 12, 26, sub, COL_SUBTITLE);
 
     draw_sunken_box(surf, STATUS_X, STATUS_Y, STATUS_W, STATUS_H, COL_STATUS_BG);
@@ -415,31 +416,33 @@ static void render_game(const pxe_win_surface_t* surf, const gomoku_app_t* app) 
     uint32_t status_color = PXE_COL_BLACK;
     if (g->game_over) {
         if (g->winner == BLACK) {
-            status = "Black wins!";
+            status = app->zh ? "黑方获胜!" : "Black wins!";
             status_color = COL_WIN;
         } else if (g->winner == WHITE) {
-            status = "White wins!";
+            status = app->zh ? "白方获胜!" : "White wins!";
             status_color = COL_WIN;
         } else {
-            status = "Draw";
+            status = app->zh ? "平局" : "Draw";
             status_color = PXE_COL_DARK_RED;
         }
     } else if (g->ai_thinking) {
-        status = "White is thinking...";
+        status = app->zh ? "电脑思考中..." : "White is thinking...";
         status_color = PXE_COL_DARK_BLUE;
     } else {
-        status = (g->turn == BLACK) ? "Black to move" : "White to move";
+        status = (g->turn == BLACK) ? (app->zh ? "轮到黑方" : "Black to move")
+                                    : (app->zh ? "轮到白方" : "White to move");
     }
     draw_text_center(surf, STATUS_X + STATUS_W / 2, STATUS_Y + 9,
                      status, status_color, 0);
 
     pxe_draw_button(surf, NEW_BTN_X, NEW_BTN_Y, NEW_BTN_W, NEW_BTN_H,
-                    "New Game", g->new_pressed, 1);
+                    app->zh ? "新游戏" : "New Game", g->new_pressed, 1);
 
     draw_board(surf, app);
 
     draw_text_center(surf, WIN_W / 2, FOOTER_Y,
-                     "Click an intersection to place a stone    Ctrl+N: New Game",
+                     app->zh ? "点击交叉点落子    Ctrl+N: 新游戏"
+                             : "Click an intersection to place a stone    Ctrl+N: New Game",
                      COL_SUBTITLE, 1);
 }
 
@@ -509,7 +512,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Gomoku");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "五子棋" : "Gomoku");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -517,6 +521,7 @@ int main(int argc, char** argv) {
 
     gomoku_app_t app;
     memset(&app, 0, sizeof(app));
+    app.zh = init_zh;
     game_new(&app);
 
     render_game(&surf, &app);
@@ -533,7 +538,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app.zh) {
+                        app.zh = new_zh;
+                        pxe_win_set_title(win_id, app.zh ? "五子棋" : "Gomoku");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;

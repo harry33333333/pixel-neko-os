@@ -80,11 +80,12 @@ typedef struct {
     int      ai_thinking;
     uint64_t ai_deadline;
     int      new_pressed;
-    char     notice[48];
+    char     notice[64];
 } othello_game_t;
 
 typedef struct {
     othello_game_t game;
+    int            zh;
 } othello_app_t;
 
 static const int k_dirs[8][2] = {
@@ -214,9 +215,15 @@ static void resolve_turn(othello_app_t* app) {
 
     int other = opponent(g->turn);
     if (has_legal_move(g->board, other)) {
-        snprintf(g->notice, sizeof(g->notice), "%s has no move - %s plays",
-                 g->turn == BLACK ? "Black" : "White",
-                 other == BLACK ? "Black" : "White");
+        if (app->zh) {
+            snprintf(g->notice, sizeof(g->notice), "%s无子可下 - %s回合",
+                     g->turn == BLACK ? "黑方" : "白方",
+                     other == BLACK ? "黑方" : "白方");
+        } else {
+            snprintf(g->notice, sizeof(g->notice), "%s has no move - %s plays",
+                     g->turn == BLACK ? "Black" : "White",
+                     other == BLACK ? "Black" : "White");
+        }
         g->turn = other;
         if (g->turn == WHITE) schedule_ai(app);
         return;
@@ -353,9 +360,8 @@ static void ai_make_move(othello_app_t* app) {
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -456,14 +462,16 @@ static void render_game(const pxe_win_surface_t* surf, const othello_app_t* app)
 
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, COL_BG);
 
-    pxe_draw_text(surf, 12, 8, "REVERSI", COL_TITLE);
-    pxe_draw_text_small(surf, 12, 28, "You: Black   CPU: White", COL_SUBTITLE);
+    pxe_draw_text(surf, 12, 8, app->zh ? "黑白棋" : "REVERSI", COL_TITLE);
+    pxe_draw_text_small(surf, 12, 28,
+                        app->zh ? "玩家: 黑棋   电脑: 白棋" : "You: Black   CPU: White",
+                        COL_SUBTITLE);
 
-    draw_score_box(surf, SCORE_BLACK_X, SCORE_Y, "BLACK", g->black_count);
-    draw_score_box(surf, SCORE_WHITE_X, SCORE_Y, "WHITE", g->white_count);
+    draw_score_box(surf, SCORE_BLACK_X, SCORE_Y, app->zh ? "黑棋" : "BLACK", g->black_count);
+    draw_score_box(surf, SCORE_WHITE_X, SCORE_Y, app->zh ? "白棋" : "WHITE", g->white_count);
 
     pxe_draw_button(surf, NEW_BTN_X, NEW_BTN_Y, NEW_BTN_W, NEW_BTN_H,
-                    "New Game", g->new_pressed, 1);
+                    app->zh ? "新游戏" : "New Game", g->new_pressed, 1);
 
     draw_board(surf, app);
 
@@ -474,31 +482,37 @@ static void render_game(const pxe_win_surface_t* surf, const othello_app_t* app)
     char line[64];
     if (g->game_over) {
         if (g->winner == BLACK) {
-            snprintf(line, sizeof(line), "Black wins! %d : %d",
+            snprintf(line, sizeof(line),
+                     app->zh ? "黑方获胜! %d : %d" : "Black wins! %d : %d",
                      g->black_count, g->white_count);
         } else if (g->winner == WHITE) {
-            snprintf(line, sizeof(line), "White wins! %d : %d",
+            snprintf(line, sizeof(line),
+                     app->zh ? "白方获胜! %d : %d" : "White wins! %d : %d",
                      g->black_count, g->white_count);
         } else {
-            snprintf(line, sizeof(line), "Draw %d : %d",
+            snprintf(line, sizeof(line),
+                     app->zh ? "平局 %d : %d" : "Draw %d : %d",
                      g->black_count, g->white_count);
         }
     } else {
-        snprintf(line, sizeof(line), "Black %d : %d White   %s to move",
+        snprintf(line, sizeof(line),
+                 app->zh ? "黑 %d : %d 白   %s回合" : "Black %d : %d White   %s to move",
                  g->black_count, g->white_count,
-                 g->turn == BLACK ? "Black" : "White");
+                 app->zh ? (g->turn == BLACK ? "黑方" : "白方")
+                         : (g->turn == BLACK ? "Black" : "White"));
     }
     draw_text_center(surf, WIN_W / 2, STATUS_LINE_Y, line, COL_STATUS_TEXT, 0);
 
     const char* hint;
     if (g->game_over) {
-        hint = "Ctrl+N: New Game";
+        hint = app->zh ? "Ctrl+N: 新游戏" : "Ctrl+N: New Game";
     } else if (g->notice[0]) {
         hint = g->notice;
     } else if (g->ai_thinking) {
-        hint = "Computer is thinking...";
+        hint = app->zh ? "电脑思考中..." : "Computer is thinking...";
     } else {
-        hint = "Click a highlighted square    Ctrl+N: New Game";
+        hint = app->zh ? "点击黄点位置落子    Ctrl+N: 新游戏"
+                       : "Click a highlighted square    Ctrl+N: New Game";
     }
     draw_text_center(surf, WIN_W / 2, STATUS_HINT_Y, hint, COL_STATUS_TEXT, 1);
 }
@@ -563,7 +577,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Reversi");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "黑白棋" : "Reversi");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -571,6 +586,7 @@ int main(int argc, char** argv) {
 
     othello_app_t app;
     memset(&app, 0, sizeof(app));
+    app.zh = init_zh;
     game_new(&app);
 
     render_game(&surf, &app);
@@ -587,7 +603,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app.zh) {
+                        app.zh = new_zh;
+                        pxe_win_set_title(win_id, app.zh ? "黑白棋" : "Reversi");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;

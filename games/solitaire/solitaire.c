@@ -101,6 +101,7 @@ typedef struct {
 typedef struct {
     solitaire_game_t game;
     uint32_t         rng;
+    int              zh;
 } solitaire_app_t;
 
 static int card_is_red(const sol_card_t* c) {
@@ -380,9 +381,8 @@ static int move_to_tableau(solitaire_game_t* g, int dest) {
 
 static void draw_text_center(const pxe_win_surface_t* surf, int cx, int y,
                              const char* text, uint32_t color, int small) {
-    int len = (int)strlen(text);
-    int char_w = small ? 6 : 8;
-    int x = cx - (len * char_w) / 2;
+    int tw = small ? pxe_text_width_small(text) : pxe_text_width(text);
+    int x = cx - tw / 2;
     if (small) {
         pxe_draw_text_small(surf, x, y, text, color);
     } else {
@@ -448,11 +448,11 @@ static void draw_card(const pxe_win_surface_t* surf, int x, int y,
 }
 
 static void draw_top_row(const pxe_win_surface_t* surf,
-                         const solitaire_game_t* g) {
+                         const solitaire_game_t* g, int zh) {
     if (g->stock_count > 0) {
         draw_card(surf, STOCK_X, TOP_Y, &g->stock[g->stock_count - 1], 0, 0);
     } else {
-        draw_empty_slot(surf, STOCK_X, TOP_Y, "STOCK", 0);
+        draw_empty_slot(surf, STOCK_X, TOP_Y, zh ? "发牌" : "STOCK", 0);
     }
 
     if (g->waste_count > 0) {
@@ -499,19 +499,21 @@ static void draw_tableau(const pxe_win_surface_t* surf,
 }
 
 static void render_game(const pxe_win_surface_t* surf,
-                        const solitaire_game_t* g) {
+                        const solitaire_app_t* app) {
+    const solitaire_game_t* g = &app->game;
+    int zh = app->zh;
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, COL_BG);
 
-    pxe_draw_text(surf, 12, 6, "SOLITAIRE", COL_TITLE);
+    pxe_draw_text(surf, 12, 6, zh ? "纸牌接龙" : "SOLITAIRE", COL_TITLE);
 
     char moves[32];
-    snprintf(moves, sizeof(moves), "Moves: %d", g->moves);
+    snprintf(moves, sizeof(moves), zh ? "步数: %d" : "Moves: %d", g->moves);
     pxe_draw_text_small(surf, 12, 26, moves, COL_SUBTITLE);
 
     pxe_draw_button(surf, NEW_BTN_X, NEW_BTN_Y, NEW_BTN_W, NEW_BTN_H,
-                    "New Game", g->new_pressed, 1);
+                    zh ? "新游戏" : "New Game", g->new_pressed, 1);
 
-    draw_top_row(surf, g);
+    draw_top_row(surf, g, zh);
     draw_tableau(surf, g);
 
     pxe_fill_rect(surf, 0, STATUS_Y, WIN_W, STATUS_H, COL_STATUS_BG);
@@ -522,7 +524,8 @@ static void render_game(const pxe_win_surface_t* surf,
     int text_y = STATUS_Y + 10;
 
     if (g->game_over) {
-        snprintf(status, sizeof(status), "You Win! Moves: %d", g->moves);
+        snprintf(status, sizeof(status),
+                 zh ? "恭喜通关! 步数: %d" : "You Win! Moves: %d", g->moves);
         small = 0;
         text_y = STATUS_Y + 7;
         draw_text_center(surf, WIN_W / 2, text_y, status, COL_WIN, small);
@@ -541,17 +544,20 @@ static void render_game(const pxe_win_surface_t* surf,
         }
 
         if (c) {
-            snprintf(status, sizeof(status), "Selected %s%c - click a destination",
+            snprintf(status, sizeof(status),
+                     zh ? "已选中 %s%c - 请点击目标位置" : "Selected %s%c - click a destination",
                      rank_name(c->rank), suit_char(c->suit));
         } else {
-            snprintf(status, sizeof(status), "Click a destination");
+            snprintf(status, sizeof(status),
+                     zh ? "请点击目标位置" : "Click a destination");
         }
         draw_text_center(surf, WIN_W / 2, text_y, status, COL_TITLE, small);
         return;
     }
 
-    snprintf(status, sizeof(status),
-             "Stock: draw   Select card, then destination   Ctrl+N: New Game");
+    snprintf(status, sizeof(status), "%s",
+             zh ? "发牌区: 翻牌   选中纸牌后点击目标位置   Ctrl+N: 新游戏"
+                : "Stock: draw   Select card, then destination   Ctrl+N: New Game");
     draw_text_center(surf, WIN_W / 2, text_y, status, COL_SUBTITLE, 1);
 }
 
@@ -689,7 +695,8 @@ int main(int argc, char** argv) {
     desc.min_h = WIN_H;
     desc.format = PXE_CANVAS_RGB32;
     desc.flags = PXE_WIN_DEFAULT;
-    strcpy(desc.title, "Solitaire");
+    int init_zh = pxe_is_zh();
+    strcpy(desc.title, init_zh ? "纸牌接龙" : "Solitaire");
 
     pxe_win_surface_t surf;
     int win_id = pxe_win_create(&desc, &surf);
@@ -697,13 +704,14 @@ int main(int argc, char** argv) {
 
     solitaire_app_t app;
     memset(&app, 0, sizeof(app));
+    app.zh = init_zh;
     uint64_t seed = pxe_get_ticks();
     app.rng = (uint32_t)seed ^ (uint32_t)(seed >> 32) ^
               ((uint32_t)pxe_getpid() * 2654435761u);
     if (app.rng == 0) app.rng = 0x5EED1234u;
     game_new(&app);
 
-    render_game(&surf, &app.game);
+    render_game(&surf, &app);
     pxe_win_present(win_id);
 
     int running = 1;
@@ -717,7 +725,15 @@ int main(int argc, char** argv) {
                 case PXE_EV_CLOSE:
                     running = 0;
                     break;
-                case PXE_EV_REDRAW:
+                case PXE_EV_REDRAW: {
+                    int new_zh = pxe_is_zh();
+                    if (new_zh != app.zh) {
+                        app.zh = new_zh;
+                        pxe_win_set_title(win_id, app.zh ? "纸牌接龙" : "Solitaire");
+                    }
+                    dirty = 1;
+                    break;
+                }
                 case PXE_EV_ACTIVATE:
                     dirty = 1;
                     break;
@@ -745,7 +761,7 @@ int main(int argc, char** argv) {
         if (rc < 0) break;
 
         if (dirty && running) {
-            render_game(&surf, &app.game);
+            render_game(&surf, &app);
             pxe_win_present(win_id);
             dirty = 0;
         } else if (running) {
