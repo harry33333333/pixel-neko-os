@@ -428,6 +428,7 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
             if (i == cp->sel_bpp && sup) {
                 pxe_fill_rect(surf, dx + 1, iy, dw - 2, 18, PXE_COL_BLUE);
             }
+            char ubuf[40];
             const char* lbl = cp->zh ? k_bpp_names_zh[i] : k_bpp_names[i];
             if (!sup) {
                 snprintf(ubuf, sizeof(ubuf),
