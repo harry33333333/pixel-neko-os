@@ -857,3 +857,4 @@ void shell_tab_complete(cmd_state_t* st) {
         st->line_len = (int)strlen(st->line);
     }
 }
+

@@ -1,5 +1,6 @@
 #include <pxe/abi.h>
 #include <pxe/sys.h>
+#include <pxe/fs.h>
 #include <pxe/gui.h>
 #include <pxe/gfx.h>
 #include <pxe/mem.h>

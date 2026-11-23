@@ -3,3 +3,4 @@ kind=app
 target=\APPS\cmd.pxe
 title=Command Prompt
 locked=0
+

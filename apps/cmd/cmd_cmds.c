@@ -792,3 +792,4 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
 
     return -999; /* Not a built-in command */
 }
+

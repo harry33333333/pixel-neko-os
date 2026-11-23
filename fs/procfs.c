@@ -403,3 +403,4 @@ int procfs_find_file(const char* rel_path, vfs_dirent_t* out_entry) {
     out_entry->size = sz;
     return VFS_OK;
 }
+

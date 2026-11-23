@@ -2810,7 +2810,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 int rc = desktop_clipboard_paste(error, sizeof(error));
                 if (rc == VFS_OK) {
                     show_opened(WM_TR("已粘贴到桌面", "Pasted to Desktop"));
-                } else if (rc != VFS_ERR_NOENT && rc != VFS_ERR_INVAL) {
+                } else if (rc != VFS_ERR_NOT_FOUND && rc != VFS_ERR_UNSUPPORTED) {
                     wm_notify_banner(error[0] ? error : WM_TR("粘贴失败", "Paste failed"));
                 }
                 handled_desk = true;

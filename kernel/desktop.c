@@ -4,6 +4,7 @@
 #include "pxe.h"
 #include "settings.h"
 #include "string.h"
+#include "ui_compat.h"
 #include "vfs.h"
 #include "wm.h"
 #include <stdarg.h>
@@ -69,14 +70,14 @@ static int desktop_format(char* output, size_t capacity,
     return (int)used;
 }
 
-static char* desktop_strrchr(char* text, char value) {
-    char* result = NULL;
+static char* desktop_strrchr(const char* text, char value) {
+    const char* result = NULL;
     if (!text) return NULL;
     while (*text) {
         if (*text == value) result = text;
         text++;
     }
-    return value == '\0' ? text : result;
+    return (char*)(value == '\0' ? text : result);
 }
 
 static int desktop_strcasecmp(const char* left, const char* right) {
@@ -1009,7 +1010,7 @@ static bool launch_associated_file(const char* path) {
         for (int i = 0; i < dn; i++) if (drives[i] == ldrv) dup = true;
         if (!dup) drives[dn++] = ldrv;
     }
-    char live_drv = find_live_drive();
+    char live_drv = find_boot_media_drive();
     if (live_drv) {
         bool dup = false;
         for (int i = 0; i < dn; i++) if (drives[i] == live_drv) dup = true;
@@ -1196,20 +1197,20 @@ int desktop_rename_item(int index, const char* new_name, char* error,
         if (error && error_capacity) {
             snprintf(error, error_capacity, "Invalid item name.");
         }
-        return VFS_ERR_INVAL;
+        return VFS_ERR_UNSUPPORTED;
     }
     if (item->locked || vfs_path_is_protected(item->path)) {
         if (error && error_capacity) {
             snprintf(error, error_capacity, "Protected desktop item cannot be renamed.");
         }
-        return VFS_ERR_ACCESS;
+        return VFS_ERR_PROTECTED;
     }
     for (const char* p = new_name; *p; p++) {
         if (*p == '\\' || *p == '/' || *p == ':') {
             if (error && error_capacity) {
                 snprintf(error, error_capacity, "Name cannot contain path separators.");
             }
-            return VFS_ERR_INVAL;
+            return VFS_ERR_UNSUPPORTED;
         }
     }
 
@@ -1229,7 +1230,7 @@ int desktop_rename_item(int index, const char* new_name, char* error,
         if (error && error_capacity) {
             snprintf(error, error_capacity, "Target name already exists.");
         }
-        return VFS_ERR_EXIST;
+        return VFS_ERR_IO;
     }
 
     char old_name[128];
@@ -1262,7 +1263,7 @@ int desktop_create_text_file(char* error, size_t error_capacity) {
     }
     char path[256];
     char name[64];
-    int created = VFS_ERR_EXIST;
+    int created = VFS_ERR_IO;
     for (int suffix = 0; suffix < 32; suffix++) {
         if (suffix == 0) {
             copy_text(name, sizeof(name), "New Text.txt");
@@ -1287,21 +1288,21 @@ int desktop_create_text_file(char* error, size_t error_capacity) {
 
 int desktop_clipboard_copy_cut(int index, bool is_cut) {
     desktop_item_t* item = desktop_get(index);
-    if (!item) return VFS_ERR_INVAL;
+    if (!item) return VFS_ERR_UNSUPPORTED;
     if (is_cut && (!g_mutable || item->locked ||
                    vfs_path_is_protected(item->path))) {
-        return VFS_ERR_ACCESS;
+        return VFS_ERR_PROTECTED;
     }
     char buf[320];
     snprintf(buf, sizeof(buf), "%s%s",
              is_cut ? "@PXEFM:CUT|" : "@PXEFM:COPY|", item->path);
-    return pxe_kern_clipboard_op(1, buf, strlen(buf) + 1);
+    return pxe_kern_clipboard_op(1, buf, strlen(buf) + 1) >= 0 ? 0 : VFS_ERR_IO;
 }
 
 bool desktop_clipboard_can_paste(void) {
     char buf[320];
     memset(buf, 0, sizeof(buf));
-    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) != 0 || !buf[0]) {
+    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) <= 0 || !buf[0]) {
         return false;
     }
     return strncmp(buf, "@PXEFM:COPY|", 12) == 0 ||
@@ -1336,7 +1337,7 @@ static int desk_copy_file_vfs(const char* src, const char* dst) {
         if (in) kfree(in);
         if (out) kfree(out);
         if (buf) kfree(buf);
-        return VFS_ERR_NOMEM;
+        return VFS_ERR_IO;
     }
     memset(in, 0, sizeof(*in));
     memset(out, 0, sizeof(*out));
@@ -1368,13 +1369,13 @@ static int desk_copy_file_vfs(const char* src, const char* dst) {
 
 static int desk_copy_dir_vfs(const char* src_dir, const char* dst_dir,
                              int depth) {
-    if (depth > 16) return VFS_ERR_INVAL;
+    if (depth > 16) return VFS_ERR_UNSUPPORTED;
     if (!path_exists_assume(dst_dir)) {
         int mk = vfs_mkdir(dst_dir);
         if (mk != VFS_OK && !path_exists_assume(dst_dir)) return mk;
     }
     desk_copy_list_t* list = (desk_copy_list_t*)kmalloc(sizeof(*list));
-    if (!list) return VFS_ERR_NOMEM;
+    if (!list) return VFS_ERR_IO;
     memset(list, 0, sizeof(*list));
     g_desk_copy_scan = list;
     int rc = vfs_list_dir(src_dir, desk_copy_collect_cb);
@@ -1399,10 +1400,10 @@ static int desk_copy_dir_vfs(const char* src_dir, const char* dst_dir,
 }
 
 static int desk_unlink_recursive(const char* target, bool is_dir, int depth) {
-    if (depth > 16) return VFS_ERR_INVAL;
+    if (depth > 16) return VFS_ERR_UNSUPPORTED;
     if (!is_dir) return vfs_unlink(target);
     desk_copy_list_t* list = (desk_copy_list_t*)kmalloc(sizeof(*list));
-    if (!list) return VFS_ERR_NOMEM;
+    if (!list) return VFS_ERR_IO;
     memset(list, 0, sizeof(*list));
     g_desk_copy_scan = list;
     int rc = vfs_list_dir(target, desk_copy_collect_cb);
@@ -1427,11 +1428,11 @@ int desktop_clipboard_paste(char* error, size_t error_capacity) {
     }
     char buf[320];
     memset(buf, 0, sizeof(buf));
-    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) != 0 || !buf[0]) {
+    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) <= 0 || !buf[0]) {
         if (error && error_capacity) {
             snprintf(error, error_capacity, "Clipboard is empty.");
         }
-        return VFS_ERR_NOENT;
+        return VFS_ERR_NOT_FOUND;
     }
     bool is_cut = false;
     const char* src = NULL;
@@ -1444,9 +1445,9 @@ int desktop_clipboard_paste(char* error, size_t error_capacity) {
         if (error && error_capacity) {
             snprintf(error, error_capacity, "No file on clipboard.");
         }
-        return VFS_ERR_INVAL;
+        return VFS_ERR_UNSUPPORTED;
     }
-    if (!src[0]) return VFS_ERR_INVAL;
+    if (!src[0]) return VFS_ERR_UNSUPPORTED;
 
     vfs_dirent_t st;
     memset(&st, 0, sizeof(st));
@@ -1454,7 +1455,7 @@ int desktop_clipboard_paste(char* error, size_t error_capacity) {
         if (error && error_capacity) {
             snprintf(error, error_capacity, "Source item not found.");
         }
-        return VFS_ERR_NOENT;
+        return VFS_ERR_NOT_FOUND;
     }
 
     const char* base = strrchr(src, '\\');
@@ -1490,7 +1491,7 @@ int desktop_clipboard_paste(char* error, size_t error_capacity) {
             if (error && error_capacity) {
                 snprintf(error, error_capacity, "Destination already exists.");
             }
-            return VFS_ERR_EXIST;
+            return VFS_ERR_IO;
         }
     }
 

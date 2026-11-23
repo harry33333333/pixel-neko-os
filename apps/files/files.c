@@ -1316,7 +1316,7 @@ static void sync_global_clipboard(fm_t* fm) {
     static char last_synced[320];
     char buf[320];
     memset(buf, 0, sizeof(buf));
-    if (pxe_kern_clipboard_op(0, buf, sizeof(buf)) != 0 || !buf[0]) return;
+    if (pxe_clipboard_get(buf, sizeof(buf)) <= 0 || !buf[0]) return;
     if (strncmp(buf, "@PXEFM:COPY|", 12) != 0 &&
         strncmp(buf, "@PXEFM:CUT|", 11) != 0) {
         return;
@@ -1435,7 +1435,7 @@ static void action_send_to_desktop(fm_t* fm, int idx) {
         set_status(fm, FM_TR(fm, "创建桌面快捷方式失败。", "Failed to create desktop shortcut."), 1);
         return;
     }
-    pxe_notify_desktop(pnk_path);
+    pxe_notify_desktop();
     set_status(fm, FM_TR(fm, "已发送到桌面。", "Sent to Desktop."), 0);
 }
 

@@ -165,3 +165,4 @@ int  cmd_resolve_app_path(cmd_state_t* st, const char* app_name, char* out, size
 int  cmd_open_with_assoc(cmd_state_t* st, const char* target_path);
 
 #endif
+
