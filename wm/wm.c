@@ -2943,9 +2943,14 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                 } else if (item == 6) {
                     if (selected) {
                         char prop[320];
-                        snprintf(prop, sizeof(prop), "%s | %s",
-                                 selected->display_name,
-                                 selected->target[0] ? selected->target : selected->path);
+                        size_t pos = 0;
+                        const char* s1 = selected->display_name;
+                        const char* sep = " | ";
+                        const char* s2 = selected->target[0] ? selected->target : selected->path;
+                        while (*s1 && pos + 1 < sizeof(prop)) prop[pos++] = *s1++;
+                        while (*sep && pos + 1 < sizeof(prop)) prop[pos++] = *sep++;
+                        while (*s2 && pos + 1 < sizeof(prop)) prop[pos++] = *s2++;
+                        prop[pos] = '\0';
                         wm_notify_banner(prop);
                     }
                 }

@@ -9,6 +9,97 @@
 #include "process.h"
 #include "string.h"
 #include "wm.h"
+#include <stdarg.h>
+
+static int proc_snprintf(char* out, size_t cap, const char* fmt, ...) {
+    if (!out || cap == 0 || !fmt) return 0;
+    size_t pos = 0;
+    va_list ap;
+    va_start(ap, fmt);
+    while (*fmt && pos + 1 < cap) {
+        if (*fmt != '%') {
+            out[pos++] = *fmt++;
+            continue;
+        }
+        fmt++;
+        if (*fmt == '%') {
+            out[pos++] = '%';
+            fmt++;
+            continue;
+        }
+        bool left = false;
+        char pad = ' ';
+        while (*fmt == '-' || *fmt == '0') {
+            if (*fmt == '-') left = true;
+            else if (*fmt == '0' && !left) pad = '0';
+            fmt++;
+        }
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
+        bool is_ll = false;
+        while (*fmt == 'l') {
+            is_ll = true;
+            fmt++;
+        }
+        char spec = *fmt;
+        if (!spec) break;
+        fmt++;
+
+        char tmp[64];
+        const char* str = tmp;
+        size_t slen = 0;
+        if (spec == 's') {
+            str = va_arg(ap, const char*);
+            if (!str) str = "(null)";
+            slen = strlen(str);
+        } else if (spec == 'c') {
+            tmp[0] = (char)va_arg(ap, int);
+            tmp[1] = '\0';
+            slen = 1;
+        } else if (spec == 'd' || spec == 'i') {
+            long long v = is_ll ? va_arg(ap, long long) : (long long)va_arg(ap, int);
+            bool neg = v < 0;
+            unsigned long long uv = neg ? (unsigned long long)(-v) : (unsigned long long)v;
+            char rev[32];
+            int rn = 0;
+            do { rev[rn++] = (char)('0' + (uv % 10ULL)); uv /= 10ULL; } while (uv);
+            if (neg) tmp[slen++] = '-';
+            while (rn > 0) tmp[slen++] = rev[--rn];
+            tmp[slen] = '\0';
+        } else if (spec == 'u' || spec == 'x' || spec == 'X') {
+            unsigned long long uv = is_ll ? va_arg(ap, unsigned long long)
+                                          : (unsigned long long)va_arg(ap, unsigned int);
+            unsigned int base = (spec == 'u') ? 10u : 16u;
+            const char* digits = (spec == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
+            char rev[32];
+            int rn = 0;
+            do { rev[rn++] = digits[uv % base]; uv /= base; } while (uv);
+            while (rn > 0) tmp[slen++] = rev[--rn];
+            tmp[slen] = '\0';
+        } else {
+            tmp[0] = '%';
+            tmp[1] = spec;
+            tmp[2] = '\0';
+            slen = 2;
+        }
+
+        int pad_len = (width > (int)slen) ? (width - (int)slen) : 0;
+        if (!left) {
+            for (int p = 0; p < pad_len && pos + 1 < cap; p++) out[pos++] = pad;
+        }
+        for (size_t i = 0; i < slen && pos + 1 < cap; i++) out[pos++] = str[i];
+        if (left) {
+            for (int p = 0; p < pad_len && pos + 1 < cap; p++) out[pos++] = ' ';
+        }
+    }
+    va_end(ap);
+    out[pos] = '\0';
+    return (int)pos;
+}
+#define snprintf proc_snprintf
 
 static char proc_lower(char c) {
     return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
@@ -111,7 +202,7 @@ char* procfs_generate_node(const char* rel_path, size_t* out_len) {
     if (!mem) return NULL;
     mem[0] = '\0';
     proc_buf_t pb = { mem, 0, cap };
-    char line[320];
+    char line[512];
 
     if (proc_ieq(rel_path, "list")) {
         pb_append(&pb, "PID   PPID  RING  STATE   MEM_KB    TICKS        NAME\n");
