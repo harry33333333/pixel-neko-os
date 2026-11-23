@@ -323,6 +323,27 @@ static void notification_ime_span(int* out_x, int* out_width) {
     if (out_width) *out_width = 36;
 }
 
+static void draw_ime_indicator(unsigned char* v) {
+    int ime_x = 0, ime_w = 0;
+    notification_ime_span(&ime_x, &ime_w);
+    bool zh = ime_is_enabled();
+    unsigned char bg = zh ? 1 : 7;
+    unsigned char fg = zh ? 15 : 0;
+    for (int yy = 2; yy < 18; yy++) {
+        for (int xx = ime_x; xx < ime_x + ime_w; xx++) PUT_PIXEL(v, xx, yy, bg);
+    }
+    for (int xx = ime_x; xx < ime_x + ime_w; xx++) {
+        PUT_PIXEL(v, xx, 2, 0);
+        PUT_PIXEL(v, xx, 17, 0);
+    }
+    for (int yy = 2; yy < 18; yy++) {
+        PUT_PIXEL(v, ime_x, yy, 0);
+        PUT_PIXEL(v, ime_x + ime_w - 1, yy, 0);
+    }
+    const char* tag = zh ? "[中]" : "[EN]";
+    font_draw_text(v, ime_x + (ime_w - font_text_width(tag)) / 2, 2, tag, fg);
+}
+
 static void notification_volume_panel(int* out_x, int* out_y,
                                       int* out_width, int* out_height) {
     int icon_x = 0, icon_width = 0;
@@ -1351,26 +1372,7 @@ static void draw_menubar(unsigned char* v)
     int clock_length = format_clock_text(clock_text, sizeof(clock_text));
     int clock_x = screen_w - clock_length * 8 - 10;
     if (clock_x < 24) clock_x = 24;
-    int ime_x = 0, ime_w = 0;
-    notification_ime_span(&ime_x, &ime_w);
-    {
-        bool zh = ime_is_enabled();
-        unsigned char bg = zh ? 1 : 7;
-        unsigned char fg = zh ? 15 : 0;
-        for (int yy = 2; yy < 18; yy++) {
-            for (int xx = ime_x; xx < ime_x + ime_w; xx++) PUT_PIXEL(v, xx, yy, bg);
-        }
-        for (int xx = ime_x; xx < ime_x + ime_w; xx++) {
-            PUT_PIXEL(v, xx, 2, 0);
-            PUT_PIXEL(v, xx, 17, 0);
-        }
-        for (int yy = 2; yy < 18; yy++) {
-            PUT_PIXEL(v, ime_x, yy, 0);
-            PUT_PIXEL(v, ime_x + ime_w - 1, yy, 0);
-        }
-        const char* tag = zh ? "[中]" : "[EN]";
-        font_draw_text(v, ime_x + (ime_w - font_text_width(tag)) / 2, 2, tag, fg);
-    }
+    draw_ime_indicator(v);
     int volume_x = 0;
     notification_volume_span(&volume_x, NULL);
     draw_volume_icon(v, volume_x, 2);
@@ -1965,8 +1967,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     int width = old_width > new_width ? old_width : new_width;
                     int volume_x = 0, volume_width = 0;
                     notification_volume_span(&volume_x, &volume_width);
+                    int ime_x = 0;
+                    notification_ime_span(&ime_x, NULL);
                     int cx0 = screen_w - width - 84;
-                    if (volume_x - 4 < cx0) cx0 = volume_x - 4;
+                    if (ime_x - 4 < cx0) cx0 = ime_x - 4;
                     if (cx0 < 24) cx0 = 24;
                     for (int cy = 0; cy < 20; cy++) {
                         for (int cx = cx0; cx < screen_w; cx++) {
@@ -1975,6 +1979,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     }
                     int tx = screen_w - new_width - 10;
                     if (tx < 24) tx = 24;
+                    draw_ime_indicator(v);
                     draw_volume_icon(v, volume_x, 2);
                     font_draw_text(v, tx, 2, next_clock, 0);
                     wm_push_dirty_rect(cx0, 0, screen_w - cx0, 20);
