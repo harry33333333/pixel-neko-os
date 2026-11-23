@@ -464,7 +464,8 @@ static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
     }
     bool ctrl = (modifiers & 0x11u) != 0;
     bool shift = (modifiers & 0x22u) != 0;
-    keyboard_set_usb_modifiers(ctrl ? 1 : 0, shift ? 1 : 0);
+    bool alt = (modifiers & 0x44u) != 0;
+    keyboard_set_usb_modifiers(ctrl ? 1 : 0, shift ? 1 : 0, alt ? 1 : 0);
     uint8_t current_keys[HID_MAX_KEYS];
     uint32_t current_codes[HID_MAX_KEYS];
     memset(current_keys, 0, sizeof(current_keys));
@@ -498,6 +499,11 @@ static void process_keyboard(hid_state_t* hid, hid_report_layout_t* layout,
     for (int i = 0; i < key_count; i++) {
         uint8_t usage = current_keys[i];
         if (key_usage_present(hid->previous_keys, previous_count, usage)) {
+            continue;
+        }
+        if (usage == 0x2Bu && keyboard_get_alt()) {
+            keyboard_notify_alt_tab(keyboard_get_shift());
+            current_codes[i] = 0;
             continue;
         }
         if (usage == 0x29 && keyboard_get_ctrl() && keyboard_get_shift()) {

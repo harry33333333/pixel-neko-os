@@ -6,6 +6,7 @@ version        = "1.0.0"
 ring           = 3
 subsystem      = GUI
 flags          = SINGLE_INST | RESIZABLE | SYS_SETTINGS
+ext_assoc      = "bmp,png,jpg,jpeg"
 stack_size     = 64K
 heap_init_size = 512K
 def_w          = 480

@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A280b`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A281a`）
 
-在当前 **`v26A280b`** 中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，全面支持 UTF-8 简体中文显示、Rime 拼音输入法（`PXE_KEY_UTF8`）、动态界面语言切换、图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 **`v26A281a`** 中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，全面支持 UTF-8 简体中文显示、Rime 拼音输入法（`PXE_KEY_UTF8`）、动态界面语言切换、图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -53,7 +53,7 @@ def_w          = 360
 def_h          = 240
 min_w          = 260
 min_h          = 180
-; ext_assoc    = "txt,md"       ; 可选：关联双击打开的文件扩展名
+; ext_assoc    = "txt,md"       ; 可选：关联双击打开的文件扩展名（嵌入 pxe_resource_t.ext_assoc，供 files.pxe 与 system\assoc.ini 协同解析）
 
 [icon]
 row00 = ................

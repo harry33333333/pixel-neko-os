@@ -3,13 +3,16 @@
 
 static bool g_ps2_shift = false;
 static bool g_ps2_ctrl = false;
+static bool g_ps2_alt = false;
 static bool g_usb_shift = false;
 static bool g_usb_ctrl = false;
+static bool g_usb_alt = false;
 static bool g_caps = false;
 static bool g_extended = false;
 static uint8_t g_e1_remaining = 0;
 static volatile int g_taskmgr_hotkey = 0;
 static volatile int g_ime_toggle_hotkey = 0;
+static volatile int g_alt_tab_steps = 0;
 static bool g_ime_chord_seen = false;
 static bool g_ime_chord_tainted = false;
 
@@ -65,13 +68,16 @@ static uint32_t translate(uint8_t scancode) {
 void keyboard_init(void) {
     g_ps2_shift = false;
     g_ps2_ctrl = false;
+    g_ps2_alt = false;
     g_usb_shift = false;
     g_usb_ctrl = false;
+    g_usb_alt = false;
     g_caps = false;
     g_extended = false;
     g_e1_remaining = 0;
     g_taskmgr_hotkey = 0;
     g_ime_toggle_hotkey = 0;
+    g_alt_tab_steps = 0;
     g_ime_chord_seen = false;
     g_ime_chord_tainted = false;
     g_key_head = 0;
@@ -124,7 +130,11 @@ void keyboard_handle_byte(uint8_t scancode) {
                 keyboard_update_ime_chord(false);
                 g_extended = false;
                 return;
-            case 0x38: break;
+            case 0x38:
+                g_ps2_alt = !release;
+                keyboard_update_ime_chord(true);
+                g_extended = false;
+                return;
             case 0x48: translated = INPUT_CODE_UP; break;
             case 0x50: translated = INPUT_CODE_DOWN; break;
             case 0x4B: translated = INPUT_CODE_LEFT; break;
@@ -149,6 +159,7 @@ void keyboard_handle_byte(uint8_t scancode) {
                 keyboard_update_ime_chord(false);
                 return;
             case 0x38:
+                g_ps2_alt = !release;
                 keyboard_update_ime_chord(true);
                 return;
             case 0x3A:
@@ -163,6 +174,12 @@ void keyboard_handle_byte(uint8_t scancode) {
 
     if (!translated) return;
     if (!release) keyboard_update_ime_chord(true);
+    if (translated == INPUT_CODE_TAB && keyboard_get_alt()) {
+        if (!release) {
+            keyboard_notify_alt_tab(keyboard_get_shift());
+        }
+        return;
+    }
     if (!release && translated == INPUT_CODE_ESCAPE &&
         keyboard_get_ctrl() && keyboard_get_shift()) {
         g_taskmgr_hotkey = 1;
@@ -186,9 +203,14 @@ int keyboard_get_shift(void) {
     return (g_ps2_shift || g_usb_shift) ? 1 : 0;
 }
 
-void keyboard_set_usb_modifiers(int ctrl, int shift) {
+int keyboard_get_alt(void) {
+    return (g_ps2_alt || g_usb_alt) ? 1 : 0;
+}
+
+void keyboard_set_usb_modifiers(int ctrl, int shift, int alt) {
     g_usb_ctrl = (ctrl != 0);
     g_usb_shift = (shift != 0);
+    g_usb_alt = (alt != 0);
     keyboard_update_ime_chord(false);
 }
 
@@ -210,6 +232,17 @@ int keyboard_consume_taskmgr_hotkey(void) {
 int keyboard_consume_ime_hotkey(void) {
     int v = g_ime_toggle_hotkey;
     g_ime_toggle_hotkey = 0;
+    return v;
+}
+
+void keyboard_notify_alt_tab(int reverse) {
+    g_alt_tab_steps += reverse ? -1 : 1;
+    keyboard_update_ime_chord(true);
+}
+
+int keyboard_consume_alt_tab(void) {
+    int v = g_alt_tab_steps;
+    g_alt_tab_steps = 0;
     return v;
 }
 

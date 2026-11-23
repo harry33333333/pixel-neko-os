@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A280b"
+    BUILD_ID="26A281a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -119,6 +119,10 @@ fi
 if [ -f "system/IME.PNY" ]; then
     cp system/IME.PNY iso_root/system/IME.PNY
     cp system/IME.PNY iso_root/payload/system/IME.PNY
+fi
+if [ -f "system/assoc.ini" ]; then
+    cp system/assoc.ini iso_root/system/assoc.ini
+    cp system/assoc.ini iso_root/payload/system/assoc.ini
 fi
 cat > iso_root/payload/system/PAYLOAD.TXT <<EOF
 Pixel Neko OS ${BUILD_ID} complete offline payload

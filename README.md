@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A280b - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A281a - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统（完整支持简体中文 / English 双语与拼音输入法）
 
 ---
@@ -43,11 +43,11 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
   - 桌面直接映射系统盘 `Desktop\` 目录中的 `*.pnk` 快捷方式（自动隐藏后缀并绘制右下角快捷箭头），图标坐标由 `.desktop-layout` 持久化保存，支持自动对齐布局与自由拖拽；`文件管理` 与 `关于本机` 等系统关键快捷方式及 `APPS\`、`PDEVICE\`、`boot\`、`system\` 目录受保护禁止删除或重命名。Live 模式使用只读桌面，不读写本地系统盘。
   - 壁纸支持平铺、拉伸与置中（1:1 原始像素）模式，并支持一键恢复默认壁纸。
   - 顶部状态栏提供日期/秒钟独立开关、输入法状态指示，以及 Windows XP 风格音量弹出面板（支持滑块拖拽、独立静音按钮与滚轮 5% 步进调节）。
-  - 全局支持 **`Ctrl+Shift+Esc`** 快捷键呼出或聚焦任务管理器；鼠标滚轮全面统一为 Windows 方向（`PXE_EV_MOUSE_WHEEL`）。
+  - 全局支持 **`Ctrl+Shift+Esc`** 快捷键呼出或聚焦任务管理器，支持 **`Alt+Tab` / `Alt+Shift+Tab`** 窗口切换弹出面板；鼠标滚轮全面统一为 Windows 方向（`PXE_EV_MOUSE_WHEEL`）。
 
 ### 4. 内置应用程序与游戏生态
 - **系统应用（`APPS\*.pxe`）**：
-  - `files`（文件管理器）：支持多盘符浏览、长文件名、复制/剪切/粘贴/重命名/新建文件夹/删除/属性查看、磁盘弹出与文件关联启动。
+  - `files`（文件管理器）：支持多盘符浏览、长文件名、文件夹递归复制、复制/剪切/粘贴/重命名/新建文件夹/删除/属性查看、磁盘弹出，以及基于 `system\assoc.ini` 与 `pxe_resource_t.ext_assoc` 的动态文件关联和右键“打开方式...”自定义默认程序。
   - `notepad`（记事本）：完整接入 UTF-8 与拼音输入法（`PXE_KEY_UTF8`），支持中文编辑与滚轮浏览。
   - `cpanel`（控制面板）：配置屏幕分辨率/色深、桌面壁纸模式、顶栏时钟选项、系统音量及简体中文/英文界面语言。
   - `player`（媒体播放器）：支持 WAV、FLAC 与 MP3 解码播放与播放列表控制。
@@ -84,18 +84,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A280b.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A281a.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A280b.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A281a.iso -m 512M -serial stdio -boot d
 ```
 
 ### 自动化冒烟测试
 `scripts/qemu_smoke_test.sh` 执行桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A280b.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A281a.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

@@ -5,8 +5,11 @@
 #include <pxe/fs.h>
 #include <pxe/mem.h>
 #include <pxe/str.h>
+#include <pxe/format.h>
 
 #define MAX_FM_FILES 512
+#define MAX_OW_APPS  32
+#define OW_VISIBLE_ROWS 6
 #define TOOLBAR_H    26
 #define PATHBAR_H    18
 #define COLHDR_H     18
@@ -20,6 +23,7 @@
 #define MODAL_MKDIR       2
 #define MODAL_CONFIRM_DEL 3
 #define MODAL_MSG         4
+#define MODAL_OPEN_WITH   5
 
 #define CTX_NONE          0
 #define CTX_ITEM          1
@@ -38,6 +42,12 @@ typedef struct {
     char     fs_name[16];
     char     label[32];
 } fm_entry_t;
+
+typedef struct {
+    char filename[64];
+    char path[128];
+    char title[48];
+} fm_ow_app_t;
 
 typedef struct {
     int        win_id;
@@ -74,6 +84,13 @@ typedef struct {
     char       modal_input[128];
     int        modal_len;
     char       modal_target_path[256];
+    fm_ow_app_t ow_apps[MAX_OW_APPS];
+    int        ow_app_count;
+    int        ow_sel;
+    int        ow_scroll;
+    int        ow_save_default;
+    int        ow_can_save;
+    char       ow_ext[32];
     int        zh;
 } fm_t;
 
@@ -192,6 +209,10 @@ static int text_contains_ci(const char* text, const char* needle) {
     return 0;
 }
 
+static char ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
 static int drive_is_readonly(char letter) {
     pxe_drive_info_t drvs[26];
     int n = pxe_get_drives(drvs, 26);
@@ -202,6 +223,367 @@ static int drive_is_readonly(char letter) {
         if (dl == letter) return drvs[i].is_readonly;
     }
     return 0;
+}
+
+static void extract_ext_no_dot(const char* name, char* out, size_t cap) {
+    out[0] = '\0';
+    if (!name || cap == 0) return;
+    const char* slash = strrchr(name, '\\');
+    const char* slash2 = strrchr(name, '/');
+    if (slash2 && (!slash || slash2 > slash)) slash = slash2;
+    const char* base = slash ? (slash + 1) : name;
+    const char* dot = strrchr(base, '.');
+    if (!dot || !dot[1]) return;
+    size_t i = 0;
+    dot++;
+    while (dot[i] && i + 1 < cap) {
+        out[i] = ascii_lower(dot[i]);
+        i++;
+    }
+    out[i] = '\0';
+}
+
+static int read_pxe_meta(const char* path, uint8_t* out_subsys,
+                         char* out_title, size_t title_cap,
+                         char* out_assoc, size_t assoc_cap) {
+    if (out_subsys) *out_subsys = 0;
+    if (out_title && title_cap > 0) out_title[0] = '\0';
+    if (out_assoc && assoc_cap > 0) out_assoc[0] = '\0';
+
+    int fd = pxe_open(path);
+    if (fd < 0) return -1;
+
+    pxe_header_t hdr;
+    int r = pxe_read(fd, &hdr, sizeof(hdr));
+    if (r != (int)sizeof(hdr) || hdr.magic != PXE_MAGIC) {
+        pxe_close(fd);
+        return -1;
+    }
+    if (out_subsys) *out_subsys = hdr.subsystem;
+
+    pxe_resource_t rsrc;
+    memset(&rsrc, 0, sizeof(rsrc));
+    if (hdr.rsrc_size >= sizeof(rsrc) && hdr.rsrc_offset >= sizeof(hdr)) {
+        if (pxe_seek(fd, hdr.rsrc_offset) == 0) {
+            (void)pxe_read(fd, &rsrc, sizeof(rsrc));
+        }
+    }
+    pxe_close(fd);
+
+    if (out_title && title_cap > 0) {
+        rsrc.title[sizeof(rsrc.title) - 1] = '\0';
+        hdr.app_name[sizeof(hdr.app_name) - 1] = '\0';
+        const char* src = rsrc.title[0] ? rsrc.title : hdr.app_name;
+        snprintf(out_title, title_cap, "%s", src);
+    }
+    if (out_assoc && assoc_cap > 0) {
+        rsrc.ext_assoc[sizeof(rsrc.ext_assoc) - 1] = '\0';
+        snprintf(out_assoc, assoc_cap, "%s", rsrc.ext_assoc);
+    }
+    return 0;
+}
+
+static int ext_list_contains(const char* comma_list, const char* ext_no_dot) {
+    if (!comma_list || !ext_no_dot || !ext_no_dot[0]) return 0;
+    const char* p = comma_list;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',' || *p == '.') p++;
+        if (!*p) break;
+        char tok[32];
+        size_t ti = 0;
+        while (*p && *p != ',' && ti + 1 < sizeof(tok)) {
+            if (*p != ' ' && *p != '\t') tok[ti++] = *p;
+            p++;
+        }
+        tok[ti] = '\0';
+        while (*p && *p != ',') p++;
+        if (tok[0] && strcasecmp(tok, ext_no_dot) == 0) return 1;
+    }
+    return 0;
+}
+
+static int find_assoc_ini_path(char* out, size_t cap, int for_write) {
+    pxe_basic_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
+    pxe_sys_get_basic_info(&info);
+    pxe_dirent_t st;
+
+    if (for_write) {
+        if (!info.settings_writable || !info.system_drive ||
+            drive_is_readonly(info.system_drive)) {
+            return -1;
+        }
+        snprintf(out, cap, "%c:\\system\\assoc.ini", info.system_drive);
+        return 0;
+    }
+    if (info.system_drive) {
+        snprintf(out, cap, "%c:\\system\\assoc.ini", info.system_drive);
+        if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
+    }
+    if (info.cdrom_drive && info.cdrom_drive != info.system_drive) {
+        snprintf(out, cap, "%c:\\system\\assoc.ini", info.cdrom_drive);
+        if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
+    }
+    return -1;
+}
+
+static int parse_ini_kv(const char* line, size_t len, char* key_out, size_t key_cap,
+                        char* val_out, size_t val_cap) {
+    size_t s = 0;
+    while (s < len && (line[s] == ' ' || line[s] == '\t')) s++;
+    if (s >= len || line[s] == '#' || line[s] == ';' || line[s] == '[') return 0;
+    size_t eq = s;
+    while (eq < len && line[eq] != '=') eq++;
+    if (eq >= len) return 0;
+
+    size_t ke = eq;
+    while (ke > s && (line[ke - 1] == ' ' || line[ke - 1] == '\t')) ke--;
+    size_t klen = ke - s;
+    if (klen == 0 || klen >= key_cap) return 0;
+    memcpy(key_out, line + s, klen);
+    key_out[klen] = '\0';
+
+    size_t vs = eq + 1;
+    while (vs < len && (line[vs] == ' ' || line[vs] == '\t')) vs++;
+    size_t ve = len;
+    if (vs < ve && line[vs] == '"') {
+        vs++;
+        size_t q = vs;
+        while (q < ve && line[q] != '"') q++;
+        ve = q;
+    } else {
+        for (size_t i = vs; i < ve; i++) {
+            if (line[i] == '#' || line[i] == ';') { ve = i; break; }
+        }
+        while (ve > vs && (line[ve - 1] == ' ' || line[ve - 1] == '\t')) ve--;
+    }
+    size_t vlen = ve - vs;
+    if (vlen >= val_cap) vlen = val_cap - 1;
+    memcpy(val_out, line + vs, vlen);
+    val_out[vlen] = '\0';
+    return vlen > 0 ? 1 : 0;
+}
+
+static int lookup_assoc_ini(const char* ext_no_dot, char* out_spec, size_t cap) {
+    if (!ext_no_dot || !ext_no_dot[0]) return -1;
+    char ini_path[64];
+    if (find_assoc_ini_path(ini_path, sizeof(ini_path), 0) != 0) return -1;
+
+    char* buf = (char*)malloc(8192);
+    if (!buf) return -1;
+    int n = pxe_read_file(ini_path, buf, 8191);
+    if (n <= 0) {
+        free(buf);
+        return -1;
+    }
+    buf[n] = '\0';
+
+    int in_assoc = 1;
+    int found = -1;
+    const char* p = buf;
+    while (*p) {
+        const char* eol = p;
+        while (*eol && *eol != '\r' && *eol != '\n') eol++;
+        size_t len = (size_t)(eol - p);
+        size_t s = 0;
+        while (s < len && (p[s] == ' ' || p[s] == '\t')) s++;
+        if (s < len && p[s] == '[') {
+            size_t e = len;
+            while (e > s && (p[e - 1] == ' ' || p[e - 1] == '\t')) e--;
+            if (e - s == 7 && strncmp(p + s, "[assoc]", 7) == 0) in_assoc = 1;
+            else in_assoc = 0;
+        } else if (in_assoc) {
+            char k[32], v[128];
+            if (parse_ini_kv(p, len, k, sizeof(k), v, sizeof(v)) &&
+                strcasecmp(k, ext_no_dot) == 0) {
+                snprintf(out_spec, cap, "%s", v);
+                found = 0;
+                break;
+            }
+        }
+        p = eol;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+    free(buf);
+    return found;
+}
+
+static int resolve_app_spec(const char* spec, char* out_path, size_t cap) {
+    if (!spec || !spec[0]) return -1;
+    pxe_dirent_t st;
+    if (strchr(spec, ':') || strchr(spec, '\\') || strchr(spec, '/')) {
+        if (pxe_stat(spec, &st) == 0 && !st.is_dir) {
+            snprintf(out_path, cap, "%s", spec);
+            return 0;
+        }
+        return -1;
+    }
+    return resolve_app_path(spec, out_path, cap);
+}
+
+static int save_assoc_ini(const char* ext_no_dot, const char* app_spec) {
+    if (!ext_no_dot || !ext_no_dot[0] || !app_spec || !app_spec[0]) return -1;
+    char dst_ini[64];
+    if (find_assoc_ini_path(dst_ini, sizeof(dst_ini), 1) != 0) return -1;
+
+    /* Ensure <drive>:\system exists */
+    char sys_dir[32];
+    snprintf(sys_dir, sizeof(sys_dir), "%c:\\system", dst_ini[0]);
+    pxe_dirent_t st;
+    if (pxe_stat(sys_dir, &st) != 0) {
+        (void)pxe_mkdir(sys_dir);
+    }
+
+    /* Normalize C:\APPS\foo.pxe -> foo.pxe for portability */
+    const char* save_spec = app_spec;
+    if (strlen(app_spec) > 8 && app_spec[1] == ':' &&
+        (app_spec[2] == '\\' || app_spec[2] == '/')) {
+        if (text_contains_ci(app_spec + 2, "\\APPS\\") ||
+            text_contains_ci(app_spec + 2, "/APPS/")) {
+            const char* base = strrchr(app_spec, '\\');
+            const char* base2 = strrchr(app_spec, '/');
+            if (base2 && (!base || base2 > base)) base = base2;
+            if (base && base[1]) save_spec = base + 1;
+        }
+    }
+
+    char src_ini[64];
+    src_ini[0] = '\0';
+    char* in_buf = (char*)malloc(8192);
+    char* out_buf = (char*)malloc(12288);
+    if (!in_buf || !out_buf) {
+        free(in_buf);
+        free(out_buf);
+        return -1;
+    }
+    in_buf[0] = '\0';
+    if (find_assoc_ini_path(src_ini, sizeof(src_ini), 0) == 0) {
+        int r = pxe_read_file(src_ini, in_buf, 8191);
+        if (r > 0) in_buf[r] = '\0';
+        else in_buf[0] = '\0';
+    }
+
+    size_t out_pos = 0;
+    size_t out_cap = 12288;
+    int replaced = 0;
+    int has_assoc_hdr = 0;
+    int in_assoc = 0;
+    const char* p = in_buf;
+    while (*p) {
+        const char* eol = p;
+        while (*eol && *eol != '\r' && *eol != '\n') eol++;
+        size_t len = (size_t)(eol - p);
+        size_t s = 0;
+        while (s < len && (p[s] == ' ' || p[s] == '\t')) s++;
+
+        if (s < len && p[s] == '[') {
+            size_t e = len;
+            while (e > s && (p[e - 1] == ' ' || p[e - 1] == '\t')) e--;
+            if (in_assoc && !replaced) {
+                int w = snprintf(out_buf + out_pos, out_cap - out_pos,
+                                 "%s=%s\n", ext_no_dot, save_spec);
+                if (w > 0) out_pos += (size_t)w;
+                replaced = 1;
+            }
+            if (e - s == 7 && strncmp(p + s, "[assoc]", 7) == 0) {
+                has_assoc_hdr = 1;
+                in_assoc = 1;
+            } else {
+                in_assoc = 0;
+            }
+            if (out_pos + len + 2 < out_cap) {
+                memcpy(out_buf + out_pos, p, len);
+                out_pos += len;
+                out_buf[out_pos++] = '\n';
+            }
+        } else if (in_assoc) {
+            char k[32], v[128];
+            if (parse_ini_kv(p, len, k, sizeof(k), v, sizeof(v)) &&
+                strcasecmp(k, ext_no_dot) == 0) {
+                if (!replaced) {
+                    int w = snprintf(out_buf + out_pos, out_cap - out_pos,
+                                     "%s=%s\n", ext_no_dot, save_spec);
+                    if (w > 0) out_pos += (size_t)w;
+                    replaced = 1;
+                }
+            } else if (out_pos + len + 2 < out_cap) {
+                memcpy(out_buf + out_pos, p, len);
+                out_pos += len;
+                out_buf[out_pos++] = '\n';
+            }
+        } else if (out_pos + len + 2 < out_cap) {
+            memcpy(out_buf + out_pos, p, len);
+            out_pos += len;
+            out_buf[out_pos++] = '\n';
+        }
+        p = eol;
+        while (*p == '\r' || *p == '\n') p++;
+    }
+
+    if (!replaced) {
+        if (!has_assoc_hdr) {
+            int w = snprintf(out_buf + out_pos, out_cap - out_pos, "[assoc]\n");
+            if (w > 0) out_pos += (size_t)w;
+        }
+        int w = snprintf(out_buf + out_pos, out_cap - out_pos,
+                         "%s=%s\n", ext_no_dot, save_spec);
+        if (w > 0) out_pos += (size_t)w;
+    }
+
+    int wrc = pxe_write_file(dst_ini, out_buf, out_pos);
+    free(in_buf);
+    free(out_buf);
+    return wrc == 0 ? 0 : -1;
+}
+
+static int scan_apps_ext_assoc_on_drive(char drive, const char* ext_no_dot,
+                                        char* out_app, size_t cap) {
+    if (!drive) return -1;
+    char dir[32];
+    snprintf(dir, sizeof(dir), "%c:\\APPS", drive);
+    pxe_dirent_t* ents = (pxe_dirent_t*)malloc(sizeof(pxe_dirent_t) * 64);
+    if (!ents) return -1;
+    int n = pxe_listdir(dir, ents, 64);
+    int found = -1;
+    for (int i = 0; i < n; i++) {
+        if (ents[i].is_dir || !ents[i].name[0]) continue;
+        const char* dot = strrchr(ents[i].name, '.');
+        if (!dot || strcasecmp(dot, ".pxe") != 0) continue;
+        char full[128], assoc[32];
+        uint8_t subsys = 0;
+        snprintf(full, sizeof(full), "%s\\%s", dir, ents[i].name);
+        if (read_pxe_meta(full, &subsys, NULL, 0, assoc, sizeof(assoc)) == 0 &&
+            subsys == PXE_SUBSYS_GUI && ext_list_contains(assoc, ext_no_dot)) {
+            snprintf(out_app, cap, "%s", full);
+            found = 0;
+            break;
+        }
+    }
+    free(ents);
+    return found;
+}
+
+static int resolve_associated_app(const char* ext_no_dot, char* out_app, size_t cap) {
+    if (!ext_no_dot || !ext_no_dot[0]) return -1;
+
+    char spec[128];
+    if (lookup_assoc_ini(ext_no_dot, spec, sizeof(spec)) == 0) {
+        if (resolve_app_spec(spec, out_app, cap) == 0) return 0;
+        return -2; /* Configured app is missing */
+    }
+
+    pxe_basic_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
+    pxe_sys_get_basic_info(&info);
+    if (info.system_drive &&
+        scan_apps_ext_assoc_on_drive(info.system_drive, ext_no_dot, out_app, cap) == 0) {
+        return 0;
+    }
+    if (info.cdrom_drive && info.cdrom_drive != info.system_drive &&
+        scan_apps_ext_assoc_on_drive(info.cdrom_drive, ext_no_dot, out_app, cap) == 0) {
+        return 0;
+    }
+    return -1;
 }
 
 static void sort_entries(fm_t* fm) {
@@ -311,6 +693,150 @@ static void go_up(fm_t* fm) {
     load_directory(fm);
 }
 
+static void collect_ow_apps_on_drive(fm_t* fm, char drive, int boot_mode) {
+    if (!drive || fm->ow_app_count >= MAX_OW_APPS) return;
+    char dir[32];
+    snprintf(dir, sizeof(dir), "%c:\\APPS", drive);
+    pxe_dirent_t* ents = (pxe_dirent_t*)malloc(sizeof(pxe_dirent_t) * 64);
+    if (!ents) return;
+    int n = pxe_listdir(dir, ents, 64);
+    for (int i = 0; i < n && fm->ow_app_count < MAX_OW_APPS; i++) {
+        if (ents[i].is_dir || !ents[i].name[0]) continue;
+        const char* dot = strrchr(ents[i].name, '.');
+        if (!dot || strcasecmp(dot, ".pxe") != 0) continue;
+        if (boot_mode != 1 && strcasecmp(ents[i].name, "install.pxe") == 0) continue;
+        int dup = 0;
+        for (int k = 0; k < fm->ow_app_count; k++) {
+            if (strcasecmp(fm->ow_apps[k].filename, ents[i].name) == 0) {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup) continue;
+        char full[128], title[48];
+        uint8_t subsys = 0;
+        snprintf(full, sizeof(full), "%s\\%s", dir, ents[i].name);
+        if (read_pxe_meta(full, &subsys, title, sizeof(title), NULL, 0) != 0) continue;
+        if (subsys != PXE_SUBSYS_GUI) continue;
+
+        fm_ow_app_t* item = &fm->ow_apps[fm->ow_app_count++];
+        snprintf(item->filename, sizeof(item->filename), "%s", ents[i].name);
+        snprintf(item->path, sizeof(item->path), "%s", full);
+        snprintf(item->title, sizeof(item->title), "%s", title[0] ? title : ents[i].name);
+    }
+    free(ents);
+}
+
+static void action_begin_open_with(fm_t* fm, int idx) {
+    if (fm->current_path[0] == '\0' || idx < 0 || idx >= fm->entry_count) return;
+    const fm_entry_t* e = &fm->entries[idx];
+    if (e->is_dir || e->is_parent) return;
+
+    join_path(fm->modal_target_path, sizeof(fm->modal_target_path), fm->current_path, e->name);
+    snprintf(fm->modal_title, sizeof(fm->modal_title), "%s", FM_TR(fm, "打开方式", "Open With"));
+    snprintf(fm->modal_msg, sizeof(fm->modal_msg), "%s", e->name);
+
+    extract_ext_no_dot(e->name, fm->ow_ext, sizeof(fm->ow_ext));
+
+    pxe_basic_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
+    pxe_sys_get_basic_info(&info);
+
+    fm->ow_app_count = 0;
+    if (info.system_drive) collect_ow_apps_on_drive(fm, info.system_drive, info.boot_mode);
+    if (info.cdrom_drive && info.cdrom_drive != info.system_drive) {
+        collect_ow_apps_on_drive(fm, info.cdrom_drive, info.boot_mode);
+    }
+    for (int i = 0; i < fm->ow_app_count - 1; i++) {
+        for (int j = i + 1; j < fm->ow_app_count; j++) {
+            if (strcasecmp(fm->ow_apps[i].filename, fm->ow_apps[j].filename) > 0) {
+                fm_ow_app_t tmp = fm->ow_apps[i];
+                fm->ow_apps[i] = fm->ow_apps[j];
+                fm->ow_apps[j] = tmp;
+            }
+        }
+    }
+
+    fm->ow_sel = fm->ow_app_count > 0 ? 0 : -1;
+    fm->ow_scroll = 0;
+    fm->modal_input[0] = '\0';
+
+    char cur_assoc[128];
+    if (fm->ow_ext[0] && resolve_associated_app(fm->ow_ext, cur_assoc, sizeof(cur_assoc)) == 0) {
+        const char* base = strrchr(cur_assoc, '\\');
+        base = base ? (base + 1) : cur_assoc;
+        for (int i = 0; i < fm->ow_app_count; i++) {
+            if (strcasecmp(fm->ow_apps[i].filename, base) == 0) {
+                fm->ow_sel = i;
+                break;
+            }
+        }
+        snprintf(fm->modal_input, sizeof(fm->modal_input), "%s",
+                 fm->ow_sel >= 0 ? fm->ow_apps[fm->ow_sel].filename : cur_assoc);
+    } else if (fm->ow_sel >= 0) {
+        snprintf(fm->modal_input, sizeof(fm->modal_input), "%s", fm->ow_apps[fm->ow_sel].filename);
+    }
+    fm->modal_len = (int)strlen(fm->modal_input);
+    if (fm->ow_sel >= OW_VISIBLE_ROWS) {
+        fm->ow_scroll = fm->ow_sel - OW_VISIBLE_ROWS + 1;
+    }
+
+    char ini_wr[64];
+    fm->ow_can_save = (fm->ow_ext[0] && find_assoc_ini_path(ini_wr, sizeof(ini_wr), 1) == 0) ? 1 : 0;
+    fm->ow_save_default = 0;
+    fm->modal = MODAL_OPEN_WITH;
+}
+
+static void submit_open_with(fm_t* fm) {
+    char spec[128];
+    snprintf(spec, sizeof(spec), "%s", fm->modal_input);
+    int len = (int)strlen(spec);
+    while (len > 0 && (spec[len - 1] == ' ' || spec[len - 1] == '\t')) spec[--len] = '\0';
+    const char* s = spec;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s) {
+        show_msg(fm, FM_TR(fm, "打开方式", "Open With"),
+                 FM_TR(fm, "请选择或输入一个有效的 .pxe 程序路径。",
+                       "Select or enter a valid .pxe program path."), 1);
+        return;
+    }
+
+    char app_path[128];
+    if (resolve_app_spec(s, app_path, sizeof(app_path)) != 0) {
+        show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
+                 FM_TR(fm, "找不到指定的 .pxe 应用程序。",
+                       "Cannot find the specified .pxe application."), 1);
+        return;
+    }
+
+    const char* base = strrchr(app_path, '\\');
+    const char* base2 = strrchr(app_path, '/');
+    if (base2 && (!base || base2 > base)) base = base2;
+    base = base ? (base + 1) : app_path;
+    if (strcasecmp(base, "install.pxe") == 0) {
+        pxe_basic_sysinfo_t info;
+        memset(&info, 0, sizeof(info));
+        if (pxe_sys_get_basic_info(&info) == 0 && info.boot_mode != 1) {
+            show_msg(fm, FM_TR(fm, "安装程序已禁用", "Installer Disabled"),
+                     FM_TR(fm, "本地或实时模式下无法运行系统安装程序。",
+                           "INSTALL cannot be launched in Local or Live mode."), 1);
+            return;
+        }
+    }
+
+    if (fm->ow_save_default && fm->ow_can_save && fm->ow_ext[0]) {
+        (void)save_assoc_ini(fm->ow_ext, app_path);
+    }
+
+    fm->modal = MODAL_NONE;
+    const char* argv[2] = { app_path, fm->modal_target_path };
+    if (pxe_spawn(app_path, 2, argv) < 0) {
+        show_msg(fm, FM_TR(fm, "启动失败", "Launch Failed"),
+                 FM_TR(fm, "无法启动选定的应用程序。",
+                       "Could not launch the selected application."), 1);
+    }
+}
+
 static void open_entry(fm_t* fm, int idx) {
     if (idx < 0 || idx >= fm->entry_count) return;
     const fm_entry_t* e = &fm->entries[idx];
@@ -335,8 +861,7 @@ static void open_entry(fm_t* fm, int idx) {
 
     const char* ext = strrchr(e->name, '.');
     if (!ext) {
-        show_msg(fm, FM_TR(fm, "打开文件", "Open File"),
-                 FM_TR(fm, "此文件没有关联的打开程序。", "No file association for this file."), 1);
+        action_begin_open_with(fm, idx);
         return;
     }
 
@@ -471,33 +996,19 @@ static void open_entry(fm_t* fm, int idx) {
         return;
     }
 
-    const char* helper = NULL;
-    if (strcasecmp(ext, ".txt") == 0 || strcasecmp(ext, ".log") == 0 ||
-        strcasecmp(ext, ".ini") == 0 || strcasecmp(ext, ".conf") == 0 ||
-        strcasecmp(ext, ".cfg") == 0 || strcasecmp(ext, ".md") == 0 ||
-        strcasecmp(ext, ".pxi") == 0 || strcasecmp(ext, ".c") == 0 ||
-        strcasecmp(ext, ".h") == 0) {
-        helper = "notepad.pxe";
-    } else if (strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".png") == 0 ||
-               strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0) {
-        helper = "viewer.pxe";
-    } else if (strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0 ||
-               strcasecmp(ext, ".flac") == 0) {
-        helper = "player.pxe";
-    }
-
-    if (!helper) {
-        show_msg(fm, FM_TR(fm, "打开文件", "Open File"),
-                 FM_TR(fm, "没有与该文件类型关联的应用程序。",
-                       "No application associated with this type."), 1);
-        return;
-    }
+    char ext_no_dot[32];
+    extract_ext_no_dot(e->name, ext_no_dot, sizeof(ext_no_dot));
 
     char app_path[128];
-    if (resolve_app_path(helper, app_path, sizeof(app_path)) != 0) {
+    int assoc_rc = resolve_associated_app(ext_no_dot, app_path, sizeof(app_path));
+    if (assoc_rc == -2) {
         show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
-                 FM_TR(fm, "在 APPS\\ 目录中找不到对应程序。",
-                       "Cannot find app in APPS\\ folder."), 1);
+                 FM_TR(fm, "关联的程序在磁盘上已不存在，请重新指定打开方式。",
+                       "Associated app is missing. Use Open With to reassign."), 1);
+        return;
+    }
+    if (assoc_rc != 0) {
+        action_begin_open_with(fm, idx);
         return;
     }
 
@@ -581,14 +1092,107 @@ static void copy_progress_cb(uint64_t copied, uint64_t total) {
     pxe_win_present(g_prog_win_id);
 }
 
+typedef struct {
+    char src[256];
+    char dst[256];
+} fm_dir_pair_t;
+
+static int path_is_same_or_subpath_ci(const char* candidate, const char* parent) {
+    if (!candidate || !parent) return 0;
+    size_t plen = strlen(parent);
+    while (plen > 3 && (parent[plen - 1] == '\\' || parent[plen - 1] == '/')) plen--;
+    size_t clen = strlen(candidate);
+    if (clen < plen) return 0;
+    for (size_t i = 0; i < plen; i++) {
+        char a = ascii_lower(candidate[i]);
+        char b = ascii_lower(parent[i]);
+        if (a == '/') a = '\\';
+        if (b == '/') b = '\\';
+        if (a != b) return 0;
+    }
+    return candidate[plen] == '\0' || candidate[plen] == '\\' || candidate[plen] == '/';
+}
+
+static int copy_directory_tree(fm_t* fm, const char* src_root, const char* dst_root,
+                               const pxe_win_surface_t* surf) {
+    int cap = 32;
+    int head = 0;
+    int tail = 0;
+    fm_dir_pair_t* queue = (fm_dir_pair_t*)malloc(sizeof(fm_dir_pair_t) * (size_t)cap);
+    pxe_dirent_t* ents = (pxe_dirent_t*)malloc(sizeof(pxe_dirent_t) * 256);
+    if (!queue || !ents) {
+        free(queue);
+        free(ents);
+        return -1;
+    }
+
+    snprintf(queue[tail].src, sizeof(queue[tail].src), "%s", src_root);
+    snprintf(queue[tail].dst, sizeof(queue[tail].dst), "%s", dst_root);
+    tail++;
+
+    g_prog_surf = surf;
+    g_prog_win_id = fm->win_id;
+
+    int rc = 0;
+    while (head < tail && rc == 0) {
+        char cur_src[256];
+        char cur_dst[256];
+        snprintf(cur_src, sizeof(cur_src), "%s", queue[head].src);
+        snprintf(cur_dst, sizeof(cur_dst), "%s", queue[head].dst);
+        head++;
+
+        pxe_dirent_t st;
+        if (pxe_stat(cur_dst, &st) == 0) {
+            if (!st.is_dir) { rc = -1; break; }
+        } else if (pxe_mkdir(cur_dst) != 0) {
+            rc = -1;
+            break;
+        }
+
+        int cnt = pxe_listdir(cur_src, ents, 256);
+        if (cnt < 0) { rc = -1; break; }
+
+        for (int i = 0; i < cnt; i++) {
+            if (!ents[i].name[0] ||
+                strcmp(ents[i].name, ".") == 0 ||
+                strcmp(ents[i].name, "..") == 0) {
+                continue;
+            }
+            char child_src[256], child_dst[256];
+            join_path(child_src, sizeof(child_src), cur_src, ents[i].name);
+            join_path(child_dst, sizeof(child_dst), cur_dst, ents[i].name);
+
+            if (ents[i].is_dir) {
+                if (tail >= cap) {
+                    int ncap = cap * 2;
+                    fm_dir_pair_t* nq = (fm_dir_pair_t*)realloc(
+                        queue, sizeof(fm_dir_pair_t) * (size_t)ncap);
+                    if (!nq) { rc = -1; break; }
+                    queue = nq;
+                    cap = ncap;
+                }
+                snprintf(queue[tail].src, sizeof(queue[tail].src), "%s", child_src);
+                snprintf(queue[tail].dst, sizeof(queue[tail].dst), "%s", child_dst);
+                tail++;
+            } else {
+                snprintf(g_prog_title, sizeof(g_prog_title), "%s", ents[i].name);
+                g_prog_last_bytes = 0;
+                if (pxe_copy_file(child_src, child_dst, copy_progress_cb) != 0) {
+                    rc = -1;
+                    break;
+                }
+            }
+        }
+    }
+
+    g_prog_surf = NULL;
+    free(ents);
+    free(queue);
+    return rc;
+}
+
 static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
     if (!fm->has_clip || fm->current_path[0] == '\0') return;
-    if (fm->clip_is_dir && !fm->clip_is_cut) {
-        show_msg(fm, FM_TR(fm, "粘贴错误", "Paste Error"),
-                 FM_TR(fm, "暂不支持直接复制整个文件夹。",
-                       "Folder copy is not supported directly."), 1);
-        return;
-    }
     if (drive_is_readonly(fm->current_path[0])) {
         show_msg(fm, FM_TR(fm, "只读驱动器", "Read-Only Drive"),
                  FM_TR(fm, "无法粘贴到只读驱动器上。",
@@ -631,6 +1235,25 @@ static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
         show_msg(fm, FM_TR(fm, "移动完成", "Move Complete"),
                  FM_TR(fm, "项目已成功移动到当前目录。",
                        "Item moved to this folder."), 0);
+        return;
+    }
+
+    if (fm->clip_is_dir) {
+        if (path_is_same_or_subpath_ci(dst, fm->clip_path)) {
+            show_msg(fm, FM_TR(fm, "粘贴错误", "Paste Error"),
+                     FM_TR(fm, "目标文件夹是源文件夹的子目录。",
+                           "Cannot copy a folder into itself or a subfolder."), 1);
+            return;
+        }
+        int rc = copy_directory_tree(fm, fm->clip_path, dst, surf);
+        if (rc != 0) {
+            show_msg(fm, FM_TR(fm, "粘贴失败", "Paste Failed"),
+                     FM_TR(fm, "复制文件夹失败（磁盘已满或权限受限）。",
+                           "Folder copy error (disk full or I/O error)."), 1);
+            return;
+        }
+        fm->clip_is_cut = 0;
+        load_directory(fm);
         return;
     }
 
@@ -919,16 +1542,18 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
     if (fm->ctx_kind != CTX_NONE) {
         pxe_draw_bevel_box(surf, fm->ctx_x, fm->ctx_y, fm->ctx_w, fm->ctx_h, 0, PXE_COL_LIGHT_GRAY);
         if (fm->ctx_kind == CTX_ITEM) {
-            const char* items_en[8] = {
-                "Open", "Cut", "Copy", "Paste", "Rename...",
+            int tgt_is_dir = (fm->ctx_target >= 0 && fm->ctx_target < fm->entry_count)
+                             ? fm->entries[fm->ctx_target].is_dir : 1;
+            const char* items_en[9] = {
+                "Open", "Open With...", "Cut", "Copy", "Paste", "Rename...",
                 "Delete", "New Folder...", "Properties..."
             };
-            const char* items_zh[8] = {
-                "打开", "剪切", "复制", "粘贴", "重命名...",
+            const char* items_zh[9] = {
+                "打开", "打开方式...", "剪切", "复制", "粘贴", "重命名...",
                 "删除", "新建目录...", "属性..."
             };
-            int en[8] = { 1, 1, 1, fm->has_clip, 1, 1, 1, 1 };
-            for (int i = 0; i < 8; i++) {
+            int en[9] = { 1, !tgt_is_dir, 1, 1, fm->has_clip, 1, 1, 1, 1 };
+            for (int i = 0; i < 9; i++) {
                 pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4 + i * 18,
                                     fm->zh ? items_zh[i] : items_en[i],
                                     en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
@@ -994,11 +1619,88 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         utf8_clip_by_pixels(fm->modal_msg, dw - 52, 1, mclip, sizeof(mclip));
         pxe_draw_text_small(surf, dx + 42, dy + 34, mclip, PXE_COL_BLACK);
         pxe_draw_button(surf, dx + dw / 2 - 32, dy + 56, 64, 22, FM_TR(fm, "确定", "OK"), 0, 1);
+    } else if (fm->modal == MODAL_OPEN_WITH) {
+        int dw = 340, dh = 236;
+        if (dw > surf->width - 12) dw = surf->width - 12;
+        if (dh > surf->height - 12) dh = surf->height - 12;
+        int dx = (surf->width - dw) / 2;
+        int dy = (surf->height - dh) / 2;
+        pxe_draw_bevel_box(surf, dx, dy, dw, dh, 0, PXE_COL_LIGHT_GRAY);
+        pxe_fill_rect(surf, dx + 2, dy + 2, dw - 4, 18, PXE_COL_DARK_BLUE);
+        pxe_draw_text(surf, dx + 8, dy + 3, fm->modal_title, PXE_COL_WHITE);
+
+        char hdr[128], hclip[128];
+        snprintf(hdr, sizeof(hdr), "%s: %s",
+                 FM_TR(fm, "选择打开程序", "Choose program for"), fm->modal_msg);
+        utf8_clip_by_pixels(hdr, dw - 20, 1, hclip, sizeof(hclip));
+        pxe_draw_text_small(surf, dx + 10, dy + 24, hclip, PXE_COL_BLACK);
+
+        int lx = dx + 10, ly = dy + 38, lw = dw - 20, lh = OW_VISIBLE_ROWS * 16 + 4;
+        pxe_draw_bevel_box(surf, lx, ly, lw - SB_W, lh, 1, PXE_COL_WHITE);
+        int max_ow_scr = (fm->ow_app_count > OW_VISIBLE_ROWS)
+                         ? (fm->ow_app_count - OW_VISIBLE_ROWS) : 0;
+        if (fm->ow_scroll > max_ow_scr) fm->ow_scroll = max_ow_scr;
+        if (fm->ow_scroll < 0) fm->ow_scroll = 0;
+
+        for (int i = 0; i < OW_VISIBLE_ROWS && (fm->ow_scroll + i) < fm->ow_app_count; i++) {
+            int aidx = fm->ow_scroll + i;
+            int ry = ly + 2 + i * 16;
+            int sel = (aidx == fm->ow_sel);
+            if (sel) pxe_fill_rect(surf, lx + 2, ry, lw - SB_W - 4, 16, PXE_COL_BLUE);
+            char row_lbl[128], row_clip[128];
+            snprintf(row_lbl, sizeof(row_lbl), "%s (%s)",
+                     fm->ow_apps[aidx].title, fm->ow_apps[aidx].filename);
+            utf8_clip_by_pixels(row_lbl, lw - SB_W - 12, 1, row_clip, sizeof(row_clip));
+            pxe_draw_text_small(surf, lx + 6, ry + 4, row_clip,
+                                sel ? PXE_COL_WHITE : PXE_COL_BLACK);
+        }
+        pxe_draw_scrollbar(surf, lx + lw - SB_W, ly, SB_W, lh,
+                           fm->ow_scroll, OW_VISIBLE_ROWS, fm->ow_app_count);
+
+        int in_lbl_y = ly + lh + 6;
+        pxe_draw_text_small(surf, dx + 10, in_lbl_y,
+                            FM_TR(fm, "自定义程序路径 (.pxe):", "Custom .pxe path / name:"),
+                            PXE_COL_BLACK);
+        int in_y = in_lbl_y + 13;
+        pxe_draw_bevel_box(surf, dx + 10, in_y, dw - 20, 20, 1, PXE_COL_WHITE);
+        const char* vis_in = fm->modal_input;
+        while (*vis_in && pxe_text_width_small(vis_in) > dw - 30) {
+            (void)utf8_decode_next(&vis_in);
+        }
+        pxe_draw_text_small(surf, dx + 14, in_y + 6, vis_in, PXE_COL_BLACK);
+        pxe_draw_vline(surf, dx + 14 + pxe_text_width_small(vis_in), in_y + 4, 12, PXE_COL_BLACK);
+
+        int chk_y = in_y + 26;
+        pxe_draw_bevel_box(surf, dx + 10, chk_y, 12, 12, 1,
+                           fm->ow_can_save ? PXE_COL_WHITE : PXE_COL_LIGHT_GRAY);
+        if (fm->ow_save_default && fm->ow_can_save) {
+            pxe_fill_rect(surf, dx + 13, chk_y + 3, 6, 6, PXE_COL_DARK_BLUE);
+        }
+        char chk_lbl[96], chk_clip[96];
+        if (fm->ow_can_save) {
+            snprintf(chk_lbl, sizeof(chk_lbl),
+                     FM_TR(fm, "始终使用此程序打开 .%s 文件", "Always use for .%s files"),
+                     fm->ow_ext);
+        } else if (fm->ow_ext[0]) {
+            snprintf(chk_lbl, sizeof(chk_lbl),
+                     FM_TR(fm, "始终使用 (.%s 仅可写系统盘可保存)", "Always use (read-only media)"),
+                     fm->ow_ext);
+        } else {
+            snprintf(chk_lbl, sizeof(chk_lbl),
+                     FM_TR(fm, "无扩展名文件仅支持单次打开", "No extension (one-time launch)"));
+        }
+        utf8_clip_by_pixels(chk_lbl, dw - 36, 1, chk_clip, sizeof(chk_clip));
+        pxe_draw_text_small(surf, dx + 27, chk_y + 2, chk_clip,
+                            fm->ow_can_save ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
+
+        int btn_y = dy + dh - 28;
+        pxe_draw_button(surf, dx + dw / 2 - 80, btn_y, 72, 22, FM_TR(fm, "确定", "OK"), 0, 1);
+        pxe_draw_button(surf, dx + dw / 2 + 8,  btn_y, 72, 22, FM_TR(fm, "取消", "Cancel"), 0, 1);
     }
 }
 
 static void clamp_ctx_menu(fm_t* fm, const pxe_win_surface_t* surf, int mx, int my, int items) {
-    fm->ctx_w = 112;
+    fm->ctx_w = 124;
     fm->ctx_h = items * 18 + 4;
     fm->ctx_x = mx;
     fm->ctx_y = my;
@@ -1006,6 +1708,38 @@ static void clamp_ctx_menu(fm_t* fm, const pxe_win_surface_t* surf, int mx, int 
     if (fm->ctx_y + fm->ctx_h > surf->height - 4) fm->ctx_y = surf->height - 4 - fm->ctx_h;
     if (fm->ctx_x < 4) fm->ctx_x = 4;
     if (fm->ctx_y < 4) fm->ctx_y = 4;
+}
+
+static void open_initial_target(fm_t* fm, const char* path) {
+    if (!path || !path[0]) {
+        load_directory(fm);
+        return;
+    }
+    pxe_dirent_t st;
+    if (pxe_stat(path, &st) == 0 && !st.is_dir) {
+        const char* slash = strrchr(path, '\\');
+        const char* slash2 = strrchr(path, '/');
+        if (slash2 && (!slash || slash2 > slash)) slash = slash2;
+        if (slash) {
+            size_t dlen = (size_t)(slash - path);
+            if (dlen == 2 && path[1] == ':') dlen = 3;
+            if (dlen >= sizeof(fm->current_path)) dlen = sizeof(fm->current_path) - 1;
+            memcpy(fm->current_path, path, dlen);
+            fm->current_path[dlen] = '\0';
+            load_directory(fm);
+            const char* base = slash + 1;
+            for (int i = 0; i < fm->entry_count; i++) {
+                if (strcasecmp(fm->entries[i].name, base) == 0) {
+                    fm->selected = i;
+                    open_entry(fm, i);
+                    return;
+                }
+            }
+            return;
+        }
+    }
+    snprintf(fm->current_path, sizeof(fm->current_path), "%s", path);
+    load_directory(fm);
 }
 
 int main(int argc, char** argv) {
@@ -1037,9 +1771,10 @@ int main(int argc, char** argv) {
     sync_fm_menu(fm);
 
     if (argc > 1 && argv[1] && argv[1][0]) {
-        snprintf(fm->current_path, sizeof(fm->current_path), "%s", argv[1]);
+        open_initial_target(fm, argv[1]);
+    } else {
+        load_directory(fm);
     }
-    load_directory(fm);
 
     render_fm(&surf, fm);
     pxe_win_present(fm->win_id);
@@ -1078,15 +1813,21 @@ int main(int argc, char** argv) {
             }
             case PXE_EV_ACTIVATE:
                 if (ev.text[0]) {
-                    snprintf(fm->current_path, sizeof(fm->current_path), "%s", ev.text);
-                    load_directory(fm);
+                    open_initial_target(fm, ev.text);
                 } else if (fm->current_path[0] == '\0') {
                     load_directory(fm);
                 }
                 dirty = 1;
                 break;
             case PXE_EV_MOUSE_WHEEL:
-                if (fm->modal == MODAL_NONE && fm->ctx_kind == CTX_NONE &&
+                if (fm->modal == MODAL_OPEN_WITH && ev.arg0 != 0) {
+                    int max_ow = (fm->ow_app_count > OW_VISIBLE_ROWS)
+                                 ? (fm->ow_app_count - OW_VISIBLE_ROWS) : 0;
+                    fm->ow_scroll -= ev.arg0;
+                    if (fm->ow_scroll < 0) fm->ow_scroll = 0;
+                    if (fm->ow_scroll > max_ow) fm->ow_scroll = max_ow;
+                    dirty = 1;
+                } else if (fm->modal == MODAL_NONE && fm->ctx_kind == CTX_NONE &&
                     ev.arg0 != 0) {
                     fm->scroll -= ev.arg0 * 3;
                     if (fm->scroll < 0) fm->scroll = 0;
@@ -1142,15 +1883,52 @@ int main(int argc, char** argv) {
                         if (pxe_point_in_rect(mx, my, dx + 46, dy + 66, 72, 22)) submit_modal(fm);
                         else if (pxe_point_in_rect(mx, my, dx + 142, dy + 66, 72, 22)) fm->modal = MODAL_NONE;
                     } else if (fm->modal == MODAL_CONFIRM_DEL) {
-                        int dx = (surf.width - 260) / 2;
+                        int dw = 280;
+                        if (dw > surf.width - 12) dw = surf.width - 12;
+                        int dx = (surf.width - dw) / 2;
                         int dy = (surf.height - 86) / 2;
                         if (pxe_point_in_rect(mx, my, dx + 46, dy + 54, 72, 22)) submit_modal(fm);
                         else if (pxe_point_in_rect(mx, my, dx + 142, dy + 54, 72, 22)) fm->modal = MODAL_NONE;
                     } else if (fm->modal == MODAL_MSG) {
-                        int dw = (surf.width - 12 < 300) ? surf.width - 12 : 300;
+                        int dw = 340;
+                        if (dw > surf.width - 12) dw = surf.width - 12;
                         int dx = (surf.width - dw) / 2;
                         int dy = (surf.height - 88) / 2;
                         if (pxe_point_in_rect(mx, my, dx + dw / 2 - 32, dy + 56, 64, 22)) {
+                            fm->modal = MODAL_NONE;
+                        }
+                    } else if (fm->modal == MODAL_OPEN_WITH) {
+                        int dw = 340, dh = 236;
+                        if (dw > surf.width - 12) dw = surf.width - 12;
+                        if (dh > surf.height - 12) dh = surf.height - 12;
+                        int dx = (surf.width - dw) / 2;
+                        int dy = (surf.height - dh) / 2;
+                        int lx = dx + 10, ly = dy + 38, lw = dw - 20, lh = OW_VISIBLE_ROWS * 16 + 4;
+                        int max_ow = (fm->ow_app_count > OW_VISIBLE_ROWS)
+                                     ? (fm->ow_app_count - OW_VISIBLE_ROWS) : 0;
+                        int chk_y = ly + lh + 45;
+                        int btn_y = dy + dh - 28;
+                        if (pxe_point_in_rect(mx, my, lx + lw - SB_W, ly, SB_W, lh)) {
+                            if (my < ly + lh / 2) {
+                                if (fm->ow_scroll > 0) fm->ow_scroll--;
+                            } else {
+                                if (fm->ow_scroll < max_ow) fm->ow_scroll++;
+                            }
+                        } else if (pxe_point_in_rect(mx, my, lx, ly + 2, lw - SB_W, lh - 4)) {
+                            int r = (my - (ly + 2)) / 16;
+                            int idx = fm->ow_scroll + r;
+                            if (idx >= 0 && idx < fm->ow_app_count) {
+                                fm->ow_sel = idx;
+                                snprintf(fm->modal_input, sizeof(fm->modal_input), "%s",
+                                         fm->ow_apps[idx].filename);
+                                fm->modal_len = (int)strlen(fm->modal_input);
+                            }
+                        } else if (fm->ow_can_save &&
+                                   pxe_point_in_rect(mx, my, dx + 10, chk_y - 2, dw - 20, 16)) {
+                            fm->ow_save_default = !fm->ow_save_default;
+                        } else if (pxe_point_in_rect(mx, my, dx + dw / 2 - 80, btn_y, 72, 22)) {
+                            submit_open_with(fm);
+                        } else if (pxe_point_in_rect(mx, my, dx + dw / 2 + 8, btn_y, 72, 22)) {
                             fm->modal = MODAL_NONE;
                         }
                     }
@@ -1167,13 +1945,14 @@ int main(int argc, char** argv) {
                     if (inside && (ev.buttons & PXE_BTN_LEFT)) {
                         if (kind == CTX_ITEM) {
                             if (item == 0) open_entry(fm, tgt);
-                            else if (item == 1) action_cut(fm, tgt);
-                            else if (item == 2) action_copy(fm, tgt);
-                            else if (item == 3) action_paste(fm, &surf);
-                            else if (item == 4) action_begin_rename(fm, tgt);
-                            else if (item == 5) action_begin_delete(fm, tgt);
-                            else if (item == 6) action_begin_mkdir(fm);
-                            else if (item == 7) action_properties(fm, tgt);
+                            else if (item == 1) action_begin_open_with(fm, tgt);
+                            else if (item == 2) action_cut(fm, tgt);
+                            else if (item == 3) action_copy(fm, tgt);
+                            else if (item == 4) action_paste(fm, &surf);
+                            else if (item == 5) action_begin_rename(fm, tgt);
+                            else if (item == 6) action_begin_delete(fm, tgt);
+                            else if (item == 7) action_begin_mkdir(fm);
+                            else if (item == 8) action_properties(fm, tgt);
                         } else if (kind == CTX_BG) {
                             if (item == 0) action_paste(fm, &surf);
                             else if (item == 1) action_begin_mkdir(fm);
@@ -1244,7 +2023,7 @@ int main(int argc, char** argv) {
                                 clamp_ctx_menu(fm, &surf, mx, my, 2);
                             } else if (!fm->entries[idx].is_parent) {
                                 fm->ctx_kind = CTX_ITEM;
-                                clamp_ctx_menu(fm, &surf, mx, my, 8);
+                                clamp_ctx_menu(fm, &surf, mx, my, 9);
                             } else if (fm->current_path[0] != '\0') {
                                 fm->ctx_kind = CTX_BG;
                                 clamp_ctx_menu(fm, &surf, mx, my, 4);
@@ -1277,6 +2056,47 @@ int main(int argc, char** argv) {
                 break;
             }
             case PXE_EV_KEY_DOWN:
+                if (fm->modal == MODAL_OPEN_WITH) {
+                    if (ev.key == PXE_KEY_ESC) {
+                        fm->modal = MODAL_NONE;
+                    } else if (ev.key == PXE_KEY_ENTER) {
+                        submit_open_with(fm);
+                    } else if (ev.key == PXE_KEY_UP && fm->ow_app_count > 0) {
+                        if (fm->ow_sel <= 0) fm->ow_sel = 0;
+                        else fm->ow_sel--;
+                        if (fm->ow_sel < fm->ow_scroll) fm->ow_scroll = fm->ow_sel;
+                        snprintf(fm->modal_input, sizeof(fm->modal_input), "%s",
+                                 fm->ow_apps[fm->ow_sel].filename);
+                        fm->modal_len = (int)strlen(fm->modal_input);
+                    } else if (ev.key == PXE_KEY_DOWN && fm->ow_app_count > 0) {
+                        if (fm->ow_sel < 0) fm->ow_sel = 0;
+                        else if (fm->ow_sel < fm->ow_app_count - 1) fm->ow_sel++;
+                        if (fm->ow_sel >= fm->ow_scroll + OW_VISIBLE_ROWS) {
+                            fm->ow_scroll = fm->ow_sel - OW_VISIBLE_ROWS + 1;
+                        }
+                        snprintf(fm->modal_input, sizeof(fm->modal_input), "%s",
+                                 fm->ow_apps[fm->ow_sel].filename);
+                        fm->modal_len = (int)strlen(fm->modal_input);
+                    } else if (ev.key == PXE_KEY_BACKSPACE) {
+                        if (fm->modal_len > 0) {
+                            int d = utf8_prev_char_bytes(fm->modal_input, fm->modal_len);
+                            fm->modal_len -= d;
+                            fm->modal_input[fm->modal_len] = '\0';
+                        }
+                    } else if (ev.key == PXE_KEY_UTF8 && ev.text[0]) {
+                        int tl = (int)strlen(ev.text);
+                        if (fm->modal_len + tl < 120) {
+                            memcpy(fm->modal_input + fm->modal_len, ev.text, (size_t)tl);
+                            fm->modal_len += tl;
+                            fm->modal_input[fm->modal_len] = '\0';
+                        }
+                    } else if (ev.key >= 32 && ev.key <= 126 && fm->modal_len < 120) {
+                        fm->modal_input[fm->modal_len++] = (char)ev.key;
+                        fm->modal_input[fm->modal_len] = '\0';
+                    }
+                    dirty = 1;
+                    break;
+                }
                 if (fm->modal == MODAL_RENAME || fm->modal == MODAL_MKDIR) {
                     if (ev.key == PXE_KEY_ESC) {
                         fm->modal = MODAL_NONE;

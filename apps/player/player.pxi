@@ -6,6 +6,7 @@ version        = "1.0.0"
 ring           = 3
 subsystem      = GUI
 flags          = SINGLE_INST | RESIZABLE
+ext_assoc      = "wav,mp3,flac"
 stack_size     = 64K
 heap_init_size = 128K
 def_w          = 342

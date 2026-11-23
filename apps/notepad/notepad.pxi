@@ -6,6 +6,7 @@ version        = "1.0.0"
 ring           = 3
 subsystem      = GUI
 flags          = RESIZABLE
+ext_assoc      = "txt,log,ini,conf,cfg,md,pxi,c,h"
 stack_size     = 64K
 heap_init_size = 128K
 def_w          = 420

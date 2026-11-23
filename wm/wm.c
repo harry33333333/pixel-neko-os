@@ -214,6 +214,10 @@ static int volume_drag_active=0;
 static int uninit_dialog_active=0;
 static int uninit_dialog_checked=0;
 static int uninit_ignore_pressed=0, uninit_init_pressed=0;
+static int alt_tab_active=0;
+static int alt_tab_win_ids[WM_DYN_MAX];
+static int alt_tab_count=0;
+static int alt_tab_sel=0;
 
 static void icon(unsigned char* v, int x, int y, int desktop_index,
                  unsigned char bg, const char* lb, int sel, bool shortcut);
@@ -929,6 +933,124 @@ static void draw_uninit_disk_dialog(unsigned char* v)
     }
 }
 
+static void alt_tab_rebuild_list(void) {
+    alt_tab_count = 0;
+    for (int i = WM_Z_COUNT - 1; i >= 0; i--) {
+        int id = z_order[i];
+        if (id >= WM_DYN_BASE && id < WM_DYN_BASE + WM_DYN_MAX) {
+            const wm_dyn_win_t* dw = &g_dyn_wins[id - WM_DYN_BASE];
+            if (dw->used && alt_tab_count < WM_DYN_MAX) {
+                alt_tab_win_ids[alt_tab_count++] = id;
+            }
+        }
+    }
+}
+
+static void alt_tab_commit(int sel_idx) {
+    if (sel_idx >= 0 && sel_idx < alt_tab_count) {
+        int target_id = alt_tab_win_ids[sel_idx];
+        if (target_id >= WM_DYN_BASE && target_id < WM_DYN_BASE + WM_DYN_MAX) {
+            wm_dyn_win_t* dw = &g_dyn_wins[target_id - WM_DYN_BASE];
+            if (dw->used) {
+                dw->shaded = 0;
+                bring_to_top(target_id);
+                wm_dyn_push_simple(dw, PXE_EV_REDRAW);
+            }
+        }
+    }
+    alt_tab_active = 0;
+    alt_tab_count = 0;
+    alt_tab_sel = 0;
+    redraw = 1;
+    need_mr = 1;
+}
+
+static void alt_tab_popup_geom(int* out_x, int* out_y, int* out_w, int* out_h,
+                               int* out_vis, int* out_first) {
+    int max_vis = (screen_h - 100) / 20;
+    if (max_vis > 10) max_vis = 10;
+    if (max_vis < 3) max_vis = 3;
+    int vis = alt_tab_count < max_vis ? alt_tab_count : max_vis;
+    if (vis < 1) vis = 1;
+    int first = 0;
+    if (alt_tab_sel >= vis) first = alt_tab_sel - vis + 1;
+    if (first + vis > alt_tab_count) first = alt_tab_count - vis;
+    if (first < 0) first = 0;
+
+    int dw = 300;
+    if (dw > screen_w - 24) dw = screen_w - 24;
+    int dh = 46 + vis * 20;
+    int dx = (screen_w - dw) / 2;
+    int dy = (screen_h - dh) / 2;
+    if (out_x) *out_x = dx;
+    if (out_y) *out_y = dy;
+    if (out_w) *out_w = dw;
+    if (out_h) *out_h = dh;
+    if (out_vis) *out_vis = vis;
+    if (out_first) *out_first = first;
+}
+
+static void draw_alt_tab_switcher(unsigned char* v) {
+    if (!alt_tab_active || alt_tab_count <= 0) return;
+    int dx = 0, dy = 0, dw = 0, dh = 0, vis = 0, first = 0;
+    alt_tab_popup_geom(&dx, &dy, &dw, &dh, &vis, &first);
+
+    for (int y = dy; y < dy + dh; y++) {
+        for (int x = dx; x < dx + dw; x++) PUT_PIXEL(v, x, y, 7);
+    }
+    for (int x = dx; x < dx + dw; x++) {
+        PUT_PIXEL(v, x, dy, 15);
+        PUT_PIXEL(v, x, dy + dh - 1, 0);
+    }
+    for (int y = dy; y < dy + dh; y++) {
+        PUT_PIXEL(v, dx, y, 15);
+        PUT_PIXEL(v, dx + dw - 1, y, 0);
+    }
+    for (int y = dy + 2; y < dy + 20; y++) {
+        for (int x = dx + 2; x < dx + dw - 2; x++) PUT_PIXEL(v, x, y, 1);
+    }
+    font_draw_text(v, dx + 8, dy + 3,
+                   WM_TR("切换窗口 (Alt+Tab)", "Switch Window (Alt+Tab)"), 15);
+
+    int list_y = dy + 24;
+    for (int i = 0; i < vis && (first + i) < alt_tab_count; i++) {
+        int idx = first + i;
+        int ry = list_y + i * 20;
+        int wid = alt_tab_win_ids[idx];
+        const wm_dyn_win_t* w = NULL;
+        if (wid >= WM_DYN_BASE && wid < WM_DYN_BASE + WM_DYN_MAX &&
+            g_dyn_wins[wid - WM_DYN_BASE].used) {
+            w = &g_dyn_wins[wid - WM_DYN_BASE];
+        }
+        bool sel = (idx == alt_tab_sel);
+        if (sel) {
+            for (int y = ry; y < ry + 18; y++) {
+                for (int x = dx + 6; x < dx + dw - 6; x++) PUT_PIXEL(v, x, y, 1);
+            }
+        }
+        char label[64];
+        const char* raw_title = (w && w->title[0]) ? w->title : WM_TR("未命名窗口", "Untitled");
+        if (w && w->shaded) {
+            char clipped[40];
+            utf8_clip_by_pixels(raw_title, dw - 86, 0, clipped, sizeof(clipped));
+            int pos = 0;
+            while (clipped[pos] && pos < (int)sizeof(label) - 16) {
+                label[pos] = clipped[pos];
+                pos++;
+            }
+            const char* tag = WM_TR(" (折叠)", " (Shaded)");
+            while (*tag && pos < (int)sizeof(label) - 1) label[pos++] = *tag++;
+            label[pos] = '\0';
+        } else {
+            utf8_clip_by_pixels(raw_title, dw - 24, 0, label, sizeof(label));
+        }
+        font_draw_text(v, dx + 12, ry + 1, label, sel ? 15 : 0);
+    }
+
+    const char* hint = WM_TR("松开 Alt 确认切换 | Esc 取消", "Release Alt to switch | Esc cancel");
+    font_draw_text_small(v, dx + 8, dy + dh - 15, hint, 8);
+}
+
 static inline void put_rgb32_pixel(unsigned char* v, int px, int py, uint32_t rgb) {
     if (px < 0 || px >= screen_w || py < 0 || py >= screen_h) return;
     if (screen_bpp >= 32) {
@@ -1588,6 +1710,9 @@ void wm_draw(unsigned char* v){
         if(crash_dialog_active)  { draw_crash_dialog(v); }
         if(power_confirm)        { draw_power_dialog(v); }
         draw_desktop_context_menu(v);
+        if (alt_tab_active) {
+            draw_alt_tab_switcher(v);
+        }
         if (ime_has_composition()) {
             int ax = 16, ay = screen_h - 62;
             int act = top_visible_win_id();
@@ -1890,7 +2015,7 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         if (redraw || !v || power_confirm || crash_dialog_active ||
             r0_confirm_active || uninit_dialog_active || menu_open ||
             volume_popup_open || icon_dragging != -1 || opened_msg[0] != 0 ||
-            ime_has_composition()) {
+            ime_has_composition() || alt_tab_active) {
             redraw = 1;
             need_mr = 1;
         } else {
@@ -2284,13 +2409,14 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Keyboard input to active window (plus global shortcuts & IME)
+    // Keyboard input to active window (plus global shortcuts, Alt+Tab & IME)
     if (keyboard_consume_ime_hotkey()) {
         ime_toggle();
         redraw = 1;
         need_mr = 1;
     }
     if (keyboard_consume_taskmgr_hotkey() && !ui_install_mode_requested()) {
+        alt_tab_active = 0;
         if (menu_open) {
             menu_open = 0;
             redraw = 1;
@@ -2298,8 +2424,76 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
         pxe_launch_builtin_app("taskmgr.pxe", NULL, true);
     }
+    {
+        int alt_tab_steps = keyboard_consume_alt_tab();
+        if (alt_tab_steps != 0 && !ui_install_mode_requested()) {
+            if (!alt_tab_active) {
+                alt_tab_rebuild_list();
+                alt_tab_sel = 0;
+            }
+            if (alt_tab_count > 0) {
+                alt_tab_active = 1;
+                int delta = alt_tab_steps % alt_tab_count;
+                alt_tab_sel = (alt_tab_sel + delta + alt_tab_count) % alt_tab_count;
+                if (menu_open) {
+                    menu_open = 0;
+                    menu_index = -1;
+                }
+                if (desktop_menu_mode) {
+                    desktop_menu_mode = 0;
+                }
+                redraw = 1;
+                need_mr = 1;
+            }
+        }
+        if (alt_tab_active) {
+            if (alt_tab_count <= 0) {
+                alt_tab_active = 0;
+                redraw = 1;
+                need_mr = 1;
+            } else if (!keyboard_get_alt()) {
+                alt_tab_commit(alt_tab_sel);
+            } else if (mb_press) {
+                int dx = 0, dy = 0, dw = 0, dh = 0, vis = 0, first = 0;
+                alt_tab_popup_geom(&dx, &dy, &dw, &dh, &vis, &first);
+                if (mx >= dx + 6 && mx < dx + dw - 6 &&
+                    my >= dy + 24 && my < dy + 24 + vis * 20) {
+                    int row = (my - (dy + 24)) / 20;
+                    if (first + row < alt_tab_count) {
+                        alt_tab_commit(first + row);
+                        return;
+                    }
+                } else {
+                    alt_tab_active = 0;
+                    redraw = 1;
+                    need_mr = 1;
+                }
+            }
+        }
+    }
     int key = keyboard_get_key();
     while (key != 0) {
+        if (alt_tab_active) {
+            if (key == 27) {
+                alt_tab_active = 0;
+                alt_tab_count = 0;
+                alt_tab_sel = 0;
+                redraw = 1;
+                need_mr = 1;
+            } else if (key == INPUT_CODE_ENTER) {
+                alt_tab_commit(alt_tab_sel);
+            } else if ((key == INPUT_CODE_DOWN || key == INPUT_CODE_RIGHT) && alt_tab_count > 0) {
+                alt_tab_sel = (alt_tab_sel + 1) % alt_tab_count;
+                redraw = 1;
+                need_mr = 1;
+            } else if ((key == INPUT_CODE_UP || key == INPUT_CODE_LEFT) && alt_tab_count > 0) {
+                alt_tab_sel = (alt_tab_sel + alt_tab_count - 1) % alt_tab_count;
+                redraw = 1;
+                need_mr = 1;
+            }
+            key = keyboard_get_key();
+            continue;
+        }
         if (key == 27 && keyboard_get_ctrl() && keyboard_get_shift() &&
             !ui_install_mode_requested()) {
             if (menu_open) {

@@ -1455,11 +1455,12 @@ static int run_installation(installer_t* inst) {
         snprintf(src_file, sizeof(src_file), "%c:\\payload\\%s", src_letter, files[i].rel);
         snprintf(dst_file, sizeof(dst_file), "%c:\\%s", target_letter, files[i].rel);
         /*
-         * Existing-system upgrades preserve the user's Desktop and icon
-         * layout. Missing defaults are recreated by the desktop service.
+         * Existing-system upgrades preserve the user's Desktop, icon
+         * layout, and custom file associations (system\assoc.ini).
          */
         pxe_dirent_t existing;
-        if (starts_with_ci(files[i].rel, "Desktop\\") &&
+        if ((starts_with_ci(files[i].rel, "Desktop\\") ||
+             strcasecmp(files[i].rel, "system\\assoc.ini") == 0) &&
             pxe_stat(dst_file, &existing) == 0) {
             continue;
         }
