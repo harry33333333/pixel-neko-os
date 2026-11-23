@@ -1345,7 +1345,8 @@ static void action_go_desktop(fm_t* fm) {
     char desk[64];
     resolve_desktop_dir(desk, sizeof(desk));
     if (!desk[0]) {
-        set_status(fm, FM_TR(fm, "未找到桌面目录。", "Desktop directory not found."), 1);
+        show_msg(fm, FM_TR(fm, "桌面", "Desktop"),
+                 FM_TR(fm, "未找到桌面目录。", "Desktop directory not found."), 1);
         return;
     }
     snprintf(fm->current_path, sizeof(fm->current_path), "%s", desk);
@@ -1384,13 +1385,15 @@ static void action_open_cmd_dir(fm_t* fm, const char* dir_path) {
         }
     }
     if (!cmd_path[0]) {
-        set_status(fm, FM_TR(fm, "找不到 APPS\\cmd.pxe。", "Cannot find APPS\\cmd.pxe."), 1);
+        show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
+                 FM_TR(fm, "找不到 APPS\\cmd.pxe。", "Cannot find APPS\\cmd.pxe."), 1);
         return;
     }
     const char* argv[2] = { cmd_path, (dir_path && dir_path[0]) ? dir_path : NULL };
     int argc = (dir_path && dir_path[0]) ? 2 : 1;
     if (pxe_spawn(cmd_path, argc, argv) < 0) {
-        set_status(fm, FM_TR(fm, "启动命令提示符失败。", "Failed to launch Command Prompt."), 1);
+        show_msg(fm, FM_TR(fm, "启动失败", "Launch Failed"),
+                 FM_TR(fm, "启动命令提示符失败。", "Failed to launch Command Prompt."), 1);
     }
 }
 
@@ -1402,7 +1405,8 @@ static void action_send_to_desktop(fm_t* fm, int idx) {
     char desk[64];
     resolve_desktop_dir(desk, sizeof(desk));
     if (!desk[0]) {
-        set_status(fm, FM_TR(fm, "未找到桌面目录。", "Desktop directory not found."), 1);
+        show_msg(fm, FM_TR(fm, "发送到桌面", "Send to Desktop"),
+                 FM_TR(fm, "未找到桌面目录。", "Desktop directory not found."), 1);
         return;
     }
 
@@ -1432,11 +1436,13 @@ static void action_send_to_desktop(fm_t* fm, int idx) {
     if (len >= (int)sizeof(content)) len = (int)sizeof(content) - 1;
 
     if (pxe_write_file(pnk_path, content, (size_t)len) != 0) {
-        set_status(fm, FM_TR(fm, "创建桌面快捷方式失败。", "Failed to create desktop shortcut."), 1);
+        show_msg(fm, FM_TR(fm, "发送到桌面", "Send to Desktop"),
+                 FM_TR(fm, "创建桌面快捷方式失败。", "Failed to create desktop shortcut."), 1);
         return;
     }
     pxe_notify_desktop();
-    set_status(fm, FM_TR(fm, "已发送到桌面。", "Sent to Desktop."), 0);
+    show_msg(fm, FM_TR(fm, "发送到桌面", "Send to Desktop"),
+             FM_TR(fm, "已发送到桌面。", "Sent to Desktop."), 0);
 }
 
 static void action_paste(fm_t* fm, const pxe_win_surface_t* surf) {
