@@ -35,6 +35,7 @@
 #include "ui_compat.h"
 #include "settings.h"
 #include "wm.h"
+#include "font.h"
 #include "power.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -781,6 +782,7 @@ void kmain(void) {
     log_printf("[P5 ] Storage block devices=%d partitions=%d\n",
                blkdev_count(), g_partition_count);
     settings_init();
+    font_cjk_init();
     log_disk_init();
     vfs_migrate_legacy_layout();
 

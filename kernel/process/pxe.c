@@ -28,6 +28,7 @@
 #include "vmm.h"
 #include "wallpaper.h"
 #include "wm.h"
+#include "font.h"
 
 extern int screen_w;
 extern int screen_h;
@@ -1235,6 +1236,10 @@ static int r0_api_init_uninit_disk(void) {
     return 0;
 }
 
+static const void* r0_api_get_cjk_font(void) {
+    return font_cjk_get_table();
+}
+
 static const pxe_ring0_api_t g_pxe_ring0_api = {
     .api_version          = PXE_R0_API_VERSION,
     .struct_size          = sizeof(pxe_ring0_api_t),
@@ -1294,7 +1299,8 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .init_uninit_disk     = r0_api_init_uninit_disk,
     .get_display_caps     = pxe_kern_get_display_caps,
     .fs_create            = r0_api_fs_create,
-    .fs_write             = r0_api_fs_write
+    .fs_write             = r0_api_fs_write,
+    .get_cjk_font         = r0_api_get_cjk_font
 };
 
 /* =========================================================================
@@ -1520,6 +1526,24 @@ static process_t* pxe_load_ring3_process(const pxe_header_t* hdr, const uint8_t*
             vmm_destroy_address_space(proc->pml4);
             kfree(proc);
             return NULL;
+        }
+    }
+
+    /* Map shared read-only CJK bitmap font at fixed VA (inside [0x600000000000, 0x700000000000)) */
+    {
+        phys_addr_t font_phys = (phys_addr_t)font_cjk_get_phys();
+        size_t font_pages = font_cjk_get_pages();
+        if (font_phys && font_pages > 0) {
+            for (size_t pg = 0; pg < font_pages; pg++) {
+                if (!vmm_map_page(proc->pml4,
+                                  NEKO_CJK_FONT_R3_VA + pg * PAGE_SIZE,
+                                  font_phys + pg * PAGE_SIZE,
+                                  PTE_PRESENT | PTE_USER | PTE_NX)) {
+                    vmm_destroy_address_space(proc->pml4);
+                    kfree(proc);
+                    return NULL;
+                }
+            }
         }
     }
 

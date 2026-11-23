@@ -212,11 +212,11 @@ static void draw_mode_btn(const pxe_win_surface_t* surf, int bx, int by, int bw,
                           const char* label, int active) {
     if (active) {
         pxe_draw_bevel_box(surf, bx, by, bw, bh, 1, PXE_COL_BLUE);
-        int tw = (int)strlen(label) * 6;
+        int tw = pxe_text_width_small(label);
         pxe_draw_text_small(surf, bx + (bw - tw) / 2, by + 6, label, PXE_COL_WHITE);
     } else {
         pxe_draw_bevel_box(surf, bx, by, bw, bh, 0, PXE_COL_LIGHT_GRAY);
-        int tw = (int)strlen(label) * 6;
+        int tw = pxe_text_width_small(label);
         pxe_draw_text_small(surf, bx + (bw - tw) / 2, by + 6, label, PXE_COL_BLACK);
     }
 }

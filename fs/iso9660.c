@@ -1,5 +1,6 @@
 #include "iso9660.h"
 #include "log.h"
+#include "utf8.h"
 #include <stddef.h>
 
 /*
@@ -37,7 +38,7 @@ static int iso_read_sector(blkdev_t* dev, uint64_t iso_lba,
 static int str_case_eq(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) {
-        char ca = a[i], cb = b[i];
+        unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
         if (ca >= 'a' && ca <= 'z') ca -= 32;
         if (cb >= 'a' && cb <= 'z') cb -= 32;
         if (ca != cb) return 0;
@@ -80,14 +81,13 @@ int iso_mount(blkdev_t* dev, iso_fs_t* fs) {
                 fs->root_data_len = *(unsigned int*)&root_rec[10];
                 fs->total_sectors = *(unsigned int*)&sec[80];
 
-                // Joliet Volume Label (UCS-2 BE)
-                int lp = 0;
-                for (int i = 40; i < 72 && lp < 31; i += 2) {
-                    char c = sec[i + 1];
-                    if (c == 0 || c == ' ') break;
-                    fs->volume_label[lp++] = c;
+                // Joliet Volume Label (UCS-2 BE -> UTF-8)
+                size_t lbytes = ucs2be_to_utf8(&sec[40], 32,
+                                               fs->volume_label,
+                                               sizeof(fs->volume_label));
+                while (lbytes > 0 && fs->volume_label[lbytes - 1] == ' ') {
+                    fs->volume_label[--lbytes] = '\0';
                 }
-                fs->volume_label[lp] = '\0';
                 fs->mounted = 1;
                 return 0; // Joliet is preferred
             }
@@ -154,19 +154,20 @@ static int parse_directory(iso_fs_t* fs, unsigned int start_lba, unsigned int to
 
             int name_len = 0;
             if (fs->is_joliet) {
-                // Unicode UCS-2 Big Endian -> ASCII
-                for (int i = 0; i < len_fi && name_len < 63; i += 2) {
-                    char c = rec[33 + i + 1];
-                    if (c == 0) c = rec[33 + i];
-                    if (c == 0) break;
-                    if (c == ';') break; // Strip version suffix ;1
-                    item.name[name_len++] = c;
+                // Unicode UCS-2 Big Endian -> UTF-8
+                ucs2be_to_utf8(&rec[33], len_fi, item.name, sizeof(item.name));
+                for (int i = 0; item.name[i]; i++) {
+                    if (item.name[i] == ';') {
+                        item.name[i] = '\0';
+                        break;
+                    }
                 }
+                while (item.name[name_len]) name_len++;
                 if (name_len > 0 && item.name[name_len - 1] == '.') {
                     name_len--;
                 }
             } else {
-                for (int i = 0; i < len_fi && name_len < 63; i++) {
+                for (int i = 0; i < len_fi && name_len < (int)sizeof(item.name) - 1; i++) {
                     char c = rec[33 + i];
                     if (c == ';') break; // Strip version suffix ;1
                     item.name[name_len++] = c;
@@ -244,7 +245,7 @@ int iso_find_file(iso_fs_t* fs, const char* path, iso_file_info_t* info) {
 
     unsigned int cur_lba = fs->root_extent_lba;
     unsigned int cur_len = fs->root_data_len;
-    char comp[64];
+    char comp[128];
 
     while (*path) {
         path = get_next_path_comp(path, comp, sizeof(comp));

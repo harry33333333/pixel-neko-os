@@ -2,6 +2,7 @@
 #include "vfs.h"
 #include "log.h"
 #include "string.h"
+#include "utf8.h"
 
 #define SECTOR_SIZE 512
 #define FAT_MAX_HANDLES 64
@@ -26,10 +27,10 @@ static file_handle_t* fat_alloc_handle(void) {
 
 static int str_casecmp(const char* a, const char* b, int n) {
     for (int i = 0; i < n; i++) {
-        char ca = a[i], cb = b[i];
+        unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
         if (ca >= 'a' && ca <= 'z') ca -= 32;
         if (cb >= 'a' && cb <= 'z') cb -= 32;
-        if (ca != cb) return ca - cb;
+        if (ca != cb) return (int)ca - (int)cb;
         if (ca == 0) return 0;
     }
     return 0;
@@ -322,7 +323,8 @@ struct lfn_slot {
 };
 
 typedef struct {
-    char lfn_buf[256];
+    uint16_t lfn_u16[260];
+    char lfn_buf[512];
     int lfn_valid;
     unsigned char lfn_chksum;
     int lfn_last_seq;
@@ -336,6 +338,7 @@ static void reset_lfn_scan_state(dir_scan_state_t* st) {
     st->lfn_last_seq = 0;
     st->lfn_slot_count = 0;
     st->lfn_buf[0] = 0;
+    memset(st->lfn_u16, 0, sizeof(st->lfn_u16));
 }
 
 static int wipe_slot_list(fat_fs_t* vol, const struct lfn_slot* slots, int count,
@@ -374,7 +377,7 @@ static int wipe_slot_list(fat_fs_t* vol, const struct lfn_slot* slots, int count
     return 0;
 }
 
-static void decode_lfn_slot_chars(const fat_lfn_entry_t* lfn, int seq, char* lfn_buf) {
+static void decode_lfn_slot_chars(const fat_lfn_entry_t* lfn, int seq, uint16_t* lfn_u16) {
     int base_char = (seq - 1) * 13;
     unsigned short ucs[13];
     for (int k = 0; k < 5; k++) ucs[k] = lfn->name1[k];
@@ -386,11 +389,9 @@ static void decode_lfn_slot_chars(const fat_lfn_entry_t* lfn, int seq, char* lfn
         int pos = base_char + k;
         if (pos < 255) {
             if (c == 0x0000 || c == 0xFFFF) {
-                lfn_buf[pos] = 0;
-            } else if (c < 0x80) {
-                lfn_buf[pos] = (char)c;
+                lfn_u16[pos] = 0;
             } else {
-                lfn_buf[pos] = (char)(c & 0xFF);
+                lfn_u16[pos] = c;
             }
         }
     }
@@ -425,7 +426,8 @@ static int traverse_dir_sector(fat_fs_t* vol, unsigned int sec,
                     st->lfn_chksum = lfn->checksum;
                     st->lfn_last_seq = seq;
                     st->lfn_slot_count = 0;
-                    for (int k = 0; k < 256; k++) st->lfn_buf[k] = 0;
+                    memset(st->lfn_u16, 0, sizeof(st->lfn_u16));
+                    st->lfn_buf[0] = 0;
                 }
                 if (st->lfn_valid && lfn->checksum == st->lfn_chksum && seq <= st->lfn_last_seq) {
                     st->lfn_last_seq = seq;
@@ -434,7 +436,7 @@ static int traverse_dir_sector(fat_fs_t* vol, unsigned int sec,
                         st->lfn_slots[st->lfn_slot_count].offset = j * 32;
                         st->lfn_slot_count++;
                     }
-                    decode_lfn_slot_chars(lfn, seq, st->lfn_buf);
+                    decode_lfn_slot_chars(lfn, seq, st->lfn_u16);
                 } else {
                     reset_lfn_scan_state(st);
                 }
@@ -445,9 +447,12 @@ static int traverse_dir_sector(fat_fs_t* vol, unsigned int sec,
         }
 
         const char* lfn_to_pass = 0;
-        if (st->lfn_valid && st->lfn_buf[0] != 0 && !(entry->attr & 0x08)) {
+        if (st->lfn_valid && st->lfn_u16[0] != 0 && !(entry->attr & 0x08)) {
             if (calc_lfn_checksum(entry->name) == st->lfn_chksum) {
-                lfn_to_pass = st->lfn_buf;
+                utf16le_to_utf8(st->lfn_u16, 255, st->lfn_buf, sizeof(st->lfn_buf));
+                if (st->lfn_buf[0] != 0) {
+                    lfn_to_pass = st->lfn_buf;
+                }
             }
         }
 
@@ -589,7 +594,6 @@ static void scrub_orphan_lfns(fat_fs_t* vol, unsigned int start_cluster) {
 static int traverse_dir(fat_fs_t* vol, unsigned int start_cluster, dir_callback_t cb, void* user_data) {
     dir_scan_state_t st;
     reset_lfn_scan_state(&st);
-    for (int k = 0; k < 256; k++) st.lfn_buf[k] = 0;
 
     if (start_cluster == 0 && (vol->type == 12 || vol->type == 16)) {
         unsigned int root_start = vol->reserved_sectors + vol->num_fats * vol->sectors_per_fat;
@@ -1051,6 +1055,7 @@ struct del_cb_data {
     const char* target_name;
     const char* fat_name;
     const char* fat_ext;
+    int free_clusters;
     int found;
 };
 
@@ -1083,7 +1088,7 @@ static int del_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
     if (matched) {
         unsigned int cluster = get_first_cluster(vol, entry);
         entry->name[0] = 0xE5;
-        if (!(entry->attr & 0x10)) {
+        if (data->free_clusters && !(entry->attr & 0x10)) {
             free_chain(vol, cluster);
         }
         
@@ -1091,6 +1096,21 @@ static int del_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
         return 3;
     }
     return 0;
+}
+
+static int fat_delete_in_dir(fat_fs_t* vol, unsigned int dir_cluster,
+                             const char* comp, int free_clusters) {
+    unsigned char fat_name[8], fat_ext[3];
+    str_to_fat_name(comp, fat_name, fat_ext);
+    struct del_cb_data data = {
+        comp, (const char*)fat_name, (const char*)fat_ext, free_clusters, 0
+    };
+    if (traverse_dir(vol, dir_cluster, del_cb, &data) != 0) return -1;
+    if (data.found) {
+        scrub_orphan_lfns(vol, dir_cluster);
+        return 0;
+    }
+    return -1;
 }
 
 int fat_delete(const char* name) {
@@ -1111,80 +1131,81 @@ int fat_delete(const char* name) {
         path = next_path;
     }
     
-    unsigned char fat_name[8], fat_ext[3];
-    str_to_fat_name(comp, fat_name, fat_ext);
-    struct del_cb_data data = { comp, (const char*)fat_name, (const char*)fat_ext, 0 };
-    if (traverse_dir(vol, cluster, del_cb, &data) != 0) return -1;
-    if (data.found) {
-        scrub_orphan_lfns(vol, cluster);
-        return 0;
-    }
-    return -1;
+    return fat_delete_in_dir(vol, cluster, comp, 1);
 }
+
+static int fat_insert_entry(fat_fs_t* vol, unsigned int dir_cluster,
+                            const char* comp, unsigned char attr,
+                            unsigned int first_cluster, unsigned int file_size,
+                            int init_new_dir);
 
 // ---------------------------------------------------------
 // Rename
 // ---------------------------------------------------------
-struct ren_cb_data {
-    const char* old_fat_name;
-    const char* old_fat_ext;
-    const char* new_fat_name;
-    const char* new_fat_ext;
-    int found;
-};
-
-static int ren_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsigned int sector, unsigned int offset, void* ud) {
-    (void)vol; (void)sector; (void)offset; (void)lfn_name;
-    if (entry->name[0] == 0x00) return 1;
-    if (entry->name[0] == 0xE5 || (entry->attr & 0x08)) return 0;
-    
-    struct ren_cb_data* data = (struct ren_cb_data*)ud;
-    if (str_casecmp((const char*)entry->name, data->old_fat_name, 8) == 0 &&
-        str_casecmp((const char*)&entry->name[8], data->old_fat_ext, 3) == 0) {
-        
-        for (int k = 0; k < 8; k++) entry->name[k] = data->new_fat_name[k];
-        for (int k = 0; k < 3; k++) entry->ext[k] = data->new_fat_ext[k];
-        
-        data->found = 1;
-        return 2; 
-    }
-    return 0;
-}
-
 int fat_rename(const char* old_name, const char* new_name) {
+    if (!old_name || !new_name) return -1;
     file_info_t dummy;
     if (fat_find(new_name, &dummy) == 0) return -2;
 
-    const char* path = old_name;
-    fat_fs_t* vol = get_vol(&path);
+    const char* old_path = old_name;
+    fat_fs_t* vol = get_vol(&old_path);
     if (!vol) return -1;
-    
-    unsigned int cluster = 0;
-    char comp[128];
-    while (*path) {
-        const char* next_path = split_path(path, comp);
-        if (*next_path == 0) break; 
-        if (fat_find_in_dir(vol, cluster, comp, &dummy) != 0) return -1;
-        cluster = dummy.first_cluster;
-        path = next_path;
-    }
-    
+
     const char* new_path = new_name;
+    fat_fs_t* new_vol = get_vol(&new_path);
+    if (!new_vol || new_vol != vol) return -1;
+    
+    unsigned int old_parent = 0;
+    char old_comp[128];
+    old_comp[0] = '\0';
+    while (*old_path) {
+        const char* next_path = split_path(old_path, old_comp);
+        if (*next_path == 0) break;
+        if (fat_find_in_dir(vol, old_parent, old_comp, &dummy) != 0) return -1;
+        old_parent = dummy.first_cluster;
+        old_path = next_path;
+    }
+    if (old_comp[0] == '\0') return -1;
+
+    file_info_t old_info;
+    if (fat_find_in_dir(vol, old_parent, old_comp, &old_info) != 0) return -1;
+
+    unsigned int new_parent = 0;
     char new_comp[128];
+    new_comp[0] = '\0';
     while (*new_path) {
         const char* next_path = split_path(new_path, new_comp);
-        if (*next_path == 0) break; 
+        if (*next_path == 0) break;
+        if (fat_find_in_dir(vol, new_parent, new_comp, &dummy) != 0) return -1;
+        if (!(dummy.attr & 0x10)) return -1;
+        new_parent = dummy.first_cluster;
         new_path = next_path;
     }
+    if (new_comp[0] == '\0') return -1;
 
-    unsigned char old_fat_name[8], old_fat_ext[3];
-    unsigned char new_fat_name[8], new_fat_ext[3];
-    str_to_fat_name(comp, old_fat_name, old_fat_ext);
-    str_to_fat_name(new_comp, new_fat_name, new_fat_ext);
+    if (fat_insert_entry(vol, new_parent, new_comp, old_info.attr,
+                         old_info.first_cluster, old_info.size, 0) != 0) {
+        return -1;
+    }
 
-    struct ren_cb_data data = { (const char*)old_fat_name, (const char*)old_fat_ext, (const char*)new_fat_name, (const char*)new_fat_ext, 0 };
-    if (traverse_dir(vol, cluster, ren_cb, &data) != 0) return -1;
-    return data.found ? 0 : -1;
+    if (fat_delete_in_dir(vol, old_parent, old_comp, 0) != 0) {
+        (void)fat_delete_in_dir(vol, new_parent, new_comp, 0);
+        return -1;
+    }
+
+    if ((old_info.attr & 0x10) && old_parent != new_parent &&
+        old_info.first_cluster >= 2) {
+        unsigned char sec_buf[512];
+        unsigned int dir_sec = cluster_to_sector(vol, old_info.first_cluster);
+        if (vol_read_sec(vol, dir_sec, sec_buf) == 0) {
+            dir_entry_t* dotdot = (dir_entry_t*)(sec_buf + 32);
+            if (dotdot->name[0] == '.' && dotdot->name[1] == '.') {
+                set_first_cluster(vol, dotdot, new_parent);
+                vol_write_sec(vol, dir_sec, sec_buf);
+            }
+        }
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------
@@ -1244,11 +1265,12 @@ static unsigned int allocate_cluster(fat_fs_t* vol) {
 }
 
 static int plain_short_name(const char* name) {
-    int length = str_len((char*)name);
+    int length = str_len(name);
     int dot = -1;
     if (length < 1 || length > 12) return 0;
     for (int index = 0; index < length; index++) {
-        char c = name[index];
+        unsigned char c = (unsigned char)name[index];
+        if (c >= 0x80u) return 0;
         if (c == '.') {
             if (dot >= 0) return 0;
             dot = index;
@@ -1309,10 +1331,21 @@ static void make_short_alias(fat_fs_t* vol, unsigned int dir_cluster,
         int position = 0;
         for (int index = 0; base[index]; index++) candidate[position++] = base[index];
         if (dot >= 0) {
-            candidate[position++] = '.';
-            for (int index = dot + 1;
-                 long_name[index] && position < 12; index++) {
-                candidate[position++] = long_name[index];
+            int ext_out = 0;
+            char ext_buf[4];
+            for (int index = dot + 1; long_name[index] && ext_out < 3; index++) {
+                unsigned char uc = (unsigned char)long_name[index];
+                if ((uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z') ||
+                    (uc >= '0' && uc <= '9') || uc == '-' || uc == '_') {
+                    if (uc >= 'a' && uc <= 'z') uc -= 32;
+                    ext_buf[ext_out++] = (char)uc;
+                }
+            }
+            if (ext_out > 0) {
+                candidate[position++] = '.';
+                for (int k = 0; k < ext_out && position < 12; k++) {
+                    candidate[position++] = ext_buf[k];
+                }
             }
         }
         candidate[position] = '\0';
@@ -1357,12 +1390,15 @@ static int extend_directory(fat_fs_t* vol, unsigned int dir_cluster,
 }
 
 static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
-                               const char* long_name, int is_dir) {
+                               const char* long_name, unsigned char attr,
+                               unsigned int first_cluster, unsigned int file_size,
+                               int init_new_dir) {
     scrub_orphan_lfns(vol, dir_cluster);
     unsigned char short_name[8], short_ext[3];
     make_short_alias(vol, dir_cluster, long_name, short_name, short_ext);
-    int name_length = str_len((char*)long_name);
-    if (name_length > 255) return -1;
+    uint16_t u16_buf[256];
+    int name_length = (int)utf8_to_utf16le(long_name, u16_buf, 255);
+    if (name_length <= 0 || name_length > 255) return -1;
     int lfn_entries = (name_length + 12) / 13;
     int needed = lfn_entries + 1;
     if (needed > 21) return -1;
@@ -1449,7 +1485,7 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
             int source = (sequence - 1) * 13 + item;
             unsigned short character = 0xFFFF;
             if (source < name_length) {
-                character = (unsigned char)long_name[source];
+                character = u16_buf[source];
             } else if (source == name_length) {
                 character = 0;
             }
@@ -1473,9 +1509,9 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
     memset(entry, 0, sizeof(entry));
     for (int index = 0; index < 8; index++) entry[index] = short_name[index];
     for (int index = 0; index < 3; index++) entry[8 + index] = short_ext[index];
-    entry[11] = is_dir ? 0x10 : 0x20;
-    unsigned int new_cluster = 0;
-    if (is_dir) {
+    entry[11] = attr;
+    unsigned int new_cluster = first_cluster;
+    if (init_new_dir) {
         new_cluster = allocate_cluster(vol);
         if (new_cluster == 0) return -1;
         unsigned char sector_buffer[512] = {0};
@@ -1499,8 +1535,9 @@ static int write_lfn_component(fat_fs_t* vol, unsigned int dir_cluster,
              sector++) {
             if (vol_write_sec(vol, first_sector + sector, zero) != 0) return -1;
         }
-        set_first_cluster(vol, (dir_entry_t*)entry, new_cluster);
     }
+    set_first_cluster(vol, (dir_entry_t*)entry, new_cluster);
+    ((dir_entry_t*)entry)->file_size = file_size;
     unsigned int sector = slots[physical].sector;
     int offset = slots[physical].offset;
     unsigned char buffer[512];
@@ -1527,7 +1564,10 @@ int fat_get_volume_space(char letter, unsigned int* total_kb, unsigned int* free
 struct cre_cb_data {
     const char* fat_name;
     const char* fat_ext;
-    int is_dir;
+    unsigned char attr;
+    unsigned int first_cluster;
+    unsigned int file_size;
+    int init_new_dir;
     unsigned int parent_cluster;
     int found;
 };
@@ -1543,10 +1583,11 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
         for (int k = 0; k < 8; k++) entry->name[k] = data->fat_name[k];
         for (int k = 0; k < 3; k++) entry->ext[k] = data->fat_ext[k];
         
-        entry->attr = data->is_dir ? 0x10 : 0x20;
-        unsigned int new_cluster = 0;
-        if (data->is_dir) {
+        entry->attr = data->attr;
+        unsigned int new_cluster = data->first_cluster;
+        if (data->init_new_dir) {
             new_cluster = allocate_cluster(vol);
+            if (new_cluster == 0) return 1;
             unsigned char sector_buf[512] = {0};
 
             // '.' entry pointing to self
@@ -1576,7 +1617,7 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
             }
         }
         set_first_cluster(vol, entry, new_cluster);
-        entry->file_size = 0;
+        entry->file_size = data->file_size;
         
         data->found = 1;
         return 2; 
@@ -1584,38 +1625,28 @@ static int cre_cb(fat_fs_t* vol, dir_entry_t* entry, const char* lfn_name, unsig
     return 0;
 }
 
-int fat_create_ext(const char* name, int is_dir) {
-    file_info_t dummy;
-    if (fat_find(name, &dummy) == 0) return -2;
-
-    const char* path = name;
-    fat_fs_t* vol = get_vol(&path);
-    if (!vol) return -1;
-    
-    unsigned int cluster = 0;
-    char comp[128];
-    while (*path) {
-        const char* next_path = split_path(path, comp);
-        if (*next_path == 0) break;
-        if (fat_find_in_dir(vol, cluster, comp, &dummy) != 0) return -1;
-        cluster = dummy.first_cluster;
-        path = next_path;
-    }
-
+static int fat_insert_entry(fat_fs_t* vol, unsigned int dir_cluster,
+                            const char* comp, unsigned char attr,
+                            unsigned int first_cluster, unsigned int file_size,
+                            int init_new_dir) {
     if (!plain_short_name(comp)) {
-        return write_lfn_component(vol, cluster, comp, is_dir);
+        return write_lfn_component(vol, dir_cluster, comp, attr,
+                                   first_cluster, file_size, init_new_dir);
     }
 
     unsigned char fat_name[8], fat_ext[3];
     str_to_fat_name(comp, fat_name, fat_ext);
 
-    struct cre_cb_data data = { (const char*)fat_name, (const char*)fat_ext, is_dir, cluster, 0 };
-    if (traverse_dir(vol, cluster, cre_cb, &data) != 0) return -1;
+    struct cre_cb_data data = {
+        (const char*)fat_name, (const char*)fat_ext, attr,
+        first_cluster, file_size, init_new_dir, dir_cluster, 0
+    };
+    if (traverse_dir(vol, dir_cluster, cre_cb, &data) != 0) return -1;
     if (data.found) return 0;
 
     // If directory was full and is cluster-based (subdirectory or FAT32 root), allocate new cluster
-    if (cluster != 0 || vol->type == 32) {
-        unsigned int dir_c = (cluster != 0) ? cluster : vol->root_cluster;
+    if (dir_cluster != 0 || vol->type == 32) {
+        unsigned int dir_c = (dir_cluster != 0) ? dir_cluster : vol->root_cluster;
         unsigned int end_mark = (vol->type == 12) ? 0x0FF8 : ((vol->type == 16) ? 0xFFF8 : 0x0FFFFFF8);
         while (1) {
             unsigned int next_c = fat_read_entry(vol, dir_c);
@@ -1636,6 +1667,28 @@ int fat_create_ext(const char* name, int is_dir) {
         }
     }
     return -3;
+}
+
+int fat_create_ext(const char* name, int is_dir) {
+    file_info_t dummy;
+    if (fat_find(name, &dummy) == 0) return -2;
+
+    const char* path = name;
+    fat_fs_t* vol = get_vol(&path);
+    if (!vol) return -1;
+    
+    unsigned int cluster = 0;
+    char comp[128];
+    while (*path) {
+        const char* next_path = split_path(path, comp);
+        if (*next_path == 0) break;
+        if (fat_find_in_dir(vol, cluster, comp, &dummy) != 0) return -1;
+        cluster = dummy.first_cluster;
+        path = next_path;
+    }
+
+    return fat_insert_entry(vol, cluster, comp,
+                            is_dir ? 0x10 : 0x20, 0, 0, is_dir ? 1 : 0);
 }
 
 int fat_create(const char* name) { return fat_create_ext(name, 0); }

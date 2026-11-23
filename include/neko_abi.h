@@ -74,6 +74,8 @@
 #define NEKO_USER_LIMIT            0x0000800000000000ULL
 #define NEKO_SHM_BASE              0x0000600000000000ULL
 #define NEKO_SHM_STRIDE            0x0000000004000000ULL /* 64 MB stride per mapped surface */
+#define NEKO_CJK_FONT_R3_VA        0x00006F0000000000ULL /* Shared read-only CJK bitmap font */
+#define NEKO_CJK_FONT_MAX_BYTES    (2U * 1024U * 1024U)
 #define NEKO_TEST_QUEUE_ID         1ULL
 #define NEKO_TEST_RESPONSE_QUEUE_ID 2ULL
 #define NEKO_TEST_SHM_ID           1ULL

@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 270
+PIXEL_NEKO_BUILD_NUMBER ?= 275
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -56,6 +56,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/core/log.c \
            kernel/core/log_disk.c \
            kernel/core/string.c \
+           kernel/core/utf8.c \
            kernel/core/panic.c \
            arch/x86_64/cpu.c \
            arch/x86_64/gdt.c \

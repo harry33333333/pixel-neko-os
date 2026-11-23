@@ -7,6 +7,7 @@ static int in_cl(int mx, int my, int cx, int cy);
 static int in_mi(int mx, int my, int cx, int cy);
 static int rs_dir(int mx, int my, int wx, int wy, int ww, int wh);
 #include "font.h"
+#include "utf8.h"
 #include "version.h"
 #include "port.h"
 #include "audio.h"
@@ -512,8 +513,8 @@ static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, i
         if (x >= 0 && wy+18 >= 0 && wy+18 < screen_h) PUT_PIXEL(v, x, wy+18, 0);
     }
     
-    int tw = 0; while(t[tw]) tw++;
-    int tx = wx + (ww - tw*8)/2;
+    int tw_px = font_text_width(t);
+    int tx = wx + (ww - tw_px) / 2;
     
     if (active) {
         // Draw stripes
@@ -522,7 +523,7 @@ static void window_ex(unsigned char* v, int wx, int wy, const char* t, int ww, i
             for (int x = wx+2; x < wx+ww-2 && x < screen_w; x++) {
                 if (x < 0) continue;
                 if ((!no_close && ((x >= wx+4 && x <= wx+16) || (x >= wx+ww-18 && x <= wx+ww-6))) ||
-                    (x >= tx-4 && x <= tx+tw*8+4)) continue;
+                    (x >= tx-4 && x <= tx+tw_px+4)) continue;
                 PUT_PIXEL(v, x, y, 0);
             }
         }
@@ -549,42 +550,46 @@ static void wrap_desktop_label(const char* label, char* line1,
     line1[0] = '\0';
     line2[0] = '\0';
     if (!label) return;
-    int length = (int)strlen(label);
-    if (length <= 7) {
-        strncpy(line1, label, 23);
-        line1[23] = '\0';
+    if (font_text_width(label) <= 56) {
+        strncpy(line1, label, 47);
+        line1[47] = '\0';
         return;
     }
 
-    int split = 7;
-    for (int index = 7; index > 0; index--) {
-        if (label[index] == ' ') {
-            split = index;
-            break;
-        }
-    }
-    int first_length = split;
-    while (first_length > 0 && label[first_length - 1] == ' ') first_length--;
-    if (first_length > 7) first_length = 7;
-    for (int index = 0; index < first_length; index++) line1[index] = label[index];
-    line1[first_length] = '\0';
+    const int max_line1_px = 56;
+    const char* p = label;
+    const char* last_space = NULL;
+    const char* fit_end = label;
+    int cur_w = 0;
 
-    int second_start = split;
-    while (label[second_start] == ' ') second_start++;
-    int remaining = length - second_start;
-    if (remaining <= 7) {
-        for (int index = 0; index < remaining; index++) {
-            line2[index] = label[second_start + index];
-        }
-        line2[remaining] = '\0';
-    } else {
-        for (int index = 0; index < 7; index++) {
-            line2[index] = label[second_start + index];
-        }
-        line2[7] = '.';
-        line2[8] = '.';
-        line2[9] = '.';
-        line2[10] = '\0';
+    while (*p) {
+        const char* prev = p;
+        uint32_t cp = utf8_decode_next(&p);
+        if (cp == 0u) break;
+        int cw = (cp < 0x80u) ? 8 : 16;
+        if (cur_w + cw > max_line1_px) break;
+        cur_w += cw;
+        fit_end = p;
+        if (cp == ' ') last_space = prev;
+    }
+
+    const char* split_end = (last_space && last_space > label) ? last_space : fit_end;
+    if (split_end == label && *label) {
+        const char* one = label;
+        (void)utf8_decode_next(&one);
+        split_end = one;
+    }
+
+    size_t len1 = (size_t)(split_end - label);
+    while (len1 > 0 && label[len1 - 1] == ' ') len1--;
+    if (len1 > 47) len1 = 47;
+    for (size_t i = 0; i < len1; i++) line1[i] = label[i];
+    line1[len1] = '\0';
+
+    const char* rest = split_end;
+    while (*rest == ' ') rest++;
+    if (*rest) {
+        utf8_clip_by_pixels(rest, 56, 0, line2, 48);
     }
 }
 
@@ -787,18 +792,18 @@ static void icon(unsigned char* v, int x, int y, int desktop_index,
     }
     
     if (lb) {
-        char line1[24];
-        char line2[24];
+        char line1[48];
+        char line2[48];
         wrap_desktop_label(lb, line1, line2);
-        int tw1 = (int)strlen(line1);
-        int tw2 = (int)strlen(line2);
-        int tx1 = x + 16 - tw1 * 4;
-        int tx2 = x + 16 - tw2 * 4;
+        int tw1 = font_text_width(line1);
+        int tw2 = font_text_width(line2);
+        int tx1 = x + 16 - tw1 / 2;
+        int tx2 = x + 16 - tw2 / 2;
         int y1 = line2[0] ? y + 34 : y + 36;
         if (sel) {
-            int label_chars = tw1 > tw2 ? tw1 : tw2;
-            int label_left = x + 16 - label_chars * 4 - 2;
-            int label_right = x + 16 + label_chars * 4 + 2;
+            int label_w = tw1 > tw2 ? tw1 : tw2;
+            int label_left = x + 16 - label_w / 2 - 2;
+            int label_right = x + 16 + (label_w + 1) / 2 + 2;
             for(int yy=y1-2; yy<y+68; yy++) {
                 for(int xx=label_left; xx<label_right; xx++) {
                     PUT_PIXEL(v, xx, yy, 1);
@@ -1108,14 +1113,8 @@ static void draw_r0_confirm_dialog(unsigned char* v) {
     font_draw_text(v, dx + 52, dy + 14, "Ring 0 Kernel Executable", 4);
     font_draw_text(v, dx + 52, dy + 34, "Grant full Ring 0 hardware access?", 0);
 
-    char disp_path[44];
-    int plen = (int)strlen(r0_confirm_path);
-    if (plen <= 40) {
-        strcpy(disp_path, r0_confirm_path);
-    } else {
-        disp_path[0] = '.'; disp_path[1] = '.'; disp_path[2] = '.';
-        strcpy(disp_path + 3, r0_confirm_path + (plen - 37));
-    }
+    char disp_path[128];
+    utf8_clip_by_pixels(r0_confirm_path, 340, 0, disp_path, sizeof(disp_path));
     font_draw_text(v, dx + 20, dy + 56, disp_path, 1);
 
     int cbx = dx + 40, oby = dy + 86;
@@ -1145,7 +1144,7 @@ static wm_dyn_win_t* get_active_pxe_menubar_win(void) {
 static void get_pxe_menu_span(const pxe_menu_bar_t* mb, int idx, int* out_x, int* out_w) {
     int cur_x = 30;
     for (int i = 0; i < mb->menu_count && i < PXE_MAX_MENUS; i++) {
-        int tw = (int)strlen(mb->menus[i].title) * 8 + 16;
+        int tw = font_text_width(mb->menus[i].title) + 16;
         if (tw < 40) tw = 40;
         if (i == idx) {
             *out_x = cur_x;

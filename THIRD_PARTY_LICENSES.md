@@ -22,6 +22,8 @@ FreeBSD 源代码衍生；这些文件不应作为 FreeBSD 移植代码或 BSD-2
 ## 2. 引导与公共库组件
 - **Limine Bootloader v8.x**：BSD-2-Clause。二进制打包进 Hybrid ISO 的 EFI/BOOT 与 boot/limine 目录，保留 LICENSE 于光盘文档中。
 - **minimp3**：CC0 / MIT 许可证。保留于 `drivers/audio/minimp3.h`。
+- **GNU Unifont (v16.0.02)**：SIL Open Font License 1.1 / GPLv2+ with Font Exception 双重许可。本项目仅依据 **SIL OFL 1.1** 使用其 16×16 点阵字形生成 `system/FONT_CJK.FNT` 与 `include/cjk_font_core.h`。
+- **Zpix (最像素, v3.3.0)**：SIL Open Font License 1.1 (`https://github.com/SolidZORO/zpix-pixel-font`)。用于生成 12×12 小号中文点阵字形至 `system/FONT_CJK.FNT` 与 `include/cjk_font_core.h`。
 
 ## 3. 宿主编译与镜像生成工具（不打入目标内核映像）
 - **GCC / Clang**：GPLv3 / Apache 2.0 with LLVM Exception。仅作为交叉构建工具，生成的目标代码不具传染性。

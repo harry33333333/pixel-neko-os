@@ -4,7 +4,7 @@
 #include "blkdev.h"
 
 typedef struct {
-    char           name[64];
+    char           name[128];
     unsigned char  is_dir;
     uint64_t       size;
     uint64_t       extent_lba;

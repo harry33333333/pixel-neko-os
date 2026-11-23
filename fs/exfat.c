@@ -1,6 +1,7 @@
 #include "exfat.h"
 #include "log.h"
 #include "string.h"
+#include "utf8.h"
 
 #define EXFAT_ENTRY_FILE 0x85u
 #define EXFAT_ENTRY_STREAM 0xC0u
@@ -65,7 +66,9 @@ static char exfat_fold_ascii(char value) {
 
 static bool exfat_name_equal(const char* left, const char* right) {
     while (*left && *right) {
-        if (exfat_fold_ascii(*left) != exfat_fold_ascii(*right)) return false;
+        unsigned char cl = (unsigned char)exfat_fold_ascii(*left);
+        unsigned char cr = (unsigned char)exfat_fold_ascii(*right);
+        if (cl != cr) return false;
         left++;
         right++;
     }
@@ -190,18 +193,15 @@ int exfat_mount(blkdev_t* dev, uint64_t partition_lba, exfat_fs_t* fs) {
                     fs->upcase_cluster = le32(entry + 20);
                     fs->upcase_length = le64(entry + 24);
                 } else if (entry[0] == EXFAT_ENTRY_LABEL) {
-                    int out = 0;
-                    for (int character_index = 0;
-                         character_index < 15 &&
-                         out + 1 < (int)sizeof(fs->volume_label);
-                         character_index++) {
-                        uint16_t character =
-                            le16(entry + 2 + character_index * 2);
-                        if (!character) break;
-                        fs->volume_label[out++] =
-                            character < 128 ? (char)character : '_';
+                    uint8_t char_count = entry[1];
+                    if (char_count > 11u) char_count = 11u;
+                    uint16_t u16_lbl[12];
+                    for (uint8_t ci = 0; ci < char_count; ci++) {
+                        u16_lbl[ci] = le16(entry + 2 + (size_t)ci * 2u);
                     }
-                    fs->volume_label[out] = '\0';
+                    utf16le_to_utf8(u16_lbl, char_count,
+                                    fs->volume_label,
+                                    sizeof(fs->volume_label));
                 }
             }
         }
@@ -372,15 +372,13 @@ static void exfat_free_chain(exfat_fs_t* fs, uint32_t first_cluster,
     }
 }
 
-static char exfat_upper_ascii(char ch) {
-    return (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : ch;
-}
-
-static uint16_t exfat_name_hash(const char* name, uint8_t name_len) {
+static uint16_t exfat_name_hash(const uint16_t* u16_name, uint8_t name_len) {
     uint16_t hash = 0;
     for (uint8_t i = 0; i < name_len; i++) {
-        uint8_t lo = (uint8_t)exfat_upper_ascii(name[i]);
-        uint8_t hi = 0;
+        uint16_t ch = u16_name[i];
+        if (ch >= 'a' && ch <= 'z') ch = (uint16_t)(ch - 32u);
+        uint8_t lo = (uint8_t)(ch & 0xFFu);
+        uint8_t hi = (uint8_t)(ch >> 8);
         hash = (uint16_t)(((hash & 1u) ? 0x8000u : 0u) + (hash >> 1) + lo);
         hash = (uint16_t)(((hash & 1u) ? 0x8000u : 0u) + (hash >> 1) + hi);
     }
@@ -551,19 +549,20 @@ static int visit_directory_ex(exfat_fs_t* fs, uint32_t first_cluster,
         info.first_cluster = le32(stream + 20);
         info.valid_size = le64(stream + 8);
         info.size = le64(stream + 24);
-        int out = 0;
-        for (uint32_t index = 1; index <= secondary && out < 255; index++) {
+        uint16_t u16_name[256];
+        uint32_t u16_out = 0;
+        for (uint32_t index = 1; index <= secondary && u16_out < name_length && u16_out < 255; index++) {
             uint8_t* name_entry = raw_set + index * 32;
             if (name_entry[0] != EXFAT_ENTRY_NAME) continue;
             for (uint32_t char_index = 0;
-                 char_index < 15 && out < name_length && out < 255;
+                 char_index < 15 && u16_out < name_length && u16_out < 255;
                  char_index++) {
-                uint16_t character = le16(name_entry + 2 + char_index * 2);
-                info.name[out++] = character < 128 ? (char)character : '_';
+                u16_name[u16_out++] = le16(name_entry + 2 + char_index * 2);
             }
         }
-        info.name[out] = '\0';
-        if (out && callback && callback(user, &info, slot, (uint8_t)(secondary + 1))) {
+        size_t utf8_len = utf16le_to_utf8(u16_name, u16_out,
+                                          info.name, sizeof(info.name));
+        if (utf8_len > 0 && callback && callback(user, &info, slot, (uint8_t)(secondary + 1))) {
             return 1;
         }
         slot += (uint32_t)(secondary + 1);
@@ -822,7 +821,8 @@ static int exfat_create_entry_set(exfat_fs_t* fs, exfat_parent_loc_t* ploc,
                                   uint32_t first_cluster, bool nofat,
                                   uint64_t valid_size, uint64_t data_size,
                                   uint32_t* out_slot) {
-    int nlen = exfat_strlen(name);
+    uint16_t u16_name[256];
+    int nlen = (int)utf8_to_utf16le(name, u16_name, 255u);
     if (nlen <= 0 || nlen > 255) return -1;
     uint8_t name_slots = (uint8_t)((nlen + 14) / 15);
     uint8_t total_slots = (uint8_t)(2 + name_slots);
@@ -838,7 +838,7 @@ static int exfat_create_entry_set(exfat_fs_t* fs, exfat_parent_loc_t* ploc,
     raw[32] = EXFAT_ENTRY_STREAM;
     raw[33] = (uint8_t)(0x01u | (nofat ? 0x02u : 0x00u));
     raw[35] = (uint8_t)nlen;
-    put_le16(raw + 36, exfat_name_hash(name, (uint8_t)nlen));
+    put_le16(raw + 36, exfat_name_hash(u16_name, (uint8_t)nlen));
     put_le64(raw + 40, valid_size);
     put_le32(raw + 52, first_cluster);
     put_le64(raw + 56, data_size);
@@ -850,7 +850,7 @@ static int exfat_create_entry_set(exfat_fs_t* fs, exfat_parent_loc_t* ploc,
         uint8_t* ne = raw + s * 32;
         ne[0] = EXFAT_ENTRY_NAME;
         ne[1] = 0;
-        put_le16(ne + 2 + c * 2, (uint16_t)(uint8_t)name[i]);
+        put_le16(ne + 2 + c * 2, u16_name[i]);
     }
     for (int s = 2; s < total_slots; s++) {
         raw[s * 32] = EXFAT_ENTRY_NAME;

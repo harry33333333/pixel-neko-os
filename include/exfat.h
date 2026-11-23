@@ -24,7 +24,7 @@ typedef struct {
     uint32_t upcase_checksum;
     uint32_t volume_serial;
     uint16_t revision;
-    char volume_label[16];
+    char volume_label[48];
     uint8_t sector_shift;
     uint8_t cluster_shift;
     int mounted;

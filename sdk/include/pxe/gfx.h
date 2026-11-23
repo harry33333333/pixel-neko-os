@@ -14,10 +14,12 @@ void pxe_draw_rect(const pxe_win_surface_t* surf, int x, int y, int w, int h, ui
 void pxe_draw_hline(const pxe_win_surface_t* surf, int x, int y, int w, uint32_t color);
 void pxe_draw_vline(const pxe_win_surface_t* surf, int x, int y, int h, uint32_t color);
 
-/* Classic 8x16 and 5x7 Pixel Neko bitmap font rendering */
+/* Classic 8x16 and 5x7 Pixel Neko bitmap font rendering (with UTF-8 / CJK support) */
 void pxe_draw_char(const pxe_win_surface_t* surf, int x, int y, char c, uint32_t fg);
 void pxe_draw_text(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg);
 void pxe_draw_text_small(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg);
+int  pxe_text_width(const char* text);
+int  pxe_text_width_small(const char* text);
 
 /* Classic Mac Platinum / Win9x 3D UI Widgets */
 void pxe_draw_bevel_box(const pxe_win_surface_t* surf, int x, int y, int w, int h,

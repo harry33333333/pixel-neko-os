@@ -377,6 +377,10 @@ void pxe_beep(void) {
     (void)_pxe_syscall0(NEKO_SYSCALL_BEEP);
 }
 
+const void* __pxe_get_cjk_font_table(void) {
+    return (const void*)(uintptr_t)NEKO_CJK_FONT_R3_VA;
+}
+
 /* =========================================================================
  * Filesystem (<pxe/fs.h>)
  * ========================================================================= */

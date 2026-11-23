@@ -8,7 +8,7 @@
  * Available ONLY to PXE_RING_0 executables (e.g. sysinfo.pxe, install.pxe, taskmgr.pxe).
  */
 
-#define PXE_R0_API_VERSION  0x0101u
+#define PXE_R0_API_VERSION  0x0102u
 
 /* Process states */
 #define PXE_PROC_READY      0u
@@ -184,6 +184,7 @@ typedef struct pxe_ring0_api {
     int      (*get_display_caps)(pxe_display_caps_t* out);
     int      (*fs_create)(const char* path);
     int      (*fs_write)(int fd, const void* buf, size_t count);
+    const void* (*get_cjk_font)(void);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */

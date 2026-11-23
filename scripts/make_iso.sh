@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A270a"
+    BUILD_ID="26A275a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -32,7 +32,7 @@ fi
 echo "=== Preparing ISO layout for ${ISO_NAME} ==="
 rm -rf iso_root
 mkdir -p iso_root/boot/limine iso_root/EFI/BOOT iso_root/PDEVICE iso_root/APPS
-mkdir -p iso_root/GAME iso_root/Desktop
+mkdir -p iso_root/GAME iso_root/Desktop iso_root/system
 mkdir -p iso_root/payload/boot/limine iso_root/payload/EFI/BOOT iso_root/payload/PDEVICE iso_root/payload/APPS
 mkdir -p iso_root/payload/GAME iso_root/payload/Desktop
 mkdir -p iso_root/payload/system
@@ -112,6 +112,10 @@ cp boot/limine-installed.conf iso_root/payload/system/limine-installed.conf
 cp LICENSE iso_root/payload/system/LICENSE.TXT
 cp THIRD_PARTY_LICENSES.md iso_root/payload/system/THIRDPARTY.TXT
 cp README.md iso_root/payload/system/README.TXT
+if [ -f "system/FONT_CJK.FNT" ]; then
+    cp system/FONT_CJK.FNT iso_root/system/FONT_CJK.FNT
+    cp system/FONT_CJK.FNT iso_root/payload/system/FONT_CJK.FNT
+fi
 cat > iso_root/payload/system/PAYLOAD.TXT <<EOF
 Pixel Neko OS ${BUILD_ID} complete offline payload
 

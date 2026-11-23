@@ -385,11 +385,11 @@ static void draw_nt6_btn(const pxe_win_surface_t* surf, int x, int y, int w, int
     }
     pxe_draw_rect(surf, x, y, w, h, border);
     if (label && label[0]) {
-        int tw = (int)strlen(label) * 8;
+        int tw = pxe_text_width(label);
         if (tw <= w - 8) {
             pxe_draw_text(surf, x + (w - tw) / 2, y + (h - 16) / 2, label, fg);
         } else {
-            int sw = (int)strlen(label) * 6;
+            int sw = pxe_text_width_small(label);
             pxe_draw_text_small(surf, x + (w - sw) / 2, y + (h - 8) / 2, label, fg);
         }
     }
@@ -413,7 +413,7 @@ static void draw_nt6_backdrop(const pxe_win_surface_t* surf, const installer_t* 
     pxe_draw_text_small(surf, 18, 12, brand, RGB_COL(0xE0F2FE));
     if (inst->install_mode) {
         const char* hint = "Use Apple Menu to Restart / Shut Down";
-        int hw = (int)strlen(hint) * 6;
+        int hw = pxe_text_width_small(hint);
         if (surf->width - hw - 18 > 280) {
             pxe_draw_text_small(surf, surf->width - hw - 18, 12, hint, RGB_COL(0xBAE6FD));
         }

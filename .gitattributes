@@ -11,3 +11,5 @@ Makefile text eol=lf
 *.EFI binary
 *.png binary
 *.exe binary
+*.FNT binary
+*.fnt binary

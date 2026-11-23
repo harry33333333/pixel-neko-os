@@ -1,6 +1,23 @@
 #include <pxe/gfx.h>
 #include <pxe/str.h>
 
+extern const void* __pxe_get_cjk_font_table(void);
+
+#define NKFT_MAGIC   0x54464B4Eu /* "NKFT" */
+#define NKFT_VERSION 1u
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t flags;
+    uint32_t glyph_count;
+    uint32_t cp_offset;
+    uint32_t g16_offset;
+    uint32_t g12_offset;
+    uint32_t total_size;
+    uint32_t reserved;
+} __attribute__((packed)) pxe_nkft_header_t;
+
 static const uint8_t s_vga16[16][3] = {
     {0, 0, 0},       {0, 0, 128},     {0, 128, 0},     {0, 128, 128},
     {128, 0, 0},     {128, 0, 128},   {128, 64, 0},    {192, 192, 192},
@@ -351,6 +368,36 @@ void pxe_draw_rect(const pxe_win_surface_t* surf, int x, int y, int w, int h, ui
     }
 }
 
+static int pxe_nkft_find_glyph(uint32_t cp) {
+    if (cp < 0x80u || cp > 0xFFFFu) return -1;
+    const pxe_nkft_header_t* hdr = (const pxe_nkft_header_t*)__pxe_get_cjk_font_table();
+    if (!hdr || hdr->magic != NKFT_MAGIC || hdr->version != NKFT_VERSION ||
+        hdr->glyph_count == 0u) {
+        return -1;
+    }
+    const uint16_t* cps = (const uint16_t*)((const uint8_t*)hdr + hdr->cp_offset);
+    uint32_t lo = 0u;
+    uint32_t hi = hdr->glyph_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        uint16_t v = cps[mid];
+        if (v == (uint16_t)cp) return (int)mid;
+        if (v < (uint16_t)cp) lo = mid + 1u;
+        else hi = mid;
+    }
+    return -1;
+}
+
+static void pxe_draw_missing_box(const pxe_win_surface_t* surf, int x, int y,
+                                 int w, int h, uint32_t fg) {
+    pxe_draw_hline(surf, x + 1, y + 1, w - 2, fg);
+    pxe_draw_hline(surf, x + 1, y + h - 2, w - 2, fg);
+    if (h > 4) {
+        pxe_draw_vline(surf, x + 1, y + 2, h - 4, fg);
+        pxe_draw_vline(surf, x + w - 2, y + 2, h - 4, fg);
+    }
+}
+
 void pxe_draw_char(const pxe_win_surface_t* surf, int x, int y, char c, uint32_t fg) {
     const uint8_t* glyph = s_font_8x16[(unsigned char)c & 0x7Fu];
     for (int row = 0; row < 16; row++) {
@@ -364,44 +411,120 @@ void pxe_draw_char(const pxe_win_surface_t* surf, int x, int y, char c, uint32_t
     }
 }
 
+static void pxe_draw_cjk_16(const pxe_win_surface_t* surf, int x, int y,
+                            uint32_t cp, uint32_t fg) {
+    int idx = pxe_nkft_find_glyph(cp);
+    if (idx < 0) {
+        pxe_draw_missing_box(surf, x, y, 16, 16, fg);
+        return;
+    }
+    const pxe_nkft_header_t* hdr = (const pxe_nkft_header_t*)__pxe_get_cjk_font_table();
+    const uint8_t* g = (const uint8_t*)hdr + hdr->g16_offset + (size_t)idx * 32u;
+    for (int row = 0; row < 16; row++) {
+        uint16_t bits = ((uint16_t)g[row * 2] << 8) | (uint16_t)g[row * 2 + 1];
+        if (!bits) continue;
+        for (int col = 0; col < 16; col++) {
+            if (bits & (0x8000u >> col)) {
+                pxe_put_pixel(surf, x + col, y + row, fg);
+            }
+        }
+    }
+}
+
+static void pxe_draw_cjk_12(const pxe_win_surface_t* surf, int x, int y,
+                            uint32_t cp, uint32_t fg) {
+    int idx = pxe_nkft_find_glyph(cp);
+    if (idx < 0) {
+        pxe_draw_missing_box(surf, x, y, 12, 12, fg);
+        return;
+    }
+    const pxe_nkft_header_t* hdr = (const pxe_nkft_header_t*)__pxe_get_cjk_font_table();
+    const uint8_t* g = (const uint8_t*)hdr + hdr->g12_offset + (size_t)idx * 24u;
+    for (int row = 0; row < 12; row++) {
+        uint16_t bits = ((uint16_t)g[row * 2] << 8) | (uint16_t)g[row * 2 + 1];
+        if (!bits) continue;
+        for (int col = 0; col < 12; col++) {
+            if (bits & (0x8000u >> col)) {
+                pxe_put_pixel(surf, x + col, y + row, fg);
+            }
+        }
+    }
+}
+
 void pxe_draw_text(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg) {
     if (!text) return;
     int cx = x;
     while (*text) {
-        if (*text == '\n') {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        if (cp == '\n') {
             y += 16;
             cx = x;
-        } else {
-            pxe_draw_char(surf, cx, y, *text, fg);
-            cx += 8;
+            continue;
         }
-        text++;
+        if (cp < 0x80u) {
+            pxe_draw_char(surf, cx, y, (char)cp, fg);
+            cx += 8;
+        } else {
+            pxe_draw_cjk_16(surf, cx, y, cp, fg);
+            cx += 16;
+        }
     }
 }
 
 void pxe_draw_text_small(const pxe_win_surface_t* surf, int x, int y, const char* text, uint32_t fg) {
     if (!text) return;
     int cx = x;
+    int row_cjk = 0;
     while (*text) {
-        if (*text == '\n') {
-            y += 9;
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        if (cp == '\n') {
+            y += row_cjk ? 13 : 9;
             cx = x;
-            text++;
+            row_cjk = 0;
             continue;
         }
-        const uint8_t* glyph = s_font_small[(unsigned char)(*text) & 0x7Fu];
-        for (int row = 0; row < 7; row++) {
-            uint8_t line = glyph[row];
-            if (!line) continue;
-            for (int col = 0; col < 5; col++) {
-                if (line & (0x80u >> col)) {
-                    pxe_put_pixel(surf, cx + col, y + row, fg);
+        if (cp < 0x80u) {
+            const uint8_t* glyph = s_font_small[cp];
+            for (int row = 0; row < 7; row++) {
+                uint8_t line = glyph[row];
+                if (!line) continue;
+                for (int col = 0; col < 5; col++) {
+                    if (line & (0x80u >> col)) {
+                        pxe_put_pixel(surf, cx + col, y + row, fg);
+                    }
                 }
             }
+            cx += 6;
+        } else {
+            pxe_draw_cjk_12(surf, cx, y, cp, fg);
+            cx += 12;
+            row_cjk = 1;
         }
-        cx += 6;
-        text++;
     }
+}
+
+int pxe_text_width(const char* text) {
+    if (!text) return 0;
+    int w = 0;
+    while (*text) {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        w += (cp < 0x80u) ? 8 : 16;
+    }
+    return w;
+}
+
+int pxe_text_width_small(const char* text) {
+    if (!text) return 0;
+    int w = 0;
+    while (*text) {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        w += (cp < 0x80u) ? 6 : 12;
+    }
+    return w;
 }
 
 void pxe_draw_bevel_box(const pxe_win_surface_t* surf, int x, int y, int w, int h,
@@ -436,8 +559,8 @@ void pxe_draw_button(const pxe_win_surface_t* surf, int x, int y, int w, int h,
     }
 
     if (label && label[0]) {
-        int len = (int)strlen(label);
-        int tx = x + (w - len * 8) / 2 + (pressed ? 1 : 0);
+        int tw = pxe_text_width(label);
+        int tx = x + (w - tw) / 2 + (pressed ? 1 : 0);
         int ty = y + (h - 16) / 2 + (pressed ? 1 : 0);
         uint32_t fg = !enabled ? PXE_COL_DARK_GRAY : (pressed ? PXE_COL_WHITE : PXE_COL_BLACK);
         pxe_draw_text(surf, tx, ty, label, fg);

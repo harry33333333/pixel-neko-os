@@ -227,6 +227,15 @@ void pxe_beep(void) {
     if (__pxe_r0_api && __pxe_r0_api->beep) __pxe_r0_api->beep();
 }
 
+const void* __pxe_get_cjk_font_table(void) {
+    if (__pxe_r0_api &&
+        __pxe_r0_api->struct_size >= sizeof(pxe_ring0_api_t) &&
+        __pxe_r0_api->get_cjk_font) {
+        return __pxe_r0_api->get_cjk_font();
+    }
+    return (const void*)0;
+}
+
 /* =========================================================================
  * Filesystem (<pxe/fs.h>)
  * ========================================================================= */

@@ -1,5 +1,14 @@
 #include "font.h"
 #include "wm.h"
+#include "utf8.h"
+#include "cjk_font_core.h"
+#include "vfs.h"
+#include "pmm.h"
+#include "mm.h"
+#include "settings.h"
+#include "string.h"
+#include "log.h"
+#include "neko_abi.h"
 
 unsigned char font_small[128][7] = {
     [32]={0x00,0x00,0x00,0x00,0x00,0x00,0x00},
@@ -233,9 +242,136 @@ unsigned char font_8x16[128][16] = {
     [127]={0x00, 0x00, 0x00, 0x00, 0x10, 0x38, 0x6c, 0xc6, 0xc6, 0xc6, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00},
 };
 
+static phys_addr_t g_cjk_font_phys = 0;
+static size_t      g_cjk_font_pages = 0;
+static const void* g_cjk_font_ptr = NULL;
+
+static bool nkft_validate(const nkft_header_t* hdr, size_t max_bytes) {
+    if (!hdr || max_bytes < sizeof(nkft_header_t)) return false;
+    if (hdr->magic != NKFT_MAGIC || hdr->version != NKFT_VERSION) return false;
+    if (hdr->total_size < sizeof(nkft_header_t) || hdr->total_size > max_bytes) return false;
+    uint64_t cnt = (uint64_t)hdr->glyph_count;
+    if (hdr->cp_offset < sizeof(nkft_header_t)) return false;
+    if ((uint64_t)hdr->cp_offset + cnt * 2ULL > hdr->total_size) return false;
+    if ((uint64_t)hdr->g16_offset + cnt * 32ULL > hdr->total_size) return false;
+    if ((uint64_t)hdr->g12_offset + cnt * 24ULL > hdr->total_size) return false;
+    return true;
+}
+
+static bool try_load_cjk_font_drive(char drv) {
+    if (drv < 'A' || drv > 'Z') return false;
+    char path[32];
+    path[0] = drv;
+    path[1] = ':';
+    strcpy(path + 2, "\\system\\FONT_CJK.FNT");
+
+    vfs_dirent_t ent;
+    if (vfs_find_file(path, &ent) != VFS_OK || ent.is_dir) return false;
+    if (ent.size < sizeof(nkft_header_t) || ent.size > NEKO_CJK_FONT_MAX_BYTES) return false;
+
+    size_t sz = (size_t)ent.size;
+    size_t pages = (sz + PAGE_SIZE - 1) / PAGE_SIZE;
+    phys_addr_t phys = pmm_alloc_pages(pages);
+    if (!phys) return false;
+
+    void* kv = phys_to_virt(phys);
+    if (!kv) {
+        pmm_free_pages(phys, pages);
+        return false;
+    }
+    memset(kv, 0, pages * PAGE_SIZE);
+
+    int rd = vfs_read_file(path, (unsigned char*)kv, (unsigned int)sz);
+    if (rd < (int)sizeof(nkft_header_t) || !nkft_validate((const nkft_header_t*)kv, (size_t)rd)) {
+        pmm_free_pages(phys, pages);
+        return false;
+    }
+
+    g_cjk_font_phys  = phys;
+    g_cjk_font_pages = pages;
+    g_cjk_font_ptr   = kv;
+    const nkft_header_t* hdr = (const nkft_header_t*)kv;
+    log_printf("[FONT] Loaded %s (%u glyphs, %u bytes, %zu pages)\n",
+               path, hdr->glyph_count, hdr->total_size, pages);
+    return true;
+}
+
+void font_cjk_init(void) {
+    if (g_cjk_font_ptr) return;
+
+    char sys_drv = settings_get_system_drive();
+    char cd_drv  = vfs_get_boot_cdrom_letter();
+
+    if (sys_drv && try_load_cjk_font_drive(sys_drv)) return;
+    if (cd_drv && cd_drv != sys_drv && try_load_cjk_font_drive(cd_drv)) return;
+    for (char d = 'C'; d <= 'Z'; d++) {
+        if (d == sys_drv || d == cd_drv) continue;
+        if (try_load_cjk_font_drive(d)) return;
+    }
+
+    /* Fallback: copy built-in core CJK table to shared physical pages */
+    size_t core_sz = sizeof(g_cjk_font_core_blob);
+    size_t pages = (core_sz + PAGE_SIZE - 1) / PAGE_SIZE;
+    phys_addr_t phys = pmm_alloc_pages(pages);
+    if (phys) {
+        void* kv = phys_to_virt(phys);
+        if (kv) {
+            memset(kv, 0, pages * PAGE_SIZE);
+            memcpy(kv, g_cjk_font_core_blob, core_sz);
+            g_cjk_font_phys  = phys;
+            g_cjk_font_pages = pages;
+            g_cjk_font_ptr   = kv;
+            log_printf("[FONT] FONT_CJK.FNT not found; using built-in core font (%zu bytes)\n",
+                       core_sz);
+            return;
+        }
+        pmm_free_pages(phys, pages);
+    }
+    g_cjk_font_ptr = (const void*)g_cjk_font_core_blob;
+}
+
+const void* font_cjk_get_table(void) {
+    return g_cjk_font_ptr ? g_cjk_font_ptr : (const void*)g_cjk_font_core_blob;
+}
+
+uint64_t font_cjk_get_phys(void) {
+    return (uint64_t)g_cjk_font_phys;
+}
+
+size_t font_cjk_get_pages(void) {
+    return g_cjk_font_pages;
+}
+
+static int nkft_find_glyph(const nkft_header_t* hdr, uint32_t cp) {
+    if (!hdr || hdr->magic != NKFT_MAGIC || hdr->version != NKFT_VERSION) return -1;
+    if (cp < 0x80u || cp > 0xFFFFu || hdr->glyph_count == 0u) return -1;
+    const uint16_t* cps = (const uint16_t*)((const uint8_t*)hdr + hdr->cp_offset);
+    uint32_t lo = 0u;
+    uint32_t hi = hdr->glyph_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        uint16_t v = cps[mid];
+        if (v == (uint16_t)cp) return (int)mid;
+        if (v < (uint16_t)cp) lo = mid + 1u;
+        else hi = mid;
+    }
+    return -1;
+}
+
+static void draw_missing_box(unsigned char* vga, int x, int y, int w, int h, unsigned char fg) {
+    for (int col = 1; col < w - 1; col++) {
+        PUT_PIXEL(vga, x + col, y + 1, fg);
+        PUT_PIXEL(vga, x + col, y + h - 2, fg);
+    }
+    for (int row = 2; row < h - 2; row++) {
+        PUT_PIXEL(vga, x + 1, y + row, fg);
+        PUT_PIXEL(vga, x + w - 2, y + row, fg);
+    }
+}
+
 void font_draw_char(unsigned char* vga, int x, int y, char c, unsigned char fg)
 {
-    unsigned char* glyph = font_8x16[(unsigned char)c];
+    unsigned char* glyph = font_8x16[(unsigned char)c & 0x7Fu];
     for (int row = 0; row < 16; row++) {
         unsigned char line = glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -247,11 +383,124 @@ void font_draw_char(unsigned char* vga, int x, int y, char c, unsigned char fg)
     }
 }
 
+void font_draw_codepoint(unsigned char* vga, int x, int y, uint32_t cp, unsigned char fg)
+{
+    if (cp < 0x80u) {
+        font_draw_char(vga, x, y, (char)cp, fg);
+        return;
+    }
+    const nkft_header_t* hdr = (const nkft_header_t*)font_cjk_get_table();
+    int idx = nkft_find_glyph(hdr, cp);
+    if (idx < 0) {
+        draw_missing_box(vga, x, y, 16, 16, fg);
+        return;
+    }
+    const uint8_t* g = (const uint8_t*)hdr + hdr->g16_offset + (size_t)idx * 32u;
+    for (int row = 0; row < 16; row++) {
+        uint16_t bits = ((uint16_t)g[row * 2] << 8) | (uint16_t)g[row * 2 + 1];
+        if (!bits) continue;
+        for (int col = 0; col < 16; col++) {
+            if (bits & (0x8000u >> col)) {
+                PUT_PIXEL(vga, x + col, y + row, fg);
+            }
+        }
+    }
+}
+
+static void font_draw_codepoint_small(unsigned char* vga, int x, int y, uint32_t cp, unsigned char fg)
+{
+    if (cp < 0x80u) {
+        unsigned char* glyph = font_small[cp];
+        for (int row = 0; row < 7; row++) {
+            unsigned char line = glyph[row];
+            if (!line) continue;
+            for (int col = 0; col < 5; col++) {
+                if (line & (0x80 >> col)) {
+                    PUT_PIXEL(vga, x + col, y + row, fg);
+                }
+            }
+        }
+        return;
+    }
+    const nkft_header_t* hdr = (const nkft_header_t*)font_cjk_get_table();
+    int idx = nkft_find_glyph(hdr, cp);
+    if (idx < 0) {
+        draw_missing_box(vga, x, y, 12, 12, fg);
+        return;
+    }
+    const uint8_t* g = (const uint8_t*)hdr + hdr->g12_offset + (size_t)idx * 24u;
+    for (int row = 0; row < 12; row++) {
+        uint16_t bits = ((uint16_t)g[row * 2] << 8) | (uint16_t)g[row * 2 + 1];
+        if (!bits) continue;
+        for (int col = 0; col < 12; col++) {
+            if (bits & (0x8000u >> col)) {
+                PUT_PIXEL(vga, x + col, y + row, fg);
+            }
+        }
+    }
+}
+
 void font_draw_text(unsigned char* vga, int x, int y, const char* text, unsigned char fg)
 {
+    if (!text) return;
+    int cx = x;
     while (*text) {
-        font_draw_char(vga, x, y, *text, fg);
-        x += 8;
-        text++;
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        if (cp == '\n') {
+            y += 16;
+            cx = x;
+            continue;
+        }
+        font_draw_codepoint(vga, cx, y, cp, fg);
+        cx += (cp < 0x80u) ? 8 : 16;
     }
+}
+
+void font_draw_text_small(unsigned char* vga, int x, int y, const char* text, unsigned char fg)
+{
+    if (!text) return;
+    int cx = x;
+    int row_cjk = 0;
+    while (*text) {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        if (cp == '\n') {
+            y += row_cjk ? 13 : 9;
+            cx = x;
+            row_cjk = 0;
+            continue;
+        }
+        font_draw_codepoint_small(vga, cx, y, cp, fg);
+        if (cp < 0x80u) {
+            cx += 6;
+        } else {
+            cx += 12;
+            row_cjk = 1;
+        }
+    }
+}
+
+int font_text_width(const char* text)
+{
+    if (!text) return 0;
+    int w = 0;
+    while (*text) {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        w += (cp < 0x80u) ? 8 : 16;
+    }
+    return w;
+}
+
+int font_text_width_small(const char* text)
+{
+    if (!text) return 0;
+    int w = 0;
+    while (*text) {
+        uint32_t cp = utf8_decode_next(&text);
+        if (cp == 0u) break;
+        w += (cp < 0x80u) ? 6 : 12;
+    }
+    return w;
 }
