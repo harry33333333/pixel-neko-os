@@ -829,46 +829,53 @@ static int nvidia_g7x_set_mode(int w, int h, int bpp) {
 static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys, int is_pascal,
                                          unsigned int default_vram) {
     if (!bar0_phys) return default_vram;
+    volatile uint8_t* pfb =
+        (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x100000ULL, 0x1000);
+    if (pfb) {
+        uint32_t cstatus = mmio_read32(pfb + 0x20C);
+        if (cstatus != 0 && cstatus != 0xFFFFFFFFU) {
+            if (is_pascal) {
+                /* GF100+/GP10x 0x10020C reports total VRAM in MB (bits 31:0 or >>20) */
+                uint64_t mb = cstatus;
+                if (mb > 32768ULL) mb = (cstatus >> 20);
+                if (mb >= 512ULL && mb <= 32768ULL) {
+                    uint64_t bytes = mb * 1024ULL * 1024ULL;
+                    if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
+                    return (unsigned int)bytes;
+                }
+            } else {
+                uint32_t bytes = cstatus & 0xFFF00000U;
+                if (bytes >= (16U * 1024U * 1024U) &&
+                    bytes <= (1024U * 1024U * 1024U)) {
+                    return bytes;
+                }
+            }
+        }
+    }
     if (is_pascal) {
         volatile uint8_t* mc_ram =
             (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x900000ULL, 0x1000);
         if (mc_ram) {
             uint32_t ram_amount = mmio_read32(mc_ram + 0x20C);
             if (ram_amount != 0 && ram_amount != 0xFFFFFFFFU) {
-                /* GP100+ NV_MEM_CTRLR_RAM_AMOUNT (0x90020C) reports size in MB or shifted pages */
+                uint64_t bytes = 0;
                 if (ram_amount >= 512U && ram_amount <= 32768U) {
-                    uint64_t bytes = (uint64_t)ram_amount * 1024ULL * 1024ULL;
-                    if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
-                    return (unsigned int)bytes;
+                    bytes = (uint64_t)ram_amount * 1024ULL * 1024ULL;
+                } else {
+                    uint64_t shifted = (uint64_t)ram_amount << 12;
+                    if (shifted >= (512ULL * 1024ULL * 1024ULL) &&
+                        shifted <= (4096ULL * 1024ULL * 1024ULL)) {
+                        bytes = shifted;
+                    }
                 }
-                uint64_t shifted = (uint64_t)ram_amount << 12;
-                if (shifted >= (512ULL * 1024ULL * 1024ULL) &&
-                    shifted <= (4096ULL * 1024ULL * 1024ULL)) {
-                    if (shifted > 0xFFF00000ULL) shifted = 0xC0000000ULL;
-                    return (unsigned int)shifted;
+                if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
+                /* 0x90020C may reflect a single FBPA partition on 192-bit GP106;
+                 * never downgrade below default_vram (e.g. 3072MB on GTX 1060 3GB). */
+                if (bytes >= (uint64_t)default_vram) {
+                    return (unsigned int)bytes;
                 }
             }
         }
-    }
-    volatile uint8_t* pfb =
-        (volatile uint8_t*)g_kapi->mmio_map_uc(bar0_phys + 0x100000ULL, 0x1000);
-    if (!pfb) return default_vram;
-    uint32_t cstatus = mmio_read32(pfb + 0x20C);
-    if (cstatus == 0 || cstatus == 0xFFFFFFFFU) return default_vram;
-    if (is_pascal) {
-        /* GF100+ 0x10020C reports total VRAM in units of MB (bits 31:0 or >>20) */
-        uint64_t mb = cstatus;
-        if (mb > 32768ULL) mb = (cstatus >> 20);
-        if (mb >= 512ULL && mb <= 32768ULL) {
-            uint64_t bytes = mb * 1024ULL * 1024ULL;
-            if (bytes > 0xFFF00000ULL) bytes = 0xC0000000ULL;
-            return (unsigned int)bytes;
-        }
-        return default_vram;
-    }
-    uint32_t bytes = cstatus & 0xFFF00000U;
-    if (bytes >= (16U * 1024U * 1024U) && bytes <= (1024U * 1024U * 1024U)) {
-        return bytes;
     }
     return default_vram;
 }

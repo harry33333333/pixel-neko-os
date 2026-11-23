@@ -174,18 +174,110 @@ static void show_msg(fm_t* fm, const char* title, const char* msg, int is_err) {
     if (is_err) pxe_beep();
 }
 
-static int resolve_app_path(const char* app_filename, char* out, size_t cap) {
+static char ascii_upper_drv(char c) {
+    return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+}
+
+static void append_unique_drive(char* list, int* count, int cap, char letter) {
+    letter = ascii_upper_drv(letter);
+    if (letter < 'C' || letter > 'Z' || *count >= cap) return;
+    for (int i = 0; i < *count; i++) {
+        if (list[i] == letter) return;
+    }
+    list[(*count)++] = letter;
+}
+
+static int drive_has_kernel(char letter) {
+    char kpath[32];
+    pxe_dirent_t st;
+    snprintf(kpath, sizeof(kpath), "%c:\\boot\\kernel.elf", ascii_upper_drv(letter));
+    return (pxe_stat(kpath, &st) == 0 && !st.is_dir) ? 1 : 0;
+}
+
+static int drive_is_mounted_in_list(const pxe_drive_info_t* drvs, int drv_n, char letter) {
+    letter = ascii_upper_drv(letter);
+    if (drv_n <= 0) return (letter >= 'C' && letter <= 'Z');
+    for (int i = 0; i < drv_n; i++) {
+        if (ascii_upper_drv(drvs[i].letter) == letter) {
+            return (drvs[i].present && drvs[i].mounted) ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+static int collect_app_drives(char* out_drives, int max_drives) {
     pxe_basic_sysinfo_t info;
     memset(&info, 0, sizeof(info));
     pxe_sys_get_basic_info(&info);
+
+    pxe_drive_info_t drvs[24];
+    memset(drvs, 0, sizeof(drvs));
+    int drv_n = pxe_get_drives(drvs, 24);
+    if (drv_n < 0) drv_n = 0;
+
+    int count = 0;
+    if (info.boot_mode == 2) {
+        if (info.system_drive && drive_is_mounted_in_list(drvs, drv_n, info.system_drive)) {
+            append_unique_drive(out_drives, &count, max_drives, info.system_drive);
+        }
+        for (int i = 0; i < drv_n; i++) {
+            if (drvs[i].present && drvs[i].mounted && drvs[i].drv_type == 1 &&
+                drive_has_kernel(drvs[i].letter)) {
+                append_unique_drive(out_drives, &count, max_drives, drvs[i].letter);
+            }
+        }
+        if (info.cdrom_drive && drive_is_mounted_in_list(drvs, drv_n, info.cdrom_drive)) {
+            append_unique_drive(out_drives, &count, max_drives, info.cdrom_drive);
+        }
+        for (int i = 0; i < drv_n; i++) {
+            if (drvs[i].present && drvs[i].mounted &&
+                (drvs[i].drv_type == 2 || drvs[i].drv_type == 3) &&
+                drive_has_kernel(drvs[i].letter)) {
+                append_unique_drive(out_drives, &count, max_drives, drvs[i].letter);
+            }
+        }
+    } else {
+        if (info.cdrom_drive && drive_is_mounted_in_list(drvs, drv_n, info.cdrom_drive)) {
+            append_unique_drive(out_drives, &count, max_drives, info.cdrom_drive);
+        }
+        for (int i = 0; i < drv_n; i++) {
+            if (drvs[i].present && drvs[i].mounted &&
+                (drvs[i].drv_type == 3 || drvs[i].drv_type == 2) &&
+                drive_has_kernel(drvs[i].letter)) {
+                append_unique_drive(out_drives, &count, max_drives, drvs[i].letter);
+            }
+        }
+        for (int i = 0; i < drv_n; i++) {
+            if (drvs[i].present && drvs[i].mounted &&
+                (drvs[i].drv_type == 3 || drvs[i].drv_type == 2)) {
+                append_unique_drive(out_drives, &count, max_drives, drvs[i].letter);
+            }
+        }
+        if (info.system_drive && drive_is_mounted_in_list(drvs, drv_n, info.system_drive)) {
+            append_unique_drive(out_drives, &count, max_drives, info.system_drive);
+        }
+    }
+
+    for (int i = 0; i < drv_n; i++) {
+        if (drvs[i].present && drvs[i].mounted) {
+            append_unique_drive(out_drives, &count, max_drives, drvs[i].letter);
+        }
+    }
+    if (count == 0) {
+        for (char c = 'C'; c <= 'Z'; c++) {
+            append_unique_drive(out_drives, &count, max_drives, c);
+        }
+    }
+    return count;
+}
+
+static int resolve_app_path(const char* app_filename, char* out, size_t cap) {
+    char drives[24];
+    int n = collect_app_drives(drives, 24);
     pxe_dirent_t st;
 
-    if (info.system_drive) {
-        snprintf(out, cap, "%c:\\APPS\\%s", info.system_drive, app_filename);
-        if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
-    }
-    if (info.cdrom_drive) {
-        snprintf(out, cap, "%c:\\APPS\\%s", info.cdrom_drive, app_filename);
+    for (int i = 0; i < n; i++) {
+        snprintf(out, cap, "%c:\\APPS\\%s", drives[i], app_filename);
         if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
     }
     return -1;
@@ -316,12 +408,10 @@ static int find_assoc_ini_path(char* out, size_t cap, int for_write) {
         snprintf(out, cap, "%c:\\system\\assoc.ini", info.system_drive);
         return 0;
     }
-    if (info.system_drive) {
-        snprintf(out, cap, "%c:\\system\\assoc.ini", info.system_drive);
-        if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
-    }
-    if (info.cdrom_drive && info.cdrom_drive != info.system_drive) {
-        snprintf(out, cap, "%c:\\system\\assoc.ini", info.cdrom_drive);
+    char drives[24];
+    int n = collect_app_drives(drives, 24);
+    for (int i = 0; i < n; i++) {
+        snprintf(out, cap, "%c:\\system\\assoc.ini", drives[i]);
         if (pxe_stat(out, &st) == 0 && !st.is_dir) return 0;
     }
     return -1;
@@ -572,16 +662,12 @@ static int resolve_associated_app(const char* ext_no_dot, char* out_app, size_t 
         return -2; /* Configured app is missing */
     }
 
-    pxe_basic_sysinfo_t info;
-    memset(&info, 0, sizeof(info));
-    pxe_sys_get_basic_info(&info);
-    if (info.system_drive &&
-        scan_apps_ext_assoc_on_drive(info.system_drive, ext_no_dot, out_app, cap) == 0) {
-        return 0;
-    }
-    if (info.cdrom_drive && info.cdrom_drive != info.system_drive &&
-        scan_apps_ext_assoc_on_drive(info.cdrom_drive, ext_no_dot, out_app, cap) == 0) {
-        return 0;
+    char drives[24];
+    int n = collect_app_drives(drives, 24);
+    for (int i = 0; i < n; i++) {
+        if (scan_apps_ext_assoc_on_drive(drives[i], ext_no_dot, out_app, cap) == 0) {
+            return 0;
+        }
     }
     return -1;
 }
@@ -743,9 +829,10 @@ static void action_begin_open_with(fm_t* fm, int idx) {
     pxe_sys_get_basic_info(&info);
 
     fm->ow_app_count = 0;
-    if (info.system_drive) collect_ow_apps_on_drive(fm, info.system_drive, info.boot_mode);
-    if (info.cdrom_drive && info.cdrom_drive != info.system_drive) {
-        collect_ow_apps_on_drive(fm, info.cdrom_drive, info.boot_mode);
+    char drives[24];
+    int n = collect_app_drives(drives, 24);
+    for (int i = 0; i < n; i++) {
+        collect_ow_apps_on_drive(fm, drives[i], info.boot_mode);
     }
     for (int i = 0; i < fm->ow_app_count - 1; i++) {
         for (int j = i + 1; j < fm->ow_app_count; j++) {
@@ -915,13 +1002,11 @@ static void open_entry(fm_t* fm, int idx) {
             return;
         }
         if (target[0] && target[1] != ':') {
-            pxe_basic_sysinfo_t info;
-            memset(&info, 0, sizeof(info));
-            pxe_sys_get_basic_info(&info);
+            char drives[24];
+            int dn = collect_app_drives(drives, 24);
             char resolved[256];
             char boot_drive = fm->current_path[0] ? fm->current_path[0] :
-                              (info.system_drive ? info.system_drive :
-                               info.cdrom_drive);
+                              (dn > 0 ? drives[0] : 0);
             if (!boot_drive) {
                 show_msg(fm, FM_TR(fm, "快捷方式错误", "Shortcut Error"),
                          FM_TR(fm, "无法解析快捷方式所在系统盘符。",

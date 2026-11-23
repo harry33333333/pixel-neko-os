@@ -5,10 +5,13 @@
 #include "exfat.h"
 #include "fat.h"
 #include "iso9660.h"
+#include "limine.h"
 #include "log.h"
 #include "settings.h"
 #include "string.h"
 #include "usb_storage.h"
+
+extern volatile struct limine_kernel_file_request kernel_file_request;
 
 vfs_drive_t g_vfs_drives[26];
 
@@ -1152,24 +1155,78 @@ int vfs_has_cdrom(void) {
     return vfs_get_boot_cdrom_letter() != 0;
 }
 
+static bool vfs_drive_has_file(char letter, const char* suffix) {
+    char path[48];
+    path[0] = letter;
+    path[1] = ':';
+    copy_text(path + 2, sizeof(path) - 2, suffix);
+    vfs_dirent_t entry;
+    return vfs_find_file(path, &entry) == 0 && !entry.is_dir;
+}
+
+static bool vfs_boot_disk_matches(blkdev_t* dev, uint32_t disk_id) {
+    if (!dev || disk_id == 0) return false;
+    unsigned char mbr[512];
+    if (block_read(dev, 0, 1, mbr) != 0) return false;
+    uint32_t signature = (uint32_t)mbr[440] |
+                         ((uint32_t)mbr[441] << 8) |
+                         ((uint32_t)mbr[442] << 16) |
+                         ((uint32_t)mbr[443] << 24);
+    return signature == disk_id;
+}
+
 char vfs_get_boot_cdrom_letter(void) {
+    const struct limine_file* boot_file =
+        kernel_file_request.response ?
+            kernel_file_request.response->kernel_file : NULL;
+    uint32_t boot_disk_id = boot_file ? boot_file->mbr_disk_id : 0;
+
+    if (boot_disk_id != 0) {
+        for (int index = 0; index < 26; index++) {
+            vfs_drive_t* drive = &g_vfs_drives[index];
+            if (!drive->present || !drive->mounted) continue;
+            if (drive->drv_type != VFS_DRV_CDROM &&
+                drive->drv_type != VFS_DRV_USB) {
+                continue;
+            }
+            if (vfs_boot_disk_matches(drive->dev, boot_disk_id) &&
+                vfs_drive_has_file(drive->letter, "\\boot\\kernel.elf")) {
+                return drive->letter;
+            }
+        }
+    }
+
     for (int index = 0; index < 26; index++) {
         vfs_drive_t* drive = &g_vfs_drives[index];
         if (!drive->present || drive->drv_type != VFS_DRV_CDROM ||
             !drive->mounted) {
             continue;
         }
-        char path[32];
-        path[0] = drive->letter;
-        path[1] = ':';
-        copy_text(path + 2, sizeof(path) - 2, "\\boot\\kernel.elf");
-        vfs_dirent_t entry;
-        if (vfs_find_file(path, &entry) == 0) return drive->letter;
+        if (vfs_drive_has_file(drive->letter, "\\boot\\kernel.elf")) {
+            return drive->letter;
+        }
+    }
+
+    for (int index = 0; index < 26; index++) {
+        vfs_drive_t* drive = &g_vfs_drives[index];
+        if (!drive->present || drive->drv_type != VFS_DRV_USB ||
+            !drive->mounted) {
+            continue;
+        }
+        if (vfs_drive_has_file(drive->letter, "\\boot\\kernel.elf") &&
+            (vfs_drive_has_file(drive->letter, "\\APPS\\files.pxe") ||
+             vfs_drive_has_file(drive->letter, "\\payload\\boot\\kernel.elf"))) {
+            return drive->letter;
+        }
     }
     return 0;
 }
 
 int vfs_is_booted_from_cdrom(void) {
+    if (settings_get_boot_mode() == SETTINGS_BOOT_LOCAL &&
+        settings_get_system_drive() != 0) {
+        return 0;
+    }
     return vfs_get_boot_cdrom_letter() != 0;
 }
 

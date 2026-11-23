@@ -697,6 +697,7 @@ int ime_process_key(int key, int modifiers, char* out_commit, size_t out_cap) {
 
     int total_pages = (g_cand_count + IME_PAGE_SIZE - 1) / IME_PAGE_SIZE;
     if (total_pages < 1) total_pages = 1;
+
     int page_start = g_cand_page * IME_PAGE_SIZE;
     int on_page = g_cand_count - page_start;
     if (on_page > IME_PAGE_SIZE) on_page = IME_PAGE_SIZE;
@@ -808,6 +809,11 @@ void ime_draw_popup(unsigned char* v, int anchor_x, int anchor_y) {
         g_popup_w = 0;
         g_popup_h = 0;
         return;
+    }
+
+    for (int i = 0; i < IME_PAGE_SIZE; i++) {
+        g_cand_hit_x0[i] = 0;
+        g_cand_hit_x1[i] = 0;
     }
 
     int page_start = g_cand_page * IME_PAGE_SIZE;

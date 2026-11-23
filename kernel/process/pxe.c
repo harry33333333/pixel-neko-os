@@ -207,7 +207,13 @@ bool pxe_is_trusted_apps_path(const char* path) {
 
     char sys_drv = settings_get_system_drive();
     char cd_drv  = vfs_get_boot_cdrom_letter();
-    if (letter != sys_drv && letter != cd_drv) return false;
+    if (letter != sys_drv && letter != cd_drv) {
+        vfs_drive_t* drv = vfs_get_drive(letter);
+        if (!drv || !drv->present || !drv->mounted ||
+            (drv->drv_type != VFS_DRV_CDROM && drv->drv_type != VFS_DRV_USB)) {
+            return false;
+        }
+    }
 
     /* Require exact "<DRV>:\APPS\<file>.pxe" without ".." traversal */
     const char* p = path + 2;
@@ -287,7 +293,8 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     out->screen_bpp      = screen_bpp;
     if (ui_install_mode_requested()) {
         out->boot_mode = 1;
-    } else if (settings_get_system_drive() != 0 && !vfs_is_booted_from_cdrom()) {
+    } else if (settings_get_boot_mode() == SETTINGS_BOOT_LOCAL &&
+               settings_get_system_drive() != 0) {
         out->boot_mode = 2;
     } else {
         out->boot_mode = 0;
@@ -299,7 +306,7 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     out->volume            = (uint8_t)audio_get_volume();
     out->wallpaper_active  = (uint8_t)(wallpaper_is_active() ? 1 : 0);
     out->wallpaper_mode    = (uint8_t)wallpaper_get_mode();
-    out->settings_writable = (uint8_t)((out->system_drive != 0 && !vfs_is_booted_from_cdrom()) ? 1 : 0);
+    out->settings_writable = (uint8_t)(settings_storage_available() ? 1 : 0);
     out->has_audio_hw      = (uint8_t)(audio_has_hardware() ? 1 : 0);
     out->audio_muted       = (uint8_t)(audio_is_muted() ? 1 : 0);
     out->gfx_is_2d_hw      = (uint8_t)(gfx_accel_is_hardware_2d_active() ? 1 : 0);
@@ -1919,13 +1926,42 @@ bool pxe_resolve_builtin_app_path(const char* filename, char* out_path, int out_
 
     char sys_drv = settings_get_system_drive();
     char cd_drv  = vfs_get_boot_cdrom_letter();
+    bool local_mode = (settings_get_boot_mode() == SETTINGS_BOOT_LOCAL);
 
-    if (sys_drv && pxe_try_apps_candidate(sys_drv, filename, out_path, out_size)) {
-        return true;
-    }
-    if (cd_drv && cd_drv != sys_drv &&
-        pxe_try_apps_candidate(cd_drv, filename, out_path, out_size)) {
-        return true;
+    if (local_mode) {
+        if (sys_drv && pxe_try_apps_candidate(sys_drv, filename, out_path, out_size)) {
+            return true;
+        }
+        if (cd_drv && cd_drv != sys_drv &&
+            pxe_try_apps_candidate(cd_drv, filename, out_path, out_size)) {
+            return true;
+        }
+        for (char d = 'C'; d <= 'Z'; d++) {
+            if (d == sys_drv || d == cd_drv) continue;
+            vfs_drive_t* drv = vfs_get_drive(d);
+            if (!drv || !drv->present || !drv->mounted) continue;
+            if (drv->drv_type != VFS_DRV_CDROM && drv->drv_type != VFS_DRV_USB) continue;
+            if (pxe_try_apps_candidate(d, filename, out_path, out_size)) {
+                return true;
+            }
+        }
+    } else {
+        if (cd_drv && pxe_try_apps_candidate(cd_drv, filename, out_path, out_size)) {
+            return true;
+        }
+        for (char d = 'C'; d <= 'Z'; d++) {
+            if (d == sys_drv || d == cd_drv) continue;
+            vfs_drive_t* drv = vfs_get_drive(d);
+            if (!drv || !drv->present || !drv->mounted) continue;
+            if (drv->drv_type != VFS_DRV_CDROM && drv->drv_type != VFS_DRV_USB) continue;
+            if (pxe_try_apps_candidate(d, filename, out_path, out_size)) {
+                return true;
+            }
+        }
+        if (sys_drv && sys_drv != cd_drv &&
+            pxe_try_apps_candidate(sys_drv, filename, out_path, out_size)) {
+            return true;
+        }
     }
     for (char d = 'C'; d <= 'Z'; d++) {
         if (d == sys_drv || d == cd_drv) continue;
