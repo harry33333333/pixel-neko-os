@@ -54,7 +54,8 @@ static int has_audio_ext(const char* name) {
     if (!dot) return 0;
     return strcasecmp(dot, ".wav") == 0 ||
            strcasecmp(dot, ".mp3") == 0 ||
-           strcasecmp(dot, ".flac") == 0;
+           strcasecmp(dot, ".flac") == 0 ||
+           strcasecmp(dot, ".cda") == 0;
 }
 
 static void extract_dir(const char* path, char* out_dir, size_t cap) {
@@ -112,6 +113,7 @@ static void refresh_playlist_around(player_t* pl, const char* path_hint) {
     }
 
     pxe_basic_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
     if (pxe_sys_get_basic_info(&info) == 0) {
         if (info.system_drive) {
             char root[8];
@@ -121,6 +123,19 @@ static void refresh_playlist_around(player_t* pl, const char* path_hint) {
         if (info.cdrom_drive && info.cdrom_drive != info.system_drive) {
             char root[8];
             snprintf(root, sizeof(root), "%c:\\", info.cdrom_drive);
+            scan_dir_tracks(pl, root);
+        }
+    }
+    pxe_drive_info_t drvs[24];
+    int dn = pxe_get_drives(drvs, 24);
+    for (int i = 0; i < dn; i++) {
+        if (drvs[i].present && drvs[i].mounted && drvs[i].drv_type == 2) {
+            if (drvs[i].letter == info.system_drive ||
+                drvs[i].letter == info.cdrom_drive) {
+                continue;
+            }
+            char root[8];
+            snprintf(root, sizeof(root), "%c:\\", drvs[i].letter);
             scan_dir_tracks(pl, root);
         }
     }

@@ -131,3 +131,9 @@ void block_set_capacity(blkdev_t* dev, uint64_t sectors,
     dev->media_state = sectors ? MEDIA_PRESENT : MEDIA_ABSENT;
     dev->media_generation++;
 }
+
+int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
+                    void* buffer, uint32_t buffer_len) {
+    if (!dev || !dev->scsi_cmd || !cdb || !cdb_len) return -1;
+    return dev->scsi_cmd(dev, cdb, cdb_len, buffer, buffer_len);
+}

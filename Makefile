@@ -117,6 +117,7 @@ C_SRCS   = kernel/core/main.c \
            drivers/audio/wav_dec.c \
            drivers/audio/flac_dec.c \
            drivers/audio/mp3_dec.c \
+           drivers/audio/cdda_dec.c \
            drivers/audio/audio.c \
            wm/font.c \
            wm/ime.c \

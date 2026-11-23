@@ -2,6 +2,7 @@
 #include "ahci.h"
 #include "apic.h"
 #include "ata.h"
+#include "cdda_dec.h"
 #include "exfat.h"
 #include "fat.h"
 #include "iso9660.h"
@@ -17,6 +18,7 @@ vfs_drive_t g_vfs_drives[26];
 
 static iso_fs_t g_iso_filesystems[4];
 static exfat_fs_t g_exfat_filesystems[26];
+static cdda_toc_t g_cdda_tocs[26];
 static uint64_t g_last_media_poll_tick;
 static uint32_t g_last_usb_storage_gen;
 
@@ -24,7 +26,8 @@ typedef enum {
     VFS_FS_NONE = 0,
     VFS_FS_FAT,
     VFS_FS_EXFAT,
-    VFS_FS_ISO
+    VFS_FS_ISO,
+    VFS_FS_CDDA
 } vfs_filesystem_kind_t;
 
 static vfs_filesystem_kind_t g_filesystem_kind[26];
@@ -192,6 +195,124 @@ int vfs_mount_partition(partition_entry_t* part, char letter) {
     return mount_partition(part, letter) ? VFS_OK : VFS_ERR_UNSUPPORTED;
 }
 
+static void cdda_format_track_name(uint8_t num, char* out, unsigned int cap) {
+    if (!out || cap < 12) return;
+    copy_text(out, cap, "Track00.cda");
+    out[5] = (char)('0' + (num / 10));
+    out[6] = (char)('0' + (num % 10));
+}
+
+static bool try_mount_cdda(vfs_drive_t* drive) {
+    if (!drive || !drive->dev || drive->letter < 'A' || drive->letter > 'Z') {
+        return false;
+    }
+    int idx = drive->letter - 'A';
+    memset(&g_cdda_tocs[idx], 0, sizeof(g_cdda_tocs[idx]));
+    if (cdda_read_toc(drive->dev, &g_cdda_tocs[idx]) != 0) {
+        return false;
+    }
+    uint64_t total_sec = 0;
+    for (int i = 0; i < g_cdda_tocs[idx].track_count; i++) {
+        total_sec += g_cdda_tocs[idx].tracks[i].sector_count;
+    }
+    drive->mounted = 1;
+    drive->is_supported = 1;
+    drive->is_readonly = 1;
+    drive->total_sectors = total_sec;
+    drive->total_kb = (total_sec * CDDA_SECTOR_SIZE) / 1024u;
+    copy_text(drive->label, sizeof(drive->label), "Audio CD");
+    g_filesystem_kind[idx] = VFS_FS_CDDA;
+    return true;
+}
+
+static const cdda_track_t* cdda_find_track_by_path(const cdda_toc_t* toc,
+                                                   const char* rel_path) {
+    if (!toc || !toc->valid || !rel_path || !rel_path[0]) return NULL;
+    for (const char* p = rel_path; *p; p++) {
+        if (*p == '\\' || *p == '/') return NULL;
+    }
+    for (int i = 0; i < toc->track_count; i++) {
+        char expected[16];
+        cdda_format_track_name(toc->tracks[i].track_num, expected,
+                               sizeof(expected));
+        int match = 1;
+        for (int k = 0; expected[k] || rel_path[k]; k++) {
+            if (lower_ascii(expected[k]) != lower_ascii(rel_path[k])) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) return &toc->tracks[i];
+    }
+    return NULL;
+}
+
+static void cdda_fill_wav_header(uint8_t hdr[44], uint32_t data_bytes) {
+    uint32_t riff_size = data_bytes + 36u;
+    memset(hdr, 0, 44);
+    memcpy(hdr + 0, "RIFF", 4);
+    hdr[4] = (uint8_t)riff_size;
+    hdr[5] = (uint8_t)(riff_size >> 8);
+    hdr[6] = (uint8_t)(riff_size >> 16);
+    hdr[7] = (uint8_t)(riff_size >> 24);
+    memcpy(hdr + 8, "WAVEfmt ", 8);
+    hdr[16] = 16; /* PCM fmt chunk size */
+    hdr[20] = 1;  /* PCM format */
+    hdr[22] = 2;  /* 2 channels */
+    hdr[24] = (uint8_t)(44100u & 0xFFu);
+    hdr[25] = (uint8_t)((44100u >> 8) & 0xFFu);
+    hdr[28] = (uint8_t)(176400u & 0xFFu);
+    hdr[29] = (uint8_t)((176400u >> 8) & 0xFFu);
+    hdr[30] = (uint8_t)((176400u >> 16) & 0xFFu);
+    hdr[32] = 4;  /* Block align */
+    hdr[34] = 16; /* Bits per sample */
+    memcpy(hdr + 36, "data", 4);
+    hdr[40] = (uint8_t)data_bytes;
+    hdr[41] = (uint8_t)(data_bytes >> 8);
+    hdr[42] = (uint8_t)(data_bytes >> 16);
+    hdr[43] = (uint8_t)(data_bytes >> 24);
+}
+
+static int cdda_read_virtual_data(blkdev_t* dev, uint32_t start_lba,
+                                  uint32_t sector_count, uint64_t offset,
+                                  void* buffer, unsigned int size) {
+    if (!dev || !buffer || !size) return -1;
+    uint32_t pcm_bytes = sector_count * CDDA_SECTOR_SIZE;
+    uint64_t total_size = 44ULL + (uint64_t)pcm_bytes;
+    if (offset >= total_size) return 0;
+    if (size > total_size - offset) size = (unsigned int)(total_size - offset);
+
+    uint8_t* dst = (uint8_t*)buffer;
+    unsigned int done = 0;
+    if (offset < 44ULL) {
+        uint8_t hdr[44];
+        cdda_fill_wav_header(hdr, pcm_bytes);
+        unsigned int hrem = (unsigned int)(44ULL - offset);
+        if (hrem > size) hrem = size;
+        memcpy(dst, hdr + offset, hrem);
+        dst += hrem;
+        offset += hrem;
+        done += hrem;
+    }
+
+    uint8_t sec_buf[CDDA_SECTOR_SIZE];
+    while (done < size) {
+        uint64_t pcm_off = offset - 44ULL;
+        uint32_t sec_idx = (uint32_t)(pcm_off / CDDA_SECTOR_SIZE);
+        uint32_t sec_off = (uint32_t)(pcm_off % CDDA_SECTOR_SIZE);
+        if (sec_idx >= sector_count) break;
+        if (cdda_read_sectors(dev, start_lba + sec_idx, 1, sec_buf) != 0) {
+            return done > 0 ? (int)done : -1;
+        }
+        unsigned int take = CDDA_SECTOR_SIZE - sec_off;
+        if (take > size - done) take = size - done;
+        memcpy(dst + done, sec_buf + sec_off, take);
+        offset += take;
+        done += take;
+    }
+    return (int)done;
+}
+
 static void mount_optical(blkdev_t* dev, char letter) {
     vfs_drive_t* drive = initialize_drive(letter);
     if (!drive) return;
@@ -218,6 +339,9 @@ static void mount_optical(blkdev_t* dev, char letter) {
             g_filesystem_kind[letter - 'A'] = VFS_FS_ISO;
             break;
         }
+    }
+    if (!drive->mounted && dev->media_state == MEDIA_PRESENT) {
+        (void)try_mount_cdda(drive);
     }
     if (!drive->mounted) {
         copy_text(drive->label, sizeof(drive->label),
@@ -269,6 +393,10 @@ static void clear_optical_mount(vfs_drive_t* drive) {
                    sizeof(g_iso_filesystems[index]));
         }
     }
+    if (drive->letter >= 'A' && drive->letter <= 'Z') {
+        memset(&g_cdda_tocs[drive->letter - 'A'], 0, sizeof(g_cdda_tocs[0]));
+        g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
+    }
     drive->mounted = 0;
     drive->fs_type = PART_FS_UNKNOWN;
     drive->is_supported = 1;
@@ -276,7 +404,6 @@ static void clear_optical_mount(vfs_drive_t* drive) {
     drive->total_sectors = drive->dev->total_sectors;
     drive->total_kb = drive->total_sectors *
                       (drive->dev->sector_size / 1024u);
-    g_filesystem_kind[drive->letter - 'A'] = VFS_FS_NONE;
 }
 
 static void clear_floppy_mount(vfs_drive_t* drive) {
@@ -399,6 +526,12 @@ static bool refresh_optical_drive(vfs_drive_t* drive) {
         g_filesystem_kind[drive->letter - 'A'] = VFS_FS_ISO;
         log_printf("[VFS ] %c: reloaded optical volume %s\n",
                    drive->letter, drive->label);
+        return true;
+    }
+
+    if (try_mount_cdda(drive)) {
+        log_printf("[VFS ] %c: Audio CD mounted (%d tracks)\n",
+                   drive->letter, g_cdda_tocs[drive->letter - 'A'].track_count);
         return true;
     }
 
@@ -573,6 +706,8 @@ bool vfs_sync_usb_drives(void) {
                            sizeof(g_iso_filesystems[iso_i]));
                 }
             }
+        } else if (g_filesystem_kind[i] == VFS_FS_CDDA) {
+            memset(&g_cdda_tocs[i], 0, sizeof(g_cdda_tocs[i]));
         }
         g_filesystem_kind[i] = VFS_FS_NONE;
         part_remove_device(drive->dev);
@@ -584,10 +719,20 @@ bool vfs_sync_usb_drives(void) {
     int total_blk = blkdev_count();
     for (int b = 0; b < total_blk; b++) {
         blkdev_t* dev = blkdev_get(b);
-        if (!dev || dev->type != BLK_TYPE_USB || !dev->total_sectors) {
+        if (!dev || dev->type != BLK_TYPE_USB) {
             continue;
         }
         if (vfs_dev_is_mounted(dev)) continue;
+
+        if (dev->is_removable && dev->is_readonly) {
+            char letter = vfs_alloc_removable_letter();
+            if (letter) {
+                mount_optical(dev, letter);
+                changed = true;
+            }
+            continue;
+        }
+        if (!dev->total_sectors) continue;
 
         part_scan_device(dev);
         bool any_mounted = false;
@@ -658,6 +803,9 @@ int vfs_eject_media(char letter) {
         result = strncmp(drive->dev->name, "ahci", 4) == 0
                      ? ahci_atapi_eject(drive->dev)
                      : ata_atapi_eject(drive->dev);
+    } else if (drive->dev->scsi_cmd) {
+        uint8_t stop_cmd[6] = { 0x1B, 0, 0, 0, 0x02, 0 };
+        result = blkdev_scsi_cmd(drive->dev, stop_cmd, 6, NULL, 0);
     } else {
         result = VFS_ERR_UNSUPPORTED;
     }
@@ -748,6 +896,27 @@ int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
             return iso_list_dir(iso, path_without_drive(path),
                                 iso_list_entry) == 0 ? VFS_OK : VFS_ERR_IO;
         }
+        case VFS_FS_CDDA: {
+            const char* rel = path_without_drive(path);
+            if (rel && rel[0]) return VFS_ERR_NOT_FOUND;
+            cdda_toc_t* toc = &g_cdda_tocs[drive->letter - 'A'];
+            if (!toc->valid) return VFS_ERR_NO_MEDIA;
+            for (int i = 0; i < toc->track_count; i++) {
+                vfs_dirent_t entry;
+                memset(&entry, 0, sizeof(entry));
+                cdda_format_track_name(toc->tracks[i].track_num, entry.name,
+                                       sizeof(entry.name));
+                entry.is_dir = 0;
+                entry.size = 44ULL +
+                             (uint64_t)toc->tracks[i].sector_count *
+                                 CDDA_SECTOR_SIZE;
+                entry.first_cluster = toc->tracks[i].start_lba;
+                if (g_list_bridge.user_callback) {
+                    g_list_bridge.user_callback(&entry);
+                }
+            }
+            return VFS_OK;
+        }
         default:
             return VFS_ERR_UNSUPPORTED;
     }
@@ -793,6 +962,19 @@ int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
             out_entry->first_cluster = info.extent_lba;
             return VFS_OK;
         }
+        case VFS_FS_CDDA: {
+            cdda_toc_t* toc = &g_cdda_tocs[drive->letter - 'A'];
+            const cdda_track_t* tr = cdda_find_track_by_path(
+                toc, path_without_drive(path));
+            if (!tr) return VFS_ERR_NOT_FOUND;
+            cdda_format_track_name(tr->track_num, out_entry->name,
+                                   sizeof(out_entry->name));
+            out_entry->is_dir = 0;
+            out_entry->size = 44ULL +
+                              (uint64_t)tr->sector_count * CDDA_SECTOR_SIZE;
+            out_entry->first_cluster = tr->start_lba;
+            return VFS_OK;
+        }
         default:
             return VFS_ERR_UNSUPPORTED;
     }
@@ -829,6 +1011,15 @@ int vfs_read_file(const char* path, unsigned char* buffer,
                 return VFS_ERR_NOT_FOUND;
             }
             return iso_read_file(iso, &info, 0, buffer, max_size);
+        }
+        case VFS_FS_CDDA: {
+            cdda_toc_t* toc = &g_cdda_tocs[drive->letter - 'A'];
+            const cdda_track_t* tr = cdda_find_track_by_path(
+                toc, path_without_drive(path));
+            if (!tr) return VFS_ERR_NOT_FOUND;
+            return cdda_read_virtual_data(drive->dev, tr->start_lba,
+                                          tr->sector_count, 0, buffer,
+                                          max_size);
         }
         default:
             return VFS_ERR_UNSUPPORTED;
@@ -1027,6 +1218,9 @@ int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     } else if (stream->fs_kind == VFS_FS_ISO) {
         stream->is_cdrom = 1;
         stream->cdrom_extent_lba = entry.first_cluster;
+    } else if (stream->fs_kind == VFS_FS_CDDA) {
+        stream->is_cdrom = 1;
+        stream->cdrom_extent_lba = entry.first_cluster;
     } else {
         return -1;
     }
@@ -1083,6 +1277,12 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
                                      &stream->has_cached_sec,
                                      stream->sec_cache);
         }
+    } else if (stream->fs_kind == VFS_FS_CDDA) {
+        uint32_t sec_cnt = (uint32_t)((stream->size - 44ULL) / CDDA_SECTOR_SIZE);
+        result = cdda_read_virtual_data(drive->dev,
+                                        (uint32_t)stream->cdrom_extent_lba,
+                                        sec_cnt, stream->current_offset, buffer,
+                                        size);
     }
     if (result > 0) stream->current_offset += (uint64_t)result;
     return result;

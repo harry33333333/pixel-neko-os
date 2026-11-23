@@ -43,6 +43,8 @@ typedef struct blkdev {
                          const void* buffer);
     media_state_t (*check_media)(struct blkdev* dev);
     int (*eject)(struct blkdev* dev);
+    int (*scsi_cmd)(struct blkdev* dev, const uint8_t* cdb, uint8_t cdb_len,
+                    void* buffer, uint32_t buffer_len);
 } blkdev_t;
 
 typedef blkdev_t block_device_t;
@@ -69,6 +71,8 @@ int block_write(blkdev_t* dev, uint64_t lba, uint32_t count,
 media_state_t block_check_media(blkdev_t* dev);
 void block_set_capacity(blkdev_t* dev, uint64_t sectors,
                         uint32_t sector_size);
+int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
+                    void* buffer, uint32_t buffer_len);
 blkdev_t* blkdev_find_type(blk_type_t type, int unit);
 
 #endif

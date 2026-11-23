@@ -357,6 +357,37 @@ static int atapi_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     return 0;
 }
 
+static int ata_atapi_scsi_cmd(blkdev_t* block, const uint8_t* cdb,
+                              uint8_t cdb_len, void* buffer,
+                              uint32_t buffer_len) {
+    ata_drive_t* drive = block ? (ata_drive_t*)block->priv : NULL;
+    if (!drive || !drive->present || !drive->packet || !cdb || !cdb_len ||
+        cdb_len > 12) {
+        return -1;
+    }
+    uint8_t packet[12];
+    memset(packet, 0, sizeof(packet));
+    memcpy(packet, cdb, cdb_len);
+    return atapi_packet(drive, packet, buffer, buffer_len, true, true);
+}
+
+static int atapi_probe_toc_fallback(ata_drive_t* drive) {
+    uint8_t packet[12];
+    uint8_t toc[20];
+    memset(packet, 0, sizeof(packet));
+    memset(toc, 0, sizeof(toc));
+    packet[0] = 0x43;
+    packet[8] = sizeof(toc);
+    if (atapi_packet(drive, packet, toc, sizeof(toc), true, true) != 0) {
+        return -1;
+    }
+    uint16_t len = (uint16_t)(((uint16_t)toc[0] << 8) | toc[1]);
+    if (len < 10) return -1;
+    drive->sector_size = 2048;
+    drive->sectors = 1;
+    return 0;
+}
+
 static media_state_t atapi_check_media(blkdev_t* block) {
     ata_drive_t* drive = block ? (ata_drive_t*)block->priv : NULL;
     if (!drive || !drive->packet) return MEDIA_ERROR;
@@ -374,7 +405,8 @@ static media_state_t atapi_check_media(blkdev_t* block) {
 
     uint64_t old_sectors = drive->sectors;
     uint32_t old_size = drive->sector_size;
-    if (atapi_probe_capacity(drive) != 0) {
+    if (atapi_probe_capacity(drive) != 0 &&
+        atapi_probe_toc_fallback(drive) != 0) {
         if (block->total_sectors != 0) {
             drive->sectors = 0;
             block_set_capacity(block, 0, drive->sector_size);
@@ -433,6 +465,7 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
             drive->packet ? NULL : ata_write_blocks,
             drive->packet ? atapi_check_media : NULL, drive);
         if (block) {
+            if (drive->packet) block->scsi_cmd = ata_atapi_scsi_cmd;
             memcpy(block->model, drive->model, sizeof(block->model));
             log_printf("[ATA ] %s %u:%u %s sectors=%llu\n",
                        drive->packet ? "ATAPI" : "ATA", channel, slave,

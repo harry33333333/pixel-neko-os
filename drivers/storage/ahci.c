@@ -308,6 +308,39 @@ static int ahci_atapi_refresh_capacity(ahci_port_t* port) {
     return port->sectors ? 0 : -1;
 }
 
+static int ahci_atapi_scsi_cmd(blkdev_t* block, const uint8_t* cdb,
+                               uint8_t cdb_len, void* buffer,
+                               uint32_t buffer_len) {
+    ahci_port_t* port = block ? (ahci_port_t*)block->priv : NULL;
+    if (!port || !port->packet || !port->initialized || !cdb || !cdb_len ||
+        cdb_len > 16 || buffer_len > sizeof(port->memory->data)) {
+        return -1;
+    }
+    uint8_t packet[16];
+    memset(packet, 0, sizeof(packet));
+    memcpy(packet, cdb, cdb_len);
+    return ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, buffer, buffer_len,
+                      packet);
+}
+
+static int ahci_atapi_probe_toc_fallback(ahci_port_t* port) {
+    uint8_t packet[16];
+    uint8_t toc[20];
+    memset(packet, 0, sizeof(packet));
+    memset(toc, 0, sizeof(toc));
+    packet[0] = 0x43;
+    packet[8] = sizeof(toc);
+    if (ahci_issue(port, AHCI_CMD_PACKET, 0, 0, NULL, toc, sizeof(toc),
+                   packet) != 0) {
+        return -1;
+    }
+    uint16_t len = (uint16_t)(((uint16_t)toc[0] << 8) | toc[1]);
+    if (len < 10) return -1;
+    port->sector_size = 2048;
+    port->sectors = 1;
+    return 0;
+}
+
 static media_state_t ahci_atapi_check_media(blkdev_t* block) {
     ahci_port_t* port = block ? (ahci_port_t*)block->priv : NULL;
     if (!port || !port->packet) return MEDIA_ERROR;
@@ -322,7 +355,8 @@ static media_state_t ahci_atapi_check_media(blkdev_t* block) {
     }
     uint64_t old_sectors = port->sectors;
     uint32_t old_size = port->sector_size;
-    if (ahci_atapi_refresh_capacity(port) != 0) {
+    if (ahci_atapi_refresh_capacity(port) != 0 &&
+        ahci_atapi_probe_toc_fallback(port) != 0) {
         if (block->total_sectors) {
             port->sectors = 0;
             block_set_capacity(block, 0, port->sector_size);
@@ -490,6 +524,7 @@ static int ahci_probe_port(ahci_port_t* port) {
         ahci_read_blocks, port->packet ? NULL : ahci_write_blocks,
         port->packet ? ahci_atapi_check_media : NULL, port);
     if (!block) return -1;
+    if (port->packet) block->scsi_cmd = ahci_atapi_scsi_cmd;
     memcpy(block->model, port->model, sizeof(block->model));
     log_printf("[AHCI] Controller %u port %u %s: %s, %llu sectors\n",
                port->controller->index, port->index,

@@ -13,6 +13,7 @@
 
 typedef struct {
     bool used;
+    bool is_optical;
     bool io_fault;
     uint8_t consec_io_errors;
     uint8_t last_sense_key;
@@ -262,13 +263,15 @@ static int scsi_inquiry(usb_bot_device_t* bot) {
                     sizeof(response), USB_DIR_IN) != 0) {
         return -1;
     }
+    bot->is_optical = ((response[0] & 0x1Fu) == 0x05u);
     char vendor[9];
     char product[17];
     memcpy(vendor, response + 8, 8);
     memcpy(product, response + 16, 16);
     vendor[8] = '\0';
     product[16] = '\0';
-    log_printf("[USBMS] SCSI device: %s %s\n", vendor, product);
+    log_printf("[USBMS] SCSI device: %s %s%s\n", vendor, product,
+               bot->is_optical ? " (ODD)" : "");
     return 0;
 }
 
@@ -281,8 +284,29 @@ static int scsi_capacity(usb_bot_device_t* bot) {
     }
     bot->sector_count = (uint64_t)be32(response) + 1;
     bot->sector_size = be32(response + 4);
-    if (!bot->sector_size) bot->sector_size = 512;
+    if (!bot->sector_size || bot->sector_size > 4096) {
+        bot->sector_size = bot->is_optical ? 2048 : 512;
+    }
     return bot->sector_count ? 0 : -1;
+}
+
+static int scsi_probe_toc_fallback(usb_bot_device_t* bot) {
+    if (!bot || !bot->is_optical) return -1;
+    uint8_t command[10];
+    uint8_t toc[20];
+    memset(command, 0, sizeof(command));
+    memset(toc, 0, sizeof(toc));
+    command[0] = 0x43;
+    command[8] = sizeof(toc);
+    if (bot_command(bot, command, sizeof(command), toc, sizeof(toc),
+                    USB_DIR_IN) != 0) {
+        return -1;
+    }
+    uint16_t len = (uint16_t)(((uint16_t)toc[0] << 8) | toc[1]);
+    if (len < 10) return -1;
+    bot->sector_size = 2048;
+    bot->sector_count = 1;
+    return 0;
 }
 
 static int scsi_test_ready(usb_bot_device_t* bot) {
@@ -301,7 +325,10 @@ static int scsi_wait_ready(usb_bot_device_t* bot) {
 static int bot_read_write(blkdev_t* block, uint64_t lba, uint32_t count,
                           void* buffer, int direction) {
     usb_bot_device_t* bot = block ? (usb_bot_device_t*)block->priv : NULL;
-    if (!bot || !buffer || !count) return -1;
+    if (!bot || !bot->used || !buffer || !count ||
+        !bot->sector_size || bot->sector_size > sizeof(bot->buffer)) {
+        return -1;
+    }
     uint8_t* bytes = (uint8_t*)buffer;
     uint32_t max_sectors = sizeof(bot->buffer) / bot->sector_size;
     while (count) {
@@ -334,6 +361,16 @@ static int bot_write_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     return bot_read_write(block, lba, count, (void*)buffer, USB_DIR_OUT);
 }
 
+static int bot_scsi_cmd(blkdev_t* block, const uint8_t* cdb, uint8_t cdb_len,
+                        void* buffer, uint32_t buffer_len) {
+    usb_bot_device_t* bot = block ? (usb_bot_device_t*)block->priv : NULL;
+    if (!bot || !bot->used || !cdb || !cdb_len || cdb_len > 16 ||
+        buffer_len > sizeof(bot->buffer)) {
+        return -1;
+    }
+    return bot_command(bot, cdb, cdb_len, buffer, buffer_len, USB_DIR_IN);
+}
+
 static media_state_t bot_check_media(blkdev_t* block) {
     usb_bot_device_t* bot = block ? (usb_bot_device_t*)block->priv : NULL;
     if (!bot || !bot->used || !bot->device || !bot->device->hci) {
@@ -348,9 +385,11 @@ static media_state_t bot_check_media(blkdev_t* block) {
             bot->consec_io_errors = 0;
             if (unit_attention || block->media_state != MEDIA_PRESENT ||
                 !block->total_sectors) {
-                if (scsi_capacity(bot) == 0) {
+                if (scsi_capacity(bot) == 0 ||
+                    scsi_probe_toc_fallback(bot) == 0) {
                     block->total_sectors = bot->sector_count;
-                    block->sector_size = bot->sector_size;
+                    block->sector_size = bot->sector_size ? bot->sector_size
+                                                          : 2048;
                 }
             }
             return MEDIA_PRESENT;
@@ -363,6 +402,8 @@ static media_state_t bot_check_media(blkdev_t* block) {
                     continue;
                 }
                 if (key == 0x02 && asc == 0x3A) {
+                    bot->sector_count = 0;
+                    block->total_sectors = 0;
                     return MEDIA_ABSENT;
                 }
                 if (key == 0x02 && asc == 0x04) {
@@ -376,7 +417,15 @@ static media_state_t bot_check_media(blkdev_t* block) {
 }
 
 int usb_storage_attach(usb_device_t* device) {
-    if (!device || g_bot_count >= USB_BOT_MAX_DEVICES) return -1;
+    if (!device) return -1;
+    int slot = -1;
+    for (int i = 0; i < USB_BOT_MAX_DEVICES; i++) {
+        if (!g_bots[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
     usb_endpoint_t* bulk_in = NULL;
     usb_endpoint_t* bulk_out = NULL;
     for (uint8_t index = 0; index < device->endpoint_count; index++) {
@@ -404,7 +453,7 @@ int usb_storage_attach(usb_device_t* device) {
                    device->address);
         return -1;
     }
-    usb_bot_device_t* bot = &g_bots[g_bot_count];
+    usb_bot_device_t* bot = &g_bots[slot];
     memset(bot, 0, sizeof(*bot));
     bot->used = true;
     bot->device = device;
@@ -417,10 +466,12 @@ int usb_storage_attach(usb_device_t* device) {
         return -1;
     }
     if (scsi_wait_ready(bot) != 0) {
-        log_printf("[USBMS] TEST UNIT READY failed on device %u\n",
-                   device->address);
-        memset(bot, 0, sizeof(*bot));
-        return -1;
+        if (!bot->is_optical) {
+            log_printf("[USBMS] TEST UNIT READY failed on device %u\n",
+                       device->address);
+            memset(bot, 0, sizeof(*bot));
+            return -1;
+        }
     }
     int capacity_result = -1;
     for (int attempt = 0; attempt < 6; attempt++) {
@@ -428,19 +479,29 @@ int usb_storage_attach(usb_device_t* device) {
         if (capacity_result == 0) break;
         usb_delay_ms(40);
     }
+    if (capacity_result != 0 && bot->is_optical) {
+        capacity_result = scsi_probe_toc_fallback(bot);
+    }
     if (capacity_result != 0) {
-        log_printf("[USBMS] READ CAPACITY failed on device %u\n",
-                   device->address);
-        memset(bot, 0, sizeof(*bot));
-        return -1;
+        if (!bot->is_optical) {
+            log_printf("[USBMS] READ CAPACITY failed on device %u\n",
+                       device->address);
+            memset(bot, 0, sizeof(*bot));
+            return -1;
+        }
+        bot->sector_size = 2048;
+        bot->sector_count = 0;
     }
     bot->block = block_register(
         "usb-bot", BLK_TYPE_USB, g_next_bot_unit++, bot->sector_size,
-        bot->sector_count, false, true, bot_read_blocks, bot_write_blocks,
-        bot_check_media, bot);
+        bot->sector_count, bot->is_optical, true, bot_read_blocks,
+        bot->is_optical ? NULL : bot_write_blocks, bot_check_media, bot);
     if (!bot->block) {
         memset(bot, 0, sizeof(*bot));
         return -1;
+    }
+    if (bot->is_optical) {
+        bot->block->scsi_cmd = bot_scsi_cmd;
     }
     g_bot_count++;
     g_bot_generation++;
@@ -451,12 +512,11 @@ int usb_storage_attach(usb_device_t* device) {
 }
 
 void usb_storage_detach(usb_device_t* device) {
-    for (int index = 0; index < g_bot_count; index++) {
+    for (int index = 0; index < USB_BOT_MAX_DEVICES; index++) {
         if (g_bots[index].used && g_bots[index].device == device) {
             if (g_bots[index].block) block_unregister(g_bots[index].block);
-            g_bots[index] = g_bots[g_bot_count - 1];
-            memset(&g_bots[g_bot_count - 1], 0, sizeof(g_bots[0]));
-            g_bot_count--;
+            memset(&g_bots[index], 0, sizeof(g_bots[0]));
+            if (g_bot_count > 0) g_bot_count--;
             g_bot_generation++;
             return;
         }

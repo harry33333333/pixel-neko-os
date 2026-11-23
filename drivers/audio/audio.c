@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "audio.h"
+#include "cdda_dec.h"
 #include "driver.h"
 #include "flac_dec.h"
 #include "log.h"
@@ -15,6 +16,7 @@
 #define DEC_WAV  1
 #define DEC_FLAC 2
 #define DEC_MP3  3
+#define DEC_CDDA 4
 
 #define PCM_QUEUE_SIZE          1048576
 #define PCM_QUEUE_SAMPLES       (PCM_QUEUE_SIZE / sizeof(short))
@@ -505,6 +507,21 @@ int audio_play_file(const char* filepath) {
             if (mi.title[0]) my_strcpy(g_audio_info.title, mi.title);
             else my_strcpy(g_audio_info.title, filepath);
         }
+    } else if (ext[0] == 'c' && ext[1] == 'd' && ext[2] == 'a') {
+        cdda_info_t ci;
+        open_ok = cdda_dec_open(filepath, &ci);
+        if (open_ok == 0) {
+            g_active_dec = DEC_CDDA;
+            g_audio_info.sample_rate = ci.sample_rate;
+            g_audio_info.channels = ci.channels;
+            g_audio_info.bit_depth = ci.bit_depth;
+            g_audio_info.is_float = 0;
+            g_audio_info.total_duration_s = (int)ci.duration_s;
+            g_audio_info.bitrate_kbps = 1411;
+            g_audio_info.is_vbr = 0;
+            if (ci.title[0]) my_strcpy(g_audio_info.title, ci.title);
+            else my_strcpy(g_audio_info.title, filepath);
+        }
     }
 
     if (open_ok != 0) {
@@ -542,6 +559,8 @@ int audio_play_file(const char* filepath) {
             samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
         } else if (g_active_dec == DEC_MP3) {
             samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        } else if (g_active_dec == DEC_CDDA) {
+            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
         }
 
         if (samples_read > 0) {
@@ -571,6 +590,8 @@ int audio_play_file(const char* filepath) {
             samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
         } else if (g_active_dec == DEC_MP3) {
             samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        } else if (g_active_dec == DEC_CDDA) {
+            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
         }
 
         if (samples_read > 0) {
@@ -605,6 +626,8 @@ int audio_play_file(const char* filepath) {
             samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
         } else if (g_active_dec == DEC_MP3) {
             samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        } else if (g_active_dec == DEC_CDDA) {
+            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
         }
 
         if (samples_read > 0) {
@@ -665,6 +688,7 @@ void audio_stop(void) {
     if (g_active_dec == DEC_WAV) wav_dec_close();
     else if (g_active_dec == DEC_FLAC) flac_dec_close();
     else if (g_active_dec == DEC_MP3) mp3_dec_close();
+    else if (g_active_dec == DEC_CDDA) cdda_dec_close();
 
     g_active_dec = DEC_NONE;
     audio_flush_queue();
@@ -684,6 +708,7 @@ void audio_seek_sec(unsigned int seconds) {
     if (g_active_dec == DEC_WAV) wav_dec_seek(seconds);
     else if (g_active_dec == DEC_FLAC) flac_dec_seek(seconds);
     else if (g_active_dec == DEC_MP3) mp3_dec_seek(seconds);
+    else if (g_active_dec == DEC_CDDA) cdda_dec_seek(seconds);
 
     audio_flush_queue();
     if (g_active_driver) {
@@ -706,6 +731,8 @@ void audio_seek_sec(unsigned int seconds) {
             samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
         } else if (g_active_dec == DEC_MP3) {
             samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        } else if (g_active_dec == DEC_CDDA) {
+            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
         }
 
         if (samples_read > 0) {
@@ -899,6 +926,8 @@ void audio_poll(void) {
             samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
         } else if (g_active_dec == DEC_MP3) {
             samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+        } else if (g_active_dec == DEC_CDDA) {
+            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
         }
 
         if (samples_read > 0) {
