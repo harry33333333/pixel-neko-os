@@ -933,6 +933,8 @@ static void draw_uninit_disk_dialog(unsigned char* v)
     }
 }
 
+static void wm_dyn_push_simple(wm_dyn_win_t* dw, uint32_t type);
+
 static void alt_tab_rebuild_list(void) {
     alt_tab_count = 0;
     for (int i = WM_Z_COUNT - 1; i >= 0; i--) {
