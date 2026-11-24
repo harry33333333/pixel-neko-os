@@ -273,6 +273,9 @@ void term_puts(cmd_state_t* st, const char* utf8) {
         uint32_t cp = utf8_decode_next(&p);
         if (cp == 0u) break;
         term_putc_cp(st, cp);
+        if (cp == '\n' && !st->capturing && st->running && !st->waiting_input) {
+            term_flush_if_due(st, 0);
+        }
     }
 }
 
@@ -406,6 +409,7 @@ void term_render_now(cmd_state_t* st) {
     }
     pxe_win_present(st->win_id);
     st->dirty = 0;
+    st->last_flush_tick = pxe_get_ticks();
 
     /* Update kernel IME candidate anchor near blinking cursor */
     if (st->cursor_row >= st->view_row &&
@@ -414,6 +418,17 @@ void term_render_now(cmd_state_t* st) {
         int ay = TERM_PAD_Y + (st->cursor_row - st->view_row) * TERM_CELL_H + 18;
         pxe_ime_set_cursor_pos(ax, ay);
     }
+}
+
+void term_flush_if_due(cmd_state_t* st, int force) {
+    if (!st || st->win_id < 0 || st->capturing) return;
+    if (!st->dirty && !force) return;
+    uint64_t now = pxe_get_ticks();
+    if (!force && st->last_flush_tick != 0 && (now - st->last_flush_tick) < 3u) {
+        return;
+    }
+    term_render_now(st);
+    pxe_sleep_ms(force ? 5 : 1);
 }
 
 static void erase_cells_from(cmd_state_t* st, int r, int c) {
@@ -681,7 +696,10 @@ int term_poll_interrupt(cmd_state_t* st) {
             }
         }
     }
-    if (st->dirty) term_render_now(st);
+    if (st->dirty) {
+        term_render_now(st);
+        pxe_yield();
+    }
     return st->interrupted;
 }
 
@@ -1024,8 +1042,10 @@ int main(int argc, char** argv) {
 
     if (!auto_close) {
         term_puts(st, CMD_TR(st,
-            "Pixel Neko OS [版本 26A300a]\n(C) Pixel Neko OS Project. 输入 \"help\" 查看命令。\n\n",
-            "Pixel Neko OS [Version 26A300a]\n(C) Pixel Neko OS Project. Type \"help\" for commands.\n\n"));
+            "Pixel Neko OS [版本 26A300b]\n(C) Pixel Neko OS Project. 输入 \"help\" 查看命令。\n\n",
+            "Pixel Neko OS [Version 26A300b]\n(C) Pixel Neko OS Project. Type \"help\" for commands.\n\n"));
+        term_render_now(st);
+        pxe_sleep_ms(5);
     }
 
     if (init_cmd[0]) {
@@ -1036,6 +1056,8 @@ int main(int argc, char** argv) {
             print_prompt(st);
             term_puts(st, init_cmd);
             term_putc_cp(st, '\n');
+            term_flush_if_due(st, 1);
+            st->waiting_input = 0;
             (void)shell_exec_line(st, init_cmd);
         }
     }

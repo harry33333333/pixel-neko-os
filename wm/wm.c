@@ -358,6 +358,14 @@ static void draw_ime_indicator(unsigned char* v) {
     }
     const char* tag = zh ? "[中]" : "[EN]";
     font_draw_text(v, ime_x + (ime_w - font_text_width(tag)) / 2, 2, tag, fg);
+    if (!ime_has_full_lexicon()) {
+        /* Amber dot warns that full IME.PNY failed to load (fallback core table active) */
+        for (int yy = 4; yy < 7; yy++) {
+            for (int xx = ime_x + ime_w - 5; xx < ime_x + ime_w - 2; xx++) {
+                PUT_PIXEL(v, xx, yy, 12);
+            }
+        }
+    }
 }
 
 static void notification_volume_panel(int* out_x, int* out_y,

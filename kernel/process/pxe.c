@@ -7,6 +7,7 @@
 #include "format.h"
 #include "gfx_accel.h"
 #include "heap.h"
+#include "ime.h"
 #include "log.h"
 #include "mm.h"
 #include "mouse.h"
@@ -490,6 +491,7 @@ static int pxe_display_mode_request(int width, int height, int bpp,
 int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char* str_arg) {
     bool is_unpriv_ok = (cmd == PXE_CFG_SET_IME_POS ||
                          cmd == PXE_CFG_NOTIFY_DESKTOP ||
+                         cmd == PXE_CFG_IME_STATUS ||
                          (cmd == PXE_CFG_DESKTOP_SHELL && arg0 == 0));
     if (!is_unpriv_ok && proc && proc->exec_ring == 3 &&
         !(proc->pxe_flags & PXE_FLAG_SYS_SETTINGS)) {
@@ -588,6 +590,8 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
             desktop_refresh();
             wm_request_desktop_redraw();
             return 0;
+        case PXE_CFG_IME_STATUS:
+            return ime_has_full_lexicon() ? (int)ime_get_phrase_count() : 0;
         default:
             return -NEKO_EINVAL;
     }
@@ -1082,7 +1086,7 @@ static int r0_api_enum_processes(pxe_r0_proc_info_t* out_list, int max_count) {
 }
 
 static int r0_api_kill_process(uint32_t pid, int exit_code) {
-    return process_kill(pid, exit_code);
+    return process_kill_force(pid, exit_code);
 }
 
 static int r0_api_focus_process_window(uint32_t pid) {

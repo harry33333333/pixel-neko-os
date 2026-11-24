@@ -36,6 +36,7 @@ int      pxe_beep_tone(int freq_hz, int duration_ms);
 int      pxe_desktop_shell_ctl(int op);
 int      pxe_ime_set_cursor_pos(int client_x, int client_y);
 int      pxe_notify_desktop(void);
+int      pxe_get_ime_phrase_count(void);
 
 #endif /* _PXE_SYS_H */
 

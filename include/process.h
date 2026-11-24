@@ -133,6 +133,7 @@ uint32_t process_current_pid(void);
 void process_cleanup_runtime_resources(process_t* process);
 void process_exit_current(int status);
 int process_kill(uint32_t pid, int exit_code);
+int process_kill_force(uint32_t pid, int exit_code);
 int64_t process_sbrk(process_t* process, int64_t delta);
 process_t* process_find_by_pid(uint32_t pid);
 thread_t* process_find_thread_by_tid(uint64_t tid);

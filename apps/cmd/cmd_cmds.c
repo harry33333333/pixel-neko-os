@@ -227,6 +227,7 @@ static void tree_walk(cmd_state_t* st, const char* dir_path, const char* prefix,
             seen++;
             int last = (seen == subdirs);
             term_printf(st, "%s%s%s\n", prefix, last ? "\\---" : "+---", ents[i].name);
+            if (term_poll_interrupt(st)) break;
             char next_dir[256], next_pre[128];
             snprintf(next_dir, sizeof(next_dir), "%s%s%s", dir_path, sep, ents[i].name);
             snprintf(next_pre, sizeof(next_pre), "%s%s", prefix, last ? "    " : "|   ");
@@ -670,7 +671,7 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
         return cmd_open_with_assoc(st, resolved);
     }
     if (strcasecmp(c, "ver") == 0) {
-        term_puts(st, "\nPixel Neko OS [Version Darwin 26A300a - Snow Neko x86_64]\n\n");
+        term_puts(st, "\nPixel Neko OS [Version Darwin 26A300b - Snow Neko x86_64]\n\n");
         return 0;
     }
     if (strcasecmp(c, "date") == 0 || strcasecmp(c, "time") == 0) {
@@ -684,7 +685,8 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
     if (strcasecmp(c, "sysinfo") == 0) {
         pxe_basic_sysinfo_t info;
         if (pxe_sys_get_basic_info(&info) == 0) {
-            term_printf(st, "OS:      Pixel Neko OS (Darwin 26A300a x86_64)\n");
+            term_printf(st, "OS:      Pixel Neko OS (Darwin %s x86_64)\n",
+                        info.os_build[0] ? info.os_build : "26A300b");
             term_printf(st, "Display: %dx%d @ %dbpp (%s)\n",
                         info.screen_w, info.screen_h, info.screen_bpp, info.gfx_backend);
             term_printf(st, "Audio:   %s (%s)\n", info.audio_backend,
@@ -720,15 +722,140 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
         return 0;
     }
     if (strcasecmp(c, "kill") == 0 || strcasecmp(c, "taskkill") == 0) {
-        if (argc < 2) return 1;
-        int pid = -1;
-        if (parse_int_str(argv[1], &pid) != 0 || pid < 0) return 1;
-        if (pid == 0) {
-            term_puts(st, CMD_TR(st, "警告: 无法从 CMD 直接终止 PID 0 (idle)。\n",
-                                 "Warning: Refusing to terminate PID 0 (idle).\n"));
+        const char* target = NULL;
+        int force_mode = 0; /* 0=auto, 1=pid, 2=im */
+        for (int i = 1; i < argc; i++) {
+            if (!argv[i] || !argv[i][0]) continue;
+            if (strcasecmp(argv[i], "/f") == 0) continue;
+            if (strcasecmp(argv[i], "/pid") == 0) {
+                force_mode = 1;
+                if (i + 1 < argc) target = argv[++i];
+            } else if (strcasecmp(argv[i], "/im") == 0) {
+                force_mode = 2;
+                if (i + 1 < argc) target = argv[++i];
+            } else if (!target) {
+                target = argv[i];
+            }
+        }
+        if (!target || !target[0]) {
+            term_puts(st, CMD_TR(st,
+                "用法: taskkill [/PID <进程号> | /IM <进程名>] 或 taskkill <PID|程序名>\n",
+                "Usage: taskkill [/PID <pid> | /IM <name>] or taskkill <pid|name>\n"));
             return 1;
         }
-        return (pxe_kill_pid((uint32_t)pid) == 0) ? 0 : 1;
+
+        int pid = -1;
+        if (force_mode != 2 && parse_int_str(target, &pid) == 0 && pid >= 0) {
+            if (pid == 0) {
+                term_puts(st, CMD_TR(st,
+                    "错误: 拒绝终止系统关键进程 PID 0 (idle)。\n",
+                    "ERROR: Refusing to terminate critical process PID 0 (idle).\n"));
+                return 1;
+            }
+            if (pxe_kill_pid((uint32_t)pid) == 0) {
+                term_printf(st, CMD_TR(st, "成功: 已终止进程 PID %d。\n",
+                                       "SUCCESS: Terminated process PID %d.\n"), pid);
+                return 0;
+            }
+            term_printf(st, CMD_TR(st,
+                "错误: 找不到 PID %d 或该进程受系统保护无法终止。\n",
+                "ERROR: Process PID %d not found or protected.\n"), pid);
+            return 1;
+        }
+        if (force_mode == 1) {
+            term_printf(st, CMD_TR(st, "错误: 无效的进程号 \"%s\"。\n",
+                                   "ERROR: Invalid PID \"%s\".\n"), target);
+            return 1;
+        }
+
+        char* pbuf = (char*)malloc(8192);
+        if (!pbuf) return 1;
+        int pn = pxe_read_file("\\PROC\\list", pbuf, 8191);
+        if (pn <= 0) {
+            free(pbuf);
+            term_puts(st, CMD_TR(st, "错误: 无法读取 \\PROC\\list。\n",
+                                 "ERROR: Cannot read \\PROC\\list.\n"));
+            return 1;
+        }
+        pbuf[pn] = '\0';
+
+        char target_stem[128];
+        snprintf(target_stem, sizeof(target_stem), "%s", target);
+        char* tdot = strrchr(target_stem, '.');
+        if (tdot && strcasecmp(tdot, ".pxe") == 0) *tdot = '\0';
+
+        int self_pid = pxe_getpid();
+        int matched = 0;
+        int killed = 0;
+        int header_done = 0;
+        char* cur = pbuf;
+        while (*cur) {
+            char* line = cur;
+            while (*cur && *cur != '\r' && *cur != '\n') cur++;
+            while (*cur == '\r' || *cur == '\n') *cur++ = '\0';
+            if (!header_done) { header_done = 1; continue; }
+            if (!line[0]) continue;
+
+            char* lp = line;
+            while (*lp == ' ') lp++;
+            int row_pid = 0;
+            if (*lp < '0' || *lp > '9') continue;
+            while (*lp >= '0' && *lp <= '9') row_pid = row_pid * 10 + (*lp++ - '0');
+
+            /* Extract columns: PPID RING STATE MEM_KB TICKS NAME */
+            char cols[6][64];
+            int nc = 0;
+            while (*lp && nc < 6) {
+                while (*lp == ' ' || *lp == '\t') lp++;
+                if (!*lp) break;
+                size_t ci = 0;
+                if (nc == 5) {
+                    while (*lp && ci + 1 < sizeof(cols[0])) cols[nc][ci++] = *lp++;
+                } else {
+                    while (*lp && *lp != ' ' && *lp != '\t' && ci + 1 < sizeof(cols[0])) {
+                        cols[nc][ci++] = *lp++;
+                    }
+                }
+                cols[nc][ci] = '\0';
+                nc++;
+            }
+            if (nc < 6) continue;
+            if (strcasecmp(cols[2], "ZOMBIE") == 0) continue;
+
+            const char* pname = cols[5];
+            char pstem[64];
+            snprintf(pstem, sizeof(pstem), "%s", pname);
+            char* pdot = strrchr(pstem, '.');
+            if (pdot && strcasecmp(pdot, ".pxe") == 0) *pdot = '\0';
+
+            if (strcasecmp(pname, target) == 0 || strcasecmp(pstem, target_stem) == 0) {
+                matched++;
+                if (row_pid == self_pid) {
+                    term_printf(st, CMD_TR(st,
+                        "警告: 跳过当前终端自身 (PID %d)。\n",
+                        "Warning: Skipping current terminal (PID %d).\n"), row_pid);
+                    continue;
+                }
+                if (pxe_kill_pid((uint32_t)row_pid) == 0) {
+                    killed++;
+                    term_printf(st, CMD_TR(st,
+                        "成功: 已终止进程 \"%s\" (PID %d)。\n",
+                        "SUCCESS: Terminated process \"%s\" (PID %d).\n"), pname, row_pid);
+                } else {
+                    term_printf(st, CMD_TR(st,
+                        "错误: 无法终止关键或受保护进程 \"%s\" (PID %d)。\n",
+                        "ERROR: Cannot terminate protected process \"%s\" (PID %d).\n"),
+                        pname, row_pid);
+                }
+            }
+        }
+        free(pbuf);
+        if (matched == 0) {
+            term_printf(st, CMD_TR(st, "错误: 找不到进程 \"%s\"。\n",
+                                   "ERROR: Process \"%s\" not found.\n"), target);
+            return 1;
+        }
+        return (killed > 0) ? 0 : 1;
     }
     if (strcasecmp(c, "taskmgr") == 0) {
         char tp[128];

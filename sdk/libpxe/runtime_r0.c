@@ -121,6 +121,13 @@ int pxe_notify_desktop(void) {
                                    (const char*)0) : -1;
 }
 
+int pxe_get_ime_phrase_count(void) {
+    int rc = (__pxe_r0_api && __pxe_r0_api->sys_config)
+        ? __pxe_r0_api->sys_config(PXE_CFG_IME_STATUS, 0, 0,
+                                   (const char*)0) : 0;
+    return rc > 0 ? rc : 0;
+}
+
 int pxe_desktop_set_pattern(int pattern) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SET_PATTERN, pattern, 0, (const char*)0) : -1;

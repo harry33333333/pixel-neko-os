@@ -18,5 +18,6 @@ void keyboard_notify_alt_tab(int reverse);
 int keyboard_consume_alt_tab(void);
 void keyboard_note_usb_activity(int has_keys);
 void keyboard_push_virtual(int key);
+uint32_t keyboard_get_drop_count(void);
 
 #endif /* _KEYBOARD_H */

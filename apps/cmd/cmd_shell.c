@@ -747,11 +747,14 @@ int shell_run_pat_file(cmd_state_t* st, const char* path, int argc, const char**
             t += 4;
             while (*t == ' ' || *t == '\t') t++;
             rc = shell_exec_line(st, t);
+            term_flush_if_due(st, 1);
+            (void)term_poll_interrupt(st);
             pc++;
             continue;
         }
 
         rc = pat_match_var_line(st, ln);
+        term_flush_if_due(st, 1);
         (void)term_poll_interrupt(st);
         pc++;
     }

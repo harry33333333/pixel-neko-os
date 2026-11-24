@@ -52,6 +52,7 @@ typedef struct {
     int running;
     int zh;
     int dirty;
+    uint64_t last_flush_tick;
 
     /* Terminal grid (ring/flat 500 lines x 160 cols) */
     term_cell_t* cells;
@@ -142,6 +143,7 @@ void term_puts(cmd_state_t* st, const char* utf8);
 void term_printf(cmd_state_t* st, const char* fmt, ...);
 void term_set_attr(cmd_state_t* st, uint8_t bg, uint8_t fg);
 void term_render_now(cmd_state_t* st);
+void term_flush_if_due(cmd_state_t* st, int force);
 int  term_wait_key_blocking(cmd_state_t* st, pxe_event_t* out_ev);
 int  term_poll_interrupt(cmd_state_t* st);
 int  term_more_prompt(cmd_state_t* st);

@@ -266,6 +266,7 @@ typedef struct {
 #define PXE_CFG_DESKTOP_SHELL      16
 #define PXE_CFG_SET_IME_POS        17
 #define PXE_CFG_NOTIFY_DESKTOP     18
+#define PXE_CFG_IME_STATUS         19
 
 /* Filesystem directory & drive structures */
 typedef struct {

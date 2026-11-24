@@ -1,5 +1,6 @@
 #include "keyboard.h"
 #include "input.h"
+#include "log.h"
 
 static bool g_ps2_shift = false;
 static bool g_ps2_ctrl = false;
@@ -16,13 +17,19 @@ static volatile int g_alt_tab_steps = 0;
 static bool g_ime_chord_seen = false;
 static bool g_ime_chord_tainted = false;
 
-static int g_key_queue[64];
+#define KEY_QUEUE_CAP 256u
+static int g_key_queue[KEY_QUEUE_CAP];
 static volatile uint32_t g_key_head = 0;
 static volatile uint32_t g_key_tail = 0;
+static volatile uint32_t g_key_drop_count = 0;
+static uint32_t g_key_drop_logged = 0;
 
 static void legacy_push(int key) {
-    uint32_t next = (g_key_head + 1u) % 64u;
-    if (next == g_key_tail) return;
+    uint32_t next = (g_key_head + 1u) % KEY_QUEUE_CAP;
+    if (next == g_key_tail) {
+        g_key_drop_count++;
+        return;
+    }
     g_key_queue[g_key_head] = key;
     g_key_head = next;
 }
@@ -195,9 +202,17 @@ void keyboard_handle_byte(uint8_t scancode) {
 }
 
 int keyboard_get_key(void) {
+    if (g_key_drop_count != g_key_drop_logged) {
+        uint32_t cur = g_key_drop_count;
+        uint32_t delta = cur - g_key_drop_logged;
+        g_key_drop_logged = cur;
+        log_printf("[KBD ] Key queue overflow (%u dropped, total=%u)\n",
+                   (unsigned)delta, (unsigned)cur);
+        log_disk_notify_urgent();
+    }
     if (g_key_head == g_key_tail) return 0;
     int key = g_key_queue[g_key_tail];
-    g_key_tail = (g_key_tail + 1u) % 64u;
+    g_key_tail = (g_key_tail + 1u) % KEY_QUEUE_CAP;
     return key;
 }
 
@@ -254,4 +269,8 @@ int keyboard_consume_alt_tab(void) {
 
 void keyboard_push_virtual(int key) {
     if (key) legacy_push(key);
+}
+
+uint32_t keyboard_get_drop_count(void) {
+    return g_key_drop_count;
 }

@@ -50,6 +50,7 @@ typedef struct {
     char load_path[128];
     int  load_len;
     int  zh;
+    int  ime_phrases;
 } sysinfo_app_t;
 
 static const char* k_tab_names[TAB_COUNT] = {
@@ -164,6 +165,7 @@ static void refresh_all(sysinfo_app_t* s) {
 
     n = pxe_r0_enum_pdv_drivers(s->pdv, MAX_PDV);
     s->pdv_count = (n > 0) ? n : 0;
+    s->ime_phrases = pxe_get_ime_phrase_count();
 
     for (int t = 0; t < TAB_COUNT; t++) {
         int cnt = 0;
@@ -311,6 +313,18 @@ static void render_overview(const pxe_win_surface_t* surf, const sysinfo_app_t* 
                    : "Devices: %d PCI | %d USB | %d Drives | %d PDV Drivers",
              s->pci_count, s->usb_count, s->drive_count, s->pdv_count);
     pxe_draw_text_small(surf, x, y + 74, buf, PXE_COL_DARK_BLUE);
+    if (s->ime_phrases > 0) {
+        snprintf(buf, sizeof(buf),
+                 s->zh ? "完整 Rime 词库已加载 (%d 词组)"
+                       : "Full Rime lexicon loaded (%d phrases)",
+                 s->ime_phrases);
+        draw_kv(surf, x, y + 90, s->zh ? "拼音词库:" : "IME Dict:", buf, PXE_COL_DARK_GREEN);
+    } else {
+        draw_kv(surf, x, y + 90, s->zh ? "拼音词库:" : "IME Dict:",
+                s->zh ? "内置精简回退词库 (IME.PNY 未加载)"
+                      : "Built-in core fallback lexicon (IME.PNY unavailable)",
+                PXE_COL_DARK_RED);
+    }
 }
 
 static void render_table(const pxe_win_surface_t* surf, const sysinfo_app_t* s) {

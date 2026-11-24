@@ -9,6 +9,9 @@
 
 void ime_init(void);
 bool ime_is_enabled(void);
+bool ime_has_full_lexicon(void);
+uint32_t ime_get_phrase_count(void);
+uint32_t ime_get_single_count(void);
 void ime_set_enabled(bool enabled);
 void ime_toggle(void);
 

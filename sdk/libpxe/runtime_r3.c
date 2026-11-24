@@ -232,6 +232,12 @@ int pxe_notify_desktop(void) {
                               0, 0, 0);
 }
 
+int pxe_get_ime_phrase_count(void) {
+    int rc = (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_IME_STATUS,
+                                0, 0, 0);
+    return rc > 0 ? rc : 0;
+}
+
 /* =========================================================================
  * Userland Heap Allocator (<pxe/mem.h>) backed by NEKO_SYSCALL_SBRK
  * ========================================================================= */

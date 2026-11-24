@@ -60,6 +60,8 @@ typedef struct {
 static phys_addr_t g_dict_phys = 0;
 static size_t      g_dict_pages = 0;
 static const uint8_t* g_dict_ptr = NULL;
+static uint32_t    g_dict_phrase_count = 0;
+static uint32_t    g_dict_single_count = 0;
 
 static bool        g_ime_enabled = false;
 static char        g_raw[IME_MAX_RAW + 1];
@@ -113,10 +115,24 @@ static bool try_load_ime_file(const char* path) {
     g_dict_pages = pages;
     g_dict_ptr = (const uint8_t*)virt;
     const nkpy_header_t* h = (const nkpy_header_t*)g_dict_ptr;
+    g_dict_phrase_count = h->phrase_count;
+    g_dict_single_count = h->single_count;
     log_printf("[IME ] Loaded Rime lexicon %s (%u bytes, %u syls, %u singles, %u phrases)\n",
                path, (unsigned)ent.size, (unsigned)h->syl_count,
                (unsigned)h->single_count, (unsigned)h->phrase_count);
     return true;
+}
+
+bool ime_has_full_lexicon(void) {
+    return g_dict_ptr != NULL;
+}
+
+uint32_t ime_get_phrase_count(void) {
+    return g_dict_ptr ? g_dict_phrase_count : 0u;
+}
+
+uint32_t ime_get_single_count(void) {
+    return g_dict_ptr ? g_dict_single_count : 0u;
 }
 
 void ime_init(void) {

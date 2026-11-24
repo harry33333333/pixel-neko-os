@@ -68,6 +68,7 @@ typedef struct {
     char notice[128];
     int notice_is_error;
     int zh;
+    int ime_phrases;
 } cpuz_app_t;
 
 static cpuz_app_t g_app;
@@ -464,6 +465,7 @@ static void refresh_all(cpuz_app_t* app) {
     count = pxe_r0_enum_pdv_drivers(app->pdv, MAX_PDV_DRIVERS);
     app->pdv_count = count > 0 ? count : 0;
     if (app->pdv_count > MAX_PDV_DRIVERS) app->pdv_count = MAX_PDV_DRIVERS;
+    app->ime_phrases = pxe_get_ime_phrase_count();
 }
 
 static void reportf(const char* format, ...) {
@@ -1251,7 +1253,7 @@ static void render_save_dialog(const pxe_win_surface_t* surf,
 
 static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
     int width = surf->width - 24;
-    draw_group(surf, CONTENT_X, CONTENT_Y, width, 176,
+    draw_group(surf, CONTENT_X, CONTENT_Y, width, 194,
                app->zh ? "Pixel CPU 检测" : "Pixel CPU Detect");
     pxe_draw_text(surf, CONTENT_X + 14, CONTENT_Y + 26,
                   app->zh ? "Pixel CPU 检测工具" : APP_NAME,
@@ -1285,6 +1287,19 @@ static void render_about(const pxe_win_surface_t* surf, cpuz_app_t* app) {
                         app->zh ? "报告包含已解码规格信息与原始 CPUID 寄存器页。"
                                 : "Report includes decoded data and raw CPUID leaves.",
                         PXE_COL_DARK_BLUE);
+    if (app->ime_phrases > 0) {
+        snprintf(value, sizeof(value),
+                 app->zh ? "IME 词库: 完整 Rime 词库已加载 (%d 词组)"
+                         : "IME Lexicon: Full Rime lexicon loaded (%d phrases)",
+                 app->ime_phrases);
+        pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 168,
+                            value, PXE_COL_DARK_GREEN);
+    } else {
+        pxe_draw_text_small(surf, CONTENT_X + 14, CONTENT_Y + 168,
+                            app->zh ? "IME 词库: 内置精简回退词库 (IME.PNY 未加载)"
+                                    : "IME Lexicon: Core fallback active (IME.PNY unavailable)",
+                            PXE_COL_DARK_RED);
+    }
 
     pxe_draw_button(surf, surf->width - 198, surf->height - 58, 186, 26,
                     app->zh ? "保存检测报告..." : "Save Report As...", 0, 1);

@@ -593,9 +593,16 @@ void process_exit_current(int status) {
     scheduler_request_reschedule();
 }
 
-int process_kill(uint32_t pid, int exit_code) {
+static int process_kill_impl(uint32_t pid, int exit_code, bool allow_critical) {
     process_t* target = process_find_by_pid(pid);
     if (!target) {
+        return -1;
+    }
+    bool was_compositor = (target->main_thread && target->main_thread->is_compositor);
+    if (!allow_critical &&
+        (target->pid == 0 || target->pid == 1 || target->is_system_daemon || was_compositor)) {
+        log_printf("[PROC] Blocked unprivileged/non-forced kill of critical PID %u (%s).\n",
+                   target->pid, target->name);
         return -1;
     }
     if (target->pid == 0) {
@@ -630,8 +637,8 @@ int process_kill(uint32_t pid, int exit_code) {
     if (target->state == PROCESS_ZOMBIE) {
         return -1;
     }
-    bool was_compositor = (target->main_thread && target->main_thread->is_compositor);
-    if (target->is_system_daemon && !was_compositor) {
+    bool is_comp = (target->main_thread && target->main_thread->is_compositor);
+    if (target->is_system_daemon && !(allow_critical && is_comp)) {
         return -1;
     }
 
@@ -675,4 +682,12 @@ int process_kill(uint32_t pid, int exit_code) {
     log_printf("[PROC] PID %u (%s) terminated via process_kill (code %d).\n",
                target->pid, target->name, exit_code);
     return 0;
+}
+
+int process_kill(uint32_t pid, int exit_code) {
+    return process_kill_impl(pid, exit_code, false);
+}
+
+int process_kill_force(uint32_t pid, int exit_code) {
+    return process_kill_impl(pid, exit_code, true);
 }
