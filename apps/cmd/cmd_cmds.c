@@ -671,7 +671,7 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
         return cmd_open_with_assoc(st, resolved);
     }
     if (strcasecmp(c, "ver") == 0) {
-        term_puts(st, "\nPixel Neko OS [Version Darwin 26A300b - Snow Neko x86_64]\n\n");
+        term_puts(st, "\nPixel Neko OS [Version Darwin 26A300c - Snow Neko x86_64]\n\n");
         return 0;
     }
     if (strcasecmp(c, "date") == 0 || strcasecmp(c, "time") == 0) {
@@ -686,7 +686,7 @@ int cmd_dispatch_builtin(cmd_state_t* st, int argc, char** argv, const char* raw
         pxe_basic_sysinfo_t info;
         if (pxe_sys_get_basic_info(&info) == 0) {
             term_printf(st, "OS:      Pixel Neko OS (Darwin %s x86_64)\n",
-                        info.os_build[0] ? info.os_build : "26A300b");
+                        info.os_build[0] ? info.os_build : "26A300c");
             term_printf(st, "Display: %dx%d @ %dbpp (%s)\n",
                         info.screen_w, info.screen_h, info.screen_bpp, info.gfx_backend);
             term_printf(st, "Audio:   %s (%s)\n", info.audio_backend,

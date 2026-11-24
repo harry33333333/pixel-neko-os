@@ -101,7 +101,7 @@ static void sync_fm_menu(fm_t* fm) {
     memset(&mb, 0, sizeof(mb));
     mb.menu_count = 2;
     strcpy(mb.menus[0].title, FM_TR(fm, "文件", "File"));
-    mb.menus[0].item_count = 9;
+    mb.menus[0].item_count = 10;
     strcpy(mb.menus[0].items[0].label, FM_TR(fm, "打开", "Open"));             mb.menus[0].items[0].enabled = 1;
     strcpy(mb.menus[0].items[1].label, FM_TR(fm, "剪切", "Cut"));              mb.menus[0].items[1].enabled = 1;
     strcpy(mb.menus[0].items[2].label, FM_TR(fm, "复制", "Copy"));             mb.menus[0].items[2].enabled = 1;
@@ -110,7 +110,8 @@ static void sync_fm_menu(fm_t* fm) {
     strcpy(mb.menus[0].items[5].label, FM_TR(fm, "新建目录...", "New Folder...")); mb.menus[0].items[5].enabled = 1;
     strcpy(mb.menus[0].items[6].label, FM_TR(fm, "删除", "Delete"));           mb.menus[0].items[6].enabled = 1;
     strcpy(mb.menus[0].items[7].label, FM_TR(fm, "弹出", "Eject"));            mb.menus[0].items[7].enabled = 1;
-    strcpy(mb.menus[0].items[8].label, FM_TR(fm, "退出", "Exit"));             mb.menus[0].items[8].enabled = 1;
+    strcpy(mb.menus[0].items[8].label, FM_TR(fm, "新建窗口", "New Window"));   mb.menus[0].items[8].enabled = 1;
+    strcpy(mb.menus[0].items[9].label, FM_TR(fm, "退出", "Exit"));             mb.menus[0].items[9].enabled = 1;
 
     strcpy(mb.menus[1].title, FM_TR(fm, "视图", "View"));
     mb.menus[1].item_count = 5;
@@ -1353,8 +1354,7 @@ static void action_go_desktop(fm_t* fm) {
     load_directory(fm);
 }
 
-static void action_open_cmd_dir(fm_t* fm, const char* dir_path) {
-    char cmd_path[96] = { 0 };
+static int find_app_path(const char* app_name, char* out, size_t cap) {
     pxe_basic_sysinfo_t info;
     memset(&info, 0, sizeof(info));
     pxe_sys_get_basic_info(&info);
@@ -1378,13 +1378,19 @@ static void action_open_cmd_dir(fm_t* fm, const char* dir_path) {
         char probe[64];
         pxe_dirent_t st;
         memset(&st, 0, sizeof(st));
-        snprintf(probe, sizeof(probe), "%c:\\APPS\\cmd.pxe", drives[i]);
+        snprintf(probe, sizeof(probe), "%c:\\APPS\\%s", drives[i], app_name);
         if (pxe_stat(probe, &st) == 0 && !st.is_dir) {
-            snprintf(cmd_path, sizeof(cmd_path), "%s", probe);
-            break;
+            snprintf(out, cap, "%s", probe);
+            return 0;
         }
     }
-    if (!cmd_path[0]) {
+    out[0] = '\0';
+    return -1;
+}
+
+static void action_open_cmd_dir(fm_t* fm, const char* dir_path) {
+    char cmd_path[96] = { 0 };
+    if (find_app_path("cmd.pxe", cmd_path, sizeof(cmd_path)) != 0) {
         show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
                  FM_TR(fm, "找不到 APPS\\cmd.pxe。", "Cannot find APPS\\cmd.pxe."), 1);
         return;
@@ -1394,6 +1400,21 @@ static void action_open_cmd_dir(fm_t* fm, const char* dir_path) {
     if (pxe_spawn(cmd_path, argc, argv) < 0) {
         show_msg(fm, FM_TR(fm, "启动失败", "Launch Failed"),
                  FM_TR(fm, "启动命令提示符失败。", "Failed to launch Command Prompt."), 1);
+    }
+}
+
+static void action_open_new_window(fm_t* fm, const char* dir_path) {
+    char fm_path[96] = { 0 };
+    if (find_app_path("files.pxe", fm_path, sizeof(fm_path)) != 0) {
+        show_msg(fm, FM_TR(fm, "缺少应用程序", "Missing Application"),
+                 FM_TR(fm, "找不到 APPS\\files.pxe。", "Cannot find APPS\\files.pxe."), 1);
+        return;
+    }
+    const char* argv[2] = { fm_path, (dir_path && dir_path[0]) ? dir_path : NULL };
+    int argc = (dir_path && dir_path[0]) ? 2 : 1;
+    if (pxe_spawn(fm_path, argc, argv) < 0) {
+        show_msg(fm, FM_TR(fm, "启动失败", "Launch Failed"),
+                 FM_TR(fm, "无法打开新的文件管理窗口。", "Failed to open a new File Manager window."), 1);
     }
 }
 
@@ -1804,18 +1825,18 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
         if (fm->ctx_kind == CTX_ITEM) {
             int tgt_is_dir = (fm->ctx_target >= 0 && fm->ctx_target < fm->entry_count)
                              ? fm->entries[fm->ctx_target].is_dir : 1;
-            const char* items_en[11] = {
-                "Open", "Open With...", "Open CMD Here", "Send to Desktop",
+            const char* items_en[12] = {
+                "Open", "Open in New Window", "Open With...", "Open CMD Here", "Send to Desktop",
                 "Cut", "Copy", "Paste", "Rename...",
                 "Delete", "New Folder...", "Properties..."
             };
-            const char* items_zh[11] = {
-                "打开", "打开方式...", "在此处打开 CMD", "发送到桌面",
+            const char* items_zh[12] = {
+                "打开", "在新窗口中打开", "打开方式...", "在此处打开 CMD", "发送到桌面",
                 "剪切", "复制", "粘贴", "重命名...",
                 "删除", "新建目录...", "属性..."
             };
-            int en[11] = { 1, !tgt_is_dir, tgt_is_dir, 1, 1, 1, fm->has_clip, 1, 1, 1, 1 };
-            for (int i = 0; i < 11; i++) {
+            int en[12] = { 1, tgt_is_dir, !tgt_is_dir, tgt_is_dir, 1, 1, 1, fm->has_clip, 1, 1, 1, 1 };
+            for (int i = 0; i < 12; i++) {
                 pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4 + i * 18,
                                     fm->zh ? items_zh[i] : items_en[i],
                                     en[i] ? PXE_COL_BLACK : PXE_COL_DARK_GRAY);
@@ -1831,7 +1852,8 @@ static void render_fm(const pxe_win_surface_t* surf, fm_t* fm) {
             }
         } else if (fm->ctx_kind == CTX_DRIVE) {
             pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 4, FM_TR(fm, "打开", "Open"), PXE_COL_BLACK);
-            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 22, FM_TR(fm, "弹出", "Eject"), PXE_COL_BLACK);
+            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 22, FM_TR(fm, "在新窗口中打开", "Open in New Window"), PXE_COL_BLACK);
+            pxe_draw_text_small(surf, fm->ctx_x + 10, fm->ctx_y + 40, FM_TR(fm, "弹出", "Eject"), PXE_COL_BLACK);
         }
     }
 
@@ -2013,8 +2035,8 @@ int main(int argc, char** argv) {
 
     pxe_win_desc_t desc;
     memset(&desc, 0, sizeof(desc));
-    desc.x = 64;
-    desc.y = 40;
+    desc.x = -1;
+    desc.y = -1;
     desc.w = 500;
     desc.h = 340;
     desc.min_w = 380;
@@ -2108,7 +2130,8 @@ int main(int argc, char** argv) {
                     else if (ev.arg1 == 5) action_begin_mkdir(fm);
                     else if (ev.arg1 == 6 && fm->selected >= 0) action_begin_delete(fm, fm->selected);
                     else if (ev.arg1 == 7) action_eject(fm);
-                    else if (ev.arg1 == 8) running = 0;
+                    else if (ev.arg1 == 8) action_open_new_window(fm, fm->current_path);
+                    else if (ev.arg1 == 9) running = 0;
                 } else if (ev.arg0 == 1) {
                     if (ev.arg1 == 0) load_directory(fm);
                     else if (ev.arg1 == 1) { fm->sort_by_size = 0; sort_entries(fm); }
@@ -2208,20 +2231,25 @@ int main(int argc, char** argv) {
                     if (inside && (ev.buttons & PXE_BTN_LEFT)) {
                         if (kind == CTX_ITEM) {
                             if (item == 0) open_entry(fm, tgt);
-                            else if (item == 1) action_begin_open_with(fm, tgt);
-                            else if (item == 2 && tgt >= 0 && tgt < fm->entry_count && fm->entries[tgt].is_dir) {
+                            else if (item == 1 && tgt >= 0 && tgt < fm->entry_count && fm->entries[tgt].is_dir) {
+                                char dsub[256];
+                                join_path(dsub, sizeof(dsub), fm->current_path, fm->entries[tgt].name);
+                                action_open_new_window(fm, dsub);
+                            }
+                            else if (item == 2) action_begin_open_with(fm, tgt);
+                            else if (item == 3 && tgt >= 0 && tgt < fm->entry_count && fm->entries[tgt].is_dir) {
                                 char dsub[256];
                                 join_path(dsub, sizeof(dsub), fm->current_path, fm->entries[tgt].name);
                                 action_open_cmd_dir(fm, dsub);
                             }
-                            else if (item == 3) action_send_to_desktop(fm, tgt);
-                            else if (item == 4) action_cut(fm, tgt);
-                            else if (item == 5) action_copy(fm, tgt);
-                            else if (item == 6) action_paste(fm, &surf);
-                            else if (item == 7) action_begin_rename(fm, tgt);
-                            else if (item == 8) action_begin_delete(fm, tgt);
-                            else if (item == 9) action_begin_mkdir(fm);
-                            else if (item == 10) action_properties(fm, tgt);
+                            else if (item == 4) action_send_to_desktop(fm, tgt);
+                            else if (item == 5) action_cut(fm, tgt);
+                            else if (item == 6) action_copy(fm, tgt);
+                            else if (item == 7) action_paste(fm, &surf);
+                            else if (item == 8) action_begin_rename(fm, tgt);
+                            else if (item == 9) action_begin_delete(fm, tgt);
+                            else if (item == 10) action_begin_mkdir(fm);
+                            else if (item == 11) action_properties(fm, tgt);
                         } else if (kind == CTX_BG) {
                             if (item == 0) action_paste(fm, &surf);
                             else if (item == 1) action_begin_mkdir(fm);
@@ -2230,7 +2258,10 @@ int main(int argc, char** argv) {
                             else if (item == 4) { fm->current_path[0] = '\0'; load_directory(fm); }
                         } else if (kind == CTX_DRIVE) {
                             if (item == 0) open_entry(fm, tgt);
-                            else if (item == 1) action_eject(fm);
+                            else if (item == 1 && tgt >= 0 && tgt < fm->entry_count) {
+                                action_open_new_window(fm, fm->entries[tgt].name);
+                            }
+                            else if (item == 2) action_eject(fm);
                         }
                     }
                     dirty = 1;
@@ -2294,11 +2325,11 @@ int main(int argc, char** argv) {
                             fm->ctx_target = idx;
                             if (fm->current_path[0] == '\0') {
                                 fm->ctx_kind = CTX_DRIVE;
-                                clamp_ctx_menu(fm, &surf, mx, my, 2);
+                                clamp_ctx_menu(fm, &surf, mx, my, 3);
                             } else if (!fm->entries[idx].is_parent) {
                                 sync_global_clipboard(fm);
                                 fm->ctx_kind = CTX_ITEM;
-                                clamp_ctx_menu(fm, &surf, mx, my, 11);
+                                clamp_ctx_menu(fm, &surf, mx, my, 12);
                             } else if (fm->current_path[0] != '\0') {
                                 sync_global_clipboard(fm);
                                 fm->ctx_kind = CTX_BG;

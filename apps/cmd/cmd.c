@@ -1042,8 +1042,8 @@ int main(int argc, char** argv) {
 
     if (!auto_close) {
         term_puts(st, CMD_TR(st,
-            "Pixel Neko OS [版本 26A300b]\n(C) Pixel Neko OS Project. 输入 \"help\" 查看命令。\n\n",
-            "Pixel Neko OS [Version 26A300b]\n(C) Pixel Neko OS Project. Type \"help\" for commands.\n\n"));
+            "Pixel Neko OS [版本 26A300c]\n(C) Pixel Neko OS Project. 输入 \"help\" 查看命令。\n\n",
+            "Pixel Neko OS [Version 26A300c]\n(C) Pixel Neko OS Project. Type \"help\" for commands.\n\n"));
         term_render_now(st);
         pxe_sleep_ms(5);
     }
