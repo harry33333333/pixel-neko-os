@@ -1225,6 +1225,84 @@ int vfs_get_drive_space(char letter, uint64_t* total_kb, uint64_t* free_kb,
     return 0;
 }
 
+#define VFS_STREAM_RA_HDD_BYTES   (256U * 1024U)
+#define VFS_STREAM_RA_CDROM_BYTES (512U * 1024U)
+#define VFS_STREAM_RA_FALLBACK    (64U  * 1024U)
+
+static void vfs_stream_alloc_readahead(vfs_stream_t* stream, const vfs_drive_t* drive) {
+    if (!stream || !drive || stream->is_write) return;
+    if (stream->fs_kind != VFS_FS_FAT &&
+        stream->fs_kind != VFS_FS_EXFAT &&
+        stream->fs_kind != VFS_FS_ISO) {
+        return;
+    }
+    if (stream->size <= 4096ULL) return;
+
+    uint32_t target = (drive->drv_type == VFS_DRV_CDROM || stream->fs_kind == VFS_FS_ISO)
+                          ? VFS_STREAM_RA_CDROM_BYTES
+                          : VFS_STREAM_RA_HDD_BYTES;
+    if (stream->size < (uint64_t)target) {
+        uint32_t aligned = (uint32_t)((stream->size + 4095ULL) & ~4095ULL);
+        if (aligned < 16384U) aligned = 16384U;
+        if (aligned < target) target = aligned;
+    }
+
+    uint8_t* buf = (uint8_t*)kmalloc(target);
+    if (!buf && target > VFS_STREAM_RA_FALLBACK) {
+        target = VFS_STREAM_RA_FALLBACK;
+        buf = (uint8_t*)kmalloc(target);
+    }
+    if (buf) {
+        stream->ra_buf = buf;
+        stream->ra_cap = target;
+        stream->ra_len = 0;
+        stream->ra_start = 0;
+    }
+}
+
+static int vfs_stream_read_raw(vfs_stream_t* stream, vfs_drive_t* drive,
+                               uint64_t offset, void* buffer, unsigned int size) {
+    if (!stream || !drive || !buffer || size == 0) return 0;
+    int result = -1;
+    if (stream->fs_kind == VFS_FS_FAT && stream->fat_handle) {
+        if (stream->raw_offset != offset) {
+            if (fat_seek((file_handle_t*)stream->fat_handle, offset) != 0) {
+                return -1;
+            }
+            stream->raw_offset = offset;
+        }
+        result = fat_read((file_handle_t*)stream->fat_handle, buffer, size);
+        if (result > 0) stream->raw_offset += (uint64_t)result;
+    } else if (stream->fs_kind == VFS_FS_EXFAT && stream->exfat_handle) {
+        if (stream->raw_offset != offset) {
+            if (exfat_seek((exfat_handle_t*)stream->exfat_handle, offset) != 0) {
+                return -1;
+            }
+            stream->raw_offset = offset;
+        }
+        result = exfat_read((exfat_handle_t*)stream->exfat_handle, buffer, size);
+        if (result > 0) stream->raw_offset += (uint64_t)result;
+    } else if (stream->fs_kind == VFS_FS_ISO) {
+        iso_fs_t* iso = iso_for_drive(drive);
+        if (iso) {
+            result = iso_read_extent(iso, stream->cdrom_extent_lba, stream->size,
+                                     offset, (unsigned char*)buffer, size,
+                                     &stream->cached_sec_lba,
+                                     &stream->has_cached_sec,
+                                     stream->sec_cache);
+            if (result > 0) stream->raw_offset = offset + (uint64_t)result;
+        }
+    } else if (stream->fs_kind == VFS_FS_CDDA) {
+        uint32_t sec_cnt = (uint32_t)((stream->size - 44ULL) / CDDA_SECTOR_SIZE);
+        result = cdda_read_virtual_data(drive->dev,
+                                        (uint32_t)stream->cdrom_extent_lba,
+                                        sec_cnt, offset, (unsigned char*)buffer,
+                                        size);
+        if (result > 0) stream->raw_offset = offset + (uint64_t)result;
+    }
+    return result;
+}
+
 int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     if (!path || !stream) return -1;
     memset(stream, 0, sizeof(*stream));
@@ -1266,6 +1344,8 @@ int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     stream->is_open = 1;
     stream->cached_sec_lba = UINT32_MAX;
     stream->has_cached_sec = 0;
+    stream->raw_offset = 0;
+    vfs_stream_alloc_readahead(stream, drive);
     return 0;
 }
 
@@ -1300,6 +1380,7 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
     if (stream->current_offset >= stream->size) return 0;
     uint64_t remaining = stream->size - stream->current_offset;
     if (size > remaining) size = (unsigned int)remaining;
+    if (size == 0) return 0;
     if (stream->fs_kind == VFS_FS_PROC && stream->proc_buf) {
         memcpy(buffer, (const uint8_t*)stream->proc_buf + stream->current_offset,
                size);
@@ -1308,29 +1389,66 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
     }
     vfs_drive_t* drive = vfs_get_drive(stream->path[0]);
     if (!drive) return -1;
-    int result = -1;
-    if (stream->fs_kind == VFS_FS_FAT && stream->fat_handle) {
-        result = fat_read((file_handle_t*)stream->fat_handle, buffer, size);
-    } else if (stream->fs_kind == VFS_FS_EXFAT && stream->exfat_handle) {
-        result = exfat_read((exfat_handle_t*)stream->exfat_handle, buffer, size);
-    } else if (stream->fs_kind == VFS_FS_ISO) {
-        iso_fs_t* iso = iso_for_drive(drive);
-        if (iso) {
-            result = iso_read_extent(iso, stream->cdrom_extent_lba, stream->size,
-                                     stream->current_offset, buffer, size,
-                                     &stream->cached_sec_lba,
-                                     &stream->has_cached_sec,
-                                     stream->sec_cache);
-        }
-    } else if (stream->fs_kind == VFS_FS_CDDA) {
-        uint32_t sec_cnt = (uint32_t)((stream->size - 44ULL) / CDDA_SECTOR_SIZE);
-        result = cdda_read_virtual_data(drive->dev,
-                                        (uint32_t)stream->cdrom_extent_lba,
-                                        sec_cnt, stream->current_offset, buffer,
-                                        size);
+
+    if (!stream->ra_buf || stream->ra_cap == 0) {
+        int result = vfs_stream_read_raw(stream, drive, stream->current_offset,
+                                         buffer, size);
+        if (result > 0) stream->current_offset += (uint64_t)result;
+        return result;
     }
-    if (result > 0) stream->current_offset += (uint64_t)result;
-    return result;
+
+    uint8_t* dst = (uint8_t*)buffer;
+    unsigned int total = 0;
+    while (total < size) {
+        uint64_t cur = stream->current_offset;
+        if (stream->ra_len > 0 && cur >= stream->ra_start &&
+            cur < stream->ra_start + (uint64_t)stream->ra_len) {
+            uint32_t off_in_ra = (uint32_t)(cur - stream->ra_start);
+            uint32_t avail = stream->ra_len - off_in_ra;
+            unsigned int take = size - total;
+            if (take > avail) take = avail;
+            memcpy(dst + total, stream->ra_buf + off_in_ra, take);
+            stream->current_offset += take;
+            total += take;
+            continue;
+        }
+
+        unsigned int rem = size - total;
+        /* Large direct reads bypass readahead to avoid double-copying */
+        if (rem >= stream->ra_cap) {
+            int n = vfs_stream_read_raw(stream, drive, cur, dst + total, rem);
+            if (n <= 0) {
+                return total > 0 ? (int)total : n;
+            }
+            stream->current_offset += (uint64_t)n;
+            total += (unsigned int)n;
+            if ((unsigned int)n < rem) break;
+            continue;
+        }
+
+        /* Refill sequential readahead window (2048-byte aligned on ISO9660) */
+        uint64_t fill_start = cur;
+        if (stream->fs_kind == VFS_FS_ISO) {
+            fill_start &= ~2047ULL;
+        }
+        uint64_t file_rem = (fill_start < stream->size) ? (stream->size - fill_start) : 0;
+        unsigned int fill_want = stream->ra_cap;
+        if (file_rem < (uint64_t)fill_want) fill_want = (unsigned int)file_rem;
+        if (fill_want == 0) break;
+
+        stream->ra_len = 0;
+        int filled = vfs_stream_read_raw(stream, drive, fill_start,
+                                         stream->ra_buf, fill_want);
+        if (filled <= 0) {
+            return total > 0 ? (int)total : filled;
+        }
+        stream->ra_start = fill_start;
+        stream->ra_len = (uint32_t)filled;
+        if (cur >= fill_start + (uint64_t)filled) {
+            break;
+        }
+    }
+    return (int)total;
 }
 
 int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
@@ -1359,13 +1477,22 @@ int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
 int vfs_stream_seek(vfs_stream_t* stream, uint64_t offset) {
     if (!stream || !stream->is_open || stream->is_write) return -1;
     if (offset > stream->size) offset = stream->size;
-    if (stream->fat_handle) {
-        if (fat_seek((file_handle_t*)stream->fat_handle, offset) != 0) {
-            return -1;
-        }
-    } else if (stream->exfat_handle) {
-        if (exfat_seek((exfat_handle_t*)stream->exfat_handle, offset) != 0) {
-            return -1;
+    /* Keep readahead buffer intact if target offset lies inside cached window */
+    bool in_ra = (stream->ra_buf != NULL && stream->ra_len > 0 &&
+                  offset >= stream->ra_start &&
+                  offset < stream->ra_start + (uint64_t)stream->ra_len);
+    if (!in_ra) {
+        stream->ra_len = 0;
+        if (stream->fat_handle) {
+            if (fat_seek((file_handle_t*)stream->fat_handle, offset) != 0) {
+                return -1;
+            }
+            stream->raw_offset = offset;
+        } else if (stream->exfat_handle) {
+            if (exfat_seek((exfat_handle_t*)stream->exfat_handle, offset) != 0) {
+                return -1;
+            }
+            stream->raw_offset = offset;
         }
     }
     stream->current_offset = offset;
@@ -1396,6 +1523,12 @@ void vfs_stream_close(vfs_stream_t* stream) {
     if (stream->proc_buf) {
         kfree(stream->proc_buf);
         stream->proc_buf = NULL;
+    }
+    if (stream->ra_buf) {
+        kfree(stream->ra_buf);
+        stream->ra_buf = NULL;
+        stream->ra_cap = 0;
+        stream->ra_len = 0;
     }
     stream->is_open = 0;
 }

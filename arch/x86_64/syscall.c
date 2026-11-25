@@ -203,8 +203,12 @@ static int64_t syscall_fs_read(process_t* process, trap_frame_t* frame) {
         return -NEKO_EFAULT;
     }
 
-    size_t chunk_cap = (count > 32768U) ? 32768U : count;
+    size_t chunk_cap = (count > 262144U) ? 262144U : count;
     uint8_t* kbuf = (uint8_t*)kmalloc(chunk_cap);
+    if (!kbuf && chunk_cap > 32768U) {
+        chunk_cap = 32768U;
+        kbuf = (uint8_t*)kmalloc(chunk_cap);
+    }
     if (!kbuf) return -NEKO_ENOMEM;
 
     thread_t* thread = scheduler_current_thread();
@@ -313,6 +317,26 @@ static int64_t syscall_audio_cmd(process_t* process, trap_frame_t* frame) {
         int rc = pxe_kern_audio_cmd(PXE_AUD_FEED_PCM, arg, NULL, &kc);
         kfree(ksamples);
         return rc;
+    }
+
+    if (cmd == PXE_AUD_GET_TIMING) {
+        if (!user_io) return -NEKO_EINVAL;
+        pxe_audio_timing_t tm;
+        int rc = pxe_kern_audio_cmd(PXE_AUD_GET_TIMING, 0, NULL, &tm);
+        if (rc < 0) return rc;
+        if (!process_copy_to_user(process, user_io, &tm, sizeof(tm))) {
+            return -NEKO_EFAULT;
+        }
+        return rc;
+    }
+
+    if (cmd == PXE_AUD_STREAM_OPEN) {
+        if (!user_io) return -NEKO_EINVAL;
+        pxe_audio_stream_cfg_t cfg;
+        if (!process_copy_from_user(process, &cfg, user_io, sizeof(cfg))) {
+            return -NEKO_EFAULT;
+        }
+        return pxe_kern_audio_cmd(PXE_AUD_STREAM_OPEN, arg, NULL, &cfg);
     }
 
     if (cmd == PXE_AUD_PLAY_FILE) {

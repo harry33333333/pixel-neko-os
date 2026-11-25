@@ -656,3 +656,20 @@ int pxe_audio_feed_pcm(const void* samples, uint32_t sample_count,
     chunk.src_float    = src_float;
     return (int)_pxe_syscall4(NEKO_SYSCALL_AUDIO_CMD, PXE_AUD_FEED_PCM, 0, 0, (long)&chunk);
 }
+
+int pxe_audio_stream_open(int sample_rate, int channels, int bit_depth, int low_latency) {
+    pxe_audio_stream_cfg_t cfg;
+    cfg.sample_rate = sample_rate;
+    cfg.channels    = channels;
+    cfg.bit_depth   = bit_depth;
+    cfg.low_latency = low_latency;
+    return (int)_pxe_syscall4(NEKO_SYSCALL_AUDIO_CMD, PXE_AUD_STREAM_OPEN, 0, 0, (long)&cfg);
+}
+
+void pxe_audio_stream_flush(void) {
+    (void)_pxe_syscall4(NEKO_SYSCALL_AUDIO_CMD, PXE_AUD_STREAM_FLUSH, 0, 0, 0);
+}
+
+int pxe_audio_get_timing(pxe_audio_timing_t* out_timing) {
+    return (int)_pxe_syscall4(NEKO_SYSCALL_AUDIO_CMD, PXE_AUD_GET_TIMING, 0, 0, (long)out_timing);
+}

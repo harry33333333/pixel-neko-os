@@ -271,13 +271,15 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
                         void* buffer, uint32_t bytes, bool input,
                         bool quiet) {
     if (!drive || !packet || !drive->packet) return -1;
-    if (bytes > 0xFFFEu) return -1;
+    if (bytes > 262144u) return -1;
+    /* ATAPI PIO byte-count limit per DRQ phase (60 KiB = 30 x 2048 B sectors) */
+    uint16_t bcl = (bytes > 0xF000u) ? 0xF000u : (uint16_t)bytes;
     ata_select(drive, 0);
     outb(drive->base + ATA_REG_FEATURES, 0);
     outb(drive->base + ATA_REG_SECCOUNT0, 0);
     outb(drive->base + ATA_REG_LBA0, 0);
-    outb(drive->base + ATA_REG_LBA1, (uint8_t)bytes);
-    outb(drive->base + ATA_REG_LBA2, (uint8_t)(bytes >> 8));
+    outb(drive->base + ATA_REG_LBA1, (uint8_t)bcl);
+    outb(drive->base + ATA_REG_LBA2, (uint8_t)(bcl >> 8));
     outb(drive->base + ATA_REG_COMMAND, ATA_CMD_PACKET);
     if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
         if (!quiet) {
@@ -290,20 +292,63 @@ static int atapi_packet(ata_drive_t* drive, const uint8_t* packet,
     ata_write_words(drive->base + ATA_REG_DATA, packet, 6);
     ata_delay400(drive);
     if (bytes) {
-        if (ata_wait_status(drive, ATA_SR_DRQ, ATA_SR_BSY, 1000000) != 0) {
-            if (!quiet) {
-                log_printf("[ATA ] ATAPI data wait: status=%02x error=%02x "
-                           "bytes=%u\n",
-                           inb(drive->base + ATA_REG_STATUS),
-                           inb(drive->base + ATA_REG_ERROR), bytes);
+        uint8_t* ptr = (uint8_t*)buffer;
+        uint32_t transferred = 0;
+        while (transferred < bytes) {
+            if (ata_wait_status(drive, 0, ATA_SR_BSY, 2000000) != 0) {
+                if (!quiet) {
+                    log_printf("[ATA ] ATAPI data wait: status=%02x error=%02x "
+                               "transferred=%u/%u\n",
+                               inb(drive->base + ATA_REG_STATUS),
+                               inb(drive->base + ATA_REG_ERROR),
+                               transferred, bytes);
+                }
+                return -1;
             }
-            return -1;
+            uint8_t st = ata_status(drive);
+            if (!(st & ATA_SR_DRQ)) {
+                break;
+            }
+            uint32_t chunk = (uint32_t)inb(drive->base + ATA_REG_LBA1) |
+                             ((uint32_t)inb(drive->base + ATA_REG_LBA2) << 8);
+            if (chunk == 0) {
+                chunk = bytes - transferred;
+                if (chunk > 0xF000u) chunk = 0xF000u;
+            }
+            uint32_t rem = bytes - transferred;
+            uint32_t take = (chunk <= rem) ? chunk : rem;
+            uint32_t words = take / 2u;
+            if (words > 0) {
+                if (input) {
+                    ata_read_words(drive->base + ATA_REG_DATA,
+                                   ptr + transferred, words);
+                } else {
+                    ata_write_words(drive->base + ATA_REG_DATA,
+                                    ptr + transferred, words);
+                }
+            }
+            if (take & 1u) {
+                if (input) {
+                    uint16_t w = inw(drive->base + ATA_REG_DATA);
+                    ptr[transferred + take - 1u] = (uint8_t)(w & 0xFFu);
+                } else {
+                    outw(drive->base + ATA_REG_DATA,
+                         (uint16_t)ptr[transferred + take - 1u]);
+                }
+            }
+            /* Drain any excess words advertised by device beyond caller buffer */
+            if (chunk > take) {
+                uint32_t extra_words = (chunk - take + 1u) / 2u;
+                for (uint32_t d = 0; d < extra_words; d++) {
+                    if (input) (void)inw(drive->base + ATA_REG_DATA);
+                    else outw(drive->base + ATA_REG_DATA, 0);
+                }
+            }
+            transferred += take;
+            audio_service_dma_irq();
         }
-        if (input) ata_read_words(drive->base + ATA_REG_DATA, buffer,
-                                  bytes / 2);
-        else ata_write_words(drive->base + ATA_REG_DATA, buffer, bytes / 2);
     }
-    if (ata_wait_status(drive, 0, ATA_SR_BSY, 1000000) != 0) {
+    if (ata_wait_status(drive, 0, ATA_SR_BSY, 2000000) != 0) {
         if (!quiet) {
             log_printf("[ATA ] ATAPI completion: status=%02x error=%02x\n",
                        inb(drive->base + ATA_REG_STATUS),
@@ -338,8 +383,11 @@ static int atapi_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     ata_drive_t* drive = block ? (ata_drive_t*)block->priv : NULL;
     if (!drive || !drive->present || !drive->packet || !buffer) return -1;
     uint8_t* output = (uint8_t*)buffer;
+    /* Up to 64 x 2048 B = 128 KiB per READ(10) command to minimize optical seeks */
+    uint32_t max_batch = (drive->sector_size > 0) ? (131072u / drive->sector_size) : 64u;
+    if (max_batch == 0) max_batch = 1;
     while (count) {
-        uint32_t batch = count > 16 ? 16 : count;
+        uint32_t batch = count > max_batch ? max_batch : count;
         uint8_t packet[12];
         memset(packet, 0, sizeof(packet));
         packet[0] = 0x28;

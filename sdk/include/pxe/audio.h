@@ -13,6 +13,9 @@ void pxe_audio_toggle_mute(void);
 int  pxe_audio_get_status(pxe_audio_status_t* out_status);
 int  pxe_audio_feed_pcm(const void* samples, uint32_t sample_count,
                         int src_rate, int src_channels, int src_bits, int src_float);
+int  pxe_audio_stream_open(int sample_rate, int channels, int bit_depth, int low_latency);
+void pxe_audio_stream_flush(void);
+int  pxe_audio_get_timing(pxe_audio_timing_t* out_timing);
 
 #endif /* _PXE_AUDIO_H */
 

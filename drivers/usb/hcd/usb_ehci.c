@@ -62,7 +62,7 @@ typedef struct {
     ehci_qtd_t bulk_qtd;
     ehci_qtd_t bulk_dummy;
     uint8_t setup_buffer[8] __attribute__((aligned(32)));
-    uint8_t data_buffer[1024] __attribute__((aligned(32)));
+    uint8_t data_buffer[16384] __attribute__((aligned(4096)));
     ehci_intr_t interrupts[EHCI_MAX_INTR_SLOTS];
 } ehci_dma_t;
 
@@ -140,8 +140,10 @@ static void ehci_qtd_init(ehci_controller_t* c, ehci_qtd_t* qtd,
         uint32_t first = ehci_phys(c, buffer);
         uint32_t last = first + (uint32_t)length - 1u;
         qtd->buffer[0] = first;
-        if ((first & 0xFFFFF000u) != (last & 0xFFFFF000u)) {
-            qtd->buffer[1] = last & 0xFFFFF000u;
+        uint32_t page = (first & 0xFFFFF000u) + 0x1000u;
+        uint32_t last_page = last & 0xFFFFF000u;
+        for (int idx = 1; idx < 5 && page <= last_page; idx++, page += 0x1000u) {
+            qtd->buffer[idx] = page;
         }
     }
 }

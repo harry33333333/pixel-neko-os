@@ -4,24 +4,29 @@
 #include <stdbool.h>
 #include "audio.h"
 #include "cdda_dec.h"
+#include "cpu.h"
 #include "driver.h"
 #include "flac_dec.h"
 #include "log.h"
 #include "mp3_dec.h"
 #include "pdv.h"
+#include "spinlock.h"
 #include "wav_dec.h"
 #include "string.h"
 
-#define DEC_NONE 0
-#define DEC_WAV  1
-#define DEC_FLAC 2
-#define DEC_MP3  3
-#define DEC_CDDA 4
+#define DEC_NONE       0
+#define DEC_WAV        1
+#define DEC_FLAC       2
+#define DEC_MP3        3
+#define DEC_CDDA       4
+#define DEC_EXT_STREAM 5
 
 #define PCM_QUEUE_SIZE          1048576
 #define PCM_QUEUE_SAMPLES       (PCM_QUEUE_SIZE / sizeof(short))
 #define AUDIO_DMA_HALF_BYTES    32768
 #define AUDIO_DMA_BUFFER_BYTES  65536
+#define AUDIO_DMA_TOTAL_FRAMES  (AUDIO_DMA_BUFFER_BYTES / 4U)
+#define AUDIO_LOWLAT_HALF_BYTES 8192
 #define AUDIO_CACHE_TARGET_BYTES (PCM_QUEUE_SIZE - 131072U)
 
 #define MAX_PDV_AUDIO_DRIVERS 8
@@ -95,21 +100,38 @@ static volatile unsigned int g_queue_read_idx = 0;
 static volatile unsigned int g_queue_write_idx = 0;
 static volatile unsigned int g_queue_bytes = 0;
 
-static volatile unsigned int g_total_frames_played = 0;
+static volatile uint64_t g_total_frames_played = 0;
+static volatile uint64_t g_submitted_audio_frames = 0;
+static volatile uint64_t g_dac_frames_played = 0;
+static volatile unsigned int g_last_dma_frame_pos = 0;
+static volatile uint32_t g_stream_underruns = 0;
+static volatile int g_ext_low_latency = 0;
 static volatile int g_eof_reached = 0;
 static volatile int g_eof_stop_pending = 0;
 static volatile int g_audio_dma_servicing = 0;
 static volatile int g_audio_poll_active = 0;
+static spinlock_t g_audio_lock = SPINLOCK_INIT;
 
 static inline uint64_t audio_irq_save(void) {
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
-    return flags;
+    return spin_lock_irqsave(&g_audio_lock);
 }
 
 static inline void audio_irq_restore(uint64_t flags) {
-    if (flags & (1ULL << 9)) {
-        __asm__ volatile("sti" ::: "memory");
+    spin_unlock_irqrestore(&g_audio_lock, flags);
+}
+
+static void audio_update_dac_clock_locked(void) {
+    if (!g_active_driver || !g_active_driver->is_present()) return;
+    unsigned int cur_pos = g_active_driver->get_dma_frame_pos() % AUDIO_DMA_TOTAL_FRAMES;
+    unsigned int delta = (cur_pos >= g_last_dma_frame_pos)
+                             ? (cur_pos - g_last_dma_frame_pos)
+                             : (AUDIO_DMA_TOTAL_FRAMES - g_last_dma_frame_pos + cur_pos);
+    g_last_dma_frame_pos = cur_pos;
+    if (g_audio_state == AUDIO_STATE_PLAYING && delta > 0) {
+        g_dac_frames_played += (uint64_t)delta;
+        if (g_dac_frames_played > g_submitted_audio_frames) {
+            g_dac_frames_played = g_submitted_audio_frames;
+        }
     }
 }
 
@@ -119,8 +141,10 @@ static int audio_consume_queue_half(int half_idx, short* scratch_buf) {
     }
 
     uint64_t irq_flags = audio_irq_save();
+    audio_update_dac_clock_locked();
     unsigned int avail_bytes = g_queue_bytes;
     int eof = g_eof_reached;
+    int is_ext = (g_active_dec == DEC_EXT_STREAM);
 
     if (avail_bytes >= AUDIO_DMA_HALF_BYTES) {
         unsigned int samples_needed = AUDIO_DMA_HALF_BYTES / sizeof(short);
@@ -134,6 +158,7 @@ static int audio_consume_queue_half(int half_idx, short* scratch_buf) {
         g_queue_read_idx = (g_queue_read_idx + samples_needed) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes -= AUDIO_DMA_HALF_BYTES;
         g_total_frames_played += (AUDIO_DMA_HALF_BYTES / 4);
+        g_submitted_audio_frames += (AUDIO_DMA_HALF_BYTES / 4);
         audio_irq_restore(irq_flags);
 
         g_active_driver->write_half(half_idx, scratch_buf, AUDIO_DMA_HALF_BYTES);
@@ -157,15 +182,19 @@ static int audio_consume_queue_half(int half_idx, short* scratch_buf) {
         g_queue_read_idx = (g_queue_read_idx + avail_samples) & (PCM_QUEUE_SAMPLES - 1);
         g_queue_bytes = 0;
         g_total_frames_played += (avail_samples / 2);
+        g_submitted_audio_frames += (avail_samples / 2);
         audio_irq_restore(irq_flags);
 
         g_active_driver->write_half(half_idx, scratch_buf, AUDIO_DMA_HALF_BYTES);
         return 1;
     }
 
+    if (is_ext) {
+        g_stream_underruns++;
+    }
     audio_irq_restore(irq_flags);
     g_active_driver->silence_half(half_idx);
-    return eof ? -1 : 0;
+    return (!is_ext && eof) ? -1 : 0;
 }
 
 static unsigned char g_spectrum_bands[10] = {0};
@@ -236,6 +265,9 @@ void audio_init(void) {
     g_queue_write_idx = 0;
     g_queue_bytes = 0;
     g_total_frames_played = 0;
+    g_submitted_audio_frames = 0;
+    g_dac_frames_played = 0;
+    g_last_dma_frame_pos = 0;
     g_eof_reached = 0;
     if (g_master_volume < 0) g_master_volume = 0;
     if (g_master_volume > 100) g_master_volume = 100;
@@ -459,6 +491,9 @@ int audio_play_file(const char* filepath) {
     g_audio_info.title[0] = '\0';
     g_audio_info.current_time_s = 0;
     g_total_frames_played = 0;
+    g_submitted_audio_frames = 0;
+    g_dac_frames_played = 0;
+    g_last_dma_frame_pos = 0;
     g_eof_reached = 0;
 
     if (ext[0] == 'w' && ext[1] == 'a' && ext[2] == 'v') {
@@ -540,6 +575,9 @@ int audio_play_file(const char* filepath) {
 
     audio_flush_queue();
     g_total_frames_played = 0;
+    g_submitted_audio_frames = 0;
+    g_dac_frames_played = 0;
+    g_last_dma_frame_pos = 0;
     g_eof_reached = 0;
     g_eof_stop_pending = 0;
 
@@ -612,6 +650,9 @@ int audio_play_file(const char* filepath) {
     }
 
     g_total_frames_played = 0;
+    g_submitted_audio_frames = (AUDIO_DMA_HALF_BYTES / 4U) * 2U;
+    g_dac_frames_played = 0;
+    g_last_dma_frame_pos = 0;
 
     /* Pre-decode a short cushion (2 DMA halves) so track open returns promptly
      * on slow optical/removable drives; audio_poll() tops up to target cache. */
@@ -692,12 +733,136 @@ void audio_stop(void) {
 
     g_active_dec = DEC_NONE;
     audio_flush_queue();
-    g_total_frames_played = 0;
-    g_eof_reached = 0;
-    g_eof_stop_pending = 0;
+    {
+        uint64_t f = audio_irq_save();
+        g_total_frames_played = 0;
+        g_submitted_audio_frames = 0;
+        g_dac_frames_played = 0;
+        g_last_dma_frame_pos = 0;
+        g_stream_underruns = 0;
+        g_ext_low_latency = 0;
+        g_eof_reached = 0;
+        g_eof_stop_pending = 0;
+        audio_irq_restore(f);
+    }
     for (int i = 0; i < 10; i++) g_spectrum_bands[i] = 0;
     g_vu_l = 0;
     g_vu_r = 0;
+}
+
+int audio_stream_open(int sample_rate, int channels, int bit_depth, int low_latency) {
+    enable_fpu();
+    audio_stop();
+
+    if (!audio_has_hardware() || !g_active_driver) {
+        return -2;
+    }
+
+    if (sample_rate <= 0) sample_rate = 48000;
+    if (channels < 1 || channels > 2) channels = 2;
+    if (bit_depth != 8 && bit_depth != 16 && bit_depth != 24 && bit_depth != 32) {
+        bit_depth = 16;
+    }
+
+    int target_rate = 48000;
+    if ((sample_rate % 44100 == 0) || sample_rate == 22050 || sample_rate == 11025) {
+        target_rate = 44100;
+    }
+
+    memset(&g_audio_info, 0, sizeof(g_audio_info));
+    g_audio_info.sample_rate = sample_rate;
+    g_audio_info.channels = channels;
+    g_audio_info.bit_depth = bit_depth;
+    g_audio_info.is_float = 0;
+    g_audio_info.target_rate = target_rate;
+    g_audio_info.bitrate_kbps = (sample_rate * channels * bit_depth) / 1000;
+    my_strcpy(g_audio_info.title, "Audio Stream");
+
+    g_active_dec = DEC_EXT_STREAM;
+    g_ext_low_latency = low_latency ? 1 : 0;
+
+    g_active_driver->set_format(target_rate, 16, 1);
+    audio_flush_queue();
+    g_active_driver->silence_half(0);
+    g_active_driver->silence_half(1);
+
+    uint64_t flags = audio_irq_save();
+    g_total_frames_played = 0;
+    g_submitted_audio_frames = 0;
+    g_dac_frames_played = 0;
+    g_stream_underruns = 0;
+    g_eof_reached = 0;
+    g_eof_stop_pending = 0;
+    g_last_dma_frame_pos = 0;
+    audio_irq_restore(flags);
+
+    g_audio_state = AUDIO_STATE_PLAYING;
+    int volume = audio_requested_volume();
+    g_active_driver->set_volume(volume, volume);
+    g_active_driver->start_dma();
+
+    flags = audio_irq_save();
+    g_last_dma_frame_pos = g_active_driver->get_dma_frame_pos() % AUDIO_DMA_TOTAL_FRAMES;
+    audio_irq_restore(flags);
+
+    log_printf("[AUD ] External PCM stream opened: %d Hz %dch %dbit -> HW %d Hz%s\n",
+               sample_rate, channels, bit_depth, target_rate,
+               g_ext_low_latency ? " (low-latency)" : "");
+    return 0;
+}
+
+void audio_stream_flush(void) {
+    uint64_t flags = audio_irq_save();
+    g_queue_read_idx = 0;
+    g_queue_write_idx = 0;
+    g_queue_bytes = 0;
+    g_total_frames_played = 0;
+    g_submitted_audio_frames = 0;
+    g_dac_frames_played = 0;
+    g_stream_underruns = 0;
+    g_eof_reached = 0;
+    g_eof_stop_pending = 0;
+    audio_irq_restore(flags);
+
+    if (g_active_driver && g_active_driver->is_present()) {
+        g_active_driver->silence_half(0);
+        g_active_driver->silence_half(1);
+        flags = audio_irq_save();
+        g_last_dma_frame_pos = g_active_driver->get_dma_frame_pos() % AUDIO_DMA_TOTAL_FRAMES;
+        audio_irq_restore(flags);
+    }
+    g_audio_info.current_time_s = 0;
+}
+
+int audio_get_timing(audio_timing_t* out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    uint64_t flags = audio_irq_save();
+    audio_update_dac_clock_locked();
+    uint64_t now_ns = cpu_monotonic_ns();
+    uint32_t rate = (g_audio_info.target_rate > 0)
+                        ? (uint32_t)g_audio_info.target_rate
+                        : 48000U;
+    uint64_t played = g_dac_frames_played;
+    uint64_t submitted = g_submitted_audio_frames;
+    uint32_t qbytes = g_queue_bytes;
+    uint32_t underruns = g_stream_underruns;
+    uint32_t state = (uint32_t)g_audio_state;
+    audio_irq_restore(flags);
+
+    uint64_t dma_rem_frames = (submitted > played) ? (submitted - played) : 0ULL;
+    out->played_frames = played;
+    out->played_us = (played * 1000000ULL) / (uint64_t)rate;
+    out->monotonic_ns = now_ns;
+    out->sample_rate = rate;
+    out->queued_bytes = qbytes;
+    out->queued_us = (uint32_t)(((uint64_t)(qbytes / 4U) * 1000000ULL) / (uint64_t)rate);
+    out->dma_latency_us = (uint32_t)((dma_rem_frames * 1000000ULL) / (uint64_t)rate);
+    out->queue_capacity = PCM_QUEUE_SIZE;
+    out->underrun_count = underruns;
+    out->state = state;
+    return 0;
 }
 
 void audio_seek_sec(unsigned int seconds) {
@@ -907,40 +1072,42 @@ void audio_poll(void) {
 
     enable_fpu();
 
-    int dec_count = 0;
-    int max_dec = 0;
-    if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 8U)) {
-        max_dec = 16;
-    } else if (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) {
-        max_dec = 8;
-    }
-    static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
-    while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
-           dec_count < max_dec) {
-        dec_count++;
-        int samples_read = 0;
-
-        if (g_active_dec == DEC_WAV) {
-            samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
-        } else if (g_active_dec == DEC_FLAC) {
-            samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
-        } else if (g_active_dec == DEC_MP3) {
-            samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
-        } else if (g_active_dec == DEC_CDDA) {
-            samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
+    if (g_active_dec != DEC_EXT_STREAM) {
+        int dec_count = 0;
+        int max_dec = 0;
+        if (g_queue_bytes < (AUDIO_DMA_HALF_BYTES * 8U)) {
+            max_dec = 16;
+        } else if (g_queue_bytes < AUDIO_CACHE_TARGET_BYTES) {
+            max_dec = 8;
         }
+        static unsigned char dec_temp_buf[16384] __attribute__((aligned(16)));
+        while (!g_eof_reached && g_queue_bytes < (PCM_QUEUE_SIZE - 32768) &&
+               dec_count < max_dec) {
+            dec_count++;
+            int samples_read = 0;
 
-        if (samples_read > 0) {
-            audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
-                               g_audio_info.sample_rate,
-                               g_audio_info.channels,
-                               g_audio_info.bit_depth,
-                               g_audio_info.is_float);
-        } else if (samples_read < 0) {
-            g_eof_reached = 1;
-            break;
-        } else {
-            break;
+            if (g_active_dec == DEC_WAV) {
+                samples_read = wav_dec_read_samples(dec_temp_buf, 2048);
+            } else if (g_active_dec == DEC_FLAC) {
+                samples_read = flac_dec_read_samples(dec_temp_buf, 4096);
+            } else if (g_active_dec == DEC_MP3) {
+                samples_read = mp3_dec_read_samples(dec_temp_buf, 1152);
+            } else if (g_active_dec == DEC_CDDA) {
+                samples_read = cdda_dec_read_samples(dec_temp_buf, 2048);
+            }
+
+            if (samples_read > 0) {
+                audio_feed_raw_pcm(dec_temp_buf, (unsigned int)samples_read,
+                                   g_audio_info.sample_rate,
+                                   g_audio_info.channels,
+                                   g_audio_info.bit_depth,
+                                   g_audio_info.is_float);
+            } else if (samples_read < 0) {
+                g_eof_reached = 1;
+                break;
+            } else {
+                break;
+            }
         }
     }
 

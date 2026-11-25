@@ -913,8 +913,41 @@ int pxe_kern_audio_cmd(int cmd, int arg, const char* path, void* io_buf) {
                                         ch->src_bits, ch->src_float);
             if (rc >= 0) {
                 g_audio_owner_pid = process_current_pid();
+                audio_service_dma_irq();
             }
             return rc;
+        }
+        case PXE_AUD_STREAM_OPEN: {
+            const pxe_audio_stream_cfg_t* cfg = (const pxe_audio_stream_cfg_t*)io_buf;
+            if (!cfg) return -1;
+            int rc = audio_stream_open(cfg->sample_rate, cfg->channels,
+                                       cfg->bit_depth, cfg->low_latency);
+            if (rc >= 0) {
+                g_audio_owner_pid = process_current_pid();
+            }
+            return rc;
+        }
+        case PXE_AUD_STREAM_FLUSH:
+            audio_stream_flush();
+            return 0;
+        case PXE_AUD_GET_TIMING: {
+            pxe_audio_timing_t* out = (pxe_audio_timing_t*)io_buf;
+            if (!out) return -1;
+            audio_timing_t kt;
+            int rc = audio_get_timing(&kt);
+            if (rc < 0) return rc;
+            memset(out, 0, sizeof(*out));
+            out->played_frames  = kt.played_frames;
+            out->played_us      = kt.played_us;
+            out->monotonic_ns   = kt.monotonic_ns;
+            out->sample_rate    = kt.sample_rate;
+            out->queued_bytes   = kt.queued_bytes;
+            out->queued_us      = kt.queued_us;
+            out->dma_latency_us = kt.dma_latency_us;
+            out->queue_capacity = kt.queue_capacity;
+            out->underrun_count = kt.underrun_count;
+            out->state          = kt.state;
+            return 0;
         }
         default:
             return -1;

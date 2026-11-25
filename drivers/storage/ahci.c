@@ -70,7 +70,7 @@ typedef struct {
     uint8_t command_list[1024] __attribute__((aligned(1024)));
     uint8_t received_fis[256] __attribute__((aligned(256)));
     uint8_t command_table[256] __attribute__((aligned(128)));
-    uint8_t data[65536] __attribute__((aligned(128)));
+    uint8_t data[262144] __attribute__((aligned(4096)));
 } ahci_port_dma_t;
 
 typedef struct ahci_controller {
@@ -190,8 +190,9 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
     build_fis(port, command, lba, count);
     if (packet) {
         uint8_t* fis = port->memory->command_table;
-        fis[5] = (uint8_t)bytes;
-        fis[6] = (uint8_t)(bytes >> 8);
+        uint16_t fis_bc = (bytes > 0xF000u) ? 0xF000u : (uint16_t)bytes;
+        fis[5] = (uint8_t)fis_bc;
+        fis[6] = (uint8_t)(fis_bc >> 8);
         memcpy(port->memory->command_table + 0x40, packet, 16);
     }
     if (write_data && bytes) {
@@ -222,7 +223,7 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
     dma_sync_for_device(&port->dma);
     port_write(port, AHCI_PX_CI, 1);
     int result = -1;
-    for (uint32_t elapsed = 0; elapsed < 2000; elapsed++) {
+    for (uint32_t elapsed = 0; elapsed < 4000; elapsed++) {
         uint32_t ci = port_register(port, AHCI_PX_CI);
         uint32_t interrupt = port_register(port, AHCI_PX_IS);
         if (!(ci & 1u) || (interrupt & ((1u << 30) | (1u << 29) |
@@ -402,6 +403,7 @@ static int ahci_read_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     uint8_t* output = (uint8_t*)buffer;
     uint32_t max_batch = (uint32_t)(sizeof(port->memory->data) /
                                     port->sector_size);
+    if (port->packet && max_batch > 64u) max_batch = 64u; /* 128 KiB per ATAPI READ(10) */
     while (count) {
         uint32_t batch = count > max_batch ? max_batch : count;
         int result = port->packet
@@ -428,6 +430,7 @@ static int ahci_write_blocks(blkdev_t* block, uint64_t lba, uint32_t count,
     const uint8_t* input = (const uint8_t*)buffer;
     uint32_t max_batch = (uint32_t)(sizeof(port->memory->data) /
                                     port->sector_size);
+    if (port->packet && max_batch > 64u) max_batch = 64u; /* 128 KiB per ATAPI READ(10) */
     while (count) {
         uint32_t batch = count > max_batch ? max_batch : count;
         if (ahci_issue(port, AHCI_CMD_WRITE_DMA_EXT, lba, batch, input, NULL,

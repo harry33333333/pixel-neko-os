@@ -70,6 +70,24 @@ int audio_feed_raw_pcm(const void* samples, unsigned int sample_count, int src_r
 // Clear audio buffer (e.g. on Seek / Stop)
 void audio_flush_queue(void);
 
+// External PCM Streaming & Microsecond Audio Master Clock (for Video / A/V Sync)
+typedef struct {
+    uint64_t played_frames;
+    uint64_t played_us;
+    uint64_t monotonic_ns;
+    uint32_t sample_rate;
+    uint32_t queued_bytes;
+    uint32_t queued_us;
+    uint32_t dma_latency_us;
+    uint32_t queue_capacity;
+    uint32_t underrun_count;
+    uint32_t state;
+} audio_timing_t;
+
+int  audio_stream_open(int sample_rate, int channels, int bit_depth, int low_latency);
+void audio_stream_flush(void);
+int  audio_get_timing(audio_timing_t* out);
+
 // Audio-Visual Spectrum (10 bands, values 0..15) & VU Meter (values 0..255)
 void audio_get_spectrum(unsigned char bands[10]);
 void audio_get_vu(unsigned char* left_vu, unsigned char* right_vu);

@@ -1,4 +1,5 @@
 #include "usb_storage.h"
+#include "audio.h"
 #include "blkdev.h"
 #include "log.h"
 #include "string.h"
@@ -6,7 +7,9 @@
 #define USB_BOT_MAX_DEVICES 4
 #define USB_BOT_CBW_SIGNATURE 0x43425355u
 #define USB_BOT_CSW_SIGNATURE 0x53425355u
-#define USB_BOT_DATA_CHUNK 4096u
+#define USB_BOT_DATA_CHUNK_XHCI 65536u
+#define USB_BOT_DATA_CHUNK_EHCI 16384u
+#define USB_BOT_DATA_CHUNK_LEGACY 1024u
 #define USB_BOT_CMD_OK             0
 #define USB_BOT_CMD_ERROR         -1
 #define USB_BOT_CMD_CHECK_COND    -2
@@ -26,7 +29,7 @@ typedef struct {
     uint32_t sector_size;
     uint64_t sector_count;
     blkdev_t* block;
-    uint8_t buffer[32768] __attribute__((aligned(16)));
+    uint8_t buffer[131072] __attribute__((aligned(16)));
 } usb_bot_device_t;
 
 typedef struct {
@@ -74,15 +77,22 @@ static int bot_bulk(usb_bot_device_t* bot, usb_endpoint_t* endpoint,
         return -1;
     }
     uint8_t* bytes = (uint8_t*)data;
+    uint32_t max_chunk = USB_BOT_DATA_CHUNK_LEGACY;
+    if (bot->device->hci->kind == USB_HCI_KIND_XHCI) {
+        max_chunk = USB_BOT_DATA_CHUNK_XHCI;
+    } else if (bot->device->hci->kind == USB_HCI_KIND_EHCI) {
+        max_chunk = USB_BOT_DATA_CHUNK_EHCI;
+    }
     uint32_t transferred = 0;
     while (transferred < length) {
         uint32_t chunk = length - transferred;
-        if (chunk > USB_BOT_DATA_CHUNK) chunk = USB_BOT_DATA_CHUNK;
+        if (chunk > max_chunk) chunk = max_chunk;
         int result = bot->device->hci->bulk(
             bot->device->hci, bot->device, endpoint, bytes + transferred,
             (int)chunk, direction);
         if (result < 0) return -1;
         transferred += (uint32_t)result;
+        audio_service_dma_irq();
         if ((uint32_t)result < chunk) break;
     }
     return (int)transferred;

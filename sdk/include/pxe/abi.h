@@ -303,6 +303,9 @@ typedef struct {
 #define PXE_AUD_TOGGLE_MUTE      7
 #define PXE_AUD_GET_STATUS       8
 #define PXE_AUD_FEED_PCM         9
+#define PXE_AUD_STREAM_OPEN      10
+#define PXE_AUD_STREAM_FLUSH     11
+#define PXE_AUD_GET_TIMING       12
 
 typedef struct {
     int32_t  has_hardware;
@@ -330,6 +333,27 @@ typedef struct {
     int32_t      src_bits;
     int32_t      src_float;
 } pxe_pcm_chunk_t;
+
+typedef struct {
+    int32_t      sample_rate;    /* Requested rate (e.g. 44100 or 48000) */
+    int32_t      channels;       /* 1 (Mono) or 2 (Stereo) */
+    int32_t      bit_depth;      /* 8, 16, 24, or 32 */
+    int32_t      low_latency;    /* 1 = enable low-latency streaming */
+} pxe_audio_stream_cfg_t;
+
+typedef struct {
+    uint64_t     played_frames;   /* Exact stereo frames played by DAC since open/flush */
+    uint64_t     played_us;       /* Microsecond Audio Master Clock (DAC position) */
+    uint64_t     monotonic_ns;    /* Kernel monotonic_ns sampled simultaneously */
+    uint32_t     sample_rate;     /* Active hardware DAC sample rate (44100 or 48000) */
+    uint32_t     queued_bytes;    /* Bytes currently buffered in kernel PCM ring */
+    uint32_t     queued_us;       /* Microseconds currently buffered in kernel PCM ring */
+    uint32_t     dma_latency_us;  /* Microseconds currently queued in hardware DMA ring */
+    uint32_t     queue_capacity;  /* Total kernel PCM ring capacity in bytes */
+    uint32_t     underrun_count;  /* Number of DMA half underruns since open/flush */
+    uint32_t     state;           /* 0=Stopped, 1=Playing, 2=Paused */
+    uint32_t     reserved;
+} pxe_audio_timing_t;
 
 #endif /* _PXE_ABI_H */
 

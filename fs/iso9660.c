@@ -325,10 +325,10 @@ int iso_read_extent(iso_fs_t* fs, uint64_t extent_lba, uint64_t file_size,
         uint64_t target_lba = extent_lba + sec_idx;
         unsigned int rem = size - bytes_read;
 
-        /* Batch contiguous full-sector reads directly into caller buffer */
+        /* Batch contiguous full-sector reads directly into caller buffer (up to 256 KiB) */
         if (sec_off == 0 && rem >= 2048u) {
             uint32_t sectors_want = rem / 2048u;
-            if (sectors_want > 16u) sectors_want = 16u;
+            if (sectors_want > 128u) sectors_want = 128u;
             if (iso_read_sectors_multi(fs->dev, target_lba, sectors_want,
                                        buf + bytes_read) != 0) {
                 return bytes_read > 0 ? (int)bytes_read : -1;

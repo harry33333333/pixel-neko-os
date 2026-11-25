@@ -78,6 +78,7 @@ typedef struct {
     char           path[256];
     uint64_t       size;
     uint64_t       current_offset;
+    uint64_t       raw_offset;
     int            is_open;
     int            is_write;
     int            fs_kind;
@@ -89,6 +90,10 @@ typedef struct {
     unsigned int   cached_sec_lba;
     int            has_cached_sec;
     unsigned char  sec_cache[2048];
+    uint8_t*       ra_buf;
+    uint32_t       ra_cap;
+    uint32_t       ra_len;
+    uint64_t       ra_start;
 } vfs_stream_t;
 
 int  vfs_stream_open(const char* path, vfs_stream_t* stream);

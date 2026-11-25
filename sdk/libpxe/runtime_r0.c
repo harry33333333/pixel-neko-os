@@ -535,6 +535,27 @@ int pxe_audio_feed_pcm(const void* samples, uint32_t sample_count,
     return __pxe_r0_api->audio_cmd(PXE_AUD_FEED_PCM, 0, (const char*)0, &chunk);
 }
 
+int pxe_audio_stream_open(int sample_rate, int channels, int bit_depth, int low_latency) {
+    if (!__pxe_r0_api || !__pxe_r0_api->audio_cmd) return -1;
+    pxe_audio_stream_cfg_t cfg;
+    cfg.sample_rate = sample_rate;
+    cfg.channels    = channels;
+    cfg.bit_depth   = bit_depth;
+    cfg.low_latency = low_latency;
+    return __pxe_r0_api->audio_cmd(PXE_AUD_STREAM_OPEN, 0, (const char*)0, &cfg);
+}
+
+void pxe_audio_stream_flush(void) {
+    if (__pxe_r0_api && __pxe_r0_api->audio_cmd) {
+        (void)__pxe_r0_api->audio_cmd(PXE_AUD_STREAM_FLUSH, 0, (const char*)0, (void*)0);
+    }
+}
+
+int pxe_audio_get_timing(pxe_audio_timing_t* out_timing) {
+    return (__pxe_r0_api && __pxe_r0_api->audio_cmd)
+        ? __pxe_r0_api->audio_cmd(PXE_AUD_GET_TIMING, 0, (const char*)0, out_timing) : -1;
+}
+
 /* =========================================================================
  * Privileged Ring 0 Introspection & Hardware Wrappers (<pxe/ring0.h>)
  * ========================================================================= */
