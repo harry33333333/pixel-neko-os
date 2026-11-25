@@ -100,6 +100,7 @@ typedef struct {
 
     /* System info */
     uint32_t          free_ram_mb;
+    uint32_t          logical_cpus;
     int               has_audio_hw;
     int               is_cdrom;
     int               is_usb;
@@ -581,14 +582,26 @@ static void* demux_audio_thread_fn(void* arg) {
 
 static void* video_decode_thread_fn(void* arg) {
     vplayer_t* vp = (vplayer_t*)arg;
-    /* Let OpenH264 use SMP threads (up to 4 threads, leaving CPU 0 free for compositor) */
-    vp_h264_dec_t* vdec = vp_h264_create(4);
+    /* Scale OpenH264 worker threads to online SMP cores (leaving CPU 0 for compositor) */
+    int dec_threads = 1;
+    if (vp->logical_cpus > 1u) {
+        dec_threads = (int)vp->logical_cpus - 1;
+        if (dec_threads < 2) dec_threads = 2;
+        if (dec_threads > 6) dec_threads = 6;
+    }
+    vp_h264_dec_t* vdec = vp_h264_create(dec_threads);
     if (!vdec) {
         pxe_mutex_lock(&vp->fring.mtx);
         vp->fring.eof = 1;
         pxe_cond_broadcast(&vp->fring.not_empty);
         pxe_mutex_unlock(&vp->fring.mtx);
         return NULL;
+    }
+    {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "[vplayer] OpenH264 decoder active: threads=%d (online_cpus=%u)",
+                 dec_threads, (unsigned)vp->logical_cpus);
+        pxe_debug_log(dbg);
     }
 
     size_t annexb_cap = 512u * 1024u;
@@ -787,6 +800,7 @@ static void vp_open_file(vplayer_t* vp, const char* path) {
     memset(&info, 0, sizeof(info));
     if (pxe_sys_get_basic_info(&info) == 0) {
         vp->free_ram_mb = info.free_ram_mb;
+        vp->logical_cpus = info.logical_cpus ? (uint32_t)info.logical_cpus : 1u;
         vp->has_audio_hw = info.has_audio_hw;
         vp->zh = (info.ui_lang != PXE_LANG_EN);
         vp->volume = info.volume;
@@ -880,6 +894,14 @@ static void vp_open_file(vplayer_t* vp, const char* path) {
         pxe_thread_create_ex(&vp->t_demux, demux_audio_thread_fn, vp, 256u * 1024u, NULL) == 0 &&
         pxe_thread_create_ex(&vp->t_vdec, video_decode_thread_fn, vp, 512u * 1024u, NULL) == 0) {
         vp->threads_active = 1;
+        char dbg[160];
+        snprintf(dbg, sizeof(dbg),
+                 "[vplayer] SMP pipeline started (cpus=%u): io=%llu demux=%llu vdec=%llu",
+                 (unsigned)vp->logical_cpus,
+                 (unsigned long long)vp->t_io,
+                 (unsigned long long)vp->t_demux,
+                 (unsigned long long)vp->t_vdec);
+        pxe_debug_log(dbg);
     } else {
         vp_stop_pipeline(vp);
         vp_set_error_modal(vp,

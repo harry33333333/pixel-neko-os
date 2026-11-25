@@ -224,7 +224,16 @@ unsigned int sleep(unsigned int seconds) {
 }
 
 static int detect_logical_cpus(void) {
-    /* Query CPUID leaf 0xB / 0x1 to estimate logical CPU count safely in Ring 3 */
+    /* Prefer exact online SMP CPU count reported by the kernel */
+    pxe_basic_sysinfo_t si;
+    memset(&si, 0, sizeof(si));
+    if (pxe_sys_get_basic_info(&si) == 0 && si.logical_cpus > 0) {
+        int ncpu = (int)si.logical_cpus;
+        if (ncpu > 16) ncpu = 16; /* OpenH264 caps decoder threads at 16 */
+        return ncpu;
+    }
+
+    /* Fallback: query CPUID leaf 0xB / 0x1 in Ring 3 */
     uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
     __asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0));
     uint32_t max_leaf = eax;
@@ -241,7 +250,7 @@ static int detect_logical_cpus(void) {
         }
     }
     if (ncpu < 1) ncpu = 1;
-    if (ncpu > 16) ncpu = 16; /* OpenH264 caps decoder threads at 16 */
+    if (ncpu > 16) ncpu = 16;
     return ncpu;
 }
 

@@ -27,6 +27,8 @@ static volatile uint64_t g_tick_count_1khz = 0;
 static uint64_t g_boot_switch_logs = 0;
 static volatile bool g_scheduler_ready = false;
 static volatile bool g_idle_reported = false;
+static uint32_t g_ipi_rr_cursor = 1;
+static uint8_t g_ap_active_logged[SMP_MAX_CPUS];
 extern bool g_acpi_shutdown_test_requested;
 
 void scheduler_init(void) {
@@ -39,10 +41,24 @@ void scheduler_init(void) {
     g_boot_switch_logs = 0;
     g_scheduler_ready = false;
     g_idle_reported = false;
+    g_ipi_rr_cursor = 1;
+    for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
+        g_ap_active_logged[i] = 0;
+    }
 }
 
 bool scheduler_is_ready(void) {
     return __atomic_load_n(&g_scheduler_ready, __ATOMIC_ACQUIRE);
+}
+
+static bool any_ap_idle_locked(void) {
+    uint32_t total = smp_get_cpu_count();
+    for (uint32_t i = 1; i < total && i < SMP_MAX_CPUS; i++) {
+        if (!g_per_cpus[i].online) continue;
+        thread_t* cur = (thread_t*)g_per_cpus[i].current_thread;
+        if (!cur || cur->is_idle) return true;
+    }
+    return false;
 }
 
 static void send_resched_ipi_if_idle_locked(int32_t target_pin) {
@@ -50,13 +66,54 @@ static void send_resched_ipi_if_idle_locked(int32_t target_pin) {
     if (total <= 1 || !g_scheduler_ready) return;
 
     uint32_t my_id = this_cpu_id();
-    for (uint32_t i = 0; i < total && i < SMP_MAX_CPUS; i++) {
-        if (i == my_id || !g_per_cpus[i].online) continue;
-        if (target_pin >= 0 && (int32_t)i != target_pin) continue;
-        thread_t* cur = (thread_t*)g_per_cpus[i].current_thread;
-        if (!cur || cur->is_idle) {
-            lapic_send_ipi(g_per_cpus[i].lapic_id, VEC_IPI_RESCHED);
+
+    /* Pinned thread: target that specific CPU directly */
+    if (target_pin >= 0) {
+        uint32_t cid = (uint32_t)target_pin;
+        if (cid >= total || cid >= SMP_MAX_CPUS || cid == my_id || !g_per_cpus[cid].online) {
             return;
+        }
+        thread_t* cur = (thread_t*)g_per_cpus[cid].current_thread;
+        bool wake_comp = (cid == 0 && cur && !cur->is_compositor);
+        if (!cur || cur->is_idle || wake_comp) {
+            g_per_cpus[cid].resched_ipi_pending = 1;
+            lapic_send_ipi(g_per_cpus[cid].lapic_id, VEC_IPI_RESCHED);
+        }
+        return;
+    }
+
+    /* Unpinned thread: round-robin across AP cores (1..total-1) so CPU 0 stays
+     * free for the compositor and multiple newly-woken threads spread across cores. */
+    uint32_t ap_count = total - 1;
+    if (ap_count > SMP_MAX_CPUS - 1) ap_count = SMP_MAX_CPUS - 1;
+    if (ap_count > 0) {
+        if (g_ipi_rr_cursor < 1 || g_ipi_rr_cursor >= 1 + ap_count) {
+            g_ipi_rr_cursor = 1;
+        }
+        /* Pass 1: prefer an idle AP without an already-in-flight resched IPI */
+        for (uint32_t step = 0; step < ap_count; step++) {
+            uint32_t cid = 1 + ((g_ipi_rr_cursor - 1 + step) % ap_count);
+            if (cid == my_id || !g_per_cpus[cid].online) continue;
+            if (g_per_cpus[cid].resched_ipi_pending) continue;
+            thread_t* cur = (thread_t*)g_per_cpus[cid].current_thread;
+            if (!cur || cur->is_idle) {
+                g_per_cpus[cid].resched_ipi_pending = 1;
+                g_ipi_rr_cursor = 1 + ((cid) % ap_count);
+                lapic_send_ipi(g_per_cpus[cid].lapic_id, VEC_IPI_RESCHED);
+                return;
+            }
+        }
+        /* Pass 2: fallback to any idle AP even if an IPI was already sent */
+        for (uint32_t step = 0; step < ap_count; step++) {
+            uint32_t cid = 1 + ((g_ipi_rr_cursor - 1 + step) % ap_count);
+            if (cid == my_id || !g_per_cpus[cid].online) continue;
+            thread_t* cur = (thread_t*)g_per_cpus[cid].current_thread;
+            if (!cur || cur->is_idle) {
+                g_per_cpus[cid].resched_ipi_pending = 1;
+                g_ipi_rr_cursor = 1 + ((cid) % ap_count);
+                lapic_send_ipi(g_per_cpus[cid].lapic_id, VEC_IPI_RESCHED);
+                return;
+            }
         }
     }
 }
@@ -119,7 +176,22 @@ static bool thread_eligible_for_cpu(const thread_t* t, uint32_t cpu_id) {
     if (t->state != THREAD_READY) return false;
     if (t->running_cpu != -1) return false;
     if (t->pinned_cpu >= 0 && t->pinned_cpu != (int32_t)cpu_id) return false;
+    /* Keep CPU 0 dedicated to compositor & IRQs whenever any AP core is idle */
+    if (cpu_id == 0 && t->pinned_cpu < 0 &&
+        smp_get_online_cpus() > 1 && any_ap_idle_locked()) {
+        return false;
+    }
     return true;
+}
+
+static bool has_unpinned_ready_locked(void) {
+    for (thread_t* t = g_thread_list; t; t = t->next) {
+        if (!t->is_idle && t->state == THREAD_READY &&
+            t->running_cpu == -1 && t->pinned_cpu < 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool has_runnable_non_idle_locked(uint32_t cpu_id) {
@@ -163,7 +235,12 @@ static thread_t* choose_next_locked(uint32_t cpu_id, thread_t* after, bool skip_
         after->state == THREAD_READY &&
         (after->running_cpu == -1 || after->running_cpu == (int32_t)cpu_id) &&
         (after->pinned_cpu < 0 || after->pinned_cpu == (int32_t)cpu_id)) {
-        return after;
+        if (cpu_id == 0 && after->pinned_cpu < 0 &&
+            smp_get_online_cpus() > 1 && any_ap_idle_locked()) {
+            send_resched_ipi_if_idle_locked(-1);
+        } else {
+            return after;
+        }
     }
 
     thread_t* idle = (thread_t*)g_per_cpus[cpu_id].idle_thread;
@@ -192,7 +269,17 @@ static void switch_to_locked(per_cpu_t* cpu, thread_t* previous, thread_t* next)
                        previous && previous->process ? previous->process->pid : 0,
                        next->process ? next->process->pid : 0,
                        next->resume_frame ? (unsigned long long)next->resume_frame->rip : 0);
+        } else if (cpu->cpu_id > 0 && cpu->cpu_id < SMP_MAX_CPUS &&
+                   !next->is_idle && !g_ap_active_logged[cpu->cpu_id]) {
+            g_ap_active_logged[cpu->cpu_id] = 1;
+            log_printf("[SCHED] CPU%u active: running PID %u (%s) TID %llu\n",
+                       cpu->cpu_id,
+                       next->process ? next->process->pid : 0,
+                       next->process ? next->process->name : "?",
+                       (unsigned long long)next->tid);
         }
+
+        cpu->resched_ipi_pending = 0;
 
         cpu->current_process = next->process;
         cpu->current_thread  = (uint64_t)next;
@@ -538,6 +625,9 @@ trap_frame_t* scheduler_handle_irq(trap_frame_t* frame) {
         g_tick_count_1khz++;
         g_tick_count_100hz = apic_get_ticks();
         wake_sleepers_locked(g_tick_count_100hz, cpu_monotonic_ns());
+        if (smp_get_online_cpus() > 1 && any_ap_idle_locked() && has_unpinned_ready_locked()) {
+            send_resched_ipi_if_idle_locked(-1);
+        }
     }
 
     if (current->state != THREAD_RUNNING) {
@@ -631,6 +721,24 @@ trap_frame_t* scheduler_handle_ipi_resched(trap_frame_t* frame) {
     if (!g_scheduler_ready || !current) return frame;
 
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    cpu->resched_ipi_pending = 0;
+
+    if (cpu->cpu_id == 0 && !current->is_compositor && g_compositor_thread &&
+        g_compositor_thread->state == THREAD_READY &&
+        g_compositor_thread->running_cpu == -1) {
+        current->resume_frame = frame;
+        if (!current->is_idle && current->state == THREAD_RUNNING) {
+            current->state = THREAD_READY;
+            if (current->process && current->process->state != PROCESS_ZOMBIE) {
+                current->process->state = PROCESS_READY;
+            }
+        }
+        switch_to_locked(cpu, current, g_compositor_thread);
+        trap_frame_t* nf = g_compositor_thread->resume_frame;
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return nf;
+    }
+
     if (current->is_idle && has_runnable_non_idle_locked(cpu->cpu_id)) {
         current->resume_frame = frame;
         thread_t* next = choose_next_locked(cpu->cpu_id, current, true);

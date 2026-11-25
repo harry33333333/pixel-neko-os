@@ -397,16 +397,24 @@ void* realloc(void* ptr, size_t size) {
         free(ptr);
         return (void*)0;
     }
-    pxe_mblk_t* blk = ((pxe_mblk_t*)ptr) - 1;
-    if (blk->magic != PXE_HEAP_MAGIC) return (void*)0;
     size_t aligned = (size + 15u) & ~((size_t)15u);
+    heap_lock();
+    pxe_mblk_t* blk = ((pxe_mblk_t*)ptr) - 1;
+    if (blk->magic != PXE_HEAP_MAGIC) {
+        heap_unlock();
+        return (void*)0;
+    }
     if (blk->size >= aligned) {
         heap_split(blk, aligned);
+        heap_unlock();
         return ptr;
     }
+    size_t old_size = blk->size;
+    heap_unlock();
+
     void* next_ptr = malloc(aligned);
     if (!next_ptr) return (void*)0;
-    memcpy(next_ptr, ptr, blk->size);
+    memcpy(next_ptr, ptr, old_size);
     free(ptr);
     return next_ptr;
 }

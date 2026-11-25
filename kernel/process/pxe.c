@@ -337,6 +337,12 @@ int pxe_kern_get_basic_sysinfo(pxe_basic_sysinfo_t* out) {
     out->clock_show_date    = (uint8_t)(settings_get_clock_show_date() ? 1 : 0);
     out->clock_show_seconds = (uint8_t)(settings_get_clock_show_seconds() ? 1 : 0);
     out->ui_lang            = (uint8_t)(settings_is_language_zh() ? PXE_LANG_ZH : PXE_LANG_EN);
+    {
+        uint32_t online_cpus = smp_get_online_cpus();
+        if (online_cpus < 1u) online_cpus = 1u;
+        if (online_cpus > 255u) online_cpus = 255u;
+        out->logical_cpus = (uint8_t)online_cpus;
+    }
 
     static const int k_res_w[4] = { 640, 800, 1024, 1280 };
     static const int k_res_h[4] = { 480, 600,  768, 1024 };

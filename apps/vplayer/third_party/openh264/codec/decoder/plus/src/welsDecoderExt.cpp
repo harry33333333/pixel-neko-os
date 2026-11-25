@@ -494,8 +494,8 @@ long CWelsDecoder::SetOption (DECODER_OPTION eOptID, void* pOption) {
       if (threadCount > m_iCpuCount) {
         threadCount = m_iCpuCount;
       }
-      if (threadCount > 3) {
-        threadCount = 3;
+      if (threadCount > WELS_DEC_MAX_NUM_CPU) {
+        threadCount = WELS_DEC_MAX_NUM_CPU;
       }
       if (threadCount != m_iThreadCount) {
         m_iThreadCount = threadCount;

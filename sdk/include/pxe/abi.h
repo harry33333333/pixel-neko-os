@@ -207,7 +207,7 @@ typedef struct {
     uint8_t  clock_show_date;    /* 1 = show date */
     uint8_t  clock_show_seconds; /* 1 = show seconds */
     uint8_t  ui_lang;            /* PXE_LANG_ZH (1) or PXE_LANG_EN (0) */
-    uint8_t  clock_pad;
+    uint8_t  logical_cpus;       /* online logical CPU count (1..128) */
 } pxe_basic_sysinfo_t;
 
 /* Display mode & capability query ABI */

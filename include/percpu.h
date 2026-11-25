@@ -39,7 +39,7 @@ typedef struct per_cpu {
     uint8_t  core_type;        /* +92: CPU_CORE_TYPE_* */
     uint8_t  online;           /* +93: 1 if CPU is online */
     uint8_t  in_irq;           /* +94 */
-    uint8_t  _pad0;            /* +95 */
+    volatile uint8_t resched_ipi_pending; /* +95: 1 if resched IPI in flight */
 
     /* Per-CPU scheduler & TSS bindings */
     void*    idle_thread;      /* +96  */

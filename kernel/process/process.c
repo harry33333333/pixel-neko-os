@@ -187,8 +187,17 @@ thread_t* process_create_user_subthread(process_t* process, uint64_t entry,
     fpu_init_state(thread->fpu_state);
 
     __atomic_fetch_add(&process->mem_pages_used, THREAD_KERNEL_STACK_PAGES, __ATOMIC_RELAXED);
+    bool is_subthread = (process->main_thread != NULL);
     process_attach_thread(process, thread);
     process->state = PROCESS_READY;
+    if (is_subthread) {
+        log_printf("[PROC] Spawned Ring 3 subthread for %s (PID=%u, TID=%llu, threads=%u): RIP=0x%016llx RSP=0x%016llx\n",
+                   process->name, process->pid,
+                   (unsigned long long)thread->tid,
+                   process->alive_thread_count,
+                   (unsigned long long)entry,
+                   (unsigned long long)user_rsp);
+    }
     scheduler_add_thread(thread);
     return thread;
 }
