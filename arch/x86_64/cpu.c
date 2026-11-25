@@ -281,8 +281,12 @@ uint64_t cpu_monotonic_ns(void) {
     if (freq > 0) {
         uint64_t now = cpu_rdtsc();
         uint64_t delta = (now >= g_tsc_boot) ? (now - g_tsc_boot) : 0ULL;
-        __uint128_t num = (__uint128_t)delta * 1000000000ULL;
-        return (uint64_t)(num / freq);
+        uint64_t sec = delta / freq;
+        uint64_t rem = delta % freq;
+        uint64_t sub_ns = (rem <= 18446744073ULL)
+                              ? ((rem * 1000000000ULL) / freq)
+                              : ((rem * 1000000ULL) / (freq / 1000ULL));
+        return sec * 1000000000ULL + sub_ns;
     }
     return apic_get_ticks_ms() * 1000000ULL;
 }
