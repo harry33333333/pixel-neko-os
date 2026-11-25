@@ -1,6 +1,7 @@
 #ifndef _SPINLOCK_H
 #define _SPINLOCK_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -84,3 +85,4 @@ bool kmutex_trylock(kmutex_t* mtx);
 void kmutex_unlock(kmutex_t* mtx);
 
 #endif /* _SPINLOCK_H */
+
