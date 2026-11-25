@@ -79,7 +79,8 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta')
+         github.ref == 'refs/heads/beta' ||
+         github.ref == 'refs/heads/dev')
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
@@ -91,7 +92,8 @@ jobs:
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
          github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta')
+         github.ref == 'refs/heads/beta' ||
+         github.ref == 'refs/heads/dev')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
