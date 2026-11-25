@@ -252,7 +252,17 @@ typedef struct {
     unsigned int second_head_control;
 } nvidia_mode_state_t;
 
-static int nvidia_g7x_supports_mode_ex(int w, int h, int bpp, int refresh_hz) {
+static int nvidia_calc_vpll(uint32_t target_khz, uint32_t ref_khz,
+                            uint32_t* out_pll);
+
+static int nvidia_has_edid_catalog(void) {
+    if (!g_kapi || !g_kapi->display_get_mode_source) return 0;
+    const char* src = g_kapi->display_get_mode_source();
+    if (!src) return 0;
+    return src[0] == 'E' && src[1] == 'D' && src[2] == 'I' && src[3] == 'D';
+}
+
+static int nvidia_g7x_hw_supports_mode_ex(int w, int h, int bpp, int refresh_hz) {
     if (!g_active) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
     if (w > 4096 || h > 2160) return 0;
@@ -280,6 +290,32 @@ static int nvidia_g7x_supports_mode_ex(int w, int h, int bpp, int refresh_hz) {
     }
     if (!got_timing || timing.pixel_clock_khz == 0 ||
         timing.pixel_clock_khz > g_max_pclk_khz) {
+        return 0;
+    }
+    uint32_t ref_khz = g_has_boot_vpll ? g_vpll_ref_khz : (g_crystal_khz * 4U);
+    uint32_t vpll_check = 0;
+    if (!nvidia_calc_vpll(timing.pixel_clock_khz, ref_khz, &vpll_check)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int nvidia_g7x_supports_mode_ex(int w, int h, int bpp, int refresh_hz) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (!nvidia_g7x_hw_supports_mode_ex(w, h, bpp, refresh_hz)) return 0;
+    if (g_is_pascal_nvdisplay) return 1;
+    if (g_nv_mode_count > 0) {
+        uint8_t bpp_bit = pdv_bpp_to_mask(bpp);
+        for (int index = 0; index < g_nv_mode_count; index++) {
+            uint16_t mode_hz = g_nv_modes[index].refresh_hz
+                                   ? g_nv_modes[index].refresh_hz : 60U;
+            if ((int)g_nv_modes[index].width == w &&
+                (int)g_nv_modes[index].height == h &&
+                (int)mode_hz == refresh_hz &&
+                (g_nv_modes[index].bpp_mask & bpp_bit) != 0) {
+                return 1;
+            }
+        }
         return 0;
     }
     return 1;
@@ -333,6 +369,9 @@ static void nvidia_g7x_build_modes(void) {
         return;
     }
 
+    int has_edid = nvidia_has_edid_catalog();
+    int edid_max_w = 0;
+    int edid_max_h = 0;
     int catalog_count = g_kapi->display_get_mode_count
                             ? g_kapi->display_get_mode_count() : 0;
     for (int i = 0; i < catalog_count && g_nv_mode_count < NV_MAX_MODES; i++) {
@@ -347,34 +386,50 @@ static void nvidia_g7x_build_modes(void) {
         uint8_t mask = 0;
         for (int b = 0; b < 2; b++) {
             if ((catalog_mode.bpp_mask & pdv_bpp_to_mask(k_bpps[b])) &&
-                nvidia_g7x_supports_mode_ex(w, h, k_bpps[b], (int)hz)) {
+                nvidia_g7x_hw_supports_mode_ex(w, h, k_bpps[b], (int)hz)) {
                 mask |= pdv_bpp_to_mask(k_bpps[b]);
             }
         }
-        nvidia_add_mode(w, h, mask, hz, catalog_mode.preferred);
+        if (mask != 0) {
+            if (w > edid_max_w) edid_max_w = w;
+            if (h > edid_max_h) edid_max_h = h;
+            nvidia_add_mode(w, h, mask, hz, catalog_mode.preferred);
+        }
     }
 
-    /* Classic & widescreen bound mode table filtered by hardware pixel clock limit */
+    /*
+     * Classic & widescreen presets:
+     * - When valid EDID modes are present, only supplement standard 60 Hz modes
+     *   within the monitor's advertised panel bounds so unadvertised high-Hz
+     *   timings (e.g. 120/144/240 Hz) never drive the monitor out of range.
+     * - When EDID is absent, offer conservative 60 Hz (plus 75 Hz <= 1280x1024).
+     */
     static const uint16_t k_width[] = {
         640, 800, 1024, 1280, 1280, 1366, 1440, 1600, 1680, 1920
     };
     static const uint16_t k_height[] = {
         480, 600, 768, 720, 1024, 768, 900, 900, 1050, 1080
     };
-    static const uint16_t k_hz_list[6] = { 60U, 75U, 85U, 100U, 120U, 144U };
+    int strict_edid = (has_edid && g_nv_mode_count > 0);
     for (size_t index = 0;
          index < sizeof(k_width) / sizeof(k_width[0]) &&
          g_nv_mode_count < NV_MAX_MODES; index++) {
-        for (int r = 0; r < 6 && g_nv_mode_count < NV_MAX_MODES; r++) {
+        if (strict_edid &&
+            ((int)k_width[index] > edid_max_w || (int)k_height[index] > edid_max_h)) {
+            continue;
+        }
+        int max_r = (!strict_edid && k_width[index] <= 1280U && k_height[index] <= 1024U) ? 2 : 1;
+        static const uint16_t k_safe_hz[2] = { 60U, 75U };
+        for (int r = 0; r < max_r && g_nv_mode_count < NV_MAX_MODES; r++) {
             uint8_t mask = 0;
             for (int b = 0; b < 2; b++) {
-                if (nvidia_g7x_supports_mode_ex(k_width[index], k_height[index],
-                                                k_bpps[b], (int)k_hz_list[r])) {
+                if (nvidia_g7x_hw_supports_mode_ex(k_width[index], k_height[index],
+                                                   k_bpps[b], (int)k_safe_hz[r])) {
                     mask |= pdv_bpp_to_mask(k_bpps[b]);
                 }
             }
             if (mask != 0) {
-                nvidia_add_mode(k_width[index], k_height[index], mask, k_hz_list[r],
+                nvidia_add_mode(k_width[index], k_height[index], mask, k_safe_hz[r],
                                 (r == 0 && k_width[index] == g_boot_w && k_height[index] == g_boot_h));
             }
         }
@@ -382,7 +437,7 @@ static void nvidia_g7x_build_modes(void) {
 
     uint8_t boot_mask = 0;
     for (int b = 0; b < 2; b++) {
-        if (nvidia_g7x_supports_mode_ex(g_boot_w, g_boot_h, k_bpps[b], 60)) {
+        if (nvidia_g7x_hw_supports_mode_ex(g_boot_w, g_boot_h, k_bpps[b], 60)) {
             boot_mask |= pdv_bpp_to_mask(k_bpps[b]);
         }
     }

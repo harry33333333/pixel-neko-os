@@ -373,6 +373,11 @@ static void apply_resolution(const pse_config_t* config) {
         return;
     }
     if (!gfx_accel_can_change_mode_ex(width, height, bpp, hz)) {
+        if (hz != 60) {
+            log_printf("[SETTINGS] unsupported refresh %dHz for %dx%d@%d; "
+                       "falling back to 60Hz\n",
+                       hz, width, height, bpp);
+        }
         hz = 60;
         if (!gfx_accel_can_change_mode_ex(width, height, bpp, hz)) {
             log_printf("[SETTINGS] unsupported resolution %dx%d@%d; "
