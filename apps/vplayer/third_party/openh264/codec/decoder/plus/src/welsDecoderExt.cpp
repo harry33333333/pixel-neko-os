@@ -335,15 +335,15 @@ void CWelsDecoder::OpenDecoderThreads() {
 }
 void CWelsDecoder::CloseDecoderThreads() {
   if (m_iThreadCount >= 1 && m_pDecThrCtx != NULL &&
-      m_pDecThrCtx[0].sThreadInfo.sThrHandle != 0) {
+      m_pDecThrCtx[0].sThreadInfo.sThrHandle.h != 0) {
     SET_EVENT (&m_sReleaseBufferEvent);
     for (int32_t i = 0; i < m_iThreadCount; i++) { //waiting the completion begun slices
-      if (m_pDecThrCtx[i].sThreadInfo.sThrHandle != 0) {
+      if (m_pDecThrCtx[i].sThreadInfo.sThrHandle.h != 0) {
         WAIT_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsIdle, WELS_DEC_THREAD_WAIT_INFINITE);
         m_pDecThrCtx[i].sThreadInfo.uiCommand = WELS_DEC_THREAD_COMMAND_ABORT;
         RELEASE_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsActivated);
         WAIT_THREAD (&m_pDecThrCtx[i].sThreadInfo.sThrHandle);
-        m_pDecThrCtx[i].sThreadInfo.sThrHandle = 0;
+        m_pDecThrCtx[i].sThreadInfo.sThrHandle.h = 0;
       }
       CLOSE_EVENT (&m_pDecThrCtx[i].sImageReady);
       CLOSE_EVENT (&m_pDecThrCtx[i].sSliceDecodeStart);
