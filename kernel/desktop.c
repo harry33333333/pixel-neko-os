@@ -136,6 +136,8 @@ static const desktop_default_t g_defaults[] = {
       DESKTOP_TARGET_APP, false },
     { "Media Player.pnk", "Media Player", "\\APPS\\player.pxe",
       DESKTOP_TARGET_APP, false },
+    { "Video Player.pnk", "Video Player", "\\APPS\\vplayer.pxe",
+      DESKTOP_TARGET_APP, false },
     { "Image Viewer.pnk", "Image Viewer", "\\APPS\\viewer.pxe",
       DESKTOP_TARGET_APP, false },
     { "Command Prompt.pnk", "Command Prompt", "\\APPS\\cmd.pxe",
@@ -720,6 +722,7 @@ void desktop_refresh(void) {
             else if (text_equal_ci(item->display_name, "Pixel CPU Detect")) copy_text(item->display_name, sizeof(item->display_name), "CPU 检测");
             else if (text_equal_ci(item->display_name, "Notepad")) copy_text(item->display_name, sizeof(item->display_name), "记事本");
             else if (text_equal_ci(item->display_name, "Media Player")) copy_text(item->display_name, sizeof(item->display_name), "媒体播放器");
+            else if (text_equal_ci(item->display_name, "Video Player")) copy_text(item->display_name, sizeof(item->display_name), "视频播放器");
             else if (text_equal_ci(item->display_name, "Image Viewer")) copy_text(item->display_name, sizeof(item->display_name), "图片查看器");
             else if (text_equal_ci(item->display_name, "Command Prompt")) copy_text(item->display_name, sizeof(item->display_name), "命令提示符");
             else if (text_equal_ci(item->display_name, "GAME")) copy_text(item->display_name, sizeof(item->display_name), "游戏");
@@ -1058,6 +1061,10 @@ static bool launch_associated_file(const char* path) {
     } else if (text_equal_ci(ext, "wav") || text_equal_ci(ext, "mp3") ||
                text_equal_ci(ext, "flac") || text_equal_ci(ext, "cda")) {
         fallback = "player.pxe";
+    } else if (text_equal_ci(ext, "mp4") || text_equal_ci(ext, "mov") ||
+               text_equal_ci(ext, "m4v") || text_equal_ci(ext, "h264") ||
+               text_equal_ci(ext, "264")) {
+        fallback = "vplayer.pxe";
     }
 
     if (fallback) {

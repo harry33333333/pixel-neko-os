@@ -8,6 +8,7 @@
 #   include $(SDK_DIR)/pxe_app.mk
 
 CC      ?= gcc
+CXX     ?= g++
 LD      ?= ld
 AR      ?= ar
 NASM    ?= nasm
@@ -20,8 +21,11 @@ PXE_RING ?= 3
 APP_PXI  ?= $(APP_NAME).pxi
 OUT_DIR  ?= build
 OBJ_DIR  ?= $(OUT_DIR)/obj_$(APP_NAME)
+APP_CXX_SRCS ?=
 APP_ASM_SRCS ?=
 EXTRA_CFLAGS ?=
+EXTRA_CXXFLAGS ?=
+EXTRA_ASMFLAGS ?=
 
 PXE_COMMON_CFLAGS := -m64 -march=core2 -mno-red-zone \
                      -fno-asynchronous-unwind-tables \
@@ -71,6 +75,7 @@ PXE_R0_OBJS := $(SDK_DIR)/lib/obj_r0/runtime_r0.o \
                $(SDK_DIR)/lib/obj_r0/str.o
 
 APP_OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(APP_SRCS)) \
+            $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(APP_CXX_SRCS)) \
             $(patsubst %.asm,$(OBJ_DIR)/%.o,$(APP_ASM_SRCS))
 
 APP_ELF := $(OBJ_DIR)/$(APP_NAME).elf
@@ -111,9 +116,13 @@ $(OBJ_DIR)/%.o: %.c $(PXE_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(PXE_TARGET_CFLAGS) $(EXTRA_CFLAGS) -c $< -o $@
 
+$(OBJ_DIR)/%.o: %.cpp $(PXE_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(filter-out -std=gnu11,$(PXE_TARGET_CFLAGS)) -fno-exceptions -fno-rtti $(EXTRA_CXXFLAGS) -c $< -o $@
+
 $(OBJ_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)
-	$(NASM) -f elf64 -o $@ $<
+	$(NASM) -f elf64 $(EXTRA_ASMFLAGS) -o $@ $<
 
 $(APP_ELF): $(PXE_CRT0) $(APP_OBJS) $(PXE_LIB) $(SDK_DIR)/crt/pxe_pie.ld
 	@mkdir -p $(dir $@)

@@ -1,0 +1,6 @@
+PNK1
+kind=app
+target=\APPS\vplayer.pxe
+title=Video Player
+locked=0
+

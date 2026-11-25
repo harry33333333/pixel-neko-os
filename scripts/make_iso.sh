@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A330a"
+    BUILD_ID="26A350a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
@@ -69,7 +69,7 @@ cp "${GAME_FILES[@]}" iso_root/GAME/
 cp "${GAME_FILES[@]}" iso_root/payload/GAME/
 
 # Copy modular built-in system applications (*.pxe in APPS\) for Live CD and offline installer payload
-REQUIRED_APPS=(about clock calc notepad cpanel cmd player viewer files sysinfo cpuz taskmgr install)
+REQUIRED_APPS=(about clock calc notepad cpanel cmd player vplayer viewer files sysinfo cpuz taskmgr install)
 for app_name in "${REQUIRED_APPS[@]}"; do
     app_pxe="build/apps/${app_name}.pxe"
     if [ ! -f "${app_pxe}" ]; then
@@ -131,7 +131,7 @@ Static system executable: boot/kernel.elf
 Loadable hardware drivers: PDEVICE/*.pdv
 Default games: GAME/*.pxe (puzzle, solitaire, gomoku, aerochess, 2048, minesweeper, othello)
 Persistent desktop: Desktop/*.pnk and Desktop/.desktop-layout
-System PXE applications: APPS/*.pxe (about, clock, calc, notepad, cpanel, player, viewer, files, sysinfo, cpuz, taskmgr, install)
+System PXE applications: APPS/*.pxe (about, clock, calc, notepad, cpanel, player, vplayer, viewer, files, sysinfo, cpuz, taskmgr, install)
 UEFI boot executable: EFI/BOOT/BOOTX64.EFI
 BIOS Limine stage 2: boot/limine/limine-bios.sys
 Boot configuration: boot/limine.conf
@@ -144,7 +144,7 @@ Loadable PDV drivers in PDEVICE/:
 - Storage: fdc.pdv
 
 Built-in PXE applications in APPS/:
-- Ring 3: about.pxe, clock.pxe, calc.pxe, notepad.pxe, cpanel.pxe, player.pxe, viewer.pxe, files.pxe
+- Ring 3: about.pxe, clock.pxe, calc.pxe, notepad.pxe, cpanel.pxe, player.pxe, vplayer.pxe, viewer.pxe, files.pxe
 - Ring 0: sysinfo.pxe, cpuz.pxe, taskmgr.pxe, install.pxe
 
 Default games in GAME/:
