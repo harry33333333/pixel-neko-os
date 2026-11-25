@@ -1,6 +1,7 @@
 #include "process.h"
 #include "boot_framebuffer.h"
 #include "scheduler.h"
+#include "percpu.h"
 #include "elf.h"
 #include "pmm.h"
 #include "heap.h"
@@ -17,15 +18,18 @@
 #define USER_HEAP_DEFAULT_BASE  0x0000000010000000ULL
 #define USER_HEAP_DEFAULT_LIMIT 0x0000000200000000ULL
 
+static spinlock_t g_proc_lock = SPINLOCK_INIT;
 static process_t* g_process_list = NULL;
-static process_t* g_current_process = NULL;
+static process_t* g_idle_process = NULL;
 static uint32_t g_next_pid = 1;
 static uint64_t g_next_tid = 1;
 
 static void process_link(process_t* process) {
     if (!process) return;
+    uint64_t flags = spin_lock_irqsave(&g_proc_lock);
     process->next = g_process_list;
     g_process_list = process;
+    spin_unlock_irqrestore(&g_proc_lock, flags);
 }
 
 process_t* process_head(void) {
@@ -34,6 +38,7 @@ process_t* process_head(void) {
 
 void process_unlink(process_t* target) {
     if (!target) return;
+    uint64_t flags = spin_lock_irqsave(&g_proc_lock);
     for (process_t* q = g_process_list; q; q = q->next) {
         if (q->parent == target) {
             q->parent = NULL;
@@ -45,17 +50,32 @@ void process_unlink(process_t* target) {
         if (*pp == target) {
             *pp = target->next;
             target->next = NULL;
+            spin_unlock_irqrestore(&g_proc_lock, flags);
             return;
         }
         pp = &(*pp)->next;
     }
+    spin_unlock_irqrestore(&g_proc_lock, flags);
 }
 
 void process_subsystem_init(void) {
+    spin_lock_init(&g_proc_lock);
     g_process_list = NULL;
-    g_current_process = NULL;
+    g_idle_process = NULL;
     g_next_pid = 1;
     g_next_tid = 1;
+}
+
+static void process_attach_thread(process_t* process, thread_t* thread) {
+    uint64_t flags = spin_lock_irqsave(&process->lock);
+    thread->proc_next = process->threads_head;
+    process->threads_head = thread;
+    process->thread_count++;
+    process->alive_thread_count++;
+    if (!process->main_thread) {
+        process->main_thread = thread;
+    }
+    spin_unlock_irqrestore(&process->lock, flags);
 }
 
 process_t* process_create_empty(const char* name, process_t* parent) {
@@ -73,6 +93,7 @@ process_t* process_create_empty(const char* name, process_t* parent) {
         return NULL;
     }
 
+    spin_lock_init(&process->lock);
     process->state = PROCESS_READY;
     process->parent = parent;
     process->ppid = parent ? parent->pid : 0;
@@ -99,6 +120,7 @@ process_t* process_create_r0_empty(const char* name, process_t* parent) {
         return NULL;
     }
 
+    spin_lock_init(&process->lock);
     process->state = PROCESS_READY;
     process->parent = parent;
     process->ppid = parent ? parent->pid : 0;
@@ -112,14 +134,17 @@ process_t* process_create_r0_empty(const char* name, process_t* parent) {
 
 void process_register(process_t* process) {
     if (!process || process->pid != 0) return;
-    process->pid = g_next_pid++;
-    if (process->pid == 0) process->pid = g_next_pid++;
+    uint32_t pid = __atomic_fetch_add(&g_next_pid, 1u, __ATOMIC_RELAXED);
+    if (pid == 0) pid = __atomic_fetch_add(&g_next_pid, 1u, __ATOMIC_RELAXED);
+    process->pid = pid;
     process_link(process);
 }
 
-thread_t* process_create_user_thread(process_t* process, uint64_t entry,
-                                     uint64_t user_rsp) {
-    if (!process || entry >= NEKO_USER_LIMIT || user_rsp >= NEKO_USER_LIMIT) {
+thread_t* process_create_user_subthread(process_t* process, uint64_t entry,
+                                        uint64_t arg, uint64_t user_rsp,
+                                        uint64_t tls_base) {
+    if (!process || entry >= NEKO_USER_LIMIT || user_rsp >= NEKO_USER_LIMIT ||
+        tls_base >= NEKO_USER_LIMIT) {
         return NULL;
     }
 
@@ -143,37 +168,48 @@ thread_t* process_create_user_thread(process_t* process, uint64_t entry,
     memset(frame, 0, sizeof(trap_frame_t));
     frame->int_no = SYSCALL_VECTOR_MARKER;
     frame->rip = entry;
+    frame->rdi = arg;
     frame->cs = GDT_USER_CODE_SEL;
     frame->rflags = 0x202;
     frame->rsp = user_rsp;
     frame->ss = GDT_USER_DATA_SEL;
 
-    log_printf("[PROC] Ring 3 thread ready for %s: RIP=0x%016llx RSP=0x%016llx\n",
-               process->name,
-               (unsigned long long)frame->rip,
-               (unsigned long long)frame->rsp);
-
-    thread->tid = g_next_tid++;
+    thread->tid = __atomic_fetch_add(&g_next_tid, 1ULL, __ATOMIC_RELAXED);
     thread->process = process;
     thread->state = THREAD_READY;
     thread->is_user = true;
+    thread->pinned_cpu = -1;
+    thread->running_cpu = -1;
     thread->wait_win_id = -1;
+    thread->fs_base = tls_base;
     thread->quantum = SCHEDULER_QUANTUM_TICKS;
     thread->resume_frame = frame;
     fpu_init_state(thread->fpu_state);
 
-    process->mem_pages_used += THREAD_KERNEL_STACK_PAGES;
-    process->main_thread = thread;
+    __atomic_fetch_add(&process->mem_pages_used, THREAD_KERNEL_STACK_PAGES, __ATOMIC_RELAXED);
+    process_attach_thread(process, thread);
     process->state = PROCESS_READY;
     scheduler_add_thread(thread);
     return thread;
+}
+
+thread_t* process_create_user_thread(process_t* process, uint64_t entry,
+                                     uint64_t user_rsp) {
+    thread_t* t = process_create_user_subthread(process, entry, 0, user_rsp, 0);
+    if (t) {
+        log_printf("[PROC] Ring 3 thread ready for %s: RIP=0x%016llx RSP=0x%016llx\n",
+                   process->name,
+                   (unsigned long long)entry,
+                   (unsigned long long)user_rsp);
+    }
+    return t;
 }
 
 thread_t* process_create_r0_thread(process_t* process, uint64_t entry,
                                    int argc, const char* const* argv,
                                    uint64_t rdx_api, size_t stack_pages) {
     if (!process || !entry) return NULL;
-    if (stack_pages < 16) stack_pages = 16; /* Minimum 64 KB stack for Ring 0 PXE */
+    if (stack_pages < 16) stack_pages = 16;
     if (stack_pages > 256) stack_pages = 256;
 
     thread_t* thread = (thread_t*)kzalloc(sizeof(thread_t));
@@ -234,49 +270,30 @@ thread_t* process_create_r0_thread(process_t* process, uint64_t entry,
     frame->rsp = initial_rsp;
     frame->ss = GDT_KERNEL_DATA_SEL;
 
-    thread->tid = g_next_tid++;
+    thread->tid = __atomic_fetch_add(&g_next_tid, 1ULL, __ATOMIC_RELAXED);
     thread->process = process;
     thread->state = THREAD_READY;
     thread->is_user = false;
+    thread->pinned_cpu = -1;
+    thread->running_cpu = -1;
     thread->wait_win_id = -1;
     thread->quantum = SCHEDULER_QUANTUM_TICKS;
     thread->resume_frame = frame;
     fpu_init_state(thread->fpu_state);
 
-    process->mem_pages_used += stack_pages;
-    process->main_thread = thread;
+    __atomic_fetch_add(&process->mem_pages_used, stack_pages, __ATOMIC_RELAXED);
+    process_attach_thread(process, thread);
     process->state = PROCESS_READY;
     scheduler_add_thread(thread);
     return thread;
 }
 
-process_t* process_create_idle(void) {
-    process_t* process = (process_t*)kzalloc(sizeof(process_t));
+static thread_t* create_idle_thread_for_cpu(process_t* idle_proc, uint32_t cpu_id) {
     thread_t* thread = (thread_t*)kzalloc(sizeof(thread_t));
-    if (!process || !thread) {
-        kfree(process);
-        kfree(thread);
-        return NULL;
-    }
-
-    process->pid = 0;
-    process->ppid = 0;
-    process->state = PROCESS_READY;
-    process->exec_ring = 0;
-    process->is_system_daemon = true;
-    process->r0_slot = -1;
-    process->pml4 = vmm_get_kernel_pml4();
-    if (!virt_to_phys_checked(process->pml4, &process->pml4_phys)) {
-        kfree(process);
-        kfree(thread);
-        return NULL;
-    }
-    strcpy(process->name, "idle");
-    strcpy(process->exe_path, "[kernel:idle]");
+    if (!thread) return NULL;
 
     thread->kernel_stack_phys = pmm_alloc_pages(THREAD_KERNEL_STACK_PAGES);
     if (!thread->kernel_stack_phys) {
-        kfree(process);
         kfree(thread);
         return NULL;
     }
@@ -295,21 +312,56 @@ process_t* process_create_idle(void) {
     frame->rsp = (thread->kernel_stack_top - sizeof(trap_frame_t) - 64) & ~0xFULL;
     frame->ss = GDT_KERNEL_DATA_SEL;
 
-    thread->tid = 0;
-    thread->process = process;
+    thread->tid = (cpu_id == 0) ? 0ULL : (0x10000ULL + cpu_id);
+    thread->process = idle_proc;
     thread->state = THREAD_READY;
     thread->is_idle = true;
     thread->is_user = false;
+    thread->pinned_cpu = (int32_t)cpu_id;
+    thread->running_cpu = -1;
     thread->wait_win_id = -1;
     thread->quantum = SCHEDULER_QUANTUM_TICKS;
     thread->resume_frame = frame;
     fpu_init_state(thread->fpu_state);
 
-    process->mem_pages_used = THREAD_KERNEL_STACK_PAGES;
-    process->main_thread = thread;
-    process_link(process);
+    __atomic_fetch_add(&idle_proc->mem_pages_used, THREAD_KERNEL_STACK_PAGES, __ATOMIC_RELAXED);
+    process_attach_thread(idle_proc, thread);
     scheduler_add_thread(thread);
+    return thread;
+}
+
+process_t* process_create_idle(void) {
+    process_t* process = (process_t*)kzalloc(sizeof(process_t));
+    if (!process) return NULL;
+
+    spin_lock_init(&process->lock);
+    process->pid = 0;
+    process->ppid = 0;
+    process->state = PROCESS_READY;
+    process->exec_ring = 0;
+    process->is_system_daemon = true;
+    process->r0_slot = -1;
+    process->pml4 = vmm_get_kernel_pml4();
+    if (!virt_to_phys_checked(process->pml4, &process->pml4_phys)) {
+        kfree(process);
+        return NULL;
+    }
+    strcpy(process->name, "idle");
+    strcpy(process->exe_path, "[kernel:idle]");
+
+    if (!create_idle_thread_for_cpu(process, 0)) {
+        kfree(process);
+        return NULL;
+    }
+
+    g_idle_process = process;
+    process_link(process);
     return process;
+}
+
+thread_t* process_create_ap_idle(uint32_t cpu_id) {
+    if (!g_idle_process || cpu_id == 0 || cpu_id >= SMP_MAX_CPUS) return NULL;
+    return create_idle_thread_for_cpu(g_idle_process, cpu_id);
 }
 
 process_t* process_create_compositor(void) {
@@ -321,6 +373,7 @@ process_t* process_create_compositor(void) {
         return NULL;
     }
 
+    spin_lock_init(&process->lock);
     process->state = PROCESS_READY;
     process->exec_ring = 0;
     process->is_system_daemon = true;
@@ -334,7 +387,7 @@ process_t* process_create_compositor(void) {
     strcpy(process->name, "kwm_compositor");
     strcpy(process->exe_path, "[kernel:compositor]");
 
-    size_t comp_stack_pages = 16; /* 64 KB stack for WM, VFS media poll & modal dialogs */
+    size_t comp_stack_pages = 16;
     thread->kernel_stack_phys = pmm_alloc_pages(comp_stack_pages);
     if (!thread->kernel_stack_phys) {
         kfree(process);
@@ -356,22 +409,24 @@ process_t* process_create_compositor(void) {
     frame->rsp = initial_rsp;
     frame->ss = GDT_KERNEL_DATA_SEL;
 
-    thread->tid = g_next_tid++;
+    thread->tid = __atomic_fetch_add(&g_next_tid, 1ULL, __ATOMIC_RELAXED);
     thread->process = process;
     thread->state = THREAD_READY;
     thread->is_idle = false;
     thread->is_compositor = true;
     thread->is_user = false;
+    thread->pinned_cpu = 0; /* Always run compositor on BSP (CPU 0) */
+    thread->running_cpu = -1;
     thread->wait_win_id = -1;
-    thread->quantum = 2;
+    thread->quantum = 5;
     thread->resume_frame = frame;
     fpu_init_state(thread->fpu_state);
 
     process->mem_pages_used = comp_stack_pages;
-    process->main_thread = thread;
+    process_attach_thread(process, thread);
     process_register(process);
     scheduler_add_thread(thread);
-    log_printf("[PROC] High-priority desktop compositor daemon ready (PID %u).\n",
+    log_printf("[PROC] High-priority desktop compositor daemon ready (PID %u, pinned CPU 0).\n",
                process->pid);
     return process;
 }
@@ -383,11 +438,11 @@ process_t* process_create_user(const uint8_t* elf, size_t size,
 }
 
 void process_set_current(process_t* process) {
-    g_current_process = process;
+    this_cpu()->current_process = process;
 }
 
 process_t* process_current(void) {
-    return g_current_process;
+    return (process_t*)this_cpu()->current_process;
 }
 
 thread_t* process_current_thread(void) {
@@ -395,20 +450,33 @@ thread_t* process_current_thread(void) {
 }
 
 uint32_t process_current_pid(void) {
-    return g_current_process ? g_current_process->pid : 0;
+    process_t* p = process_current();
+    return p ? p->pid : 0;
 }
 
 process_t* process_find_by_pid(uint32_t pid) {
+    uint64_t flags = spin_lock_irqsave(&g_proc_lock);
     for (process_t* p = g_process_list; p; p = p->next) {
-        if (p->pid == pid) return p;
+        if (p->pid == pid) {
+            spin_unlock_irqrestore(&g_proc_lock, flags);
+            return p;
+        }
     }
+    spin_unlock_irqrestore(&g_proc_lock, flags);
     return NULL;
 }
 
 thread_t* process_find_thread_by_tid(uint64_t tid) {
+    uint64_t flags = spin_lock_irqsave(&g_proc_lock);
     for (process_t* p = g_process_list; p; p = p->next) {
-        if (p->main_thread && p->main_thread->tid == tid) return p->main_thread;
+        for (thread_t* t = p->threads_head; t; t = t->proc_next) {
+            if (t->tid == tid) {
+                spin_unlock_irqrestore(&g_proc_lock, flags);
+                return t;
+            }
+        }
     }
+    spin_unlock_irqrestore(&g_proc_lock, flags);
     return NULL;
 }
 
@@ -485,8 +553,12 @@ int64_t process_sbrk(process_t* process, int64_t delta) {
     if (!process || process->exec_ring != 3 || !process->pml4) {
         return -1;
     }
+
+    uint64_t flags = spin_lock_irqsave(&process->lock);
     if (delta == 0) {
-        return (int64_t)process->heap_brk;
+        uint64_t brk = process->heap_brk;
+        spin_unlock_irqrestore(&process->lock, flags);
+        return (int64_t)brk;
     }
 
     uint64_t old_brk = process->heap_brk;
@@ -494,6 +566,7 @@ int64_t process_sbrk(process_t* process, int64_t delta) {
     if (delta > 0) {
         uint64_t udelta = (uint64_t)delta;
         if (udelta > process->heap_limit - old_brk) {
+            spin_unlock_irqrestore(&process->lock, flags);
             return -1;
         }
         new_brk = old_brk + udelta;
@@ -512,12 +585,14 @@ int64_t process_sbrk(process_t* process, int64_t delta) {
                         if (process->mem_pages_used > 0) process->mem_pages_used--;
                     }
                 }
+                spin_unlock_irqrestore(&process->lock, flags);
                 return -1;
             }
             memset(phys_to_virt(page), 0, PAGE_SIZE);
             if (!vmm_map_page(process->pml4, va, page,
                               PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX)) {
                 pmm_free_page(page);
+                spin_unlock_irqrestore(&process->lock, flags);
                 return -1;
             }
             process->mem_pages_used++;
@@ -542,6 +617,7 @@ int64_t process_sbrk(process_t* process, int64_t delta) {
     }
 
     process->heap_brk = new_brk;
+    spin_unlock_irqrestore(&process->lock, flags);
     return (int64_t)old_brk;
 }
 
@@ -572,25 +648,90 @@ void process_cleanup_runtime_resources(process_t* process) {
 }
 
 void process_exit_current(int status) {
-    process_t* process = g_current_process;
-    thread_t* thread = scheduler_current_thread();
+    process_t* process = process_current();
     if (!process || process->is_system_daemon) return;
 
     process_cleanup_runtime_resources(process);
 
+    uint64_t flags = spin_lock_irqsave(&process->lock);
     process->state = PROCESS_ZOMBIE;
     process->exit_status = status;
     process->zombie_reap_tick = scheduler_get_ticks() + 1000;
-    if (thread) {
-        thread->state = THREAD_ZOMBIE;
-        thread->wake_tick = 0;
-        thread->wait_queue_id = 0;
-        thread->wait_win_id = -1;
+    process->alive_thread_count = 0;
+    for (thread_t* t = process->threads_head; t; t = t->proc_next) {
+        t->state = THREAD_ZOMBIE;
+        t->wake_tick = 0;
+        t->wake_ns = 0;
+        t->wait_queue_id = 0;
+        t->wait_win_id = -1;
+        t->futex_phys = 0;
     }
+    spin_unlock_irqrestore(&process->lock, flags);
 
     log_printf("[PROC] PID %u (%s) exited with status %d.\n",
                process->pid, process->name, status);
     scheduler_request_reschedule();
+}
+
+void process_thread_exit_current(int status) {
+    process_t* process = process_current();
+    thread_t* thread = scheduler_current_thread();
+    if (!process || !thread || process->is_system_daemon) return;
+
+    uint64_t tid = thread->tid;
+    uint32_t remaining = 0;
+
+    uint64_t flags = spin_lock_irqsave(&process->lock);
+    thread->thread_exit_code = status;
+    thread->state = THREAD_ZOMBIE;
+    thread->wake_tick = 0;
+    thread->wake_ns = 0;
+    thread->wait_queue_id = 0;
+    thread->wait_win_id = -1;
+    thread->futex_phys = 0;
+    if (process->alive_thread_count > 0) {
+        process->alive_thread_count--;
+    }
+    remaining = process->alive_thread_count;
+    spin_unlock_irqrestore(&process->lock, flags);
+
+    scheduler_wake_joiners(tid);
+
+    if (remaining == 0) {
+        process_exit_current(status);
+        return;
+    }
+
+    scheduler_request_reschedule();
+}
+
+int process_thread_join(process_t* process, uint64_t target_tid, int* out_status) {
+    if (!process || target_tid == 0) return -NEKO_EINVAL;
+    thread_t* self = scheduler_current_thread();
+    if (self && self->tid == target_tid) return -NEKO_EINVAL;
+
+    thread_t* target = NULL;
+    uint64_t flags = spin_lock_irqsave(&process->lock);
+    for (thread_t* t = process->threads_head; t; t = t->proc_next) {
+        if (t->tid == target_tid) {
+            target = t;
+            break;
+        }
+    }
+    if (!target) {
+        spin_unlock_irqrestore(&process->lock, flags);
+        return -NEKO_ESRCH;
+    }
+    if (target->state == THREAD_ZOMBIE) {
+        if (out_status) *out_status = target->thread_exit_code;
+        target->joined = true;
+        spin_unlock_irqrestore(&process->lock, flags);
+        return 0;
+    }
+    spin_unlock_irqrestore(&process->lock, flags);
+
+    scheduler_block_on_join(target_tid);
+    return -NEKO_EAGAIN;
 }
 
 static int process_kill_impl(uint32_t pid, int exit_code, bool allow_critical) {
@@ -610,8 +751,8 @@ static int process_kill_impl(uint32_t pid, int exit_code, bool allow_critical) {
                    exit_code);
         target->state = PROCESS_ZOMBIE;
         target->exit_status = exit_code;
-        if (target->main_thread) {
-            target->main_thread->state = THREAD_ZOMBIE;
+        for (thread_t* t = target->threads_head; t; t = t->proc_next) {
+            t->state = THREAD_ZOMBIE;
         }
         boot_framebuffer_fill_rect(0, 0, (int)g_main_surface.width, (int)g_main_surface.height,
                                    boot_framebuffer_make_color(0, 0, 128));
@@ -628,7 +769,7 @@ static int process_kill_impl(uint32_t pid, int exit_code, bool allow_critical) {
             __asm__ volatile ("cli; hlt");
         }
     }
-    if (target == g_current_process) {
+    if (target == process_current()) {
         if (target->is_system_daemon) return -1;
         process_exit_current(exit_code);
         scheduler_yield_kernel();
@@ -658,15 +799,20 @@ static int process_kill_impl(uint32_t pid, int exit_code, bool allow_critical) {
 
     process_cleanup_runtime_resources(target);
 
+    uint64_t flags = spin_lock_irqsave(&target->lock);
     target->state = PROCESS_ZOMBIE;
     target->exit_status = exit_code;
     target->zombie_reap_tick = scheduler_get_ticks() + 200;
-    if (target->main_thread) {
-        target->main_thread->state = THREAD_ZOMBIE;
-        target->main_thread->wake_tick = 0;
-        target->main_thread->wait_queue_id = 0;
-        target->main_thread->wait_win_id = -1;
+    target->alive_thread_count = 0;
+    for (thread_t* t = target->threads_head; t; t = t->proc_next) {
+        t->state = THREAD_ZOMBIE;
+        t->wake_tick = 0;
+        t->wake_ns = 0;
+        t->wait_queue_id = 0;
+        t->wait_win_id = -1;
+        t->futex_phys = 0;
     }
+    spin_unlock_irqrestore(&target->lock, flags);
 
     if (was_compositor) {
         target->is_system_daemon = false;

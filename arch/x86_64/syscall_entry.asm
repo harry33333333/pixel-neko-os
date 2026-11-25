@@ -1,4 +1,4 @@
-; Pixel Neko OS - NMI-safe SYSCALL/SYSRET and transition restore path
+; Pixel Neko OS - SMP & NMI-safe SYSCALL/SYSRET and trap frame restore path
 
 [bits 64]
 default rel
@@ -10,30 +10,34 @@ global arch_restore_trap_frame
 extern syscall_dispatcher
 extern syscall_reschedule
 extern syscall_bad_return
-extern per_cpu_set_gs_domain
 extern lapic_send_nmi_self
-extern per_cpu_kernel_rsp0
-extern per_cpu_user_rsp
-extern per_cpu_need_resched
-extern per_cpu_switch_gs
-extern per_cpu_syscall_count
 extern per_cpu_nmi_test_pending
 
 section .text
 
-; On entry:
+; Per-CPU offsets via %gs (matches include/percpu.h):
+;   [gs:0]  = kernel_rsp0
+;   [gs:8]  = user_rsp
+;   [gs:16] = need_resched
+;   [gs:24] = switch_gs
+;   [gs:32] = current_thread
+;   [gs:40] = nmi_swapgs
+;   [gs:48] = syscall_count
+;   [gs:56] = nmi_count
+
+; On entry from Ring 3:
 ;   RDI, RSI, RDX, R10, R8, R9 carry syscall arguments.
 ;   RCX carries user RIP and R11 carries user RFLAGS.
-; IA32_FMASK has already cleared IF and DF.
+;   IA32_FMASK has already cleared IF and DF.
 syscall_entry:
-    mov [rel per_cpu_user_rsp], rsp
-    mov rsp, [rel per_cpu_kernel_rsp0]
-    inc qword [rel per_cpu_syscall_count]
+    swapgs                          ; Enter per-CPU kernel GS domain
+    mov [gs:8], rsp                 ; Save user RSP
+    mov rsp, [gs:0]                 ; Switch to current thread's kernel stack
+    inc qword [gs:48]               ; per_cpu.syscall_count++
 
-    ; Build a full trap_frame_t. This permits the same restore path to be
-    ; used after an IRQ/syscall-triggered context switch.
+    ; Build a full trap_frame_t so the same restore path handles context switches
     push qword 0x1B                 ; user SS (RPL 3)
-    push qword [rel per_cpu_user_rsp]
+    push qword [gs:8]               ; user RSP
     push r11                        ; user RFLAGS
     push qword 0x23                 ; user CS (RPL 3)
     push rcx                        ; user RIP
@@ -56,16 +60,13 @@ syscall_entry:
     push r14
     push r15
 
-    xor edi, edi
-    call per_cpu_set_gs_domain       ; deterministically enter kernel GS domain
-
     mov rdi, rsp
     cld
     call syscall_dispatcher
 
     ; frame->rax is at offset 14 * 8.
     mov [rsp + 14*8], rax
-    cmp qword [rel per_cpu_need_resched], 0
+    cmp qword [gs:16], 0            ; per_cpu.need_resched
     jne .reschedule
 
     ; Reject non-canonical or kernel-half RIP before using SYSRET.
@@ -108,16 +109,15 @@ syscall_entry:
     or  r11, 0x0202                 ; Enforce IF=1 and bit 1 = 1
     mov [rsp + 19*8], r11
 
-    ; Data selectors are loaded before restoring user registers.
+    ; Restore user DS/ES without touching FS (preserves MSR_FS_BASE TLS!)
     mov ax, 0x1B
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov edi, 1
-    call per_cpu_set_gs_domain       ; restore the Ring 3 GS domain
 
-    ; Exercise the narrow kernel-CPL/user-GS window before SYSRET. The
-    ; paranoid NMI stub must not leak the temporary SWAPGS state.
+    ; Restore user GS domain right before SYSRET
+    swapgs
+
+    ; Exercise the narrow kernel-CPL/user-GS window before SYSRET.
     cmp qword [rel per_cpu_nmi_test_pending], 0
     je .nmi_test_done
     mov qword [rel per_cpu_nmi_test_pending], 0
@@ -162,32 +162,44 @@ syscall_entry:
     mov rsp, rax
     jmp arch_restore_trap_frame
 
-; Enter an initial or saved trap frame. The scheduler has already selected
-; the address space and set per_cpu_switch_gs when a GS-domain change is due.
+; Enter an initial or saved trap frame from kernel mode (GS_BASE = kernel per_cpu).
 arch_enter_thread:
     mov rsp, rdi
     jmp arch_restore_trap_frame
 
-; Restore a trap_frame_t and return with IRETQ. This also handles an IST stack
-; switch and same-CPL kernel frames correctly.
+; Restore a trap_frame_t and return with IRETQ.
+; Called from kernel mode (GS_BASE = kernel per_cpu).
+; Symmetrically executes SWAPGS when returning to Ring 3.
 arch_restore_trap_frame:
-    mov qword [rel per_cpu_switch_gs], 0
+    mov qword [gs:24], 0            ; per_cpu.switch_gs = 0
+
+    ; Release previous thread's running_cpu now that RSP is on the next thread's stack
+    mov rax, [gs:160]
+    test rax, rax
+    jz .no_prev_release
+    mov qword [gs:160], 0
+    mov dword [rax], -1
+.no_prev_release:
 
     test byte [rsp + 18*8], 3       ; frame->cs
     jz .kernel_segments
+
     ; Returning to user mode: sanitize RFLAGS (IOPL=0, IF=1)
-    and dword [rsp + 19*8], 0x0CD5  ; Clear IOPL/NT/privileged bits in lower 32-bit of RFLAGS
-    or  dword [rsp + 19*8], 0x0202  ; Force IF=1 and reserved bit 1 = 1
-    mov dword [rsp + 19*8 + 4], 0   ; Ensure upper 32-bits of RFLAGS are 0
+    and dword [rsp + 19*8], 0x0CD5
+    or  dword [rsp + 19*8], 0x0202
+    mov dword [rsp + 19*8 + 4], 0
     mov ax, 0x1B
-    jmp .load_segments
-.kernel_segments:
-    mov ax, 0x10
-.load_segments:
     mov ds, ax
     mov es, ax
-    mov fs, ax
+    swapgs                          ; Restore user GS domain
+    jmp .pop_regs
 
+.kernel_segments:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+.pop_regs:
     pop r15
     pop r14
     pop r13

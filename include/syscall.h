@@ -8,6 +8,7 @@
 #define SYSCALL_VECTOR_MARKER 0x100
 
 void syscall_init(void);
+void syscall_init_ap(void);
 int64_t syscall_dispatcher(trap_frame_t* frame);
 trap_frame_t* syscall_reschedule(trap_frame_t* frame);
 trap_frame_t* syscall_bad_return(trap_frame_t* frame);

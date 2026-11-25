@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include "idt.h"
 
-// Local APIC Registers
+// Local APIC Registers (xAPIC MMIO offsets; x2APIC MSR = 0x800 + (reg >> 4))
 #define LAPIC_ID            0x0020
 #define LAPIC_VERSION       0x0030
 #define LAPIC_TPR           0x0080
@@ -31,16 +31,27 @@
 #define IOAPIC_REG_ARB      0x02
 #define IOAPIC_REDTBL(n)    (0x10 + 2 * (n))
 
-void apic_init(void);
-void lapic_eoi(void);
-void lapic_send_nmi_self(void);
+// SMP Inter-Processor Interrupt (IPI) Vectors
+#define VEC_IPI_RESCHED       0xF0u
+#define VEC_IPI_TLB_SHOOTDOWN 0xF1u
+#define VEC_IPI_PANIC_HALT    0xF2u
+
+void     apic_init(void);
+void     apic_init_ap(void);
+bool     apic_is_x2apic(void);
+uint32_t lapic_get_id(void);
+void     lapic_eoi(void);
+void     lapic_send_nmi_self(void);
+void     lapic_send_ipi(uint32_t dest_lapic_id, uint8_t vector);
+void     lapic_broadcast_ipi_others(uint8_t vector);
 uint32_t lapic_read(uint32_t reg);
-void lapic_write(uint32_t reg, uint32_t val);
+void     lapic_write(uint32_t reg, uint32_t val);
 uint32_t ioapic_read(uint8_t reg);
-void ioapic_write(uint8_t reg, uint32_t val);
-void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t flags, bool masked);
-void apic_enable_pci_irq(uint8_t irq_line);
-void apic_enable_pci_gsi(uint8_t gsi, uint16_t flags);
+void     ioapic_write(uint8_t reg, uint32_t val);
+void     ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t apic_id, uint16_t flags, bool masked);
+void     apic_enable_pci_irq(uint8_t irq_line);
+void     apic_enable_pci_gsi(uint8_t gsi, uint16_t flags);
 uint64_t apic_get_ticks(void);
+uint64_t apic_get_ticks_ms(void);
 
 #endif /* _APIC_H */

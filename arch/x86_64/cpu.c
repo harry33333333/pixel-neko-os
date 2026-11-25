@@ -1,10 +1,12 @@
 #include "cpu.h"
+#include "apic.h"
 #include "log.h"
 #include "port.h"
 #include <stddef.h>
 
 cpu_info_t g_cpu_info = {0};
 char cpu_model_string[49] = "Unknown AMD64 CPU";
+static uint64_t g_tsc_boot = 0;
 
 static inline uint64_t cpu_rdtsc(void) {
     uint32_t lo, hi;
@@ -154,10 +156,18 @@ bool cpu_detect_and_verify(void) {
         g_cpu_info.basic_ecx = ecx;
         g_cpu_info.basic_edx = edx;
 
-        g_cpu_info.has_apic = (edx & CPUID_FEAT_APIC) != 0;
-        g_cpu_info.has_sse2 = (edx & CPUID_FEAT_SSE2) != 0;
-        g_cpu_info.has_sse3 = (ecx & CPUID_FEAT_SSE3) != 0;
-        g_cpu_info.has_cx16 = (ecx & CPUID_FEAT_CX16) != 0;
+        g_cpu_info.has_apic  = (edx & CPUID_FEAT_APIC) != 0;
+        g_cpu_info.has_sse2  = (edx & CPUID_FEAT_SSE2) != 0;
+        g_cpu_info.has_sse3  = (ecx & CPUID_FEAT_SSE3) != 0;
+        g_cpu_info.has_cx16  = (ecx & CPUID_FEAT_CX16) != 0;
+        g_cpu_info.has_xsave = (ecx & CPUID_FEAT_XSAVE) != 0;
+        g_cpu_info.has_avx   = (ecx & CPUID_FEAT_AVX) != 0;
+    }
+
+    // 2b. Structured Extended Feature Leaf 0x07: AVX2
+    if (g_cpu_info.max_basic_leaf >= 7) {
+        cpuid(7, 0, &eax, &ebx, &ecx, &edx);
+        g_cpu_info.has_avx2 = (ebx & (1u << 5)) != 0;
     }
 
     // 3. Frequency Leaf 0x16 / 0x15
@@ -217,12 +227,24 @@ bool cpu_detect_and_verify(void) {
         g_cpu_info.mhz = parse_brand_mhz(cpu_model_string);
     }
 
+    // Record calibrated TSC frequency and boot epoch for monotonic nanosecond clock
+    g_cpu_info.tsc_freq_hz = (uint64_t)g_cpu_info.mhz * 1000000ULL;
+    if (g_cpu_info.max_basic_leaf >= 0x15) {
+        cpuid(0x15, 0, &eax, &ebx, &ecx, &edx);
+        if (eax && ebx && ecx) {
+            g_cpu_info.tsc_freq_hz = ((uint64_t)ecx * (uint64_t)ebx) / (uint64_t)eax;
+        }
+    }
+    g_tsc_boot = cpu_rdtsc();
+
     log_printf("[CPU] Vendor: %s, Model: %s\n", g_cpu_info.vendor, cpu_model_string);
-    log_printf("[CPU] Family: %u, Model: %u, Stepping: %u, Freq: %u MHz\n",
-               g_cpu_info.family, g_cpu_info.model, g_cpu_info.stepping, g_cpu_info.mhz);
-    log_printf("[CPU] Features: LM=%d, NX=%d, APIC=%d, SYSCALL=%d, SSE2=%d, SSE3=%d, CX16=%d\n",
+    log_printf("[CPU] Family: %u, Model: %u, Stepping: %u, Freq: %u MHz (TSC %llu Hz)\n",
+               g_cpu_info.family, g_cpu_info.model, g_cpu_info.stepping, g_cpu_info.mhz,
+               (unsigned long long)g_cpu_info.tsc_freq_hz);
+    log_printf("[CPU] Features: LM=%d, NX=%d, APIC=%d, SYSCALL=%d, SSE2=%d, XSAVE=%d, AVX=%d, AVX2=%d\n",
                g_cpu_info.has_lm, g_cpu_info.has_nx, g_cpu_info.has_apic,
-               g_cpu_info.has_syscall, g_cpu_info.has_sse2, g_cpu_info.has_sse3, g_cpu_info.has_cx16);
+               g_cpu_info.has_syscall, g_cpu_info.has_sse2,
+               g_cpu_info.has_xsave, g_cpu_info.has_avx, g_cpu_info.has_avx2);
 
     // 8. Verify Mandatory Admission Features (Section 1.3)
     bool pass = true;
@@ -248,4 +270,19 @@ bool cpu_detect_and_verify(void) {
     }
 
     return pass;
+}
+
+uint64_t cpu_get_tsc_freq_hz(void) {
+    return g_cpu_info.tsc_freq_hz;
+}
+
+uint64_t cpu_monotonic_ns(void) {
+    uint64_t freq = g_cpu_info.tsc_freq_hz;
+    if (freq > 0) {
+        uint64_t now = cpu_rdtsc();
+        uint64_t delta = (now >= g_tsc_boot) ? (now - g_tsc_boot) : 0ULL;
+        __uint128_t num = (__uint128_t)delta * 1000000000ULL;
+        return (uint64_t)(num / freq);
+    }
+    return apic_get_ticks_ms() * 1000000ULL;
 }

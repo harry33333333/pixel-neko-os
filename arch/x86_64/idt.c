@@ -70,6 +70,10 @@ extern void irq22(void);
 extern void irq23(void);
 extern void isr_kernel_yield(void);
 extern void isr_spurious(void);
+extern void isr_ipi_resched(void);
+extern void isr_ipi_tlb(void);
+extern void isr_ipi_panic(void);
+extern void vmm_handle_tlb_shootdown_ipi(void);
 
 // 256-entry 64-bit IDT
 __attribute__((aligned(16)))
@@ -191,7 +195,6 @@ trap_frame_t* c_exception_handler(trap_frame_t* frame) {
 
     if (frame && (frame->cs & 3) == 3 &&
         frame->int_no != 8 && frame->int_no != 18) {
-        per_cpu_set_gs_domain(false);
         uint64_t cr2 = 0;
         if (frame->int_no == 14) {
             __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
@@ -224,8 +227,29 @@ trap_frame_t* c_exception_handler(trap_frame_t* frame) {
 // C-level cooperative kernel yield/sleep/exit dispatcher (int 0x81, DPL 0)
 trap_frame_t* c_kernel_yield_handler(trap_frame_t* frame) {
     if (!frame) return frame;
-    per_cpu_set_gs_domain(false);
     return scheduler_reschedule_from_syscall(frame);
+}
+
+// C-level IPI handlers (SMP)
+trap_frame_t* c_ipi_resched_handler(trap_frame_t* frame) {
+    lapic_eoi();
+    return scheduler_handle_ipi_resched(frame);
+}
+
+trap_frame_t* c_ipi_tlb_handler(trap_frame_t* frame) {
+    vmm_handle_tlb_shootdown_ipi();
+    lapic_eoi();
+    return frame;
+}
+
+void c_ipi_panic_handler(void) {
+    for (;;) {
+        __asm__ volatile ("cli; hlt");
+    }
+}
+
+void idt_load_ap(void) {
+    __asm__ volatile ("lidt %0" : : "m"(g_idt_ptr));
 }
 
 // C-level IRQ dispatcher called from common_irq_stub
@@ -320,6 +344,11 @@ void idt_init(void) {
 
     // Kernel thread cooperative reschedule gate (DPL 0 only)
     idt_set_gate(0x81, (uint64_t)isr_kernel_yield, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+
+    // SMP Inter-Processor Interrupt (IPI) vectors
+    idt_set_gate(0xF0, (uint64_t)isr_ipi_resched, GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(0xF1, (uint64_t)isr_ipi_tlb,     GDT_KERNEL_CODE_SEL, 0x8E, 0);
+    idt_set_gate(0xF2, (uint64_t)isr_ipi_panic,   GDT_KERNEL_CODE_SEL, 0x8E, 0);
 
     g_idt_ptr.limit = sizeof(g_idt) - 1;
     g_idt_ptr.base = (uint64_t)&g_idt;

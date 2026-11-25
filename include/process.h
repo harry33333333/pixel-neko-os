@@ -7,6 +7,7 @@
 #include "vmm.h"
 #include "idt.h"
 #include "fpu.h"
+#include "spinlock.h"
 
 #define PROCESS_MAX_NAME          32
 #define PROCESS_MAX_PATH          128
@@ -52,17 +53,27 @@ struct thread {
     bool is_idle;
     bool is_compositor;
     bool is_user;
+    bool joined;
+    int  thread_exit_code;
+    int32_t pinned_cpu;          /* -1 = any CPU, >= 0 = pinned to specific CPU */
+    volatile int32_t running_cpu;/* -1 = not running, >= 0 = currently running on CPU */
     uint64_t quantum;
-    uint64_t wake_tick;
+    uint64_t wake_tick;          /* 100 Hz tick deadline (0 = none) */
+    uint64_t wake_ns;            /* Monotonic ns deadline (0 = none) */
     uint64_t wait_queue_id;
     uint64_t wait_user_dst;
-    int32_t wait_win_id;
+    int32_t  wait_win_id;
+    phys_addr_t futex_phys;      /* Physical address of futex word (0 = none) */
+    bool     futex_timed_out;
+    uint64_t join_target_tid;    /* TID being joined (0 = none) */
+    uint64_t fs_base;            /* Ring 3 TLS FS_BASE MSR value */
     phys_addr_t kernel_stack_phys;
     size_t kernel_stack_pages;
     uint64_t kernel_stack_top;
     trap_frame_t* resume_frame;
-    uint8_t fpu_state[FPU_STATE_SIZE] __attribute__((aligned(16)));
-    thread_t* next;
+    uint8_t fpu_state[FPU_STATE_SIZE] __attribute__((aligned(64)));
+    thread_t* proc_next;         /* Next thread in same process_t */
+    thread_t* next;              /* Next thread in global scheduler list */
 };
 
 struct process {
@@ -72,6 +83,10 @@ struct process {
     process_t* parent;
     process_t* next;
     thread_t* main_thread;
+    thread_t* threads_head;
+    uint32_t thread_count;
+    uint32_t alive_thread_count;
+    spinlock_t lock;
     pagetable_t pml4;
     phys_addr_t pml4_phys;
     user_region_t* regions;
@@ -85,7 +100,7 @@ struct process {
     bool waited;
     bool runtime_cleaned;
     uint64_t zombie_reap_tick;
-    uint64_t cpu_ticks_total;
+    volatile uint64_t cpu_ticks_total;
     uint64_t mem_pages_used;
     uint64_t r0_heap_bytes;
 
@@ -114,6 +129,7 @@ void process_subsystem_init(void);
 process_t* process_head(void);
 void process_unlink(process_t* process);
 process_t* process_create_idle(void);
+thread_t* process_create_ap_idle(uint32_t cpu_id);
 process_t* process_create_compositor(void);
 process_t* process_create_empty(const char* name, process_t* parent);
 process_t* process_create_r0_empty(const char* name, process_t* parent);
@@ -122,6 +138,9 @@ process_t* process_create_user(const uint8_t* elf, size_t size,
                                const char* arg1, process_t* parent);
 thread_t* process_create_user_thread(process_t* process, uint64_t entry,
                                      uint64_t user_rsp);
+thread_t* process_create_user_subthread(process_t* process, uint64_t entry,
+                                        uint64_t arg, uint64_t user_rsp,
+                                        uint64_t tls_base);
 thread_t* process_create_r0_thread(process_t* process, uint64_t entry,
                                    int argc, const char* const* argv,
                                    uint64_t rdx_api, size_t stack_pages);
@@ -132,6 +151,8 @@ thread_t* process_current_thread(void);
 uint32_t process_current_pid(void);
 void process_cleanup_runtime_resources(process_t* process);
 void process_exit_current(int status);
+void process_thread_exit_current(int status);
+int  process_thread_join(process_t* process, uint64_t target_tid, int* out_status);
 int process_kill(uint32_t pid, int exit_code);
 int process_kill_force(uint32_t pid, int exit_code);
 int64_t process_sbrk(process_t* process, int64_t delta);

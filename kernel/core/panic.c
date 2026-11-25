@@ -1,5 +1,7 @@
 #include "panic.h"
 #include "idt.h"
+#include "apic.h"
+#include "smp.h"
 #include "boot_framebuffer.h"
 #include "log.h"
 #include "port.h"
@@ -57,8 +59,11 @@ static void sys_reboot_8042(void) {
 }
 
 void panic_show_exception(struct trap_frame* frame, const char* name) {
-    // Disable interrupts unconditionally
+    // Disable interrupts unconditionally and freeze all other SMP cores
     __asm__ volatile ("cli");
+    if (smp_get_online_cpus() > 1) {
+        lapic_broadcast_ipi_others(VEC_IPI_PANIC_HALT);
+    }
 
     uint64_t cr2 = 0;
     if (frame && frame->int_no == 14) {

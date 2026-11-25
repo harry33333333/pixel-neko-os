@@ -1,9 +1,12 @@
 #include "log.h"
 #include "port.h"
+#include "spinlock.h"
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdbool.h>
+
+static spinlock_t g_log_lock = SPINLOCK_INIT;
 
 #define LOG_LINE_SIZE      160
 #define LOG_HISTORY_LINES  64
@@ -189,6 +192,7 @@ static int append_unsigned64(char* dst, int pos, int max, uint64_t value,
 }
 
 static void log_commit(const char* line) {
+    uint64_t flags = spin_lock_irqsave(&g_log_lock);
     int length = 0;
     int slot = g_history_next;
     while (line[length] && length < LOG_LINE_SIZE - 1) {
@@ -199,14 +203,13 @@ static void log_commit(const char* line) {
     g_history_next = (g_history_next + 1) % LOG_HISTORY_LINES;
     if (g_history_count < LOG_HISTORY_LINES) g_history_count++;
 
-    uint64_t flags = log_irq_save();
     for (int i = 0; line[i]; i++) {
         if (line[i] == '\n') log_ring_push_byte('\r');
         log_ring_push_byte((uint8_t)line[i]);
     }
-    log_irq_restore(flags);
 
     serial_puts(line);
+    spin_unlock_irqrestore(&g_log_lock, flags);
 
     if (log_line_is_urgent(line)) {
         log_disk_notify_urgent();

@@ -8,6 +8,8 @@
 #include "speaker.h"
 #include "gdt.h"
 #include "idt.h"
+#include "percpu.h"
+#include "smp.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "heap.h"
@@ -102,6 +104,13 @@ __attribute__((used, section(".limine_requests")))
 volatile struct limine_rsdp_request rsdp_request = {
     .id = LIMINE_RSDP_REQUEST,
     .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST,
+    .revision = 0,
+    .flags = LIMINE_SMP_X2APIC
 };
 
 __attribute__((used, section(".limine_requests_end_marker")))
@@ -686,8 +695,9 @@ void kmain(void) {
     // 5. Parse Memory Map
     parse_memory_map();
 
-    // 6. P2.3: Initialize 64-bit GDT, Per-CPU TSS, and IST1 Double Fault Stack
+    // 6. P2.3: Initialize 64-bit GDT, Per-CPU TSS, IST1/IST2 stacks, and BSP GS_BASE
     gdt_init();
+    per_cpu_init_bsp();
 
     // 7. P2.4: Initialize 64-bit IDT (256 vectors, CPU exception stubs, Mac Bomb Panic)
     idt_init();
@@ -869,6 +879,9 @@ void kmain(void) {
     }
 
     log_printf("[SYSTEM] P4b milestone reached: full USB host-controller matrix active.\n");
+
+    // 24. Bring up SMP Application Processors (APs) before entering scheduler
+    smp_init();
     log_disk_flush();
 
     // 25. Hardware IRQs are enabled by the initial IRET to the selected thread.

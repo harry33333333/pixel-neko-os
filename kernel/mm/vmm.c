@@ -1,5 +1,8 @@
 #include "vmm.h"
 #include "pmm.h"
+#include "spinlock.h"
+#include "apic.h"
+#include "smp.h"
 #include "log.h"
 #include "string.h"
 #include "boot_framebuffer.h"
@@ -10,6 +13,11 @@
 extern volatile struct limine_memmap_request memmap_request;
 
 static pagetable_t g_kernel_pml4 = NULL;
+static spinlock_t g_vmm_lock = SPINLOCK_INIT;
+static spinlock_t g_tlb_lock = SPINLOCK_INIT;
+static volatile phys_addr_t g_tlb_target_cr3 = 0;
+static volatile virt_addr_t g_tlb_target_va = 0;
+static volatile uint32_t g_tlb_pending = 0;
 
 static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
@@ -21,6 +29,57 @@ static inline void wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
 
 void vmm_invlpg(virt_addr_t virt) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+}
+
+void vmm_handle_tlb_shootdown_ipi(void) {
+    phys_addr_t target_cr3 = g_tlb_target_cr3;
+    virt_addr_t target_va  = g_tlb_target_va;
+    uint64_t cur_cr3 = 0;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cur_cr3));
+    if (target_cr3 == 0 || (cur_cr3 & PTE_ADDR_MASK) == (target_cr3 & PTE_ADDR_MASK)) {
+        if (target_va != 0) {
+            vmm_invlpg(target_va);
+        } else {
+            __asm__ volatile ("mov %0, %%cr3" : : "r"(cur_cr3) : "memory");
+        }
+    }
+    __atomic_sub_fetch(&g_tlb_pending, 1u, __ATOMIC_RELEASE);
+}
+
+void vmm_tlb_shootdown(pagetable_t pml4, virt_addr_t virt) {
+    if (virt != 0) {
+        vmm_invlpg(virt);
+    }
+    uint32_t online = smp_get_online_cpus();
+    if (online <= 1) return;
+
+    phys_addr_t cr3 = 0;
+    if (pml4 && pml4 != g_kernel_pml4) {
+        (void)virt_to_phys_checked(pml4, &cr3);
+    }
+
+    uint64_t flags = spin_lock_irqsave(&g_tlb_lock);
+    g_tlb_target_cr3 = cr3;
+    g_tlb_target_va  = virt;
+    __atomic_store_n(&g_tlb_pending, online - 1u, __ATOMIC_RELEASE);
+    lapic_broadcast_ipi_others(VEC_IPI_TLB_SHOOTDOWN);
+
+    uint32_t timeout = 2000000u;
+    while (__atomic_load_n(&g_tlb_pending, __ATOMIC_ACQUIRE) > 0 && --timeout) {
+        __asm__ volatile ("pause" : : : "memory");
+    }
+    spin_unlock_irqrestore(&g_tlb_lock, flags);
+}
+
+void vmm_init_pat_ap(void) {
+    uint32_t pat_lo = 0, pat_hi = 0;
+    rdmsr(IA32_PAT_MSR, &pat_lo, &pat_hi);
+    pat_lo &= ~(0xFFu << 8);
+    pat_lo |= (0x01u << 8);
+    wrmsr(IA32_PAT_MSR, pat_lo, pat_hi);
+    if (g_kernel_pml4) {
+        vmm_switch_pml4(g_kernel_pml4);
+    }
 }
 
 void vmm_switch_pml4(pagetable_t pml4) {
@@ -230,6 +289,7 @@ static pagetable_t get_next_level(pagetable_t table, uint64_t index, bool alloca
 bool vmm_map_page(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, uint64_t flags) {
     if (!pml4) return false;
 
+    uint64_t irq_flags = spin_lock_irqsave(&g_vmm_lock);
     uint64_t pml4_idx = (virt >> 39) & 0x1FF;
     uint64_t pdpt_idx = (virt >> 30) & 0x1FF;
     uint64_t pd_idx   = (virt >> 21) & 0x1FF;
@@ -237,26 +297,36 @@ bool vmm_map_page(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, uint64_t
 
     pagetable_t pdpt = get_next_level(pml4, pml4_idx, true, flags);
     if (!pdpt) {
-        if (pml4[pml4_idx] & PTE_LARGE_PAGE) return true;
-        return false;
+        bool ok = (pml4[pml4_idx] & PTE_LARGE_PAGE) != 0;
+        spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
+        return ok;
     }
 
     if (pdpt[pdpt_idx] & PTE_LARGE_PAGE) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
         return true; // Covered by 1GB large page
     }
 
     pagetable_t pd = get_next_level(pdpt, pdpt_idx, true, flags);
-    if (!pd) return false;
+    if (!pd) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
+        return false;
+    }
 
     if (pd[pd_idx] & PTE_LARGE_PAGE) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
         return true; // Covered by 2MB large page
     }
 
     pagetable_t pt = get_next_level(pd, pd_idx, true, flags);
-    if (!pt) return false;
+    if (!pt) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
+        return false;
+    }
 
     pt[pt_idx] = (phys & ~0xFFFULL) | flags | PTE_PRESENT;
     vmm_invlpg(virt);
+    spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
     return true;
 }
 
@@ -279,22 +349,24 @@ bool vmm_map_range(pagetable_t pml4, virt_addr_t virt, phys_addr_t phys, size_t 
 bool vmm_unmap_page(pagetable_t pml4, virt_addr_t virt) {
     if (!pml4) return false;
 
+    uint64_t irq_flags = spin_lock_irqsave(&g_vmm_lock);
     uint64_t pml4_idx = (virt >> 39) & 0x1FF;
     uint64_t pdpt_idx = (virt >> 30) & 0x1FF;
     uint64_t pd_idx   = (virt >> 21) & 0x1FF;
     uint64_t pt_idx   = (virt >> 12) & 0x1FF;
 
     pagetable_t pdpt = get_next_level(pml4, pml4_idx, false, 0);
-    if (!pdpt) return false;
+    if (!pdpt) { spin_unlock_irqrestore(&g_vmm_lock, irq_flags); return false; }
 
     pagetable_t pd = get_next_level(pdpt, pdpt_idx, false, 0);
-    if (!pd) return false;
+    if (!pd) { spin_unlock_irqrestore(&g_vmm_lock, irq_flags); return false; }
 
     pagetable_t pt = get_next_level(pd, pd_idx, false, 0);
-    if (!pt) return false;
+    if (!pt) { spin_unlock_irqrestore(&g_vmm_lock, irq_flags); return false; }
 
     pt[pt_idx] = 0;
-    vmm_invlpg(virt);
+    spin_unlock_irqrestore(&g_vmm_lock, irq_flags);
+    vmm_tlb_shootdown(pml4, virt);
     return true;
 }
 

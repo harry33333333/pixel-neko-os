@@ -38,6 +38,7 @@ struct gdt_ptr {
 typedef struct gdt_ptr gdt_ptr_t;
 
 void gdt_init(void);
+void gdt_init_ap(uint32_t cpu_id);
 void tss_set_rsp0(uint64_t rsp0);
 
 #endif /* _GDT_H */

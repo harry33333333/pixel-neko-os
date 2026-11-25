@@ -1,4 +1,4 @@
-; Pixel Neko OS - 64-Bit Interrupt & Exception Stubs
+; Pixel Neko OS - 64-Bit Interrupt, Exception & SMP IPI Stubs
 ; Architecture: AMD64 / x86-64 Long Mode
 
 [bits 64]
@@ -7,6 +7,9 @@ default rel
 extern c_exception_handler
 extern c_irq_handler
 extern c_kernel_yield_handler
+extern c_ipi_resched_handler
+extern c_ipi_tlb_handler
+extern c_ipi_panic_handler
 extern arch_restore_trap_frame
 
 %macro ISR_NOERRCODE 1
@@ -30,6 +33,24 @@ irq%1:
     push 0                  ; Dummy error code
     push %2                 ; Interrupt vector number
     jmp common_irq_stub
+%endmacro
+
+%macro PUSH_GPRS 0
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
 %endmacro
 
 section .text
@@ -68,7 +89,7 @@ ISR_ERRCODE   29  ; #VC VMM Communication Exception
 ISR_ERRCODE   30  ; #SX Security Exception
 ISR_NOERRCODE 31  ; Reserved
 
-; 32..47 Hardware IRQs (Master/Slave PIC or APIC IOAPIC)
+; 32..55 Hardware IRQs (APIC IOAPIC + LAPIC Timer)
 IRQ 0, 32   ; Timer
 IRQ 1, 33   ; PS/2 Keyboard
 IRQ 2, 34   ; Cascade
@@ -96,54 +117,23 @@ IRQ 23, 55  ; IOAPIC GSI 23 / PCI INTx
 
 ; Common Exception Handler Stub
 common_isr_stub:
-    ; 1. Save all 15 general-purpose registers
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push rbp
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-
-    ; 2. Pass trap_frame pointer in RDI (1st argument in SysV AMD64 ABI)
+    PUSH_GPRS
+    test byte [rsp + 18*8], 3
+    jz .from_kernel
+    swapgs
+.from_kernel:
     mov rdi, rsp
-
-    ; 3. Clear direction flag (System V ABI requirement)
     cld
-
-    ; 4. Call C-level exception dispatcher (returns trap_frame_t* in RAX)
     call c_exception_handler
     mov rsp, rax
     jmp arch_restore_trap_frame
 
-; Software Interrupt 0x81: Cooperative Kernel Thread Yield / Sleep / Exit
+; Software Interrupt 0x81: Cooperative Kernel Thread Yield / Sleep / Exit (DPL 0)
 global isr_kernel_yield
 isr_kernel_yield:
     push 0
     push 0x81
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push rbp
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
+    PUSH_GPRS
     mov rdi, rsp
     cld
     call c_kernel_yield_handler
@@ -152,30 +142,59 @@ isr_kernel_yield:
 
 ; Common IRQ Handler Stub
 common_irq_stub:
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push rbp
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-
+    PUSH_GPRS
+    test byte [rsp + 18*8], 3
+    jz .from_kernel
+    swapgs
+.from_kernel:
     mov rdi, rsp
     cld
     call c_irq_handler
     mov rsp, rax
     jmp arch_restore_trap_frame
 
+; SMP IPI 0xF0: Reschedule
+global isr_ipi_resched
+isr_ipi_resched:
+    push 0
+    push 0xF0
+    PUSH_GPRS
+    test byte [rsp + 18*8], 3
+    jz .from_kernel
+    swapgs
+.from_kernel:
+    mov rdi, rsp
+    cld
+    call c_ipi_resched_handler
+    mov rsp, rax
+    jmp arch_restore_trap_frame
+
+; SMP IPI 0xF1: TLB Shootdown
+global isr_ipi_tlb
+isr_ipi_tlb:
+    push 0
+    push 0xF1
+    PUSH_GPRS
+    test byte [rsp + 18*8], 3
+    jz .from_kernel
+    swapgs
+.from_kernel:
+    mov rdi, rsp
+    cld
+    call c_ipi_tlb_handler
+    mov rsp, rax
+    jmp arch_restore_trap_frame
+
+; SMP IPI 0xF2: Panic Halt (freeze AP cleanly)
+global isr_ipi_panic
+isr_ipi_panic:
+    cli
+    call c_ipi_panic_handler
+.halt_loop:
+    hlt
+    jmp .halt_loop
+
 ; Spurious interrupt handler (no EOI needed, just IRETQ)
 global isr_spurious
 isr_spurious:
     iretq
-

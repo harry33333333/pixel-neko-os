@@ -58,9 +58,11 @@ PXE_HEADERS := $(SDK_DIR)/include/pxe/abi.h \
                $(SDK_DIR)/include/pxe/mem.h \
                $(SDK_DIR)/include/pxe/ring0.h \
                $(SDK_DIR)/include/pxe/str.h \
-               $(SDK_DIR)/include/pxe/sys.h
+               $(SDK_DIR)/include/pxe/sys.h \
+               $(SDK_DIR)/include/pxe/thread.h
 
 PXE_R3_OBJS := $(SDK_DIR)/lib/obj_r3/runtime_r3.o \
+               $(SDK_DIR)/lib/obj_r3/thread.o \
                $(SDK_DIR)/lib/obj_r3/gfx.o \
                $(SDK_DIR)/lib/obj_r3/str.o
 

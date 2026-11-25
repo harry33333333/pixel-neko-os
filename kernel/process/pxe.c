@@ -1,9 +1,12 @@
 #include "pxe.h"
+#include "apic.h"
 #include "audio.h"
 #include "blkdev.h"
 #include "boot_framebuffer.h"
 #include "cpu.h"
 #include "desktop.h"
+#include "percpu.h"
+#include "smp.h"
 #include "format.h"
 #include "gfx_accel.h"
 #include "heap.h"
@@ -1286,6 +1289,63 @@ static const void* r0_api_get_cjk_font(void) {
     return font_cjk_get_table();
 }
 
+static int r0_api_get_cpu_stats(pxe_r0_cpu_summary_t* out_summary,
+                                pxe_r0_cpu_core_stat_t* out_cores,
+                                int max_cores) {
+    smp_topology_t topo;
+    smp_get_topology(&topo);
+
+    uint32_t total_cpus = smp_get_cpu_count();
+    if (total_cpus == 0) total_cpus = 1;
+    if (total_cpus > SMP_MAX_CPUS) total_cpus = SMP_MAX_CPUS;
+
+    if (out_summary) {
+        memset(out_summary, 0, sizeof(*out_summary));
+        out_summary->logical_cpus   = topo.logical_cpus;
+        out_summary->physical_cores = topo.physical_cores;
+        out_summary->packages       = topo.packages;
+        out_summary->smt_enabled    = topo.smt_enabled ? 1u : 0u;
+        out_summary->base_mhz       = g_cpu_info.mhz;
+        out_summary->uptime_ms      = apic_get_ticks_ms();
+        strncpy(out_summary->cpu_brand, cpu_model_string, sizeof(out_summary->cpu_brand) - 1);
+
+        uint64_t flags = pxe_irq_save();
+        uint32_t pcnt = 0;
+        for (process_t* p = process_head(); p; p = p->next) {
+            if (p->state != PROCESS_ZOMBIE) pcnt++;
+        }
+        pxe_irq_restore(flags);
+        out_summary->process_count = pcnt;
+        out_summary->thread_count  = scheduler_get_thread_count();
+    }
+
+    int written = 0;
+    if (out_cores && max_cores > 0) {
+        for (uint32_t i = 0; i < total_cpus && written < max_cores; i++) {
+            per_cpu_t* c = smp_get_cpu(i);
+            if (!c || !c->online) continue;
+            pxe_r0_cpu_core_stat_t* dst = &out_cores[written++];
+            memset(dst, 0, sizeof(*dst));
+            dst->cpu_id       = c->cpu_id;
+            dst->lapic_id     = c->lapic_id;
+            dst->package_id   = (uint16_t)c->package_id;
+            dst->core_id      = (uint16_t)c->core_id;
+            dst->smt_id       = (uint8_t)c->smt_id;
+            dst->core_type    = c->core_type;
+            dst->online       = c->online;
+            dst->ticks_total  = c->ticks_total;
+            dst->ticks_idle   = c->ticks_idle;
+            dst->ticks_kernel = c->ticks_kernel;
+            dst->ticks_user   = c->ticks_user;
+        }
+    }
+    return written;
+}
+
+static uint64_t r0_api_get_time_ns(void) {
+    return cpu_monotonic_ns();
+}
+
 static const pxe_ring0_api_t g_pxe_ring0_api = {
     .api_version          = PXE_R0_API_VERSION,
     .struct_size          = sizeof(pxe_ring0_api_t),
@@ -1346,7 +1406,9 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .get_display_caps     = pxe_kern_get_display_caps,
     .fs_create            = r0_api_fs_create,
     .fs_write             = r0_api_fs_write,
-    .get_cjk_font         = r0_api_get_cjk_font
+    .get_cjk_font         = r0_api_get_cjk_font,
+    .get_cpu_stats        = r0_api_get_cpu_stats,
+    .get_time_ns          = r0_api_get_time_ns
 };
 
 /* =========================================================================

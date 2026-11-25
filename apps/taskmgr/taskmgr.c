@@ -8,9 +8,21 @@
 #include <pxe/ring0.h>
 
 #define MAX_PROCS     32
+#define MAX_CPUS      128
+#define HIST_LEN      60
 #define ROW_H         16
 #define HEADER_H      18
 #define SB_W          14
+#define TAB_BAR_H     24
+
+#define TAB_PROCESSES   0
+#define TAB_PERFORMANCE 1
+
+#define PERF_SUB_CPU    0
+#define PERF_SUB_MEM    1
+
+#define CPU_MODE_OVERALL 0
+#define CPU_MODE_LOGICAL 1
 
 #define SORT_NONE     0
 #define SORT_PID      1
@@ -20,11 +32,31 @@
 typedef struct {
     int win_id;
     int self_pid;
+    int active_tab;       /* TAB_PROCESSES or TAB_PERFORMANCE */
+    int perf_sub;         /* PERF_SUB_CPU or PERF_SUB_MEM */
+    int cpu_graph_mode;   /* CPU_MODE_OVERALL or CPU_MODE_LOGICAL */
+    int perf_scroll_row;  /* Row offset for Logical Processors grid */
+
     pxe_r0_mem_info_t mem;
     pxe_r0_proc_info_t procs[MAX_PROCS];
     int proc_cpu_pct[MAX_PROCS];
     int total_cpu_pct;
+    int total_kern_pct;
     int proc_count;
+
+    /* SMP Per-CPU live stats & 60-sample rolling history */
+    pxe_r0_cpu_summary_t cpu_sum;
+    pxe_r0_cpu_core_stat_t cores[MAX_CPUS];
+    pxe_r0_cpu_core_stat_t prev_cores[MAX_CPUS];
+    int core_count;
+    int has_prev_cores;
+    uint8_t core_pct[MAX_CPUS];
+    uint8_t core_hist[MAX_CPUS][HIST_LEN];
+    uint8_t total_hist[HIST_LEN];
+    uint8_t kern_hist[HIST_LEN];
+    uint8_t mem_hist[HIST_LEN];
+    int hist_pos;
+    int hist_count;
 
     int has_prev;
     int prev_count;
@@ -36,7 +68,7 @@ typedef struct {
     int selected_idx;
     uint32_t selected_pid;
     int scroll_offset;
-    int press_btn;   /* 0=none, 1=refresh, 2=switch, 3=end_task, 4=live/pause */
+    int press_btn;   /* 0=none, 1=refresh, 2=switch, 3=end_task, 4=live/pause, 5=new_task */
     int hover_btn;
     int warn_modal;
     uint32_t warn_target_pid;
@@ -90,9 +122,9 @@ static int is_critical_system_proc(const taskmgr_state_t* st, const pxe_r0_proc_
 static void get_table_rect(const pxe_win_surface_t* surf,
                            int* tx, int* ty, int* tw, int* th, int* vis_rows) {
     *tx = 8;
-    *ty = 64;
+    *ty = TAB_BAR_H + 58;
     *tw = surf->width - 16;
-    *th = surf->height - 112;
+    *th = surf->height - (TAB_BAR_H + 104);
     if (*th < 64) *th = 64;
     int body_h = *th - HEADER_H - 2;
     *vis_rows = body_h / ROW_H;
@@ -104,6 +136,49 @@ static void clamp_scroll(taskmgr_state_t* st, int vis_rows) {
     if (max_scroll < 0) max_scroll = 0;
     if (st->scroll_offset > max_scroll) st->scroll_offset = max_scroll;
     if (st->scroll_offset < 0) st->scroll_offset = 0;
+}
+
+static void compute_logical_grid(int core_count, int area_w, int area_h,
+                                 int* out_cols, int* out_total_rows, int* out_vis_rows) {
+    int cols = 1;
+    if (core_count <= 1) cols = 1;
+    else if (core_count <= 2) cols = 2;
+    else if (core_count <= 4) cols = 2;
+    else if (core_count <= 8) cols = 4;
+    else if (core_count <= 16) cols = 4;
+    else if (core_count <= 32) cols = 4;
+    else if (core_count <= 64) cols = 6;
+    else cols = 8;
+
+    /* Shrink columns if window is narrow so each cell stays legible (>= 72px) */
+    while (cols > 1 && (area_w / cols) < 72) {
+        cols--;
+    }
+    int total_rows = (core_count + cols - 1) / cols;
+    if (total_rows < 1) total_rows = 1;
+
+    int min_cell_h = 46;
+    int vis_rows = area_h / min_cell_h;
+    if (vis_rows < 1) vis_rows = 1;
+    if (vis_rows > total_rows) vis_rows = total_rows;
+
+    *out_cols = cols;
+    *out_total_rows = total_rows;
+    *out_vis_rows = vis_rows;
+}
+
+static void clamp_perf_scroll(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
+    int area_w = surf->width - 116 - SB_W;
+    int area_h = surf->height - (TAB_BAR_H + 44);
+    if (area_w < 80) area_w = 80;
+    if (area_h < 60) area_h = 60;
+    int cols, total_rows, vis_rows;
+    compute_logical_grid(st->core_count > 0 ? st->core_count : 1,
+                         area_w, area_h, &cols, &total_rows, &vis_rows);
+    int max_s = total_rows - vis_rows;
+    if (max_s < 0) max_s = 0;
+    if (st->perf_scroll_row > max_s) st->perf_scroll_row = max_s;
+    if (st->perf_scroll_row < 0) st->perf_scroll_row = 0;
 }
 
 static uint64_t lookup_prev_ticks(const taskmgr_state_t* st, uint32_t pid, int* found) {
@@ -171,13 +246,71 @@ static void reselect_pid(taskmgr_state_t* st) {
 
 static void refresh_data(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
     pxe_r0_get_memory_summary(&st->mem);
+
+    /* Sample SMP Per-CPU statistics */
+    int nc = pxe_r0_get_cpu_stats(&st->cpu_sum, st->cores, MAX_CPUS);
+    if (nc < 0) nc = 0;
+    if (nc > MAX_CPUS) nc = MAX_CPUS;
+    st->core_count = nc;
+
+    uint64_t sum_total_dt = 0;
+    uint64_t sum_busy_dt  = 0;
+    uint64_t sum_kern_dt  = 0;
+
+    if (nc > 0) {
+        if (st->has_prev_cores) {
+            for (int i = 0; i < nc; i++) {
+                uint64_t dt_tot = (st->cores[i].ticks_total >= st->prev_cores[i].ticks_total)
+                                      ? (st->cores[i].ticks_total - st->prev_cores[i].ticks_total) : 0;
+                uint64_t dt_idl = (st->cores[i].ticks_idle >= st->prev_cores[i].ticks_idle)
+                                      ? (st->cores[i].ticks_idle - st->prev_cores[i].ticks_idle) : 0;
+                uint64_t dt_krn = (st->cores[i].ticks_kernel >= st->prev_cores[i].ticks_kernel)
+                                      ? (st->cores[i].ticks_kernel - st->prev_cores[i].ticks_kernel) : 0;
+                uint64_t dt_busy = (dt_tot >= dt_idl) ? (dt_tot - dt_idl) : 0;
+                int pct = (dt_tot > 0) ? (int)((dt_busy * 100ULL) / dt_tot) : 0;
+                if (pct > 100) pct = 100;
+                st->core_pct[i] = (uint8_t)pct;
+                st->core_hist[i][st->hist_pos] = (uint8_t)pct;
+                sum_total_dt += dt_tot;
+                sum_busy_dt  += dt_busy;
+                sum_kern_dt  += dt_krn;
+            }
+            if (sum_total_dt > 0) {
+                st->total_cpu_pct = (int)((sum_busy_dt * 100ULL) / sum_total_dt);
+                st->total_kern_pct = (int)((sum_kern_dt * 100ULL) / sum_total_dt);
+                if (st->total_cpu_pct > 100) st->total_cpu_pct = 100;
+                if (st->total_kern_pct > st->total_cpu_pct) st->total_kern_pct = st->total_cpu_pct;
+            }
+        } else {
+            for (int i = 0; i < nc; i++) {
+                st->core_pct[i] = 0;
+                st->core_hist[i][st->hist_pos] = 0;
+            }
+            st->total_cpu_pct = 0;
+            st->total_kern_pct = 0;
+        }
+        for (int i = 0; i < nc; i++) {
+            st->prev_cores[i] = st->cores[i];
+        }
+        st->has_prev_cores = 1;
+    }
+
+    int mem_pct = (st->mem.total_pages > 0)
+                      ? (int)((st->mem.used_pages * 100ULL) / st->mem.total_pages) : 0;
+    if (mem_pct > 100) mem_pct = 100;
+    st->total_hist[st->hist_pos] = (uint8_t)st->total_cpu_pct;
+    st->kern_hist[st->hist_pos]  = (uint8_t)st->total_kern_pct;
+    st->mem_hist[st->hist_pos]   = (uint8_t)mem_pct;
+    st->hist_pos = (st->hist_pos + 1) % HIST_LEN;
+    if (st->hist_count < HIST_LEN) st->hist_count++;
+
+    /* Enumerate processes & normalize CPU% across all logical CPUs */
     int n = pxe_r0_enum_processes(st->procs, MAX_PROCS);
     if (n < 0) n = 0;
     if (n > MAX_PROCS) n = MAX_PROCS;
     st->proc_count = n;
 
     uint64_t deltas[MAX_PROCS];
-    uint64_t delta_idle = 0;
     uint64_t delta_busy = 0;
 
     for (int i = 0; i < st->proc_count; i++) {
@@ -187,29 +320,30 @@ static void refresh_data(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
                           ? (st->procs[i].cpu_ticks_total - old_t)
                           : 0;
         deltas[i] = dt;
-        if (st->procs[i].pid == 0) {
-            delta_idle += dt;
-        } else {
-            delta_busy += dt;
-        }
+        if (st->procs[i].pid != 0) delta_busy += dt;
     }
 
-    uint64_t delta_total = delta_idle + delta_busy;
+    uint64_t denom = sum_total_dt;
+    if (denom < delta_busy) denom = delta_busy;
+
     if (!st->has_prev) {
         for (int i = 0; i < st->proc_count; i++) st->proc_cpu_pct[i] = 0;
-        st->total_cpu_pct = 0;
         for (int i = 0; i < st->proc_count; i++) {
             st->prev_pids[i] = st->procs[i].pid;
             st->prev_ticks[i] = st->procs[i].cpu_ticks_total;
         }
         st->prev_count = st->proc_count;
         st->has_prev = 1;
-    } else if (delta_total >= 5ULL) {
-        st->total_cpu_pct = (int)((delta_busy * 100ULL) / delta_total);
-        if (st->total_cpu_pct > 100) st->total_cpu_pct = 100;
+    } else if (denom >= 5ULL) {
         for (int i = 0; i < st->proc_count; i++) {
-            int pct = (int)((deltas[i] * 100ULL) / delta_total);
-            if (pct > 100) pct = 100;
+            int pct = 0;
+            if (st->procs[i].pid == 0) {
+                pct = 100 - st->total_cpu_pct;
+                if (pct < 0) pct = 0;
+            } else {
+                pct = (int)((deltas[i] * 100ULL) / denom);
+                if (pct > 100) pct = 100;
+            }
             st->proc_cpu_pct[i] = pct;
         }
         for (int i = 0; i < st->proc_count; i++) {
@@ -218,9 +352,7 @@ static void refresh_data(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
         }
         st->prev_count = st->proc_count;
     } else {
-        for (int i = 0; i < st->proc_count; i++) {
-            st->proc_cpu_pct[i] = 0;
-        }
+        for (int i = 0; i < st->proc_count; i++) st->proc_cpu_pct[i] = 0;
     }
 
     sort_processes(st);
@@ -229,6 +361,7 @@ static void refresh_data(taskmgr_state_t* st, const pxe_win_surface_t* surf) {
     int tx, ty, tw, th, vis_rows;
     get_table_rect(surf, &tx, &ty, &tw, &th, &vis_rows);
     clamp_scroll(st, vis_rows);
+    clamp_perf_scroll(st, surf);
 }
 
 static const pxe_r0_proc_info_t* get_selected_proc(const taskmgr_state_t* st) {
@@ -244,13 +377,313 @@ static void compute_buttons(const pxe_win_surface_t* surf,
                             int* b5x, int* b5w,
                             int* by, int* bh) {
     (void)surf;
-    *by = surf->height - 38;
+    *by = surf->height - 34;
     *bh = 24;
     *b1x = 8;   *b1w = 56;
     *b2x = 68;  *b2w = 72;
     *b3x = 144; *b3w = 74;
     *b4x = 222; *b4w = 56;
     *b5x = 282; *b5w = 90;
+}
+
+static void draw_graph_box(const pxe_win_surface_t* surf, int gx, int gy, int gw, int gh,
+                           const uint8_t* hist, const uint8_t* overlay_hist,
+                           int hist_pos, int hist_count,
+                           uint32_t line_col, uint32_t fill_col, uint32_t overlay_col) {
+    if (gw < 8 || gh < 8) return;
+    pxe_draw_bevel_box(surf, gx, gy, gw, gh, 1, PXE_COL_BLACK);
+    int ix = gx + 2, iy = gy + 2, iw = gw - 4, ih = gh - 4;
+    if (iw <= 2 || ih <= 2) return;
+
+    /* Grid lines (25%, 50%, 75% horizontal + vertical) */
+    for (int r = 1; r <= 3; r++) {
+        int ly = iy + (ih * r) / 4;
+        pxe_draw_hline(surf, ix, ly, iw, PXE_COL_DARK_GREEN);
+    }
+    int vstep = (iw >= 80) ? 20 : 12;
+    for (int lx = ix + vstep; lx < ix + iw; lx += vstep) {
+        pxe_draw_vline(surf, lx, iy, ih, PXE_COL_DARK_GREEN);
+    }
+
+    if (hist_count <= 0) return;
+
+    /* Plot samples right-aligned */
+    for (int px = 0; px < iw; px++) {
+        int sample_from_right = ((iw - 1 - px) * (HIST_LEN - 1)) / (iw > 1 ? (iw - 1) : 1);
+        if (sample_from_right >= hist_count) continue;
+        int idx = (hist_pos - 1 - sample_from_right + HIST_LEN * 2) % HIST_LEN;
+        int val = hist[idx];
+        if (val > 100) val = 100;
+        int bar_h = (val * (ih - 1)) / 100;
+        int top_y = iy + ih - 1 - bar_h;
+        if (bar_h > 0 && fill_col != PXE_COL_TRANSPARENT) {
+            pxe_draw_vline(surf, ix + px, top_y, bar_h, fill_col);
+        }
+        pxe_put_pixel(surf, ix + px, top_y, line_col);
+
+        if (overlay_hist && overlay_col != PXE_COL_TRANSPARENT) {
+            int oval = overlay_hist[idx];
+            if (oval > val) oval = val;
+            if (oval > 0) {
+                int oh = (oval * (ih - 1)) / 100;
+                int oy = iy + ih - 1 - oh;
+                pxe_put_pixel(surf, ix + px, oy, overlay_col);
+            }
+        }
+    }
+}
+
+static void render_tab_bar(const pxe_win_surface_t* surf, const taskmgr_state_t* st) {
+    pxe_fill_rect(surf, 0, 0, surf->width, TAB_BAR_H, PXE_COL_LIGHT_GRAY);
+    pxe_draw_hline(surf, 0, TAB_BAR_H - 1, surf->width, PXE_COL_DARK_GRAY);
+
+    int t0_x = 8, t0_w = 104;
+    int t1_x = 116, t1_w = 112;
+
+    /* Tab 0: Processes */
+    if (st->active_tab == TAB_PROCESSES) {
+        pxe_fill_rect(surf, t0_x, 3, t0_w, TAB_BAR_H - 3, PXE_COL_WHITE);
+        pxe_draw_hline(surf, t0_x, 3, t0_w, PXE_COL_BLACK);
+        pxe_draw_vline(surf, t0_x, 3, TAB_BAR_H - 3, PXE_COL_BLACK);
+        pxe_draw_vline(surf, t0_x + t0_w - 1, 3, TAB_BAR_H - 3, PXE_COL_BLACK);
+        pxe_draw_text(surf, t0_x + 12, 6, st->zh ? "进程" : "Processes", PXE_COL_DARK_BLUE);
+    } else {
+        pxe_draw_bevel_box(surf, t0_x, 5, t0_w, TAB_BAR_H - 6, 0, PXE_COL_LIGHT_GRAY);
+        pxe_draw_text(surf, t0_x + 12, 7, st->zh ? "进程" : "Processes", PXE_COL_BLACK);
+    }
+
+    /* Tab 1: Performance */
+    if (st->active_tab == TAB_PERFORMANCE) {
+        pxe_fill_rect(surf, t1_x, 3, t1_w, TAB_BAR_H - 3, PXE_COL_WHITE);
+        pxe_draw_hline(surf, t1_x, 3, t1_w, PXE_COL_BLACK);
+        pxe_draw_vline(surf, t1_x, 3, TAB_BAR_H - 3, PXE_COL_BLACK);
+        pxe_draw_vline(surf, t1_x + t1_w - 1, 3, TAB_BAR_H - 3, PXE_COL_BLACK);
+        pxe_draw_text(surf, t1_x + 10, 6, st->zh ? "性能" : "Performance", PXE_COL_DARK_BLUE);
+    } else {
+        pxe_draw_bevel_box(surf, t1_x, 5, t1_w, TAB_BAR_H - 6, 0, PXE_COL_LIGHT_GRAY);
+        pxe_draw_text(surf, t1_x + 10, 7, st->zh ? "性能" : "Performance", PXE_COL_BLACK);
+    }
+
+    /* Right side compact SMP badge */
+    if (surf->width >= 360) {
+        char badge[48];
+        uint32_t lcpus = st->cpu_sum.logical_cpus ? st->cpu_sum.logical_cpus : 1u;
+        snprintf(badge, sizeof(badge), "CPU:%d%% (%uT) %s",
+                 st->total_cpu_pct, (unsigned)lcpus,
+                 st->paused ? (st->zh ? "[暂停]" : "[PAUSED]") : "");
+        int bw = pxe_text_width_small(badge);
+        pxe_draw_text_small(surf, surf->width - bw - 10, 8, badge, PXE_COL_DARK_BLUE);
+    }
+}
+
+static void render_performance_tab(const pxe_win_surface_t* surf, const taskmgr_state_t* st) {
+    char line[160];
+    int top_y = TAB_BAR_H + 6;
+    int body_h = surf->height - top_y - 8;
+    if (body_h < 80) body_h = 80;
+
+    /* Left sidebar: [ CPU ] and [ Memory ] */
+    int sb_x = 8, sb_w = 96;
+    pxe_draw_bevel_box(surf, sb_x, top_y, sb_w, body_h, 1, PXE_COL_WHITE);
+
+    /* CPU sidebar card */
+    int c0_y = top_y + 4, c0_h = 56;
+    pxe_fill_rect(surf, sb_x + 2, c0_y, sb_w - 4, c0_h,
+                  (st->perf_sub == PERF_SUB_CPU) ? PXE_COL_DARK_BLUE : PXE_COL_LIGHT_GRAY);
+    uint32_t fg0 = (st->perf_sub == PERF_SUB_CPU) ? PXE_COL_WHITE : PXE_COL_BLACK;
+    pxe_draw_text(surf, sb_x + 8, c0_y + 4, "CPU", fg0);
+    snprintf(line, sizeof(line), "%d%%", st->total_cpu_pct);
+    pxe_draw_text_small(surf, sb_x + 8, c0_y + 22, line, fg0);
+    snprintf(line, sizeof(line), "%uC/%uT",
+             (unsigned)(st->cpu_sum.physical_cores ? st->cpu_sum.physical_cores : 1u),
+             (unsigned)(st->cpu_sum.logical_cpus ? st->cpu_sum.logical_cpus : 1u));
+    pxe_draw_text_small(surf, sb_x + 8, c0_y + 36, line, fg0);
+
+    /* Memory sidebar card */
+    int c1_y = c0_y + c0_h + 4, c1_h = 56;
+    uint64_t total_mb = st->mem.total_bytes / (1024ULL * 1024ULL);
+    uint64_t free_mb  = st->mem.free_bytes / (1024ULL * 1024ULL);
+    uint64_t used_mb  = (total_mb >= free_mb) ? (total_mb - free_mb) : 0;
+    int mem_pct = (st->mem.total_pages > 0)
+                      ? (int)((st->mem.used_pages * 100ULL) / st->mem.total_pages) : 0;
+    if (mem_pct > 100) mem_pct = 100;
+
+    pxe_fill_rect(surf, sb_x + 2, c1_y, sb_w - 4, c1_h,
+                  (st->perf_sub == PERF_SUB_MEM) ? PXE_COL_DARK_BLUE : PXE_COL_LIGHT_GRAY);
+    uint32_t fg1 = (st->perf_sub == PERF_SUB_MEM) ? PXE_COL_WHITE : PXE_COL_BLACK;
+    pxe_draw_text(surf, sb_x + 8, c1_y + 4, st->zh ? "内存" : "Memory", fg1);
+    snprintf(line, sizeof(line), "%d%%", mem_pct);
+    pxe_draw_text_small(surf, sb_x + 8, c1_y + 22, line, fg1);
+    snprintf(line, sizeof(line), "%llu/%lluM",
+             (unsigned long long)used_mb, (unsigned long long)total_mb);
+    pxe_draw_text_small(surf, sb_x + 8, c1_y + 36, line, fg1);
+
+    /* Right detail panel */
+    int rx = sb_x + sb_w + 6;
+    int rw = surf->width - rx - 8;
+    if (rw < 120) rw = 120;
+    pxe_draw_bevel_box(surf, rx, top_y, rw, body_h, 1, PXE_COL_WHITE);
+
+    if (st->perf_sub == PERF_SUB_CPU) {
+        /* Header + Overall / Logical toggle button */
+        int btn_w = 118, btn_h = 20;
+        int btn_x = rx + rw - btn_w - 6;
+        int btn_y = top_y + 5;
+        pxe_draw_text(surf, rx + 8, top_y + 6,
+                      st->zh ? "处理器 (CPU)" : "CPU", PXE_COL_DARK_BLUE);
+        pxe_draw_button(surf, btn_x, btn_y, btn_w, btn_h,
+                        (st->cpu_graph_mode == CPU_MODE_OVERALL)
+                            ? (st->zh ? "切换:逻辑处理器" : "View: Logical")
+                            : (st->zh ? "切换:总体利用率" : "View: Overall"),
+                        0, 1);
+
+        /* Brand string */
+        if (st->cpu_sum.cpu_brand[0]) {
+            pxe_draw_text_small(surf, rx + 8, top_y + 24, st->cpu_sum.cpu_brand, PXE_COL_DARK_GRAY);
+        }
+
+        if (st->cpu_graph_mode == CPU_MODE_OVERALL) {
+            int gx = rx + 8, gy = top_y + 38;
+            int gw = rw - 16;
+            int gh = body_h - 122;
+            if (gh < 56) gh = 56;
+            draw_graph_box(surf, gx, gy, gw, gh,
+                           st->total_hist, st->kern_hist,
+                           st->hist_pos, st->hist_count,
+                           PXE_COL_GREEN, PXE_COL_DARK_GREEN, PXE_COL_RED);
+
+            int iy = gy + gh + 8;
+            uint64_t up_sec = st->cpu_sum.uptime_ms / 1000ULL;
+            uint32_t hh = (uint32_t)(up_sec / 3600ULL);
+            uint32_t mm = (uint32_t)((up_sec % 3600ULL) / 60ULL);
+            uint32_t ss = (uint32_t)(up_sec % 60ULL);
+
+            snprintf(line, sizeof(line),
+                     st->zh ? "利用率: %d%% (内核 %d%%)   基准频率: %u MHz"
+                            : "Utilization: %d%% (Kernel %d%%)   Base: %u MHz",
+                     st->total_cpu_pct, st->total_kern_pct, (unsigned)st->cpu_sum.base_mhz);
+            pxe_draw_text_small(surf, rx + 8, iy, line, PXE_COL_BLACK);
+
+            snprintf(line, sizeof(line),
+                     st->zh ? "插槽: %u   物理核心: %u   逻辑处理器: %u   超线程: %s"
+                            : "Sockets: %u   Cores: %u   Logical: %u   SMT: %s",
+                     (unsigned)(st->cpu_sum.packages ? st->cpu_sum.packages : 1u),
+                     (unsigned)(st->cpu_sum.physical_cores ? st->cpu_sum.physical_cores : 1u),
+                     (unsigned)(st->cpu_sum.logical_cpus ? st->cpu_sum.logical_cpus : 1u),
+                     st->cpu_sum.smt_enabled ? (st->zh ? "已启用" : "Enabled")
+                                             : (st->zh ? "未启用" : "Disabled"));
+            pxe_draw_text_small(surf, rx + 8, iy + 16, line, PXE_COL_BLACK);
+
+            snprintf(line, sizeof(line),
+                     st->zh ? "进程: %u   线程: %u   运行时间: %02u:%02u:%02u"
+                            : "Processes: %u   Threads: %u   Uptime: %02u:%02u:%02u",
+                     (unsigned)st->cpu_sum.process_count,
+                     (unsigned)st->cpu_sum.thread_count,
+                     (unsigned)hh, (unsigned)mm, (unsigned)ss);
+            pxe_draw_text_small(surf, rx + 8, iy + 32, line, PXE_COL_DARK_BLUE);
+
+            pxe_draw_text_small(surf, rx + 8, iy + 50,
+                                st->zh ? "图例: 绿=总占用  红=内核态 (最近 60 秒)"
+                                       : "Legend: Green=Total  Red=Kernel (60s window)",
+                                PXE_COL_DARK_GRAY);
+        } else {
+            /* Logical Processors Grid (supports up to 128 CPUs with scrolling) */
+            int nc = st->core_count > 0 ? st->core_count : 1;
+            int area_x = rx + 6;
+            int area_y = top_y + 38;
+            int area_w = rw - 12 - SB_W;
+            int area_h = body_h - 44;
+            if (area_w < 80) area_w = 80;
+            if (area_h < 50) area_h = 50;
+
+            int cols, total_rows, vis_rows;
+            compute_logical_grid(nc, area_w, area_h, &cols, &total_rows, &vis_rows);
+            int cell_w = area_w / cols;
+            int cell_h = area_h / vis_rows;
+
+            for (int r = 0; r < vis_rows; r++) {
+                int grid_r = st->perf_scroll_row + r;
+                if (grid_r >= total_rows) break;
+                for (int c = 0; c < cols; c++) {
+                    int idx = grid_r * cols + c;
+                    if (idx >= nc) break;
+
+                    int cx = area_x + c * cell_w + 2;
+                    int cy = area_y + r * cell_h + 2;
+                    int cw = cell_w - 4;
+                    int ch = cell_h - 4;
+                    if (cw < 24 || ch < 24) continue;
+
+                    draw_graph_box(surf, cx, cy, cw, ch,
+                                   st->core_hist[idx], NULL,
+                                   st->hist_pos, st->hist_count,
+                                   PXE_COL_GREEN, PXE_COL_DARK_GREEN, PXE_COL_TRANSPARENT);
+
+                    const char* tag = "";
+                    if (st->cores[idx].core_type == 1) tag = "P";
+                    else if (st->cores[idx].core_type == 2) tag = "E";
+                    snprintf(line, sizeof(line), "%s%u %u%%", tag,
+                             (unsigned)st->cores[idx].cpu_id, (unsigned)st->core_pct[idx]);
+                    pxe_draw_text_small(surf, cx + 4, cy + 4, line, PXE_COL_WHITE);
+                }
+            }
+
+            if (total_rows > vis_rows) {
+                pxe_draw_scrollbar(surf, area_x + area_w + 2, area_y, SB_W, area_h,
+                                   st->perf_scroll_row, vis_rows, total_rows);
+            }
+        }
+    } else {
+        /* Memory Performance View */
+        pxe_draw_text(surf, rx + 8, top_y + 6,
+                      st->zh ? "物理内存 (Memory)" : "Physical Memory", PXE_COL_DARK_BLUE);
+        snprintf(line, sizeof(line), "%llu / %llu MB (%d%%)",
+                 (unsigned long long)used_mb, (unsigned long long)total_mb, mem_pct);
+        pxe_draw_text_small(surf, rx + 8, top_y + 24, line, PXE_COL_DARK_GRAY);
+
+        int gx = rx + 8, gy = top_y + 38;
+        int gw = rw - 16;
+        int gh = body_h - 140;
+        if (gh < 56) gh = 56;
+        draw_graph_box(surf, gx, gy, gw, gh,
+                       st->mem_hist, NULL,
+                       st->hist_pos, st->hist_count,
+                       PXE_COL_CYAN, PXE_COL_DARK_CYAN, PXE_COL_TRANSPARENT);
+
+        /* Memory composition bar */
+        int by = gy + gh + 8;
+        pxe_draw_bevel_box(surf, gx, by, gw, 16, 1, PXE_COL_WHITE);
+        int used_w = ((gw - 4) * mem_pct) / 100;
+        if (used_w > 0) {
+            uint32_t mcol = (mem_pct > 85) ? PXE_COL_RED
+                                           : ((mem_pct > 65) ? PXE_COL_YELLOW : PXE_COL_BLUE);
+            pxe_fill_rect(surf, gx + 2, by + 2, used_w, 12, mcol);
+        }
+
+        int iy = by + 24;
+        snprintf(line, sizeof(line),
+                 st->zh ? "使用中: %llu MB   可用: %llu MB   总计: %llu MB"
+                        : "In Use: %llu MB   Available: %llu MB   Total: %llu MB",
+                 (unsigned long long)used_mb,
+                 (unsigned long long)free_mb,
+                 (unsigned long long)total_mb);
+        pxe_draw_text_small(surf, rx + 8, iy, line, PXE_COL_BLACK);
+
+        snprintf(line, sizeof(line),
+                 st->zh ? "物理页帧: %llu / %llu (4 KB/页)"
+                        : "Page Frames: %llu / %llu (4 KB/page)",
+                 (unsigned long long)st->mem.used_pages,
+                 (unsigned long long)st->mem.total_pages);
+        pxe_draw_text_small(surf, rx + 8, iy + 16, line, PXE_COL_BLACK);
+
+        snprintf(line, sizeof(line),
+                 st->zh ? "已加载 .pdv 驱动: %llu   活动进程: %llu   线程: %u"
+                        : "Loaded .pdv Drivers: %llu   Processes: %llu   Threads: %u",
+                 (unsigned long long)st->mem.pdv_loaded_count,
+                 (unsigned long long)st->mem.process_count,
+                 (unsigned)st->cpu_sum.thread_count);
+        pxe_draw_text_small(surf, rx + 8, iy + 32, line, PXE_COL_DARK_BLUE);
+    }
 }
 
 static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_state_t* st) {
@@ -260,145 +693,150 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
     if (!surf || !surf->pixels) return;
 
     pxe_fill_rect(surf, 0, 0, surf->width, surf->height, PXE_COL_LIGHT_GRAY);
+    render_tab_bar(surf, st);
 
-    /* Top summary box */
-    pxe_draw_bevel_box(surf, 8, 8, surf->width - 16, 50, 0, PXE_COL_WHITE);
+    if (st->active_tab == TAB_PERFORMANCE) {
+        render_performance_tab(surf, st);
+    } else {
+        /* Top summary box */
+        int sy = TAB_BAR_H + 4;
+        pxe_draw_bevel_box(surf, 8, sy, surf->width - 16, 48, 0, PXE_COL_WHITE);
 
-    snprintf(line, sizeof(line),
-             st->zh ? "任务: %d | 驱动: %llu | CPU: %d%% | 排序: %s"
-                    : "Tasks: %d | Drivers: %llu | CPU: %d%% | Sort: %s",
-             st->proc_count,
-             (unsigned long long)st->mem.pdv_loaded_count,
-             st->total_cpu_pct,
-             sort_label(st->sort_mode, st->zh));
-    pxe_draw_text(surf, 16, 12, line, PXE_COL_DARK_BLUE);
+        snprintf(line, sizeof(line),
+                 st->zh ? "任务: %d | 线程: %u | CPU: %d%% | 排序: %s"
+                        : "Tasks: %d | Threads: %u | CPU: %d%% | Sort: %s",
+                 st->proc_count,
+                 (unsigned)st->cpu_sum.thread_count,
+                 st->total_cpu_pct,
+                 sort_label(st->sort_mode, st->zh));
+        pxe_draw_text(surf, 16, sy + 4, line, PXE_COL_DARK_BLUE);
 
-    uint64_t total_mb = st->mem.total_bytes / (1024ULL * 1024ULL);
-    uint64_t free_mb = st->mem.free_bytes / (1024ULL * 1024ULL);
-    uint64_t used_mb = (total_mb >= free_mb) ? (total_mb - free_mb) : 0;
-    int mem_pct = (st->mem.total_pages > 0)
-                      ? (int)((st->mem.used_pages * 100ULL) / st->mem.total_pages)
-                      : 0;
-    if (mem_pct > 100) mem_pct = 100;
+        uint64_t total_mb = st->mem.total_bytes / (1024ULL * 1024ULL);
+        uint64_t free_mb = st->mem.free_bytes / (1024ULL * 1024ULL);
+        uint64_t used_mb = (total_mb >= free_mb) ? (total_mb - free_mb) : 0;
+        int mem_pct = (st->mem.total_pages > 0)
+                          ? (int)((st->mem.used_pages * 100ULL) / st->mem.total_pages)
+                          : 0;
+        if (mem_pct > 100) mem_pct = 100;
 
-    snprintf(line, sizeof(line),
-             st->zh ? "内存: %llu / %llu MB (已用 %d%%, 空闲 %llu MB)"
-                    : "Mem: %llu / %llu MB (%d%% used, %llu MB free)",
-             (unsigned long long)used_mb,
-             (unsigned long long)total_mb,
-             mem_pct,
-             (unsigned long long)free_mb);
-    pxe_draw_text_small(surf, 16, 32, line, PXE_COL_BLACK);
+        snprintf(line, sizeof(line),
+                 st->zh ? "内存: %llu / %llu MB (已用 %d%%, 空闲 %llu MB)"
+                        : "Mem: %llu / %llu MB (%d%% used, %llu MB free)",
+                 (unsigned long long)used_mb,
+                 (unsigned long long)total_mb,
+                 mem_pct,
+                 (unsigned long long)free_mb);
+        pxe_draw_text_small(surf, 16, sy + 24, line, PXE_COL_BLACK);
 
-    /* Visual CPU & Mem meters on right side of summary box when wide enough */
-    if (surf->width >= 490) {
-        int gx = surf->width - 134;
-        pxe_draw_bevel_box(surf, gx, 30, 114, 14, 1, PXE_COL_BLACK);
-        int fill_w = (mem_pct * 110) / 100;
-        if (fill_w > 0) {
-            uint32_t mcol = (mem_pct > 85) ? PXE_COL_RED
-                                           : ((mem_pct > 65) ? PXE_COL_YELLOW : PXE_COL_GREEN);
-            pxe_fill_rect(surf, gx + 2, 32, fill_w, 10, mcol);
+        if (surf->width >= 490) {
+            int gx = surf->width - 134;
+            pxe_draw_bevel_box(surf, gx, sy + 22, 114, 14, 1, PXE_COL_BLACK);
+            int fill_w = (mem_pct * 110) / 100;
+            if (fill_w > 0) {
+                uint32_t mcol = (mem_pct > 85) ? PXE_COL_RED
+                                               : ((mem_pct > 65) ? PXE_COL_YELLOW : PXE_COL_GREEN);
+                pxe_fill_rect(surf, gx + 2, sy + 24, fill_w, 10, mcol);
+            }
         }
-    }
 
-    /* Process list table */
-    get_table_rect(surf, &tx, &ty, &tw, &th, &vis_rows);
-    pxe_draw_bevel_box(surf, tx, ty, tw, th, 1, PXE_COL_WHITE);
+        /* Process list table */
+        get_table_rect(surf, &tx, &ty, &tw, &th, &vis_rows);
+        pxe_draw_bevel_box(surf, tx, ty, tw, th, 1, PXE_COL_WHITE);
 
-    int list_w = tw - SB_W - 2;
-    int hx = tx + 1;
-    int hy = ty + 1;
+        int list_w = tw - SB_W - 2;
+        int hx = tx + 1;
+        int hy = ty + 1;
 
-    pxe_fill_rect(surf, hx, hy, tw - 2, HEADER_H, PXE_COL_LIGHT_GRAY);
-    pxe_draw_hline(surf, hx, hy + HEADER_H - 1, tw - 2, PXE_COL_DARK_GRAY);
+        pxe_fill_rect(surf, hx, hy, tw - 2, HEADER_H, PXE_COL_LIGHT_GRAY);
+        pxe_draw_hline(surf, hx, hy + HEADER_H - 1, tw - 2, PXE_COL_DARK_GRAY);
 
-    pxe_draw_text(surf, hx + 4,   hy + 1, "PID",   (st->sort_mode == SORT_PID) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 36,  hy + 1, st->zh ? "环" : "R",     PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 58,  hy + 1, st->zh ? "状态" : "St",    PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 88,  hy + 1, st->zh ? "窗口" : "Win",   PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 118, hy + 1, "CPU",   (st->sort_mode == SORT_CPU) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 158, hy + 1, st->zh ? "时间片" : "Ticks", PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 214, hy + 1, st->zh ? "内存" : "Mem",   (st->sort_mode == SORT_MEM) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
-    pxe_draw_text(surf, hx + 272, hy + 1, st->zh ? "映像名" : "Image", PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 4,   hy + 1, "PID",   (st->sort_mode == SORT_PID) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 36,  hy + 1, st->zh ? "环" : "R",     PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 58,  hy + 1, st->zh ? "状态" : "St",    PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 88,  hy + 1, st->zh ? "窗口" : "Win",   PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 118, hy + 1, "CPU",   (st->sort_mode == SORT_CPU) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 158, hy + 1, st->zh ? "时间片" : "Ticks", PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 214, hy + 1, st->zh ? "内存" : "Mem",   (st->sort_mode == SORT_MEM) ? PXE_COL_DARK_BLUE : PXE_COL_BLACK);
+        pxe_draw_text(surf, hx + 272, hy + 1, st->zh ? "映像名" : "Image", PXE_COL_BLACK);
 
-    int max_name_chars = (list_w - 276) / 8;
-    if (max_name_chars < 6) max_name_chars = 6;
-    if (max_name_chars > 31) max_name_chars = 31;
+        int max_name_chars = (list_w - 276) / 8;
+        if (max_name_chars < 6) max_name_chars = 6;
+        if (max_name_chars > 31) max_name_chars = 31;
 
-    for (int row = 0; row < vis_rows; row++) {
-        int idx = st->scroll_offset + row;
-        if (idx >= st->proc_count) break;
-        const pxe_r0_proc_info_t* p = &st->procs[idx];
-        int ry = hy + HEADER_H + row * ROW_H;
-        int is_sel = (idx == st->selected_idx);
+        for (int row = 0; row < vis_rows; row++) {
+            int idx = st->scroll_offset + row;
+            if (idx >= st->proc_count) break;
+            const pxe_r0_proc_info_t* p = &st->procs[idx];
+            int ry = hy + HEADER_H + row * ROW_H;
+            int is_sel = (idx == st->selected_idx);
 
-        if (is_sel) {
-            pxe_fill_rect(surf, hx, ry, list_w, ROW_H, PXE_COL_DARK_BLUE);
+            if (is_sel) {
+                pxe_fill_rect(surf, hx, ry, list_w, ROW_H, PXE_COL_DARK_BLUE);
+            }
+            uint32_t fg = is_sel ? PXE_COL_WHITE
+                                 : ((p->exec_ring == 0) ? PXE_COL_DARK_RED : PXE_COL_BLACK);
+
+            char numbuf[16];
+            snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)p->pid);
+            pxe_draw_text(surf, hx + 4, ry, numbuf, fg);
+
+            snprintf(numbuf, sizeof(numbuf), "R%u", (unsigned)p->exec_ring);
+            pxe_draw_text(surf, hx + 36, ry, numbuf, fg);
+
+            pxe_draw_text(surf, hx + 58, ry, state_short(p->state), fg);
+
+            snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)p->window_count);
+            pxe_draw_text(surf, hx + 88, ry, numbuf, fg);
+
+            snprintf(numbuf, sizeof(numbuf), "%d%%", st->proc_cpu_pct[idx]);
+            pxe_draw_text(surf, hx + 118, ry, numbuf, fg);
+
+            uint64_t ticks = p->cpu_ticks_total;
+            if (ticks > 999999ULL) ticks = 999999ULL;
+            snprintf(numbuf, sizeof(numbuf), "%llu", (unsigned long long)ticks);
+            pxe_draw_text(surf, hx + 158, ry, numbuf, fg);
+
+            uint64_t mem_kb = (p->mem_bytes_used + 1023ULL) / 1024ULL;
+            if (mem_kb > 999999ULL) mem_kb = 999999ULL;
+            snprintf(numbuf, sizeof(numbuf), "%lluK", (unsigned long long)mem_kb);
+            pxe_draw_text(surf, hx + 214, ry, numbuf, fg);
+
+            char nshort[32];
+            int ni = 0;
+            while (p->name[ni] && ni < max_name_chars) {
+                nshort[ni] = p->name[ni];
+                ni++;
+            }
+            nshort[ni] = '\0';
+            pxe_draw_text(surf, hx + 272, ry, nshort, fg);
         }
-        uint32_t fg = is_sel ? PXE_COL_WHITE
-                             : ((p->exec_ring == 0) ? PXE_COL_DARK_RED : PXE_COL_BLACK);
 
-        char numbuf[16];
-        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)p->pid);
-        pxe_draw_text(surf, hx + 4, ry, numbuf, fg);
+        pxe_draw_scrollbar(surf, tx + tw - SB_W - 1, hy + HEADER_H, SB_W,
+                           th - HEADER_H - 1, st->scroll_offset, vis_rows, st->proc_count);
 
-        snprintf(numbuf, sizeof(numbuf), "R%u", (unsigned)p->exec_ring);
-        pxe_draw_text(surf, hx + 36, ry, numbuf, fg);
+        /* Action buttons */
+        int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, b5x, b5w, by, bh;
+        compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &b5x, &b5w, &by, &bh);
 
-        pxe_draw_text(surf, hx + 58, ry, state_short(p->state), fg);
+        const pxe_r0_proc_info_t* sel = get_selected_proc(st);
+        int can_focus = (sel && sel->window_count > 0);
+        int can_kill = is_proc_killable(st, sel);
 
-        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)p->window_count);
-        pxe_draw_text(surf, hx + 88, ry, numbuf, fg);
+        pxe_draw_button(surf, b1x, by, b1w, bh, st->zh ? "刷新" : "Refresh",
+                        (st->press_btn == 1 && st->hover_btn == 1), 1);
+        pxe_draw_button(surf, b2x, by, b2w, bh, st->zh ? "切换至" : "Switch To",
+                        (can_focus && st->press_btn == 2 && st->hover_btn == 2), can_focus);
+        pxe_draw_button(surf, b3x, by, b3w, bh, st->zh ? "结束任务" : "End Task",
+                        (can_kill && st->press_btn == 3 && st->hover_btn == 3), can_kill);
+        pxe_draw_button(surf, b4x, by, b4w, bh,
+                        st->paused ? (st->zh ? "继续" : "Resume") : (st->zh ? "暂停" : "Pause"),
+                        (st->press_btn == 4 && st->hover_btn == 4), 1);
+        pxe_draw_button(surf, b5x, by, b5w, bh, st->zh ? "新任务..." : "New Task...",
+                        (st->press_btn == 5 && st->hover_btn == 5), 1);
 
-        snprintf(numbuf, sizeof(numbuf), "%d%%", st->proc_cpu_pct[idx]);
-        pxe_draw_text(surf, hx + 118, ry, numbuf, fg);
-
-        uint64_t ticks = p->cpu_ticks_total;
-        if (ticks > 999999ULL) ticks = 999999ULL;
-        snprintf(numbuf, sizeof(numbuf), "%llu", (unsigned long long)ticks);
-        pxe_draw_text(surf, hx + 158, ry, numbuf, fg);
-
-        uint64_t mem_kb = (p->mem_bytes_used + 1023ULL) / 1024ULL;
-        if (mem_kb > 999999ULL) mem_kb = 999999ULL;
-        snprintf(numbuf, sizeof(numbuf), "%lluK", (unsigned long long)mem_kb);
-        pxe_draw_text(surf, hx + 214, ry, numbuf, fg);
-
-        char nshort[32];
-        int ni = 0;
-        while (p->name[ni] && ni < max_name_chars) {
-            nshort[ni] = p->name[ni];
-            ni++;
+        if (surf->width >= 500 && st->status_msg[0]) {
+            pxe_draw_text_small(surf, b5x + b5w + 8, by + 8, st->status_msg, PXE_COL_DARK_BLUE);
         }
-        nshort[ni] = '\0';
-        pxe_draw_text(surf, hx + 272, ry, nshort, fg);
-    }
-
-    pxe_draw_scrollbar(surf, tx + tw - SB_W - 1, hy + HEADER_H, SB_W,
-                       th - HEADER_H - 1, st->scroll_offset, vis_rows, st->proc_count);
-
-    /* Action buttons */
-    int b1x, b1w, b2x, b2w, b3x, b3w, b4x, b4w, b5x, b5w, by, bh;
-    compute_buttons(surf, &b1x, &b1w, &b2x, &b2w, &b3x, &b3w, &b4x, &b4w, &b5x, &b5w, &by, &bh);
-
-    const pxe_r0_proc_info_t* sel = get_selected_proc(st);
-    int can_focus = (sel && sel->window_count > 0);
-    int can_kill = is_proc_killable(st, sel);
-
-    pxe_draw_button(surf, b1x, by, b1w, bh, st->zh ? "刷新" : "Refresh",
-                    (st->press_btn == 1 && st->hover_btn == 1), 1);
-    pxe_draw_button(surf, b2x, by, b2w, bh, st->zh ? "切换至" : "Switch To",
-                    (can_focus && st->press_btn == 2 && st->hover_btn == 2), can_focus);
-    pxe_draw_button(surf, b3x, by, b3w, bh, st->zh ? "结束任务" : "End Task",
-                    (can_kill && st->press_btn == 3 && st->hover_btn == 3), can_kill);
-    pxe_draw_button(surf, b4x, by, b4w, bh,
-                    st->paused ? (st->zh ? "继续" : "Resume") : (st->zh ? "暂停" : "Pause"),
-                    (st->press_btn == 4 && st->hover_btn == 4), 1);
-    pxe_draw_button(surf, b5x, by, b5w, bh, st->zh ? "新任务..." : "New Task...",
-                    (st->press_btn == 5 && st->hover_btn == 5), 1);
-
-    if (surf->width >= 500 && st->status_msg[0]) {
-        pxe_draw_text_small(surf, b5x + b5w + 8, by + 8, st->status_msg, PXE_COL_DARK_BLUE);
     }
 
     if (st->new_task_modal) {
@@ -444,7 +882,6 @@ static void render_taskmgr_into(const pxe_win_surface_t* surf, const taskmgr_sta
         pxe_draw_text(surf, dx + 8, dy + 3,
                       st->zh ? "任务管理器警告" : "Task Manager Warning", PXE_COL_WHITE);
 
-        /* Yellow warning triangle */
         for (int r = 0; r < 20; r++) {
             int half = r / 2;
             for (int c = -half; c <= half; c++) {
@@ -630,7 +1067,6 @@ static void launch_new_task_cmd(taskmgr_state_t* st, const char* raw) {
     while (bl > 0 && (p[bl - 1] == ' ' || p[bl - 1] == '\t')) p[--bl] = '\0';
     if (!p[0]) return;
 
-    /* Split command token and optional tail argument */
     char cmd_tok[128];
     char* rest = NULL;
     if (p[0] == '"') {
@@ -674,7 +1110,6 @@ static void launch_new_task_cmd(taskmgr_state_t* st, const char* raw) {
     if (strcasecmp(cmd_tok, "terminal") == 0 || strcasecmp(cmd_tok, "cmd.exe") == 0) mapped = "cmd.pxe";
     else if (strcasecmp(cmd_tok, "control") == 0) mapped = "cpanel.pxe";
 
-    /* If ends with .pat, launch cmd.pxe /c <target> */
     const char* dot = strrchr(mapped, '.');
     if (dot && strcasecmp(dot, ".pat") == 0) {
         char cpath[128];
@@ -748,7 +1183,7 @@ static void sync_taskmgr_menu(int win_id, int zh) {
     mb.menus[0].items[3].enabled = 1;
 
     strcpy(mb.menus[1].title, zh ? "视图" : "View");
-    mb.menus[1].item_count = 6;
+    mb.menus[1].item_count = 8;
     strcpy(mb.menus[1].items[0].label, zh ? "立即刷新" : "Refresh Now");
     mb.menus[1].items[0].enabled = 1;
     strcpy(mb.menus[1].items[1].label, zh ? "暂停/继续" : "Pause/Resume");
@@ -761,6 +1196,10 @@ static void sync_taskmgr_menu(int win_id, int zh) {
     mb.menus[1].items[4].enabled = 1;
     strcpy(mb.menus[1].items[5].label, zh ? "按内存排序" : "Sort by Memory");
     mb.menus[1].items[5].enabled = 1;
+    strcpy(mb.menus[1].items[6].label, zh ? "进程页" : "Processes Tab");
+    mb.menus[1].items[6].enabled = 1;
+    strcpy(mb.menus[1].items[7].label, zh ? "性能页" : "Performance Tab");
+    mb.menus[1].items[7].enabled = 1;
 
     pxe_win_set_menu(win_id, &mb);
 }
@@ -777,10 +1216,10 @@ int main(int argc, char** argv) {
     memset(&desc, 0, sizeof(desc));
     desc.x = -1;
     desc.y = -1;
-    desc.w = 540;
-    desc.h = 340;
-    desc.min_w = 420;
-    desc.min_h = 240;
+    desc.w = 560;
+    desc.h = 380;
+    desc.min_w = 440;
+    desc.min_h = 260;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_RESIZABLE;
     strcpy(desc.title, st->zh ? "任务管理器" : "Task Manager");
@@ -825,14 +1264,24 @@ int main(int argc, char** argv) {
                         sync_taskmgr_menu(win_id, st->zh);
                     }
                 }
-                refresh_data(st, &surf);
                 dirty = 1;
             } else if (ev.type == PXE_EV_RESIZE) {
                 if (pxe_win_get_surface(win_id, &surf) == 0) {
                     get_table_rect(&surf, &tx, &ty, &tw, &th, &vis_rows);
                     clamp_scroll(st, vis_rows);
+                    clamp_perf_scroll(st, &surf);
                     dirty = 1;
                 }
+            } else if (ev.type == PXE_EV_MOUSE_WHEEL) {
+                int delta = (int)(int32_t)ev.arg0;
+                if (st->active_tab == TAB_PROCESSES) {
+                    st->scroll_offset -= delta;
+                    clamp_scroll(st, vis_rows);
+                } else if (st->perf_sub == PERF_SUB_CPU && st->cpu_graph_mode == CPU_MODE_LOGICAL) {
+                    st->perf_scroll_row -= delta;
+                    clamp_perf_scroll(st, &surf);
+                }
+                dirty = 1;
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
                 if (st->new_task_modal) {
                     int dw = 368, dh = 136;
@@ -868,6 +1317,57 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
+
+                /* Top Tab Bar hit test */
+                if (ev.y < TAB_BAR_H) {
+                    if (pxe_point_in_rect(ev.x, ev.y, 8, 2, 104, TAB_BAR_H - 2)) {
+                        st->active_tab = TAB_PROCESSES;
+                        dirty = 1;
+                    } else if (pxe_point_in_rect(ev.x, ev.y, 116, 2, 112, TAB_BAR_H - 2)) {
+                        st->active_tab = TAB_PERFORMANCE;
+                        dirty = 1;
+                    }
+                    continue;
+                }
+
+                if (st->active_tab == TAB_PERFORMANCE) {
+                    int top_y = TAB_BAR_H + 6;
+                    int sb_x = 8, sb_w = 96;
+                    if (pxe_point_in_rect(ev.x, ev.y, sb_x + 2, top_y + 4, sb_w - 4, 56)) {
+                        st->perf_sub = PERF_SUB_CPU;
+                        dirty = 1;
+                    } else if (pxe_point_in_rect(ev.x, ev.y, sb_x + 2, top_y + 64, sb_w - 4, 56)) {
+                        st->perf_sub = PERF_SUB_MEM;
+                        dirty = 1;
+                    } else if (st->perf_sub == PERF_SUB_CPU) {
+                        int rx = sb_x + sb_w + 6;
+                        int rw = surf.width - rx - 8;
+                        int btn_w = 118, btn_h = 20;
+                        int btn_x = rx + rw - btn_w - 6;
+                        int btn_y = top_y + 5;
+                        if (pxe_point_in_rect(ev.x, ev.y, btn_x, btn_y, btn_w, btn_h)) {
+                            st->cpu_graph_mode = (st->cpu_graph_mode == CPU_MODE_OVERALL)
+                                                     ? CPU_MODE_LOGICAL : CPU_MODE_OVERALL;
+                            st->perf_scroll_row = 0;
+                            clamp_perf_scroll(st, &surf);
+                            dirty = 1;
+                        } else if (st->cpu_graph_mode == CPU_MODE_LOGICAL) {
+                            int area_x = rx + 6;
+                            int area_y = top_y + 38;
+                            int area_w = rw - 12 - SB_W;
+                            int area_h = (surf.height - top_y - 8) - 44;
+                            if (pxe_point_in_rect(ev.x, ev.y, area_x + area_w + 2, area_y, SB_W, area_h)) {
+                                if (ev.y < area_y + area_h / 2) st->perf_scroll_row--;
+                                else st->perf_scroll_row++;
+                                clamp_perf_scroll(st, &surf);
+                                dirty = 1;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                /* Processes tab interactions */
                 int hit = hit_test_button(&surf, ev.x, ev.y);
                 if (hit != 0) {
                     const pxe_r0_proc_info_t* sel = get_selected_proc(st);
@@ -985,6 +1485,12 @@ int main(int argc, char** argv) {
                     } else if (ev.arg1 >= 2 && ev.arg1 <= 5) {
                         set_sort_mode(st, ev.arg1 - 2, &surf);
                         dirty = 1;
+                    } else if (ev.arg1 == 6) {
+                        st->active_tab = TAB_PROCESSES;
+                        dirty = 1;
+                    } else if (ev.arg1 == 7) {
+                        st->active_tab = TAB_PERFORMANCE;
+                        dirty = 1;
                     }
                 }
             } else if (ev.type == PXE_EV_KEY_DOWN) {
@@ -1047,7 +1553,34 @@ int main(int argc, char** argv) {
                     }
                     continue;
                 }
-                if (ev.key == PXE_KEY_UP && st->proc_count > 0) {
+
+                if (ev.key == PXE_KEY_TAB) {
+                    st->active_tab = (st->active_tab == TAB_PROCESSES) ? TAB_PERFORMANCE : TAB_PROCESSES;
+                    dirty = 1;
+                } else if (st->active_tab == TAB_PERFORMANCE) {
+                    if (ev.key == PXE_KEY_UP) {
+                        st->perf_scroll_row--;
+                        clamp_perf_scroll(st, &surf);
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_DOWN) {
+                        st->perf_scroll_row++;
+                        clamp_perf_scroll(st, &surf);
+                        dirty = 1;
+                    } else if (ev.key == 'l' || ev.key == 'L') {
+                        st->cpu_graph_mode = (st->cpu_graph_mode == CPU_MODE_OVERALL)
+                                                 ? CPU_MODE_LOGICAL : CPU_MODE_OVERALL;
+                        clamp_perf_scroll(st, &surf);
+                        dirty = 1;
+                    } else if (ev.key == 'm' || ev.key == 'M') {
+                        st->perf_sub = (st->perf_sub == PERF_SUB_CPU) ? PERF_SUB_MEM : PERF_SUB_CPU;
+                        dirty = 1;
+                    } else if (ev.key == 'p' || ev.key == 'P') {
+                        toggle_pause(st);
+                        dirty = 1;
+                    } else if (ev.key == PXE_KEY_ESC) {
+                        running = 0;
+                    }
+                } else if (ev.key == PXE_KEY_UP && st->proc_count > 0) {
                     if (st->selected_idx > 0) st->selected_idx--;
                     st->selected_pid = st->procs[st->selected_idx].pid;
                     ensure_selected_visible(st, vis_rows);

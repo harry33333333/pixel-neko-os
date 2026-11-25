@@ -1,5 +1,6 @@
 #include "heap.h"
 #include "pmm.h"
+#include "spinlock.h"
 #include "log.h"
 #include "string.h"
 
@@ -15,10 +16,11 @@ typedef struct heap_block {
     uint32_t magic;           // Magic sanity check
 } __attribute__((aligned(HEAP_ALIGNMENT))) heap_block_t;
 
+static spinlock_t g_heap_lock = SPINLOCK_INIT;
 static heap_block_t* g_heap_start = NULL;
 
 void kheap_init(void) {
-    // Allocate initial 1MB (256 pages) for kernel heap
+    spin_lock_init(&g_heap_lock);
     size_t initial_pages = 256;
     phys_addr_t initial_phys = pmm_alloc_pages(initial_pages);
     if (!initial_phys) {
@@ -37,49 +39,55 @@ void kheap_init(void) {
                g_heap_start, (uint64_t)(g_heap_start->size / 1024));
 }
 
+static void* kmalloc_from_block(heap_block_t* curr, size_t size) {
+    if (curr->size >= size + sizeof(heap_block_t) + HEAP_ALIGNMENT) {
+        heap_block_t* new_block = (heap_block_t*)((uint8_t*)(curr + 1) + size);
+        new_block->size = curr->size - size - sizeof(heap_block_t);
+        new_block->is_free = true;
+        new_block->magic = HEAP_MAGIC;
+        new_block->next = curr->next;
+        new_block->prev = curr;
+
+        if (curr->next) {
+            curr->next->prev = new_block;
+        }
+        curr->next = new_block;
+        curr->size = size;
+    }
+    curr->is_free = false;
+    return (void*)(curr + 1);
+}
+
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
     size = ALIGN_UP(size, HEAP_ALIGNMENT);
 
+    uint64_t flags = spin_lock_irqsave(&g_heap_lock);
     heap_block_t* curr = g_heap_start;
     while (curr) {
         if (curr->magic != HEAP_MAGIC) {
+            spin_unlock_irqrestore(&g_heap_lock, flags);
             log_printf("[HEAP ERROR] Heap corruption detected at %p (magic=0x%08x)!\n", curr, curr->magic);
             return NULL;
         }
 
         if (curr->is_free && curr->size >= size) {
-            // Check if we can split this block
-            if (curr->size >= size + sizeof(heap_block_t) + HEAP_ALIGNMENT) {
-                heap_block_t* new_block = (heap_block_t*)((uint8_t*)(curr + 1) + size);
-                new_block->size = curr->size - size - sizeof(heap_block_t);
-                new_block->is_free = true;
-                new_block->magic = HEAP_MAGIC;
-                new_block->next = curr->next;
-                new_block->prev = curr;
-
-                if (curr->next) {
-                    curr->next->prev = new_block;
-                }
-                curr->next = new_block;
-                curr->size = size;
-            }
-
-            curr->is_free = false;
-            return (void*)(curr + 1);
+            void* ptr = kmalloc_from_block(curr, size);
+            spin_unlock_irqrestore(&g_heap_lock, flags);
+            return ptr;
         }
 
         if (!curr->next) break;
         curr = curr->next;
     }
 
-    // No existing block had enough space, expand the heap
     size_t needed = size + sizeof(heap_block_t);
     size_t pages = (needed + PAGE_SIZE - 1) / PAGE_SIZE;
-    if (pages < 64) pages = 64; // Allocate at least 256KB on expansion
+    if (pages < 64) pages = 64;
 
     phys_addr_t new_phys = pmm_alloc_pages(pages);
     if (!new_phys) {
+        spin_unlock_irqrestore(&g_heap_lock, flags);
         log_printf("[HEAP ERROR] Out of physical memory while expanding heap!\n");
         return NULL;
     }
@@ -97,8 +105,9 @@ void* kmalloc(size_t size) {
         g_heap_start = expanded;
     }
 
-    // Allocate from newly expanded block
-    return kmalloc(size);
+    void* ptr = kmalloc_from_block(expanded, size);
+    spin_unlock_irqrestore(&g_heap_lock, flags);
+    return ptr;
 }
 
 void* kzalloc(size_t size) {
@@ -112,15 +121,16 @@ void* kzalloc(size_t size) {
 void kfree(void* ptr) {
     if (!ptr) return;
 
+    uint64_t flags = spin_lock_irqsave(&g_heap_lock);
     heap_block_t* block = (heap_block_t*)ptr - 1;
     if (block->magic != HEAP_MAGIC) {
+        spin_unlock_irqrestore(&g_heap_lock, flags);
         log_printf("[HEAP ERROR] kfree(): Invalid pointer or heap corruption at %p!\n", ptr);
         return;
     }
 
     block->is_free = true;
 
-    // Coalesce with next block if physically contiguous in memory
     if (block->next && block->next->is_free &&
         ((uint8_t*)(block + 1) + block->size == (uint8_t*)block->next)) {
         block->size += sizeof(heap_block_t) + block->next->size;
@@ -130,7 +140,6 @@ void kfree(void* ptr) {
         }
     }
 
-    // Coalesce with previous block if physically contiguous in memory
     if (block->prev && block->prev->is_free &&
         ((uint8_t*)(block->prev + 1) + block->prev->size == (uint8_t*)block)) {
         block->prev->size += sizeof(heap_block_t) + block->size;
@@ -139,10 +148,12 @@ void kfree(void* ptr) {
             block->next->prev = block->prev;
         }
     }
+    spin_unlock_irqrestore(&g_heap_lock, flags);
 }
 
 void kheap_get_stats(size_t* total_bytes, size_t* used_bytes, size_t* free_bytes) {
     size_t tot = 0, used = 0, fre = 0;
+    uint64_t flags = spin_lock_irqsave(&g_heap_lock);
     heap_block_t* curr = g_heap_start;
     while (curr && curr->magic == HEAP_MAGIC) {
         tot += sizeof(heap_block_t) + curr->size;
@@ -150,6 +161,7 @@ void kheap_get_stats(size_t* total_bytes, size_t* used_bytes, size_t* free_bytes
         else used += curr->size;
         curr = curr->next;
     }
+    spin_unlock_irqrestore(&g_heap_lock, flags);
     if (total_bytes) *total_bytes = tot;
     if (used_bytes) *used_bytes = used;
     if (free_bytes) *free_bytes = fre;

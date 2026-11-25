@@ -5,31 +5,76 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define SMP_MAX_CPUS 128u
+
+#define CPU_CORE_TYPE_GENERIC 0u
+#define CPU_CORE_TYPE_PERF    1u /* Intel P-Core (0x40) */
+#define CPU_CORE_TYPE_EFF     2u /* Intel E-Core (0x20) */
+
 /*
- * These symbols live in arch/x86_64/syscall_entry.asm so the SYSCALL fast
- * path can address them with fixed GS offsets. The first twelve fields are
- * part of that assembly ABI and must not be reordered.
+ * Per-CPU control block addressed via %gs in kernel mode.
+ * Offsets 0..64 are part of the assembly ABI (syscall_entry.asm, nmi.asm,
+ * interrupts.asm) and MUST NOT be reordered.
  */
-typedef struct {
-    uint64_t kernel_rsp0;
-    uint64_t user_rsp;
-    uint64_t need_resched;
-    uint64_t switch_gs;
-    uint64_t current_thread;
-    uint64_t nmi_swapgs;
-    uint64_t syscall_count;
-    uint64_t nmi_count;
-} per_cpu_t;
+typedef struct per_cpu {
+    /* Fixed assembly ABI (offsets 0..56) */
+    uint64_t kernel_rsp0;      /* +0  */
+    uint64_t user_rsp;         /* +8  */
+    uint64_t need_resched;     /* +16 */
+    uint64_t switch_gs;        /* +24 */
+    uint64_t current_thread;   /* +32 */
+    uint64_t nmi_swapgs;       /* +40 */
+    uint64_t syscall_count;    /* +48 */
+    uint64_t nmi_count;        /* +56 */
 
-extern per_cpu_t per_cpu_block;
-extern uint64_t per_cpu_kernel_rsp0;
-extern uint64_t per_cpu_user_rsp;
-extern uint64_t per_cpu_need_resched;
-extern uint64_t per_cpu_switch_gs;
-extern uint64_t per_cpu_current_thread;
-extern uint64_t per_cpu_nmi_count;
-extern uint64_t per_cpu_nmi_test_pending;
+    /* Fast self-pointer for this_cpu() (+64) */
+    struct per_cpu* self;      /* +64 */
 
+    /* SMP identity & hardware topology */
+    uint32_t cpu_id;           /* +72: logical index 0..SMP_MAX_CPUS-1 */
+    uint32_t lapic_id;         /* +76: xAPIC or x2APIC ID */
+    uint32_t package_id;       /* +80: physical socket / package */
+    uint32_t core_id;          /* +84: physical core ID within package */
+    uint32_t smt_id;           /* +88: hardware thread index within core */
+    uint8_t  core_type;        /* +92: CPU_CORE_TYPE_* */
+    uint8_t  online;           /* +93: 1 if CPU is online */
+    uint8_t  in_irq;           /* +94 */
+    uint8_t  _pad0;            /* +95 */
+
+    /* Per-CPU scheduler & TSS bindings */
+    void*    idle_thread;      /* +96  */
+    void*    current_process;  /* +104 */
+    uint64_t tss_base;         /* +112 */
+    uint32_t preempt_count;    /* +120 */
+    uint32_t irq_depth;        /* +124 */
+
+    /* Lock-free per-CPU 1000 Hz utilization counters (written only by local timer IRQ) */
+    volatile uint64_t ticks_total;  /* +128 */
+    volatile uint64_t ticks_idle;   /* +136 */
+    volatile uint64_t ticks_kernel; /* +144 */
+    volatile uint64_t ticks_user;   /* +152 */
+
+    /* Deferred running_cpu release pointer executed after RSP switches to next thread (+160) */
+    volatile int32_t* prev_release_ptr; /* +160 */
+
+    uint64_t _reserved[3];          /* pad to 192 bytes (3 cache lines) */
+} __attribute__((aligned(64))) per_cpu_t;
+
+extern per_cpu_t g_per_cpus[SMP_MAX_CPUS];
+extern volatile uint64_t per_cpu_nmi_test_pending;
+
+static inline per_cpu_t* this_cpu(void) {
+    per_cpu_t* ptr;
+    __asm__ volatile ("mov %%gs:64, %0" : "=r"(ptr));
+    return ptr;
+}
+
+static inline uint32_t this_cpu_id(void) {
+    return this_cpu()->cpu_id;
+}
+
+void per_cpu_init_bsp(void);
+void per_cpu_init_ap(uint32_t cpu_id, uint32_t lapic_id);
 void per_cpu_init(void* percpu);
 void per_cpu_set_kernel_stack(uint64_t rsp0);
 void per_cpu_set_current(void* thread);

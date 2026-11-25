@@ -26,6 +26,7 @@
 typedef uint64_t* pagetable_t;
 
 void vmm_init(void);
+void vmm_init_pat_ap(void);
 pagetable_t vmm_get_kernel_pml4(void);
 pagetable_t vmm_create_address_space(void);
 void vmm_destroy_address_space(pagetable_t pml4);
@@ -36,6 +37,8 @@ bool vmm_virt_to_phys(pagetable_t pml4, virt_addr_t virt, phys_addr_t* phys);
 bool vmm_user_range_ok(pagetable_t pml4, virt_addr_t virt, size_t size, bool write);
 void vmm_switch_pml4(pagetable_t pml4);
 void vmm_invlpg(virt_addr_t virt);
+void vmm_tlb_shootdown(pagetable_t pml4, virt_addr_t virt);
+void vmm_handle_tlb_shootdown_ipi(void);
 bool vmm_remap_framebuffer_wc(void);
 
 #endif /* _VMM_H */

@@ -46,6 +46,7 @@ typedef void (*irq_handler_t)(trap_frame_t* frame);
 typedef void (*pci_irq_handler_t)(void* ctx);
 
 void idt_init(void);
+void idt_load_ap(void);
 void idt_set_gate(uint8_t num, uint64_t handler, uint16_t sel, uint8_t flags, uint8_t ist);
 void irq_install_handler(int irq, irq_handler_t handler);
 void irq_uninstall_handler(int irq);

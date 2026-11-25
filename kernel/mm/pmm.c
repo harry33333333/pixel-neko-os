@@ -1,10 +1,12 @@
 #include "pmm.h"
 #include "limine.h"
+#include "spinlock.h"
 #include "log.h"
 #include "string.h"
 
 extern volatile struct limine_memmap_request memmap_request;
 
+static spinlock_t g_pmm_lock = SPINLOCK_INIT;
 static uint8_t* g_pmm_bitmap = NULL;
 static uint64_t g_pmm_total_pages = 0;
 static uint64_t g_pmm_free_pages = 0;
@@ -123,7 +125,7 @@ void pmm_init(void) {
                bitmap_phys, bitmap_size / 1024);
 }
 
-phys_addr_t pmm_alloc_page(void) {
+static phys_addr_t pmm_alloc_page_unlocked(void) {
     for (uint64_t i = 0; i < g_pmm_total_pages; i++) {
         uint64_t idx = (g_pmm_last_index + i) % g_pmm_total_pages;
         if (!bitmap_test(idx)) {
@@ -133,14 +135,24 @@ phys_addr_t pmm_alloc_page(void) {
             return (phys_addr_t)(idx * PAGE_SIZE);
         }
     }
-    log_printf("[PMM ERROR] Physical memory exhausted (Out of Memory)!\n");
     return 0;
+}
+
+phys_addr_t pmm_alloc_page(void) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    phys_addr_t res = pmm_alloc_page_unlocked();
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+    if (!res) {
+        log_printf("[PMM ERROR] Physical memory exhausted (Out of Memory)!\n");
+    }
+    return res;
 }
 
 phys_addr_t pmm_alloc_pages(size_t count) {
     if (count == 0) return 0;
     if (count == 1) return pmm_alloc_page();
 
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
     uint64_t consecutive = 0;
     uint64_t start_idx = 0;
 
@@ -154,17 +166,19 @@ phys_addr_t pmm_alloc_pages(size_t count) {
                 }
                 if (g_pmm_free_pages >= count) g_pmm_free_pages -= count;
                 else g_pmm_free_pages = 0;
+                spin_unlock_irqrestore(&g_pmm_lock, flags);
                 return (phys_addr_t)(start_idx * PAGE_SIZE);
             }
         } else {
             consecutive = 0;
         }
     }
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
     log_printf("[PMM ERROR] Failed to allocate %llu contiguous physical pages!\n", (uint64_t)count);
     return 0;
 }
 
-void pmm_free_page(phys_addr_t phys) {
+static void pmm_free_page_unlocked(phys_addr_t phys) {
     if (phys % PAGE_SIZE != 0) return;
     uint64_t idx = phys / PAGE_SIZE;
     if (idx >= g_pmm_total_pages) return;
@@ -175,10 +189,18 @@ void pmm_free_page(phys_addr_t phys) {
     }
 }
 
+void pmm_free_page(phys_addr_t phys) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    pmm_free_page_unlocked(phys);
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+}
+
 void pmm_free_pages(phys_addr_t phys, size_t count) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
     for (size_t i = 0; i < count; i++) {
-        pmm_free_page(phys + i * PAGE_SIZE);
+        pmm_free_page_unlocked(phys + i * PAGE_SIZE);
     }
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
 }
 
 phys_addr_t pmm_alloc_pages_zoned(size_t count, uint64_t max_addr, size_t alignment, bool no_64k_cross) {
@@ -186,6 +208,7 @@ phys_addr_t pmm_alloc_pages_zoned(size_t count, uint64_t max_addr, size_t alignm
     if (alignment < PAGE_SIZE) alignment = PAGE_SIZE;
     uint64_t align_pages = alignment / PAGE_SIZE;
 
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
     uint64_t max_page = max_addr / PAGE_SIZE;
     if (max_page > g_pmm_total_pages) max_page = g_pmm_total_pages;
 
@@ -195,12 +218,10 @@ phys_addr_t pmm_alloc_pages_zoned(size_t count, uint64_t max_addr, size_t alignm
 
         if (end_phys > max_addr) break;
 
-        // Check 64KB boundary restriction (for ISA DMA)
         if (no_64k_cross && ((start_phys >> 16) != (end_phys >> 16))) {
             continue;
         }
 
-        // Verify if all requested pages are free
         bool all_free = true;
         for (uint64_t j = 0; j < count; j++) {
             if (bitmap_test(i + j)) {
@@ -215,9 +236,11 @@ phys_addr_t pmm_alloc_pages_zoned(size_t count, uint64_t max_addr, size_t alignm
             }
             if (g_pmm_free_pages >= count) g_pmm_free_pages -= count;
             else g_pmm_free_pages = 0;
+            spin_unlock_irqrestore(&g_pmm_lock, flags);
             return start_phys;
         }
     }
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
 
     log_printf("[PMM WARN] Failed to allocate %llu zoned physical pages (limit: 0x%016llx, align: 0x%llx)\n",
                (uint64_t)count, max_addr, (uint64_t)alignment);

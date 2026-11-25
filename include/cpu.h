@@ -14,6 +14,8 @@
 #define CPUID_FEAT_SSE2     (1u << 26)   // EDX Bit 26: SSE2 instructions
 #define CPUID_FEAT_SSE3     (1u << 0)    // ECX Bit 0:  SSE3 instructions
 #define CPUID_FEAT_CX16     (1u << 13)   // ECX Bit 13: CMPXCHG16B (128-bit atomic)
+#define CPUID_FEAT_XSAVE    (1u << 26)   // ECX Bit 26: XSAVE/XRSTOR support
+#define CPUID_FEAT_AVX      (1u << 28)   // ECX Bit 28: AVX support
 
 // Common MSRs
 #define MSR_IA32_APIC_BASE  0x0000001B
@@ -52,6 +54,10 @@ typedef struct {
     bool has_sse2;
     bool has_sse3;
     bool has_cx16;
+    bool has_xsave;
+    bool has_avx;
+    bool has_avx2;
+    uint64_t tsc_freq_hz;
 } cpu_info_t;
 
 extern cpu_info_t g_cpu_info;
@@ -82,5 +88,7 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
 }
 
 bool cpu_detect_and_verify(void);
+uint64_t cpu_monotonic_ns(void);
+uint64_t cpu_get_tsc_freq_hz(void);
 
 #endif /* _CPU_H */

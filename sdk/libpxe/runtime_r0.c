@@ -33,8 +33,23 @@ void pxe_sleep_ms(uint32_t ms) {
     if (__pxe_r0_api && __pxe_r0_api->sleep_ms) __pxe_r0_api->sleep_ms(ms);
 }
 
+void pxe_sleep_us(uint64_t us) {
+    uint32_t ms = (uint32_t)((us + 999ULL) / 1000ULL);
+    if (ms == 0 && us > 0) ms = 1;
+    pxe_sleep_ms(ms);
+}
+
 uint64_t pxe_get_ticks(void) {
     return (__pxe_r0_api && __pxe_r0_api->get_ticks) ? __pxe_r0_api->get_ticks() : 0ULL;
+}
+
+uint64_t pxe_get_time_ns(void) {
+    if (__pxe_r0_api &&
+        __pxe_r0_api->struct_size >= sizeof(pxe_ring0_api_t) &&
+        __pxe_r0_api->get_time_ns) {
+        return __pxe_r0_api->get_time_ns();
+    }
+    return pxe_get_ticks() * 10000000ULL;
 }
 
 int pxe_spawn(const char* path, int argc, const char* const* argv) {
@@ -585,4 +600,14 @@ int pxe_r0_sync_filesystems(void) {
 int pxe_r0_init_uninit_disk(void) {
     return (__pxe_r0_api && __pxe_r0_api->init_uninit_disk)
         ? __pxe_r0_api->init_uninit_disk() : -1;
+}
+
+int pxe_r0_get_cpu_stats(pxe_r0_cpu_summary_t* out_summary,
+                         pxe_r0_cpu_core_stat_t* out_cores, int max_cores) {
+    if (__pxe_r0_api &&
+        __pxe_r0_api->struct_size >= sizeof(pxe_ring0_api_t) &&
+        __pxe_r0_api->get_cpu_stats) {
+        return __pxe_r0_api->get_cpu_stats(out_summary, out_cores, max_cores);
+    }
+    return -1;
 }

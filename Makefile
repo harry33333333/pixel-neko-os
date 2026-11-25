@@ -6,8 +6,8 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 300
-PIXEL_NEKO_BUILD_SUFFIX ?= b
+PIXEL_NEKO_BUILD_NUMBER ?= 310
+PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
 CFLAGS ?= -m64 -march=core2 -mcmodel=kernel -mno-red-zone \
@@ -58,12 +58,14 @@ C_SRCS   = kernel/core/main.c \
            kernel/core/string.c \
            kernel/core/utf8.c \
            kernel/core/panic.c \
+           kernel/core/spinlock.c \
            arch/x86_64/cpu.c \
            arch/x86_64/gdt.c \
            arch/x86_64/idt.c \
            arch/x86_64/apic.c \
            arch/x86_64/fpu.c \
            arch/x86_64/percpu.c \
+           arch/x86_64/smp.c \
            arch/x86_64/syscall.c \
            kernel/mm/pmm.c \
            kernel/mm/vmm.c \
@@ -155,6 +157,7 @@ PXE_SDK_DEPS = sdk/pxe_app.mk \
                include/neko_abi.h \
                sdk/crt/crt0_r3.asm sdk/crt/crt0_r0.asm sdk/crt/pxe_pie.ld \
                sdk/libpxe/runtime_r3.c sdk/libpxe/runtime_r0.c \
+               sdk/libpxe/thread.c \
                sdk/libpxe/gfx.c sdk/libpxe/str.c \
                $(wildcard sdk/include/pxe/*.h)
 

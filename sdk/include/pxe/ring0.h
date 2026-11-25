@@ -8,7 +8,7 @@
  * Available ONLY to PXE_RING_0 executables (e.g. sysinfo.pxe, install.pxe, taskmgr.pxe).
  */
 
-#define PXE_R0_API_VERSION  0x0102u
+#define PXE_R0_API_VERSION  0x0103u
 
 /* Process states */
 #define PXE_PROC_READY      0u
@@ -109,6 +109,34 @@ typedef struct {
     char     label[32];
 } pxe_r0_part_info_t;
 
+typedef struct {
+    uint32_t logical_cpus;
+    uint32_t physical_cores;
+    uint32_t packages;
+    uint32_t smt_enabled;
+    uint32_t base_mhz;
+    uint32_t process_count;
+    uint32_t thread_count;
+    uint32_t reserved;
+    uint64_t uptime_ms;
+    char     cpu_brand[64];
+} pxe_r0_cpu_summary_t;
+
+typedef struct {
+    uint32_t cpu_id;
+    uint32_t lapic_id;
+    uint16_t package_id;
+    uint16_t core_id;
+    uint8_t  smt_id;
+    uint8_t  core_type;   /* 0=Generic, 1=P-Core, 2=E-Core */
+    uint8_t  online;
+    uint8_t  reserved;
+    uint64_t ticks_total;
+    uint64_t ticks_idle;
+    uint64_t ticks_kernel;
+    uint64_t ticks_user;
+} pxe_r0_cpu_core_stat_t;
+
 /* Kernel Direct Dispatch Table injected into crt0_r0 via RDX */
 typedef struct pxe_ring0_api {
     uint32_t api_version;
@@ -185,6 +213,9 @@ typedef struct pxe_ring0_api {
     int      (*fs_create)(const char* path);
     int      (*fs_write)(int fd, const void* buf, size_t count);
     const void* (*get_cjk_font)(void);
+    int      (*get_cpu_stats)(pxe_r0_cpu_summary_t* out_summary,
+                              pxe_r0_cpu_core_stat_t* out_cores, int max_cores);
+    uint64_t (*get_time_ns)(void);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */
@@ -206,6 +237,8 @@ int  pxe_r0_vfs_remount_all(void);
 void pxe_r0_power_control(int action);
 int  pxe_r0_sync_filesystems(void);
 int  pxe_r0_init_uninit_disk(void);
+int  pxe_r0_get_cpu_stats(pxe_r0_cpu_summary_t* out_summary,
+                          pxe_r0_cpu_core_stat_t* out_cores, int max_cores);
 
 #endif /* _PXE_RING0_H */
 

@@ -16,8 +16,7 @@
 #include "audio.h"
 #include "fpu.h"
 #include "vfs.h"
-
-static char g_user_write_buffer[192];
+#include "smp.h"
 
 static void syscall_pump_audio(thread_t* thread) {
     if (!audio_is_playing()) return;
@@ -30,9 +29,7 @@ static void syscall_pump_audio(thread_t* thread) {
     }
 }
 
-void syscall_init(void) {
-    per_cpu_init(&per_cpu_block);
-
+static void syscall_configure_msrs(void) {
     uint64_t efer = rdmsr(MSR_IA32_EFER);
     efer |= EFER_SCE | EFER_NXE;
     wrmsr(MSR_IA32_EFER, efer);
@@ -45,19 +42,38 @@ void syscall_init(void) {
     wrmsr(MSR_IA32_STAR, star);
     wrmsr(MSR_IA32_LSTAR, (uint64_t)syscall_entry);
     wrmsr(MSR_IA32_FMASK, (1ULL << 9) | (1ULL << 10)); // IF=0, DF=0
+}
 
-    log_printf("[SYSCALL] SYSCALL/SYSRET active: STAR=0x%016llx LSTAR=%p FMASK=0x600\n",
-               (unsigned long long)star, (void*)syscall_entry);
-    log_printf("[SYSCALL] GS_BASE per-CPU block @ %p, paranoid NMI uses IST2.\n",
-               (void*)&per_cpu_block);
+void syscall_init(void) {
+    per_cpu_init_bsp();
+    syscall_configure_msrs();
+
+    log_printf("[SYSCALL] SYSCALL/SYSRET active: LSTAR=%p FMASK=0x600\n",
+               (void*)syscall_entry);
+    log_printf("[SYSCALL] Per-CPU GS_BASE @ %p (max %u CPUs), paranoid NMI uses IST2.\n",
+               (void*)&g_per_cpus[0], (unsigned)SMP_MAX_CPUS);
+}
+
+void syscall_init_ap(void) {
+    syscall_configure_msrs();
 }
 
 uint64_t syscall_get_count(void) {
-    return per_cpu_block.syscall_count;
+    uint64_t total = 0;
+    uint32_t n = smp_get_cpu_count();
+    for (uint32_t i = 0; i < n && i < SMP_MAX_CPUS; i++) {
+        total += g_per_cpus[i].syscall_count;
+    }
+    return total;
 }
 
 uint64_t nmi_get_count(void) {
-    return per_cpu_block.nmi_count;
+    uint64_t total = 0;
+    uint32_t n = smp_get_cpu_count();
+    for (uint32_t i = 0; i < n && i < SMP_MAX_CPUS; i++) {
+        total += g_per_cpus[i].nmi_count;
+    }
+    return total;
 }
 
 void syscall_mark_reschedule(void) {
@@ -85,20 +101,21 @@ trap_frame_t* syscall_bad_return(trap_frame_t* frame) {
 }
 
 static int64_t syscall_write(trap_frame_t* frame) {
+    char kbuf[192];
     uint64_t user_ptr = frame->rsi;
     size_t length = (size_t)frame->rdx;
     if (length == 0) return 0;
-    if (length >= sizeof(g_user_write_buffer)) {
-        length = sizeof(g_user_write_buffer) - 1;
+    if (length >= sizeof(kbuf)) {
+        length = sizeof(kbuf) - 1;
     }
     if (!process_current() ||
-        !process_copy_from_user(process_current(), g_user_write_buffer,
+        !process_copy_from_user(process_current(), kbuf,
                                 user_ptr, length)) {
         return -NEKO_EFAULT;
     }
 
-    g_user_write_buffer[length] = '\0';
-    log_printf("[RING3:%u] %s\n", process_current_pid(), g_user_write_buffer);
+    kbuf[length] = '\0';
+    log_printf("[RING3:%u] %s\n", process_current_pid(), kbuf);
     return (int64_t)length;
 }
 
@@ -837,6 +854,65 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
             result = syscall_audio_cmd(process, frame);
             break;
 
+        case NEKO_SYSCALL_GET_TIME_NS:
+            result = (int64_t)cpu_monotonic_ns();
+            break;
+
+        case NEKO_SYSCALL_SLEEP_US: {
+            uint64_t us = frame->rdi;
+            if (us == 0) {
+                scheduler_mark_current_ready();
+                scheduler_request_reschedule();
+                result = 0;
+            } else {
+                uint64_t deadline = cpu_monotonic_ns() + us * 1000ULL;
+                scheduler_block_current_ns(deadline);
+                result = 0;
+            }
+            break;
+        }
+
+        case NEKO_SYSCALL_THREAD_CREATE: {
+            uint64_t entry    = frame->rdi;
+            uint64_t arg      = frame->rsi;
+            uint64_t sp_top   = frame->rdx;
+            uint64_t tls_base = frame->r10;
+            if (!process || process->exec_ring != 3 || !entry || !sp_top) {
+                result = -NEKO_EINVAL;
+                break;
+            }
+            thread_t* nt = process_create_user_subthread(process, entry, arg, sp_top, tls_base);
+            result = nt ? (int64_t)nt->tid : -NEKO_ENOMEM;
+            break;
+        }
+
+        case NEKO_SYSCALL_THREAD_EXIT:
+            process_thread_exit_current((int)frame->rdi);
+            result = 0;
+            break;
+
+        case NEKO_SYSCALL_THREAD_JOIN: {
+            uint64_t target_tid = frame->rdi;
+            uint64_t status_ptr = frame->rsi;
+            int st_val = 0;
+            int rc = process_thread_join(process, target_tid, &st_val);
+            if (rc == 0 && status_ptr) {
+                if (!process_copy_to_user(process, status_ptr, &st_val, sizeof(st_val))) {
+                    rc = -NEKO_EFAULT;
+                }
+            }
+            result = rc;
+            break;
+        }
+
+        case NEKO_SYSCALL_FUTEX_WAIT:
+            result = scheduler_futex_wait(process, frame->rdi, (uint32_t)frame->rsi, frame->rdx);
+            break;
+
+        case NEKO_SYSCALL_FUTEX_WAKE:
+            result = scheduler_futex_wake(process, frame->rdi, (int)frame->rsi);
+            break;
+
         default:
             result = -NEKO_EINVAL;
             break;
@@ -847,19 +923,21 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 }
 
 void c_nmi_handler(trap_frame_t* frame) {
-    per_cpu_block.nmi_count++;
+    per_cpu_t* cpu = this_cpu();
+    cpu->nmi_count++;
 
     uint64_t kernel_gs = rdmsr(MSR_GS_BASE);
-    if (kernel_gs != (uint64_t)&per_cpu_block) {
-        log_printf("[NMI CRITICAL] GS_BASE identity mismatch: 0x%016llx != %p\n",
-                   (unsigned long long)kernel_gs, (void*)&per_cpu_block);
+    if (kernel_gs != (uint64_t)cpu) {
+        log_printf("[NMI CRITICAL] CPU%u GS_BASE identity mismatch: 0x%016llx != %p\n",
+                   cpu->cpu_id, (unsigned long long)kernel_gs, (void*)cpu);
     }
 
-    if (per_cpu_block.nmi_count <= 4) {
-        log_printf("[NMI] Paranoid entry #%llu RIP=0x%016llx CS=0x%04llx GS=%s\n",
-                   (unsigned long long)per_cpu_block.nmi_count,
+    if (cpu->nmi_count <= 4) {
+        log_printf("[NMI] CPU%u Paranoid entry #%llu RIP=0x%016llx CS=0x%04llx GS=%s\n",
+                   cpu->cpu_id,
+                   (unsigned long long)cpu->nmi_count,
                    (unsigned long long)(frame ? frame->rip : 0),
                    (unsigned long long)(frame ? frame->cs : 0),
-                   kernel_gs == (uint64_t)&per_cpu_block ? "kernel" : "invalid");
+                   kernel_gs == (uint64_t)cpu ? "kernel" : "invalid");
     }
 }

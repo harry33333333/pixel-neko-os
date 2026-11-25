@@ -100,8 +100,16 @@ void pxe_sleep_ms(uint32_t ms) {
     (void)_pxe_syscall1(NEKO_SYSCALL_SLEEP, (long)ticks);
 }
 
+void pxe_sleep_us(uint64_t us) {
+    (void)_pxe_syscall1(NEKO_SYSCALL_SLEEP_US, (long)us);
+}
+
 uint64_t pxe_get_ticks(void) {
     return (uint64_t)_pxe_syscall0(NEKO_SYSCALL_GETTICKS);
+}
+
+uint64_t pxe_get_time_ns(void) {
+    return (uint64_t)_pxe_syscall0(NEKO_SYSCALL_GET_TIME_NS);
 }
 
 int pxe_spawn(const char* path, int argc, const char* const* argv) {
@@ -254,6 +262,17 @@ typedef struct pxe_mblk {
 
 static pxe_mblk_t* g_heap_head = (pxe_mblk_t*)0;
 static pxe_mblk_t* g_heap_tail = (pxe_mblk_t*)0;
+static volatile uint32_t g_heap_spin = 0u;
+
+static inline void heap_lock(void) {
+    while (__atomic_exchange_n(&g_heap_spin, 1u, __ATOMIC_ACQUIRE) != 0u) {
+        __asm__ volatile ("pause" : : : "memory");
+    }
+}
+
+static inline void heap_unlock(void) {
+    __atomic_store_n(&g_heap_spin, 0u, __ATOMIC_RELEASE);
+}
 
 void* pxe_sbrk(intptr_t delta) {
     long ret = _pxe_syscall1(NEKO_SYSCALL_SBRK, (long)delta);
@@ -283,10 +302,12 @@ void* malloc(size_t size) {
     if (size == 0) size = 16;
     size = (size + 15u) & ~((size_t)15u);
 
+    heap_lock();
     for (pxe_mblk_t* cur = g_heap_head; cur; cur = cur->next) {
         if (cur->free && cur->size >= size) {
             cur->free = 0u;
             heap_split(cur, size);
+            heap_unlock();
             return (void*)(cur + 1);
         }
     }
@@ -294,7 +315,10 @@ void* malloc(size_t size) {
     size_t req = sizeof(pxe_mblk_t) + size;
     size_t chunk = (req + 65535u) & ~((size_t)65535u);
     void* mem = pxe_sbrk((intptr_t)chunk);
-    if (mem == (void*)(intptr_t)-1) return (void*)0;
+    if (mem == (void*)(intptr_t)-1) {
+        heap_unlock();
+        return (void*)0;
+    }
 
     pxe_mblk_t* blk = (pxe_mblk_t*)mem;
     blk->size  = chunk - sizeof(pxe_mblk_t);
@@ -310,13 +334,18 @@ void* malloc(size_t size) {
     g_heap_tail = blk;
 
     heap_split(blk, size);
+    heap_unlock();
     return (void*)(blk + 1);
 }
 
 void free(void* ptr) {
     if (!ptr) return;
+    heap_lock();
     pxe_mblk_t* blk = ((pxe_mblk_t*)ptr) - 1;
-    if (blk->magic != PXE_HEAP_MAGIC || blk->free) return;
+    if (blk->magic != PXE_HEAP_MAGIC || blk->free) {
+        heap_unlock();
+        return;
+    }
     blk->free = 1u;
 
     if (blk->next && blk->next->magic == PXE_HEAP_MAGIC && blk->next->free &&
@@ -336,6 +365,7 @@ void free(void* ptr) {
         if (blk->next) blk->next->prev = prv;
         else g_heap_tail = prv;
     }
+    heap_unlock();
 }
 
 void* calloc(size_t nmemb, size_t size) {

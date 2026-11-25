@@ -62,14 +62,27 @@
 /* PXE Audio Syscall (60) */
 #define NEKO_SYSCALL_AUDIO_CMD     60
 
+/* High-Precision Time Syscalls (65..66) */
+#define NEKO_SYSCALL_GET_TIME_NS   65
+#define NEKO_SYSCALL_SLEEP_US      66
+
+/* Ring 3 Multithreading & Futex Syscalls (70..74) */
+#define NEKO_SYSCALL_THREAD_CREATE 70
+#define NEKO_SYSCALL_THREAD_EXIT   71
+#define NEKO_SYSCALL_THREAD_JOIN   72
+#define NEKO_SYSCALL_FUTEX_WAIT    73
+#define NEKO_SYSCALL_FUTEX_WAKE    74
+
 #define NEKO_EPERM                 1
 #define NEKO_ENOENT                2
+#define NEKO_ESRCH                 3
 #define NEKO_ECHILD                10
 #define NEKO_EAGAIN                11
 #define NEKO_ENOMEM                12
 #define NEKO_EFAULT                14
 #define NEKO_EINVAL                22
 #define NEKO_ENOSPC                28
+#define NEKO_ETIMEDOUT             110
 
 #define NEKO_USER_LIMIT            0x0000800000000000ULL
 #define NEKO_SHM_BASE              0x0000600000000000ULL
