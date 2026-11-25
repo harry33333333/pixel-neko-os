@@ -248,6 +248,11 @@ static const char* pci_gpu_chip_summary(const pxe_r0_pci_info_t* pci) {
             case 0x01D1:
             case 0x01D3:
                 return "G72 (90nm GeForce 7300 Series, 64-bit)";
+            case 0x0142:
+            case 0x00F4:
+                return "NV43 (110nm GeForce 6600 LE, 4 Pixel/3 Vertex Shaders, 128MB GDDR3 128-bit)";
+            case 0x0163:
+                return "NV44 (110nm GeForce 6200 LE, 128MB 64-bit)";
             default:
                 break;
         }

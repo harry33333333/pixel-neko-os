@@ -2,7 +2,7 @@
 name        = nvg7x
 provider    = Pixel Neko OS
 class       = DISPLAY
-version     = 1.2.0
+version     = 1.2.1
 ddk_version = 0x0100
 start       = BOOT
 safe_mode   = false
@@ -14,4 +14,6 @@ pci = ven=0x10de, dev=0x1c06
 pci = ven=0x10de, dev=0x0393
 pci = ven=0x10de, dev=0x0391
 pci = ven=0x10de, dev=0x01df
+pci = ven=0x10de, dev=0x0142
+pci = ven=0x10de, dev=0x00f4
 pci = ven=0x10de, class=0x03, subclass=*

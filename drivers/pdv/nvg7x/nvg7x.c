@@ -54,6 +54,7 @@ static const unsigned char g_nv_crtc_state_regs[] = {
 static const pdv_pci_device_t* g_pci;
 static int g_active;
 static int g_is_pascal_nvdisplay;
+static int g_is_nv4x;
 static uint32_t g_chip_arch;
 static unsigned int g_vram_size;
 static uint64_t g_bar0;
@@ -889,7 +890,8 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
         nvidia_pcrtc_write(NV_PCRTC_INTR_0, 1U);
         nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 1U);
     }
-    g_status = "G7x CRTC/VPLL hardware modeset active";
+    g_status = g_is_nv4x ? "NV4x CRTC/VPLL hardware modeset active"
+                         : "G7x CRTC/VPLL hardware modeset active";
     return 1;
 }
 
@@ -1012,6 +1014,7 @@ static unsigned int nvidia_probe_hw_vram(uint64_t bar0_phys, int is_pascal,
 static int nvidia_g7x_probe(void) {
     g_active = 0;
     g_is_pascal_nvdisplay = 0;
+    g_is_nv4x = 0;
     g_chip_arch = 0;
     g_pci = 0;
     g_vram_size = 0;
@@ -1078,11 +1081,17 @@ static int nvidia_g7x_probe(void) {
             case PCI_DEV_6200LE_NV44:
                 g_name = "NVIDIA GeForce 6200 LE (NV44 PCIe)";
                 vram = 128U * 1024U * 1024U;
+                g_is_nv4x = 1;
                 break;
             case PCI_DEV_6600LE_NV43_A:
+                g_name = "NVIDIA GeForce 6600 LE (NV43)";
+                vram = 128U * 1024U * 1024U;
+                g_is_nv4x = 1;
+                break;
             case PCI_DEV_6600LE_NV43_B:
                 g_name = "NVIDIA GeForce 6600 LE (NV43 PCIe)";
                 vram = 128U * 1024U * 1024U;
+                g_is_nv4x = 1;
                 break;
             default:
                 if (dev->class_code == 0x03) {
@@ -1132,6 +1141,9 @@ static int nvidia_g7x_probe(void) {
         if (g_regs) {
             uint32_t pmc_boot0 = pdv_mmio_read32(g_regs + NV_MC_BOOT_0_REG);
             g_chip_arch = (pmc_boot0 >> 20) & 0x1FFU;
+            if (g_chip_arch >= 0x040U && g_chip_arch <= 0x045U) {
+                g_is_nv4x = 1;
+            }
             if (g_chip_arch >= 0x050U && g_chip_arch != 0x1FFU) {
                 /* NV50/Tesla through GP10x/Pascal use NVDisplay/EVO rather than NV4x PCRTC */
                 if (g_chip_arch >= 0x130U || is_pascal) {
@@ -1201,7 +1213,7 @@ static int nvidia_g7x_probe(void) {
                     boot_timing.pixel_clock_khz >= 20000U) {
                     uint64_t bvco = (uint64_t)boot_timing.pixel_clock_khz << bp;
                     uint32_t bref = (uint32_t)((bvco * bm + (bn / 2U)) / bn);
-                    if (bref >= 12000U && bref <= 250000U) {
+                    if (bref >= 12000U && bref <= 500000U) {
                         g_boot_vpll = boot_vpll;
                         g_boot_vpllb = boot_vpllb;
                         g_boot_vpll2b = boot_vpll2b;
@@ -1244,13 +1256,15 @@ static int nvidia_g7x_probe(void) {
             }
         } else if (g_bar1 && nvidia_framebuffer_in_bar(
                           surf.framebuffer_phys, bar_size)) {
-            g_status = "G7x CRTC/VPLL hardware modeset ready (BAR1)";
+            g_status = g_is_nv4x ? "NV4x CRTC/VPLL hardware modeset ready (BAR1)"
+                                 : "G7x CRTC/VPLL hardware modeset ready (BAR1)";
         } else {
-            g_status = "G7x CRTC/VPLL hardware modeset ready";
+            g_status = g_is_nv4x ? "NV4x CRTC/VPLL hardware modeset ready"
+                                 : "G7x CRTC/VPLL hardware modeset ready";
         }
-        klog_info("[NV  ] active %s id=%04x:%04x subsys=%04x:%04x rev=%02x pcie=%02x head=%d BAR0=0x%llx BAR1=0x%llx(size=%lluMB) lfb=0x%llx vram=%uMB modes=%d",
+        klog_info("[NV  ] active %s id=%04x:%04x subsys=%04x:%04x rev=%02x arch=0x%03x pcie=%02x head=%d BAR0=0x%llx BAR1=0x%llx(size=%lluMB) lfb=0x%llx vram=%uMB modes=%d",
                   g_name, dev->vendor, dev->device, dev->subsystem_vendor,
-                  dev->subsystem_device, dev->revision, pcie,
+                  dev->subsystem_device, dev->revision, g_chip_arch, pcie,
                   g_head, (unsigned long long)g_bar0, (unsigned long long)g_bar1,
                   (unsigned long long)(g_bar1_size / (1024ULL * 1024ULL)),
                   (unsigned long long)surf.framebuffer_phys,

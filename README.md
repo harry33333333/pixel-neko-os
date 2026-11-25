@@ -35,7 +35,7 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **EDID 解析与动态分辨率/色深切换**：
   - 启动时优先解析 UEFI GOP / Legacy VBE 获取的 EDID 1.3/1.4 时序（含 Established/Standard/DTD 与常见 CEA-861 模式），EDID 缺失时回退固件模式表。
   - 由已加载显卡 `.pdv` 动态枚举分辨率与 `8/16/24/32-bit` 色深，结合动态 PAT Write-Combining 显存窗口双缓冲与 64 MiB `SHM` 共享窗口画布槽实现无撕裂流畅刷新：
-    - **NVIDIA**：支持 G72/G73 与 GeForce GTX 1060 3GB (`10DE:1C02`, GP106 Pascal)，支持运行时两级 VPLL/PCRTC/RAMDAC 无重启模式切换与同步极性配置。
+    - **NVIDIA**：支持 NV43 (GeForce 6600 LE `10DE:0142`)、G72/G73 与 GeForce GTX 1060 3GB (`10DE:1C02`, GP106 Pascal)，支持运行时两级 VPLL/PCRTC/RAMDAC 无重启模式切换与同步极性配置。
     - **ATI Mach64 / 3D Rage II+DVD**：支持内部 PLL、CRTC、`32-qword` Display FIFO 水位线校准与晶振自动标定，按 2MB/4MB 真实显存过滤并运行时切换模式。
     - **VMware SVGA II / SVGA3D**：支持完整虚拟模式列表、2D 加速与 Screen Target (`STDU`)。
     - 通用 LFB / 回退路径提供安全兼容模式，需重启切换时先弹出确认框。
