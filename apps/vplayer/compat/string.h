@@ -7,6 +7,7 @@ extern "C" {
 
 #include <pxe/str.h>
 
+void* memchr(const void* s, int c, size_t n);
 char* strstr(const char* haystack, const char* needle);
 char* strdup(const char* s);
 

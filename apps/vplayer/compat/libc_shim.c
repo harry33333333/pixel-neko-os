@@ -143,6 +143,15 @@ long strtol(const char* nptr, char** endptr, int base) {
 int atoi(const char* s) { return (int)strtol(s, NULL, 10); }
 long atol(const char* s) { return strtol(s, NULL, 10); }
 
+void* memchr(const void* s, int c, size_t n) {
+    const uint8_t* p = (const uint8_t*)s;
+    uint8_t target = (uint8_t)c;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] == target) return (void*)(p + i);
+    }
+    return NULL;
+}
+
 char* strstr(const char* haystack, const char* needle) {
     if (!haystack || !needle) return NULL;
     if (!*needle) return (char*)haystack;

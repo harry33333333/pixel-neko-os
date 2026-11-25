@@ -16,22 +16,22 @@ typedef struct {
     const uint8_t* data;
     size_t         size_bits;
     size_t         pos;
-} bs_t;
+} vp_bs_t;
 
-static inline uint32_t bs_read_bit(bs_t* b) {
+static inline uint32_t bs_read_bit(vp_bs_t* b) {
     if (b->pos >= b->size_bits) return 0;
     uint32_t v = (b->data[b->pos >> 3] >> (7u - (b->pos & 7u))) & 1u;
     b->pos++;
     return v;
 }
 
-static inline uint32_t bs_read_bits(bs_t* b, int n) {
+static inline uint32_t bs_read_bits(vp_bs_t* b, int n) {
     uint32_t v = 0;
     for (int i = 0; i < n; i++) v = (v << 1) | bs_read_bit(b);
     return v;
 }
 
-static uint32_t bs_read_ue(bs_t* b) {
+static uint32_t bs_read_ue(vp_bs_t* b) {
     int zeros = 0;
     while (b->pos < b->size_bits && bs_read_bit(b) == 0 && zeros < 31) {
         zeros++;
@@ -40,13 +40,13 @@ static uint32_t bs_read_ue(bs_t* b) {
     return ((1u << zeros) - 1u) + bs_read_bits(b, zeros);
 }
 
-static int32_t bs_read_se(bs_t* b) {
+static int32_t bs_read_se(vp_bs_t* b) {
     uint32_t v = bs_read_ue(b);
     if (v & 1u) return (int32_t)((v + 1u) >> 1);
     return -(int32_t)(v >> 1);
 }
 
-static void skip_scaling_list(bs_t* b, int size) {
+static void skip_scaling_list(vp_bs_t* b, int size) {
     int last_scale = 8, next_scale = 8;
     for (int j = 0; j < size; j++) {
         if (next_scale != 0) {
@@ -92,7 +92,7 @@ static void parse_h264_sps(const uint8_t* nalu, size_t nalu_len, sps_info_t* out
         else zeros = 0;
     }
 
-    bs_t bs;
+    vp_bs_t bs;
     bs.data = rbsp;
     bs.size_bits = rlen * 8u;
     bs.pos = 0;
@@ -457,7 +457,7 @@ int vp_media_index_open(const char* path, vp_media_index_t* out_idx) {
 
     out_idx->file_size = st.size;
     out_idx->has_video = 1;
-    out_idx->avc_nal_len_size = (int)(vtr->avc1.lengthSizeMinusOne & 3u) + 1;
+    out_idx->avc_nal_len_size = (int)(vtr->CodecDescription.avc1.lengthSizeMinusOne & 3u) + 1;
     if (out_idx->avc_nal_len_size < 1 || out_idx->avc_nal_len_size > 4) {
         out_idx->avc_nal_len_size = 4;
     }
@@ -500,7 +500,7 @@ int vp_media_index_open(const char* path, vp_media_index_t* out_idx) {
     out_idx->width = sps.valid ? sps.width : (int)vtr->SampleDescription.video.width;
     out_idx->height = sps.valid ? sps.height : (int)vtr->SampleDescription.video.height;
     out_idx->bit_depth = sps.valid ? sps.bit_depth_luma : 8;
-    out_idx->profile_idc = sps.valid ? sps.profile_idc : (int)vtr->avc1.AVCProfileIndication;
+    out_idx->profile_idc = sps.valid ? sps.profile_idc : (int)vtr->CodecDescription.avc1.AVCProfileIndication;
     out_idx->bt709 = sps.valid ? sps.bt709 : (out_idx->height >= 720 ? 1 : 0);
 
     /* Compute exact duration and FPS from track timescale & sample_count */
