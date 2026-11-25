@@ -252,10 +252,6 @@ drivers/audio/mp3_dec.o: drivers/audio/mp3_dec.c
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -fno-tree-vectorize -mstackrealign -c -o $@ $<
 
-kernel/fb_blit_wc.o: kernel/fb_blit_wc.c
-	@mkdir -p $(dir $@)
-	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -fno-tree-vectorize -mstackrealign -c -o $@ $<
-
 %.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<

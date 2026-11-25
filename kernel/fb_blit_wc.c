@@ -32,6 +32,15 @@ static void fb_blit_scalar_row(uint8_t* dst, const uint8_t* src, uint32_t n) {
     }
 }
 
+static inline int wc_sse2_ready(void) {
+    uint64_t cr0, cr4;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
+    /* Require CR4.OSFXSR (bit 9) = 1, CR0.EM (bit 2) = 0, CR0.TS (bit 3) = 0 */
+    return ((cr4 & (1ULL << 9)) != 0ULL) &&
+           ((cr0 & ((1ULL << 2) | (1ULL << 3))) == 0ULL);
+}
+
 static void fb_blit_sse2_chunk(uint8_t* dst_row, uint32_t dst_pitch,
                                const uint8_t* src_row, uint32_t src_pitch,
                                uint32_t row_bytes, uint32_t rows) {
@@ -39,10 +48,10 @@ static void fb_blit_sse2_chunk(uint8_t* dst_row, uint32_t dst_pitch,
     uint64_t flags = wc_irq_save();
 
     __asm__ __volatile__(
-        "movdqa %%xmm0, 0(%0)\n\t"
-        "movdqa %%xmm1, 16(%0)\n\t"
-        "movdqa %%xmm2, 32(%0)\n\t"
-        "movdqa %%xmm3, 48(%0)\n\t"
+        "movdqu %%xmm0, 0(%0)\n\t"
+        "movdqu %%xmm1, 16(%0)\n\t"
+        "movdqu %%xmm2, 32(%0)\n\t"
+        "movdqu %%xmm3, 48(%0)\n\t"
         :
         : "r"(xmm_save)
         : "memory");
@@ -101,10 +110,10 @@ static void fb_blit_sse2_chunk(uint8_t* dst_row, uint32_t dst_pitch,
 
     __asm__ __volatile__(
         "sfence\n\t"
-        "movdqa 0(%0), %%xmm0\n\t"
-        "movdqa 16(%0), %%xmm1\n\t"
-        "movdqa 32(%0), %%xmm2\n\t"
-        "movdqa 48(%0), %%xmm3\n\t"
+        "movdqu 0(%0), %%xmm0\n\t"
+        "movdqu 16(%0), %%xmm1\n\t"
+        "movdqu 32(%0), %%xmm2\n\t"
+        "movdqu 48(%0), %%xmm3\n\t"
         :
         : "r"(xmm_save)
         : "memory");
@@ -120,7 +129,7 @@ void fb_blit_wc_rect(void* dst_base, uint32_t dst_pitch,
     uint8_t* d = (uint8_t*)dst_base;
     const uint8_t* s = (const uint8_t*)src_base;
 
-    if (row_bytes < 64U) {
+    if (row_bytes < 64U || !wc_sse2_ready()) {
         for (uint32_t r = 0; r < height; r++) {
             fb_blit_scalar_row(d + (size_t)r * (size_t)dst_pitch,
                                s + (size_t)r * (size_t)src_pitch,
@@ -142,3 +151,4 @@ void fb_blit_wc_rect(void* dst_base, uint32_t dst_pitch,
         done += batch;
     }
 }
+
