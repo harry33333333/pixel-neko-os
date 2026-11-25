@@ -134,9 +134,51 @@ void vp_yuv420_to_surface(const pxe_win_surface_t* surf,
         return;
     }
 
-    /* Scaled path: 16.16 fixed-point horizontal/vertical mapping (zero extra buffer) */
+    /* Scaled path: 16.16 fixed-point horizontal/vertical mapping */
     uint32_t x_step = (uint32_t)(((uint64_t)(uint32_t)src_w << 16) / (uint32_t)dst_w);
     uint32_t y_step = (uint32_t)(((uint64_t)(uint32_t)src_h << 16) / (uint32_t)dst_h);
+    int copy_w = clip_x1 - clip_x0;
+
+    /* Fast SSE2 scaled RGB32 path: precompute X lookup table + gather row + SIMD convert */
+    if (surf->format == PXE_CANVAS_RGB32 && copy_w <= 2048) {
+        uint16_t sx_lut[2048];
+        uint8_t  row_y[2048];
+        uint8_t  row_u[1024];
+        uint8_t  row_v[1024];
+
+        uint32_t sx_fp = (uint32_t)(clip_x0 - dst_x) * x_step;
+        for (int i = 0; i < copy_w; i++) {
+            int sx = (int)(sx_fp >> 16);
+            sx_fp += x_step;
+            if (sx >= src_w) sx = src_w - 1;
+            sx_lut[i] = (uint16_t)sx;
+        }
+
+        int last_uv_sy = -1;
+        for (int dy = clip_y0; dy < clip_y1; dy++) {
+            int sy = (int)(((uint64_t)(uint32_t)(dy - dst_y) * y_step) >> 16);
+            if (sy >= src_h) sy = src_h - 1;
+            const uint8_t* yp = y_plane + (size_t)sy * (size_t)y_stride;
+            for (int i = 0; i < copy_w; i++) {
+                row_y[i] = yp[sx_lut[i]];
+            }
+            int uv_sy = sy >> 1;
+            if (uv_sy != last_uv_sy) {
+                last_uv_sy = uv_sy;
+                const uint8_t* up = u_plane + (size_t)uv_sy * (size_t)uv_stride;
+                const uint8_t* vp = v_plane + (size_t)uv_sy * (size_t)uv_stride;
+                int half_w = (copy_w + 1) >> 1;
+                for (int i = 0; i < half_w; i++) {
+                    int uv_x = sx_lut[i << 1] >> 1;
+                    row_u[i] = up[uv_x];
+                    row_v[i] = vp[uv_x];
+                }
+            }
+            uint32_t* row = (uint32_t*)((uint8_t*)surf->pixels + (size_t)dy * (size_t)surf->pitch) + clip_x0;
+            yuv420_row_rgb32_sse2(row, row_y, row_u, row_v, copy_w, c);
+        }
+        return;
+    }
 
     for (int dy = clip_y0; dy < clip_y1; dy++) {
         int sy = (int)(((uint64_t)(uint32_t)(dy - dst_y) * y_step) >> 16);

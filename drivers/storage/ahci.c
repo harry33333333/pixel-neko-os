@@ -223,22 +223,38 @@ static int ahci_issue(ahci_port_t* port, uint8_t command, uint64_t lba,
     dma_sync_for_device(&port->dma);
     port_write(port, AHCI_PX_CI, 1);
     int result = -1;
+    const uint32_t err_mask = (1u << 30) | (1u << 29) | (1u << 28) | (1u << 27);
+    /* Fast short spin first so DMA transfers complete in microseconds instead of waiting 1 ms */
+    for (uint32_t fast = 0; fast < 4096u; fast++) {
+        uint32_t ci = port_register(port, AHCI_PX_CI);
+        uint32_t interrupt = port_register(port, AHCI_PX_IS);
+        if (!(ci & 1u) || (interrupt & err_mask)) {
+            uint32_t tfd = port_register(port, AHCI_PX_TFD);
+            result = (!(tfd & AHCI_PORT_TFD_ERR) && !(interrupt & err_mask)) ? 0 : -1;
+            goto done;
+        }
+        __asm__ volatile ("pause");
+    }
     for (uint32_t elapsed = 0; elapsed < 4000; elapsed++) {
         uint32_t ci = port_register(port, AHCI_PX_CI);
         uint32_t interrupt = port_register(port, AHCI_PX_IS);
-        if (!(ci & 1u) || (interrupt & ((1u << 30) | (1u << 29) |
-                                        (1u << 28) | (1u << 27)))) {
+        if (!(ci & 1u) || (interrupt & err_mask)) {
             uint32_t tfd = port_register(port, AHCI_PX_TFD);
-            result = (!(tfd & AHCI_PORT_TFD_ERR) &&
-                      !(interrupt & ((1u << 30) | (1u << 29) | (1u << 28) |
-                                     (1u << 27)))) ? 0 : -1;
+            result = (!(tfd & AHCI_PORT_TFD_ERR) && !(interrupt & err_mask)) ? 0 : -1;
             break;
         }
         usb_delay_ms(1);
         audio_service_dma_irq();
     }
+done:
     dma_sync_for_cpu(&port->dma);
     port_write(port, AHCI_PX_IS, 0xFFFFFFFFu);
+    if (result != 0) {
+        /* Clear sticky port error state so subsequent commands do not stay wedged */
+        port_write(port, AHCI_PX_SERR, 0xFFFFFFFFu);
+        (void)port_stop(port);
+        (void)port_start(port);
+    }
     if (result == 0 && read_data && bytes) {
         memcpy(read_data, port->memory->data, bytes);
     }

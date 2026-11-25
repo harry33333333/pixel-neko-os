@@ -1,10 +1,12 @@
 #include "blkdev.h"
 #include "log.h"
+#include "spinlock.h"
 #include "string.h"
 
 blkdev_t g_blkdevs[MAX_BLKDEV];
 static blkdev_scsi_cmd_fn g_blkdev_scsi_cmds[MAX_BLKDEV];
 static int g_block_count;
+static kmutex_t g_blk_io_mutex = KMUTEX_INIT;
 
 static void block_copy_name(char* target, unsigned int capacity,
                             const char* source) {
@@ -18,6 +20,7 @@ static void block_copy_name(char* target, unsigned int capacity,
 }
 
 void blkdev_init(void) {
+    kmutex_init(&g_blk_io_mutex);
     memset(g_blkdevs, 0, sizeof(g_blkdevs));
     memset(g_blkdev_scsi_cmds, 0, sizeof(g_blkdev_scsi_cmds));
     g_block_count = 0;
@@ -99,25 +102,37 @@ blkdev_t* blkdev_find_type(blk_type_t type, int unit) {
 
 int block_read(blkdev_t* dev, uint64_t lba, uint32_t count, void* buffer) {
     if (!dev || !dev->read_sectors || !buffer || !count) return -1;
-    if (dev->is_removable && dev->media_state != MEDIA_PRESENT) return -1;
-    if (lba >= dev->total_sectors || count > dev->total_sectors - lba) {
+    kmutex_lock(&g_blk_io_mutex);
+    if (dev->is_removable && dev->media_state != MEDIA_PRESENT) {
+        kmutex_unlock(&g_blk_io_mutex);
         return -1;
     }
-    return dev->read_sectors(dev, lba, count, buffer);
+    if (lba >= dev->total_sectors || count > dev->total_sectors - lba) {
+        kmutex_unlock(&g_blk_io_mutex);
+        return -1;
+    }
+    int rc = dev->read_sectors(dev, lba, count, buffer);
+    kmutex_unlock(&g_blk_io_mutex);
+    return rc;
 }
 
 int block_write(blkdev_t* dev, uint64_t lba, uint32_t count,
                 const void* buffer) {
     if (!dev || !dev->write_sectors || !buffer || !count) return -1;
+    kmutex_lock(&g_blk_io_mutex);
     if (dev->is_readonly || lba >= dev->total_sectors ||
         count > dev->total_sectors - lba) {
+        kmutex_unlock(&g_blk_io_mutex);
         return -1;
     }
-    return dev->write_sectors(dev, lba, count, buffer);
+    int rc = dev->write_sectors(dev, lba, count, buffer);
+    kmutex_unlock(&g_blk_io_mutex);
+    return rc;
 }
 
 media_state_t block_check_media(blkdev_t* dev) {
     if (!dev) return MEDIA_ERROR;
+    kmutex_lock(&g_blk_io_mutex);
     media_state_t state = dev->check_media
                               ? dev->check_media(dev)
                               : dev->media_state;
@@ -125,6 +140,7 @@ media_state_t block_check_media(blkdev_t* dev) {
         dev->media_state = state;
         dev->media_generation++;
     }
+    kmutex_unlock(&g_blk_io_mutex);
     return state;
 }
 
@@ -157,5 +173,8 @@ int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
     }
     int slot = (int)(dev - g_blkdevs);
     if (!g_blkdev_scsi_cmds[slot]) return -1;
-    return g_blkdev_scsi_cmds[slot](dev, cdb, cdb_len, buffer, buffer_len);
+    kmutex_lock(&g_blk_io_mutex);
+    int rc = g_blkdev_scsi_cmds[slot](dev, cdb, cdb_len, buffer, buffer_len);
+    kmutex_unlock(&g_blk_io_mutex);
+    return rc;
 }

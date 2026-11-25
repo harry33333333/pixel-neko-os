@@ -286,6 +286,7 @@ long CWelsDecoder::Initialize (const SDecodingParam* pParam) {
 }
 
 long CWelsDecoder::Uninitialize() {
+  CloseDecoderThreads();
   UninitDecoder();
 
   return ERR_NONE;
@@ -333,13 +334,17 @@ void CWelsDecoder::OpenDecoderThreads() {
   }
 }
 void CWelsDecoder::CloseDecoderThreads() {
-  if (m_iThreadCount >= 1) {
+  if (m_iThreadCount >= 1 && m_pDecThrCtx != NULL &&
+      m_pDecThrCtx[0].sThreadInfo.sThrHandle != 0) {
     SET_EVENT (&m_sReleaseBufferEvent);
     for (int32_t i = 0; i < m_iThreadCount; i++) { //waiting the completion begun slices
-      WAIT_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsIdle, WELS_DEC_THREAD_WAIT_INFINITE);
-      m_pDecThrCtx[i].sThreadInfo.uiCommand = WELS_DEC_THREAD_COMMAND_ABORT;
-      RELEASE_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsActivated);
-      WAIT_THREAD (&m_pDecThrCtx[i].sThreadInfo.sThrHandle);
+      if (m_pDecThrCtx[i].sThreadInfo.sThrHandle != 0) {
+        WAIT_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsIdle, WELS_DEC_THREAD_WAIT_INFINITE);
+        m_pDecThrCtx[i].sThreadInfo.uiCommand = WELS_DEC_THREAD_COMMAND_ABORT;
+        RELEASE_SEMAPHORE (&m_pDecThrCtx[i].sThreadInfo.sIsActivated);
+        WAIT_THREAD (&m_pDecThrCtx[i].sThreadInfo.sThrHandle);
+        m_pDecThrCtx[i].sThreadInfo.sThrHandle = 0;
+      }
       CLOSE_EVENT (&m_pDecThrCtx[i].sImageReady);
       CLOSE_EVENT (&m_pDecThrCtx[i].sSliceDecodeStart);
       CLOSE_EVENT (&m_pDecThrCtx[i].sSliceDecodeFinish);
@@ -350,6 +355,8 @@ void CWelsDecoder::CloseDecoderThreads() {
     CLOSE_EVENT (&m_sBufferingEvent);
     CLOSE_EVENT (&m_sReleaseBufferEvent);
     CLOSE_SEMAPHORE (&m_sIsBusy);
+    m_DecCtxActiveCount = 0;
+    m_pLastDecThrCtx = NULL;
   }
 }
 

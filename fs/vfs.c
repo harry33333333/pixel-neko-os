@@ -11,11 +11,39 @@
 #include "limine.h"
 #include "log.h"
 #include "procfs.h"
+#include "scheduler.h"
 #include "settings.h"
+#include "spinlock.h"
 #include "string.h"
 #include "usb_storage.h"
 
 extern volatile struct limine_kernel_file_request kernel_file_request;
+
+static kmutex_t g_vfs_mutex = KMUTEX_INIT;
+static void*    g_vfs_owner = NULL;
+static uint32_t g_vfs_depth = 0;
+
+static void vfs_lock(void) {
+    void* me = scheduler_is_ready() ? (void*)scheduler_current_thread() : (void*)1;
+    if (!me) me = (void*)1;
+    if (g_vfs_owner == me) {
+        g_vfs_depth++;
+        return;
+    }
+    kmutex_lock(&g_vfs_mutex);
+    g_vfs_owner = me;
+    g_vfs_depth = 1;
+}
+
+static void vfs_unlock(void) {
+    if (g_vfs_depth > 1) {
+        g_vfs_depth--;
+        return;
+    }
+    g_vfs_depth = 0;
+    g_vfs_owner = NULL;
+    kmutex_unlock(&g_vfs_mutex);
+}
 
 vfs_drive_t g_vfs_drives[26];
 
@@ -585,7 +613,6 @@ void vfs_init(void) {
                 char* cursor = removable ? &removable_letter : &local_letter;
                 while (*cursor == optical_letter ||
                        (removable && *cursor < 'E') ||
-                       (!removable && *cursor == 'E') ||
                        (*cursor >= 'A' && *cursor <= 'Z' &&
                         g_vfs_drives[*cursor - 'A'].present)) {
                     (*cursor)++;
@@ -641,7 +668,7 @@ void vfs_init(void) {
     for (int index = 0; index < 26; index++) {
         if (g_vfs_drives[index].mounted) mounted++;
     }
-    log_printf("[VFS ] Mounted %d drive(s); C: local, D: optical, E: removable\n",
+    log_printf("[VFS ] Mounted %d drive(s); C:/E:+ local, D: optical, removable from first free >=E:\n",
                mounted);
 }
 
@@ -879,7 +906,7 @@ static void iso_list_entry(const iso_file_info_t* info) {
     if (g_list_bridge.user_callback) g_list_bridge.user_callback(&entry);
 }
 
-int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
+static int vfs_list_dir_locked(const char* path, void (*callback)(const vfs_dirent_t*)) {
     if (!path) return VFS_ERR_NOT_FOUND;
     char proc_rel[64];
     if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
@@ -930,7 +957,14 @@ int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
     }
 }
 
-int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
+int vfs_list_dir(const char* path, void (*callback)(const vfs_dirent_t*)) {
+    vfs_lock();
+    int rc = vfs_list_dir_locked(path, callback);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_find_file_locked(const char* path, vfs_dirent_t* out_entry) {
     if (!path || !out_entry) return VFS_ERR_NOT_FOUND;
     char proc_rel[64];
     if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
@@ -992,8 +1026,15 @@ int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
     }
 }
 
-int vfs_read_file(const char* path, unsigned char* buffer,
-                  unsigned int max_size) {
+int vfs_find_file(const char* path, vfs_dirent_t* out_entry) {
+    vfs_lock();
+    int rc = vfs_find_file_locked(path, out_entry);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_read_file_locked(const char* path, unsigned char* buffer,
+                                unsigned int max_size) {
     if (!path || !buffer) return VFS_ERR_NOT_FOUND;
     char proc_rel[64];
     if (procfs_match_path(path, proc_rel, sizeof(proc_rel))) {
@@ -1048,8 +1089,16 @@ int vfs_read_file(const char* path, unsigned char* buffer,
     }
 }
 
-int vfs_write_file(const char* path, const unsigned char* buffer,
-                   unsigned int size) {
+int vfs_read_file(const char* path, unsigned char* buffer,
+                  unsigned int max_size) {
+    vfs_lock();
+    int rc = vfs_read_file_locked(path, buffer, max_size);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_write_file_locked(const char* path, const unsigned char* buffer,
+                                 unsigned int size) {
     if (!path || !buffer) return VFS_ERR_NOT_FOUND;
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
@@ -1067,7 +1116,15 @@ int vfs_write_file(const char* path, const unsigned char* buffer,
     return res;
 }
 
-int vfs_mkdir(const char* path) {
+int vfs_write_file(const char* path, const unsigned char* buffer,
+                   unsigned int size) {
+    vfs_lock();
+    int rc = vfs_write_file_locked(path, buffer, size);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_mkdir_locked(const char* path) {
     if (!path) return VFS_ERR_NOT_FOUND;
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
@@ -1085,7 +1142,14 @@ int vfs_mkdir(const char* path) {
     return res;
 }
 
-int vfs_unlink(const char* path) {
+int vfs_mkdir(const char* path) {
+    vfs_lock();
+    int rc = vfs_mkdir_locked(path);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_unlink_locked(const char* path) {
     if (!path) return VFS_ERR_NOT_FOUND;
     vfs_drive_t* drive = vfs_get_drive(path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
@@ -1104,7 +1168,14 @@ int vfs_unlink(const char* path) {
     return res;
 }
 
-int vfs_rename(const char* old_path, const char* new_path) {
+int vfs_unlink(const char* path) {
+    vfs_lock();
+    int rc = vfs_unlink_locked(path);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_rename_locked(const char* old_path, const char* new_path) {
     if (!old_path || !new_path) return VFS_ERR_NOT_FOUND;
     vfs_drive_t* drive = vfs_get_drive(old_path[0]);
     if (!drive || !drive->mounted) return VFS_ERR_NO_DRIVE;
@@ -1131,6 +1202,13 @@ int vfs_rename(const char* old_path, const char* new_path) {
         desktop_notify_path_changed(new_path);
     }
     return res;
+}
+
+int vfs_rename(const char* old_path, const char* new_path) {
+    vfs_lock();
+    int rc = vfs_rename_locked(old_path, new_path);
+    vfs_unlock();
+    return rc;
 }
 
 static int remove_legacy_system_file(const char* path) {
@@ -1303,7 +1381,7 @@ static int vfs_stream_read_raw(vfs_stream_t* stream, vfs_drive_t* drive,
     return result;
 }
 
-int vfs_stream_open(const char* path, vfs_stream_t* stream) {
+static int vfs_stream_open_locked(const char* path, vfs_stream_t* stream) {
     if (!path || !stream) return -1;
     memset(stream, 0, sizeof(*stream));
     copy_text(stream->path, sizeof(stream->path), path);
@@ -1349,7 +1427,14 @@ int vfs_stream_open(const char* path, vfs_stream_t* stream) {
     return 0;
 }
 
-int vfs_stream_create(const char* path, vfs_stream_t* stream) {
+int vfs_stream_open(const char* path, vfs_stream_t* stream) {
+    vfs_lock();
+    int rc = vfs_stream_open_locked(path, stream);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_stream_create_locked(const char* path, vfs_stream_t* stream) {
     if (!path || !stream) return -1;
     memset(stream, 0, sizeof(*stream));
     copy_text(stream->path, sizeof(stream->path), path);
@@ -1375,7 +1460,14 @@ int vfs_stream_create(const char* path, vfs_stream_t* stream) {
     return 0;
 }
 
-int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
+int vfs_stream_create(const char* path, vfs_stream_t* stream) {
+    vfs_lock();
+    int rc = vfs_stream_create_locked(path, stream);
+    vfs_unlock();
+    return rc;
+}
+
+static int vfs_stream_read_locked(vfs_stream_t* stream, void* buffer, unsigned int size) {
     if (!stream || !stream->is_open || stream->is_write || !buffer) return -1;
     if (stream->current_offset >= stream->size) return 0;
     uint64_t remaining = stream->size - stream->current_offset;
@@ -1451,6 +1543,13 @@ int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
     return (int)total;
 }
 
+int vfs_stream_read(vfs_stream_t* stream, void* buffer, unsigned int size) {
+    vfs_lock();
+    int rc = vfs_stream_read_locked(stream, buffer, size);
+    vfs_unlock();
+    return rc;
+}
+
 int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
                      unsigned int size) {
     if (!stream || !stream->is_open || !stream->is_write ||
@@ -1458,6 +1557,7 @@ int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
         return -1;
     }
     if (size == 0) return 0;
+    vfs_lock();
     int result = -1;
     if (stream->fs_kind == VFS_FS_FAT && stream->fat_handle) {
         result = fat_write((file_handle_t*)stream->fat_handle, buffer, size);
@@ -1471,11 +1571,13 @@ int vfs_stream_write(vfs_stream_t* stream, const void* buffer,
             stream->size = stream->current_offset;
         }
     }
+    vfs_unlock();
     return result;
 }
 
 int vfs_stream_seek(vfs_stream_t* stream, uint64_t offset) {
     if (!stream || !stream->is_open || stream->is_write) return -1;
+    vfs_lock();
     if (offset > stream->size) offset = stream->size;
     /* Keep readahead buffer intact if target offset lies inside cached window */
     bool in_ra = (stream->ra_buf != NULL && stream->ra_len > 0 &&
@@ -1485,33 +1587,39 @@ int vfs_stream_seek(vfs_stream_t* stream, uint64_t offset) {
         stream->ra_len = 0;
         if (stream->fat_handle) {
             if (fat_seek((file_handle_t*)stream->fat_handle, offset) != 0) {
+                vfs_unlock();
                 return -1;
             }
             stream->raw_offset = offset;
         } else if (stream->exfat_handle) {
             if (exfat_seek((exfat_handle_t*)stream->exfat_handle, offset) != 0) {
+                vfs_unlock();
                 return -1;
             }
             stream->raw_offset = offset;
         }
     }
     stream->current_offset = offset;
+    vfs_unlock();
     return 0;
 }
 
 int vfs_stream_sync(vfs_stream_t* stream) {
     if (!stream || !stream->is_open || !stream->is_write) return -1;
+    vfs_lock();
+    int rc = -1;
     if (stream->fat_handle) {
-        return fat_sync((file_handle_t*)stream->fat_handle);
+        rc = fat_sync((file_handle_t*)stream->fat_handle);
+    } else if (stream->exfat_handle) {
+        rc = exfat_sync((exfat_handle_t*)stream->exfat_handle);
     }
-    if (stream->exfat_handle) {
-        return exfat_sync((exfat_handle_t*)stream->exfat_handle);
-    }
-    return -1;
+    vfs_unlock();
+    return rc;
 }
 
 void vfs_stream_close(vfs_stream_t* stream) {
     if (!stream) return;
+    vfs_lock();
     if (stream->fat_handle) {
         fat_close((file_handle_t*)stream->fat_handle);
         stream->fat_handle = NULL;
@@ -1531,6 +1639,8 @@ void vfs_stream_close(vfs_stream_t* stream) {
         stream->ra_len = 0;
     }
     stream->is_open = 0;
+    stream->is_write = 0;
+    vfs_unlock();
 }
 
 int vfs_has_cdrom(void) {

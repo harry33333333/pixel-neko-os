@@ -19,7 +19,7 @@
 
 #define VP_CTRL_BAR_H      48
 #define VP_VPQ_CAP         96
-#define VP_FRAME_RING_MAX  6
+#define VP_FRAME_RING_MAX  8
 #define VP_MAX_PKT_BYTES   (4u * 1024u * 1024u)
 
 #define VP_TR(vp, z, e) ((vp)->zh ? (z) : (e))
@@ -124,6 +124,8 @@ typedef struct {
     volatile uint64_t clock_base_us;
     volatile uint64_t wall_start_ns;
     volatile uint64_t pause_pos_us;
+    uint64_t          aud_last_played_us;
+    uint64_t          aud_last_sample_ns;
     int               audio_stream_opened;
     uint64_t          cur_pos_us;
 
@@ -834,7 +836,7 @@ static void vp_open_file(vplayer_t* vp, const char* path) {
 
     /* Adaptive Stream Ring & Decoded Frame Ring sizing (Section 5.3.4) */
     size_t ring_mb = vp->is_cdrom ? 16u : 8u;
-    int fring_slots = 6;
+    int fring_slots = 8;
     if (vp->free_ram_mb > 0 && vp->free_ram_mb < 160u) {
         ring_mb = 4u;
         fring_slots = 3;
@@ -886,6 +888,8 @@ static void vp_open_file(vplayer_t* vp, const char* path) {
     vp->seek_start_sample = 0;
     vp->clock_base_us = 0;
     vp->wall_start_ns = pxe_get_time_ns();
+    vp->aud_last_played_us = 0;
+    vp->aud_last_sample_ns = vp->wall_start_ns;
     vp->playing = 1;
     vp->paused = 0;
     vp->cur_pos_us = 0;
@@ -937,6 +941,8 @@ static void vp_seek_to(vplayer_t* vp, uint64_t target_us) {
 
     vp->clock_base_us = actual_us;
     vp->wall_start_ns = pxe_get_time_ns();
+    vp->aud_last_played_us = 0;
+    vp->aud_last_sample_ns = vp->wall_start_ns;
     vp->cur_pos_us = actual_us;
     vp->pause_pos_us = actual_us;
     if (vp->is_cdrom) vp->buffering = 1;
@@ -964,13 +970,22 @@ static void vp_toggle_pause(vplayer_t* vp) {
 
 static uint64_t vp_get_master_clock_us(vplayer_t* vp) {
     if (vp->paused) return vp->pause_pos_us;
+    uint64_t now_ns = pxe_get_time_ns();
     if (vp->audio_stream_opened) {
         pxe_audio_timing_t at;
         if (pxe_audio_get_timing(&at) == 0 && at.state == 1) {
-            return vp->clock_base_us + at.played_us;
+            if (at.played_us != vp->aud_last_played_us || vp->aud_last_sample_ns == 0) {
+                vp->aud_last_played_us = at.played_us;
+                vp->aud_last_sample_ns = now_ns;
+            }
+            /* Smoothly interpolate between HDA DMA position updates (clamped to <= 35ms) */
+            uint64_t interp_us = (now_ns > vp->aud_last_sample_ns)
+                                     ? ((now_ns - vp->aud_last_sample_ns) / 1000ULL)
+                                     : 0ULL;
+            if (interp_us > 35000ULL) interp_us = 35000ULL;
+            return vp->clock_base_us + at.played_us + interp_us;
         }
     }
-    uint64_t now_ns = pxe_get_time_ns();
     uint64_t elap_us = (now_ns > vp->wall_start_ns) ? ((now_ns - vp->wall_start_ns) / 1000ULL) : 0ULL;
     return vp->clock_base_us + elap_us;
 }
@@ -1390,25 +1405,20 @@ int main(int argc, char** argv) {
             pxe_mutex_lock(&vp->fring.mtx);
             while (vp->fring.count > 0) {
                 vp_yuv_frame_t* f = &vp->fring.slots[vp->fring.head];
-                if (f->pts_us + 45000ULL < master_us && vp->fring.count > 1) {
-                    /* Drop late frame to maintain strict <15ms A/V sync */
+                if (f->pts_us + 65000ULL < master_us && vp->fring.count > 1) {
+                    /* Drop late frame to maintain smooth A/V sync */
                     vp->fring.head = (vp->fring.head + 1) % vp->fring.cap;
                     vp->fring.count--;
                     pxe_cond_signal(&vp->fring.not_full);
                     continue;
                 }
-                if (f->pts_us <= master_us + 2500ULL) {
-                    /* Save pointer/copy for resize/pause redraw, present immediately */
-                    vp_yuv_frame_t cur = *f;
+                if (f->pts_us <= master_us + 3000ULL) {
+                    /* O(1) zero-copy buffer swap with last_frame while holding mutex */
+                    vp_yuv_frame_t old_last = vp->last_frame;
+                    vp->last_frame = *f;
+                    *f = old_last;
                     vp->fring.head = (vp->fring.head + 1) % vp->fring.cap;
                     vp->fring.count--;
-                    /* Copy into last_frame before unlocking slot */
-                    vp_h264_frame_t tmp_src;
-                    tmp_src.width = cur.w; tmp_src.height = cur.h;
-                    tmp_src.y_stride = cur.y_stride; tmp_src.uv_stride = cur.uv_stride;
-                    tmp_src.y_plane = cur.y; tmp_src.u_plane = cur.u; tmp_src.v_plane = cur.v;
-                    tmp_src.pts_us = cur.pts_us;
-                    (void)yuv_frame_copy(&vp->last_frame, &tmp_src);
                     vp->has_last_frame = 1;
                     pxe_cond_signal(&vp->fring.not_full);
                     pxe_mutex_unlock(&vp->fring.mtx);
@@ -1430,7 +1440,7 @@ int main(int argc, char** argv) {
                 vp->ui_dirty = 1;
             }
             if (!presented) {
-                pxe_sleep_us(2000ULL);
+                pxe_sleep_us(1000ULL);
             }
         } else {
             uint64_t now_ns = pxe_get_time_ns();
