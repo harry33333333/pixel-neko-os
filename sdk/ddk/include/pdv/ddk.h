@@ -264,7 +264,7 @@ typedef struct {
     uint16_t height;
     uint8_t  bpp_mask;
     uint8_t  preferred;
-    uint16_t reserved;
+    uint16_t refresh_hz; /* 0 = legacy default 60 Hz */
 } pdv_display_mode_t;
 
 /*
@@ -314,6 +314,14 @@ typedef struct {
     int          (*get_mode)(int index, pdv_display_mode_t* out_mode); /* 1=ok, 0=err */
     int          (*get_max_width)(void);
     int          (*get_max_height)(void);
+    /* Optional high-refresh, VBlank & Page Flip extensions (tail-appended) */
+    int          (*can_set_mode_ex)(int w, int h, int bpp, int refresh_hz);
+    int          (*set_mode_ex)(int w, int h, int bpp, int refresh_hz,
+                                const pdv_display_timing_t* timing);
+    int          (*get_current_refresh_hz)(void);
+    void         (*wait_vblank)(void);
+    int          (*enable_vblank_irq)(void (*cb)(void));
+    int          (*flip_scanout)(uint64_t fb_offset_bytes);
 } pdv_display_driver_t;
 
 typedef struct {
@@ -424,6 +432,9 @@ typedef struct pdv_kernel_api {
     const char* (*display_get_mode_source)(void);
     int (*display_get_mode_timing)(int width, int height,
                                    pdv_display_timing_t* out_timing);
+    int (*display_get_mode_timing_ex)(int width, int height, int refresh_hz,
+                                      pdv_display_timing_t* out_timing);
+    uint64_t (*monotonic_ns)(void);
 } pdv_kernel_api_t;
 
 /* Convenience PCI byte/word helpers via kapi */

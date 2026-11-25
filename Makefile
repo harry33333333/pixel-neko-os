@@ -6,7 +6,7 @@ LD ?= ld
 NASM ?= nasm
 USER_CC ?= gcc
 PYTHON3 ?= python3
-PIXEL_NEKO_BUILD_NUMBER ?= 310
+PIXEL_NEKO_BUILD_NUMBER ?= 320
 PIXEL_NEKO_BUILD_SUFFIX ?= a
 
 # Compiler Flags adhering to Plan Section 9.1
@@ -80,6 +80,7 @@ C_SRCS   = kernel/core/main.c \
            kernel/driver.c \
            kernel/pdv.c \
            kernel/ui_compat.c \
+           kernel/fb_blit_wc.c \
            kernel/ui_timer.c \
            kernel/ui_settings.c \
            kernel/ui_power.c \
@@ -248,6 +249,10 @@ version:
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
 drivers/audio/mp3_dec.o: drivers/audio/mp3_dec.c
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -fno-tree-vectorize -mstackrealign -c -o $@ $<
+
+kernel/fb_blit_wc.o: kernel/fb_blit_wc.c
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse -msse2 -fno-tree-vectorize -mstackrealign -c -o $@ $<
 

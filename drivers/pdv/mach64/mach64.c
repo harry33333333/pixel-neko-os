@@ -52,7 +52,9 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_GUI_TRAJ_CNTL        0x0330
 #define MACH64_GUI_STAT             0x0338
 
-#define MACH64_MAX_MODES            48
+#define MACH64_MAX_MODES            128
+#define MACH64_CRTC_VBLANK_INT_EN   (1U << 1)
+#define MACH64_CRTC_VBLANK_INT      (1U << 2)
 
 #define MACH64_CRTC_H_SYNC_POL      (1U << 21)
 #define MACH64_CRTC_V_SYNC_POL      (1U << 21)
@@ -82,17 +84,22 @@ static const pdv_kernel_api_t* g_kapi;
 #define MACH64_DAC_MASK             0x00C2U
 
 static int g_ati_active = 0;
+static const pdv_pci_device_t* g_ati_pci = 0;
 static unsigned short g_ati_device_id = 0;
 static const char* g_ati_chip_name = "None";
 static const char* g_ati_status = "Not detected";
 static unsigned int g_ati_vram_bytes = 2U * 1024U * 1024U;
 static unsigned int g_ati_xtal_khz = 14318U;
+static unsigned int g_ati_max_dac_khz = 200000U;
 static volatile unsigned char* g_ati_regs = 0;
 static unsigned short g_ati_io_base = 0;
 static uint64_t g_ati_bar0_phys;
 static int g_cur_w = 800, g_cur_h = 600;
 static int g_cur_bpp = 16;
 static int g_cur_pitch = 1600;
+static int g_cur_refresh_hz = 60;
+static void (*g_ati_vblank_cb)(void) = 0;
+static int g_ati_vblank_irq_registered = 0;
 static int g_boot_w = 1024, g_boot_h = 768;
 static int g_boot_bpp = 16;
 static int g_ati_hw_modeset_capable;
@@ -609,31 +616,92 @@ static int mach64_calc_dsp_gt(unsigned char ref_div,
     return 1;
 }
 
-static int ati_mach64_supports_bpp(int w, int h, int bpp) {
+static int mach64_check_pll_and_dsp(uint32_t pixel_clock_khz, int bpp) {
+    if (!g_ati_hw_modeset_capable || pixel_clock_khz == 0 ||
+        pixel_clock_khz > g_ati_max_dac_khz) {
+        return 0;
+    }
+    unsigned char ref_div = mach64_pll_read(MACH64_PLL_REF_DIV);
+    if (ref_div == 0 || ref_div == 0xFFU) return 0;
+    unsigned int xtal_2x = 2U * g_ati_xtal_khz;
+    static const uint16_t k_post_div[8] = { 1, 2, 4, 8, 3, 0, 6, 12 };
+    uint32_t best_error = 0xFFFFFFFFU;
+    unsigned int best_n = 0, best_post = 0;
+    int best_in_vco = 0;
+    for (unsigned int post = 0; post < 8; post++) {
+        if (!k_post_div[post]) continue;
+        uint32_t divisor = (uint32_t)ref_div * (uint32_t)k_post_div[post];
+        uint64_t numerator = (uint64_t)pixel_clock_khz * (uint64_t)divisor;
+        unsigned int n = (unsigned int)((numerator + xtal_2x / 2U) / xtal_2x);
+        if (n < 2U) n = 2U;
+        if (n > 255U) n = 255U;
+        int in_vco = (n >= 128U && n <= 255U) ? 1 : 0;
+        uint32_t actual = (uint32_t)(((uint64_t)n * xtal_2x + divisor / 2U) / divisor);
+        uint32_t error = actual > pixel_clock_khz
+            ? actual - pixel_clock_khz : pixel_clock_khz - actual;
+        if ((in_vco && !best_in_vco) ||
+            (in_vco == best_in_vco && error < best_error)) {
+            best_in_vco = in_vco;
+            best_error = error;
+            best_n = n;
+            best_post = post;
+        }
+    }
+    if (!best_n || best_error > pixel_clock_khz / 20U + 1000U) return 0;
+    unsigned int dsp_cfg = 0, dsp_on_off = 0;
+    if (mach64_calc_dsp_gt(ref_div, best_n, k_post_div[best_post], bpp,
+                           &dsp_cfg, &dsp_on_off)) {
+        uint32_t dsp_on  = (dsp_on_off >> 16) & 0x7FFU;
+        uint32_t dsp_off = dsp_on_off & 0x7FFU;
+        if (dsp_on >= dsp_off) return 0;
+    }
+    return 1;
+}
+
+static int ati_mach64_supports_mode_ex(int w, int h, int bpp, int refresh_hz) {
     if (!g_ati_active) return 0;
     if (w < PDV_DISPLAY_MIN_WIDTH || h < PDV_DISPLAY_MIN_HEIGHT) return 0;
     if (w > 2048 || h > 1536) return 0;
     if (bpp != 16 && bpp != 24 && bpp != 32) return 0;
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (refresh_hz < 24 || refresh_hz > 144) return 0;
     if (!g_ati_hw_modeset_capable) {
-        return w == g_boot_w && h == g_boot_h && bpp == g_boot_bpp;
+        return (w == g_boot_w && h == g_boot_h && bpp == g_boot_bpp && refresh_hz == 60) ? 1 : 0;
     }
     if ((w & 7) != 0) return 0;
-    pdv_display_timing_t timing;
-    if (!g_kapi->display_get_mode_timing ||
-        !g_kapi->display_get_mode_timing(w, h, &timing) ||
-        timing.pixel_clock_khz == 0 || timing.pixel_clock_khz > 300000U) {
-        return 0;
-    }
     uint64_t pitch = (uint64_t)(unsigned int)w * (uint64_t)(unsigned int)(bpp / 8);
     uint64_t bytes = pitch * (uint64_t)(unsigned int)h;
-    return (bytes <= (uint64_t)g_ati_vram_bytes) ? 1 : 0;
+    if (bytes > (uint64_t)g_ati_vram_bytes) return 0;
+
+    pdv_display_timing_t timing;
+    int got_timing = 0;
+    if (g_kapi->display_get_mode_timing_ex) {
+        got_timing = g_kapi->display_get_mode_timing_ex(w, h, refresh_hz, &timing);
+    } else if (refresh_hz == 60 && g_kapi->display_get_mode_timing) {
+        got_timing = g_kapi->display_get_mode_timing(w, h, &timing);
+    }
+    if (!got_timing || timing.pixel_clock_khz == 0 ||
+        timing.pixel_clock_khz > g_ati_max_dac_khz) {
+        return 0;
+    }
+    if (refresh_hz > 60 && !mach64_check_pll_and_dsp(timing.pixel_clock_khz, bpp)) {
+        return 0;
+    }
+    return 1;
 }
 
-static void ati_mach64_add_mode(int w, int h, uint8_t mask, int preferred) {
+static int ati_mach64_supports_bpp(int w, int h, int bpp) {
+    return ati_mach64_supports_mode_ex(w, h, bpp, 60);
+}
+
+static void ati_mach64_add_mode(int w, int h, uint8_t mask, uint16_t refresh_hz, int preferred) {
     if (mask == 0 || g_ati_mode_count >= MACH64_MAX_MODES) return;
+    if (refresh_hz == 0) refresh_hz = 60U;
     for (int index = 0; index < g_ati_mode_count; index++) {
+        uint16_t existing_hz = g_ati_modes[index].refresh_hz ? g_ati_modes[index].refresh_hz : 60U;
         if (g_ati_modes[index].width == (uint16_t)w &&
-            g_ati_modes[index].height == (uint16_t)h) {
+            g_ati_modes[index].height == (uint16_t)h &&
+            existing_hz == refresh_hz) {
             g_ati_modes[index].bpp_mask |= mask;
             g_ati_modes[index].preferred |= preferred ? 1U : 0U;
             return;
@@ -644,7 +712,7 @@ static void ati_mach64_add_mode(int w, int h, uint8_t mask, int preferred) {
     mode->height = (uint16_t)h;
     mode->bpp_mask = mask;
     mode->preferred = preferred ? 1U : 0U;
-    mode->reserved = 0;
+    mode->refresh_hz = refresh_hz;
 }
 
 static void ati_mach64_build_modes(void) {
@@ -661,40 +729,46 @@ static void ati_mach64_build_modes(void) {
         }
         int w = catalog_mode.width;
         int h = catalog_mode.height;
+        uint16_t hz = catalog_mode.refresh_hz ? catalog_mode.refresh_hz : 60U;
         uint8_t mask = 0;
         for (int b = 0; b < 3; b++) {
             if ((catalog_mode.bpp_mask & pdv_bpp_to_mask(k_bpps[b])) &&
-                ati_mach64_supports_bpp(w, h, k_bpps[b])) {
+                ati_mach64_supports_mode_ex(w, h, k_bpps[b], (int)hz)) {
                 mask |= pdv_bpp_to_mask(k_bpps[b]);
             }
         }
-        ati_mach64_add_mode(w, h, mask, catalog_mode.preferred);
+        ati_mach64_add_mode(w, h, mask, hz, catalog_mode.preferred);
     }
 
-    if (g_ati_mode_count == 0) {
-        static const uint16_t k_width[] = { 640, 800, 1024, 1280, 1600 };
-        static const uint16_t k_height[] = { 480, 600, 768, 1024, 1200 };
-        for (size_t index = 0;
-             index < sizeof(k_width) / sizeof(k_width[0]) &&
-             g_ati_mode_count < MACH64_MAX_MODES; index++) {
+    /* Direct bound mode table filtered by VRAM, chip DAC limit, and DSP FIFO watermarks */
+    static const uint16_t k_width[]  = { 640, 800, 1024, 1280, 1280 };
+    static const uint16_t k_height[] = { 480, 600,  768,  720, 1024 };
+    static const uint16_t k_hz_list[5] = { 60U, 75U, 85U, 100U, 120U };
+    for (size_t index = 0;
+         index < sizeof(k_width) / sizeof(k_width[0]) &&
+         g_ati_mode_count < MACH64_MAX_MODES; index++) {
+        for (int r = 0; r < 5 && g_ati_mode_count < MACH64_MAX_MODES; r++) {
             uint8_t mask = 0;
             for (int b = 0; b < 3; b++) {
-                if (ati_mach64_supports_bpp(k_width[index],
-                                            k_height[index], k_bpps[b])) {
+                if (ati_mach64_supports_mode_ex(k_width[index], k_height[index],
+                                                k_bpps[b], (int)k_hz_list[r])) {
                     mask |= pdv_bpp_to_mask(k_bpps[b]);
                 }
             }
-            ati_mach64_add_mode(k_width[index], k_height[index], mask, false);
+            if (mask != 0) {
+                ati_mach64_add_mode(k_width[index], k_height[index], mask, k_hz_list[r],
+                                    (r == 0 && k_width[index] == g_boot_w && k_height[index] == g_boot_h));
+            }
         }
     }
 
     uint8_t boot_mask = 0;
     for (int b = 0; b < 3; b++) {
-        if (ati_mach64_supports_bpp(g_boot_w, g_boot_h, k_bpps[b])) {
+        if (ati_mach64_supports_mode_ex(g_boot_w, g_boot_h, k_bpps[b], 60)) {
             boot_mask |= pdv_bpp_to_mask(k_bpps[b]);
         }
     }
-    ati_mach64_add_mode(g_boot_w, g_boot_h, boot_mask, true);
+    ati_mach64_add_mode(g_boot_w, g_boot_h, boot_mask, 60U, 1);
 }
 
 static int ati_mach64_probe_hw(void) {
@@ -744,8 +818,24 @@ static int ati_mach64_probe_hw(void) {
             g_ati_io_base = (unsigned short)pci->bar[1].address;
         }
 
+        g_ati_pci = pci;
         g_ati_device_id = device;
         g_ati_chip_name = name;
+        if (device == PCI_DEVICE_ATI_RAGE_PRO_PCI ||
+            device == PCI_DEVICE_ATI_RAGE_PRO_TRB ||
+            device == PCI_DEVICE_ATI_RAGE_PRO_AGP ||
+            device == PCI_DEVICE_ATI_RAGE_XL ||
+            device == PCI_DEVICE_ATI_RAGE_XL_PCI) {
+            g_ati_max_dac_khz = 230000U;
+        } else if (device == PCI_DEVICE_ATI_RAGE_II ||
+                   device == PCI_DEVICE_ATI_RAGE_IIC_PCI ||
+                   device == PCI_DEVICE_ATI_RAGE_IIC_AGP ||
+                   device == PCI_DEVICE_ATI_RAGE_IIC_B ||
+                   device == PCI_DEVICE_ATI_RAGE_IIC_C) {
+            g_ati_max_dac_khz = 200000U;
+        } else {
+            g_ati_max_dac_khz = 170000U;
+        }
         g_ati_regs = mach64_find_register_base(pci, bar0_phys, bar2_phys, device);
         g_ati_bar0_phys = bar0_phys;
         int has_regs = (g_ati_regs != 0) ? 1 : 0;
@@ -900,9 +990,12 @@ static int ati_mach64_get_max_height(void) {
     return g_ati_active ? maximum : 0;
 }
 
-static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
-    if (!ati_mach64_supports_bpp(w, h, bpp)) return 0;
-    if (w == g_cur_w && h == g_cur_h && bpp == g_cur_bpp) {
+static int ati_mach64_set_mode_ex(int w, int h, int bpp, int refresh_hz,
+                                  const pdv_display_timing_t* in_timing) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (!ati_mach64_supports_mode_ex(w, h, bpp, refresh_hz)) return 0;
+    if (w == g_cur_w && h == g_cur_h && bpp == g_cur_bpp &&
+        refresh_hz == g_cur_refresh_hz) {
         return 1;
     }
     if (!g_ati_hw_modeset_capable) {
@@ -910,13 +1003,21 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     }
 
     pdv_display_timing_t timing;
-    if (!g_kapi->display_get_mode_timing ||
-        !g_kapi->display_get_mode_timing(w, h, &timing)) {
+    if (in_timing && in_timing->pixel_clock_khz > 0) {
+        timing = *in_timing;
+    } else if (g_kapi->display_get_mode_timing_ex &&
+               g_kapi->display_get_mode_timing_ex(w, h, refresh_hz, &timing)) {
+        /* ok */
+    } else if (g_kapi->display_get_mode_timing &&
+               g_kapi->display_get_mode_timing(w, h, &timing)) {
+        /* fallback */
+    } else {
         return 0;
     }
     if (timing.h_display != (uint16_t)w ||
         timing.v_display != (uint16_t)h ||
         timing.pixel_clock_khz == 0 ||
+        timing.pixel_clock_khz > g_ati_max_dac_khz ||
         timing.h_total <= timing.h_display ||
         timing.v_total <= timing.v_display) {
         return 0;
@@ -945,7 +1046,7 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     }
 
     if (w == g_boot_w && h == g_boot_h && bpp == g_boot_bpp &&
-        g_boot_regs_saved) {
+        refresh_hz == 60 && g_boot_regs_saved) {
         unsigned char* mapped =
             (unsigned char*)g_kapi->mmio_map_wc(surface.framebuffer_phys,
                                                 (size_t)frame_bytes);
@@ -975,6 +1076,7 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
         g_cur_h = h;
         g_cur_bpp = bpp;
         g_cur_pitch = pitch;
+        g_cur_refresh_hz = 60;
         return 1;
     }
 
@@ -1205,36 +1307,100 @@ static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
     g_cur_h = h;
     g_cur_bpp = bpp;
     g_cur_pitch = pitch;
+    g_cur_refresh_hz = timing.refresh_hz ? (int)timing.refresh_hz : refresh_hz;
     g_ati_hw_modeset_last_status = "Active (Mach64 CRTC/PLL hardware modeset)";
     g_ati_status = g_ati_hw_modeset_last_status;
     return 1;
 }
 
+static int ati_mach64_set_mode_bpp(int w, int h, int bpp) {
+    return ati_mach64_set_mode_ex(w, h, bpp, 60, 0);
+}
+
+static int ati_mach64_get_current_refresh_hz(void) {
+    return g_cur_refresh_hz > 0 ? g_cur_refresh_hz : 60;
+}
+
+static void ati_mach64_wait_vblank(void) {
+    if (!g_ati_active || !g_ati_regs) return;
+    int timeout = 200000;
+    while (!(mach64_read32(MACH64_CRTC_INT_CNTL) & MACH64_CRTC_VBLANK) && --timeout) {}
+    timeout = 200000;
+    while ((mach64_read32(MACH64_CRTC_INT_CNTL) & MACH64_CRTC_VBLANK) && --timeout) {}
+}
+
+static void ati_mach64_irq_handler(void* ctx) {
+    (void)ctx;
+    if (!g_ati_active || !g_ati_regs) return;
+    unsigned int val = mach64_read32(MACH64_CRTC_INT_CNTL);
+    if (val & MACH64_CRTC_VBLANK_INT) {
+        mach64_write32(MACH64_CRTC_INT_CNTL, val | MACH64_CRTC_VBLANK_INT);
+        if (g_ati_vblank_cb) g_ati_vblank_cb();
+    }
+}
+
+static int ati_mach64_enable_vblank_irq(void (*cb)(void)) {
+    if (!g_ati_active || !g_ati_regs || !g_ati_pci) return 0;
+    g_ati_vblank_cb = cb;
+    if (cb) {
+        if (!g_ati_vblank_irq_registered && g_kapi->pci_register_irq) {
+            if (g_kapi->pci_register_irq(g_ati_pci, ati_mach64_irq_handler, 0) == 0) {
+                g_ati_vblank_irq_registered = 1;
+            }
+        }
+        if (g_ati_vblank_irq_registered) {
+            unsigned int val = mach64_read32(MACH64_CRTC_INT_CNTL);
+            mach64_write32(MACH64_CRTC_INT_CNTL,
+                           val | MACH64_CRTC_VBLANK_INT_EN | MACH64_CRTC_VBLANK_INT);
+            return 1;
+        }
+    } else {
+        unsigned int val = mach64_read32(MACH64_CRTC_INT_CNTL);
+        mach64_write32(MACH64_CRTC_INT_CNTL, val & ~MACH64_CRTC_VBLANK_INT_EN);
+    }
+    return 0;
+}
+
+static int ati_mach64_flip_scanout(uint64_t fb_offset_bytes) {
+    if (!g_ati_active || !g_ati_regs) return 0;
+    if (fb_offset_bytes >= (uint64_t)g_ati_vram_bytes) return 0;
+    unsigned int cur = mach64_read32(MACH64_CRTC_OFF_PITCH);
+    unsigned int offset_units = (unsigned int)(fb_offset_bytes >> 3) & 0x000FFFFFU;
+    mach64_write32(MACH64_CRTC_OFF_PITCH, (cur & ~0x000FFFFFU) | offset_units);
+    return 1;
+}
+
 static const pdv_display_driver_t g_mach64_drv = {
-    .name                 = "ATI Mach64",
-    .priority             = 50,
-    .requires_hw_mode_set = 1,
-    .probe                = ati_mach64_probe_entry,
-    .start                = 0,
-    .stop                 = 0,
-    .get_name             = ati_mach64_get_chip_name,
-    .get_status           = ati_mach64_get_status,
-    .is_active            = ati_mach64_is_active,
-    .is_2d_active         = ati_mach64_is_2d_active,
-    .get_vram_size        = ati_mach64_get_vram_size,
-    .can_set_mode         = ati_mach64_supports_bpp,
-    .supports_bpp         = ati_mach64_supports_bpp,
-    .set_mode             = ati_mach64_set_mode_bpp,
-    .fill_rect            = 0,
-    .screen_blt           = 0,
-    .present_rect         = 0,
-    .sync                 = ati_mach64_sync,
-    .has_hw_cursor        = 0,
-    .set_cursor           = 0,
-    .get_mode_count       = ati_mach64_get_mode_count,
-    .get_mode             = ati_mach64_get_mode,
-    .get_max_width        = ati_mach64_get_max_width,
-    .get_max_height       = ati_mach64_get_max_height,
+    .name                   = "ATI Mach64",
+    .priority               = 50,
+    .requires_hw_mode_set   = 1,
+    .probe                  = ati_mach64_probe_entry,
+    .start                  = 0,
+    .stop                   = 0,
+    .get_name               = ati_mach64_get_chip_name,
+    .get_status             = ati_mach64_get_status,
+    .is_active              = ati_mach64_is_active,
+    .is_2d_active           = ati_mach64_is_2d_active,
+    .get_vram_size          = ati_mach64_get_vram_size,
+    .can_set_mode           = ati_mach64_supports_bpp,
+    .supports_bpp           = ati_mach64_supports_bpp,
+    .set_mode               = ati_mach64_set_mode_bpp,
+    .fill_rect              = 0,
+    .screen_blt             = 0,
+    .present_rect           = 0,
+    .sync                   = ati_mach64_sync,
+    .has_hw_cursor          = 0,
+    .set_cursor             = 0,
+    .get_mode_count         = ati_mach64_get_mode_count,
+    .get_mode               = ati_mach64_get_mode,
+    .get_max_width          = ati_mach64_get_max_width,
+    .get_max_height         = ati_mach64_get_max_height,
+    .can_set_mode_ex        = ati_mach64_supports_mode_ex,
+    .set_mode_ex            = ati_mach64_set_mode_ex,
+    .get_current_refresh_hz = ati_mach64_get_current_refresh_hz,
+    .wait_vblank            = ati_mach64_wait_vblank,
+    .enable_vblank_irq      = ati_mach64_enable_vblank_irq,
+    .flip_scanout           = ati_mach64_flip_scanout,
 };
 
 int pdv_driver_entry(const pdv_kernel_api_t* kapi) {

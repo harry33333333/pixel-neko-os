@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "blkdev.h"
 #include "boot_framebuffer.h"
+#include "cpu.h"
 #include "display_modes.h"
 #include "dma.h"
 #include "driver.h"
@@ -246,6 +247,7 @@ static int ddi_display_get_mode(int index, pdv_display_mode_t* out_mode) {
     out_mode->height = mode.height;
     out_mode->bpp_mask = mode.bpp_mask;
     out_mode->preferred = mode.preferred;
+    out_mode->refresh_hz = mode.refresh_hz ? mode.refresh_hz : 60U;
     return 1;
 }
 
@@ -262,6 +264,17 @@ static int ddi_display_get_mode_timing(int width, int height,
     display_timing_t timing;
     memset(&timing, 0, sizeof(timing));
     if (!out_timing || !display_modes_timing(width, height, &timing)) {
+        return 0;
+    }
+    memcpy(out_timing, &timing, sizeof(*out_timing));
+    return 1;
+}
+
+static int ddi_display_get_mode_timing_ex(int width, int height, int refresh_hz,
+                                          pdv_display_timing_t* out_timing) {
+    display_timing_t timing;
+    memset(&timing, 0, sizeof(timing));
+    if (!out_timing || !display_modes_timing_ex(width, height, refresh_hz, &timing)) {
         return 0;
     }
     memcpy(out_timing, &timing, sizeof(*out_timing));
@@ -381,6 +394,8 @@ static const pdv_kernel_api_t g_pdv_kernel_api = {
     .display_has_edid           = ddi_display_has_edid,
     .display_get_mode_source    = ddi_display_get_mode_source,
     .display_get_mode_timing    = ddi_display_get_mode_timing,
+    .display_get_mode_timing_ex = ddi_display_get_mode_timing_ex,
+    .monotonic_ns               = cpu_monotonic_ns,
 };
 
 /* --------------------------------------------------------------------------

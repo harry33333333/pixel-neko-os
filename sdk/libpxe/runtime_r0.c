@@ -93,6 +93,20 @@ int pxe_display_apply_mode(int width, int height, int bpp) {
     return __pxe_r0_api->sys_config(PXE_CFG_APPLY_RESOLUTION, wh, bpp, (const char*)0);
 }
 
+int pxe_display_set_mode_ex(int width, int height, int bpp, int refresh_hz) {
+    if (!__pxe_r0_api || !__pxe_r0_api->sys_config) return -1;
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    int br = (bpp & 0xFFFF) | (((refresh_hz > 0 ? refresh_hz : 0) & 0xFFFF) << 16);
+    return __pxe_r0_api->sys_config(PXE_CFG_SET_RESOLUTION, wh, br, (const char*)0);
+}
+
+int pxe_display_apply_mode_ex(int width, int height, int bpp, int refresh_hz) {
+    if (!__pxe_r0_api || !__pxe_r0_api->sys_config) return -1;
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    int br = (bpp & 0xFFFF) | (((refresh_hz > 0 ? refresh_hz : 0) & 0xFFFF) << 16);
+    return __pxe_r0_api->sys_config(PXE_CFG_APPLY_RESOLUTION, wh, br, (const char*)0);
+}
+
 int pxe_system_reboot(void) {
     return (__pxe_r0_api && __pxe_r0_api->sys_config)
         ? __pxe_r0_api->sys_config(PXE_CFG_SYSTEM_REBOOT, 0, 0,
@@ -259,6 +273,11 @@ int pxe_win_set_menu(int win_id, const pxe_menu_bar_t* menu_bar) {
 int pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface) {
     return (__pxe_r0_api && __pxe_r0_api->win_get_surface)
         ? __pxe_r0_api->win_get_surface(win_id, out_surface) : -1;
+}
+
+int pxe_win_swap_buffer(int win_id, pxe_win_surface_t* out_surface) {
+    return (__pxe_r0_api && __pxe_r0_api->win_swap_buffer)
+        ? __pxe_r0_api->win_swap_buffer(win_id, out_surface) : -1;
 }
 
 int pxe_win_present(int win_id) {

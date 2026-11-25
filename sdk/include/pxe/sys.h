@@ -21,6 +21,8 @@ int      pxe_display_get_caps(pxe_display_caps_t* out);
 /* Settings control (requires PXE_FLAG_SYS_SETTINGS in Ring 3 or Ring 0) */
 int      pxe_display_set_mode(int width, int height, int bpp);
 int      pxe_display_apply_mode(int width, int height, int bpp);
+int      pxe_display_set_mode_ex(int width, int height, int bpp, int refresh_hz);
+int      pxe_display_apply_mode_ex(int width, int height, int bpp, int refresh_hz);
 int      pxe_desktop_set_pattern(int pattern);
 int      pxe_desktop_set_wallpaper(const char* path, int mode);
 int      pxe_desktop_set_wallpaper_mode(int mode);

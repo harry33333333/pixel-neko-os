@@ -98,6 +98,10 @@ typedef struct {
     size_t          canvas_pages;
     void*           canvas_kvirt;
     uint64_t        canvas_uvirt;
+    uint32_t        buf_count;
+    uint32_t        front_buf;
+    uint32_t        back_buf;
+    size_t          slot_bytes;
     bool            has_menu;
     pxe_menu_bar_t  menu_bar;
     bool            present_dirty;
@@ -1117,32 +1121,79 @@ static void blit_dyn_client_rect(unsigned char* v, const wm_dyn_win_t* dw,
 
     int cx0 = dw->x + 1;
     int cy0 = dw->y + 19;
+    const uint8_t* front_base = (const uint8_t*)dw->canvas_kvirt +
+                                (size_t)dw->front_buf * dw->slot_bytes;
 
-    if (dw->format == PXE_CANVAS_RGB32) {
-        for (int ry = ry0; ry < ry1; ry++) {
-            int sy = cy0 + ry;
-            if (sy < 0 || sy >= screen_h) continue;
-            const uint32_t* src = (const uint32_t*)((const uint8_t*)dw->canvas_kvirt +
-                                                    (size_t)ry * (size_t)dw->pitch);
-            for (int rx = rx0; rx < rx1; rx++) {
-                int sx = cx0 + rx;
-                if (sx >= 0 && sx < screen_w) {
-                    put_rgb32_pixel(v, sx, sy, src[rx]);
+    int rx_clip0 = rx0;
+    int rx_clip1 = rx1;
+    if (cx0 + rx_clip0 < 0) rx_clip0 = -cx0;
+    if (cx0 + rx_clip1 > screen_w) rx_clip1 = screen_w - cx0;
+    int span = rx_clip1 - rx_clip0;
+
+    if (span > 0) {
+        if (dw->format == PXE_CANVAS_RGB32) {
+            if (screen_bpp == 32) {
+                size_t copy_bytes = (size_t)span * 4U;
+                for (int ry = ry0; ry < ry1; ry++) {
+                    int sy = cy0 + ry;
+                    if (sy < 0 || sy >= screen_h) continue;
+                    const uint8_t* src = front_base + (size_t)ry * (size_t)dw->pitch +
+                                         (size_t)rx_clip0 * 4U;
+                    uint8_t* dst = v + (size_t)sy * (size_t)screen_pitch +
+                                   (size_t)(cx0 + rx_clip0) * 4U;
+                    memcpy(dst, src, copy_bytes);
+                }
+            } else {
+                for (int ry = ry0; ry < ry1; ry++) {
+                    int sy = cy0 + ry;
+                    if (sy < 0 || sy >= screen_h) continue;
+                    const uint32_t* src = (const uint32_t*)(front_base +
+                                                            (size_t)ry * (size_t)dw->pitch);
+                    for (int rx = rx_clip0; rx < rx_clip1; rx++) {
+                        put_rgb32_pixel(v, cx0 + rx, sy, src[rx]);
+                    }
                 }
             }
-        }
-    } else {
-        for (int ry = ry0; ry < ry1; ry++) {
-            int sy = cy0 + ry;
-            if (sy < 0 || sy >= screen_h) continue;
-            const uint8_t* src = (const uint8_t*)dw->canvas_kvirt +
-                                 (size_t)ry * (size_t)dw->pitch;
-            for (int rx = rx0; rx < rx1; rx++) {
-                int sx = cx0 + rx;
-                if (sx < 0 || sx >= screen_w) continue;
-                uint8_t c = src[rx];
-                if (c != 255) {
-                    PUT_PIXEL(v, sx, sy, c);
+        } else if (dw->format == PXE_CANVAS_RGB565) {
+            if (screen_bpp == 16) {
+                size_t copy_bytes = (size_t)span * 2U;
+                for (int ry = ry0; ry < ry1; ry++) {
+                    int sy = cy0 + ry;
+                    if (sy < 0 || sy >= screen_h) continue;
+                    const uint8_t* src = front_base + (size_t)ry * (size_t)dw->pitch +
+                                         (size_t)rx_clip0 * 2U;
+                    uint8_t* dst = v + (size_t)sy * (size_t)screen_pitch +
+                                   (size_t)(cx0 + rx_clip0) * 2U;
+                    memcpy(dst, src, copy_bytes);
+                }
+            } else {
+                for (int ry = ry0; ry < ry1; ry++) {
+                    int sy = cy0 + ry;
+                    if (sy < 0 || sy >= screen_h) continue;
+                    const uint16_t* src = (const uint16_t*)(front_base +
+                                                            (size_t)ry * (size_t)dw->pitch);
+                    for (int rx = rx_clip0; rx < rx_clip1; rx++) {
+                        uint16_t c16 = src[rx];
+                        uint32_t r5 = (c16 >> 11) & 0x1FU;
+                        uint32_t g6 = (c16 >> 5) & 0x3FU;
+                        uint32_t b5 = c16 & 0x1FU;
+                        uint32_t rgb = (((r5 << 3) | (r5 >> 2)) << 16) |
+                                       (((g6 << 2) | (g6 >> 4)) << 8) |
+                                       ((b5 << 3) | (b5 >> 2));
+                        put_rgb32_pixel(v, cx0 + rx, sy, rgb);
+                    }
+                }
+            }
+        } else {
+            for (int ry = ry0; ry < ry1; ry++) {
+                int sy = cy0 + ry;
+                if (sy < 0 || sy >= screen_h) continue;
+                const uint8_t* src = front_base + (size_t)ry * (size_t)dw->pitch;
+                for (int rx = rx_clip0; rx < rx_clip1; rx++) {
+                    uint8_t c = src[rx];
+                    if (c != 255) {
+                        PUT_PIXEL(v, cx0 + rx, sy, c);
+                    }
                 }
             }
         }
@@ -2263,8 +2314,27 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
                     need_full = true;
                     break;
                 }
-                blit_dyn_client_rect(v, dw, drx, dry, drw, drh);
-                wm_push_dirty_rect(sx, sy, drw, drh);
+                /* Direct Scanout fast path: unobstructed truecolor/RGB565 window bypasses backbuffer */
+                bool direct_ok = false;
+                if (!redraw && !dragging && !power_confirm && !crash_dialog_active &&
+                    !r0_confirm_active && !uninit_dialog_active && !menu_open &&
+                    !volume_popup_open && icon_dragging == -1 && g_dirty_rect_count == 0 &&
+                    (dw->format == PXE_CANVAS_RGB32 || dw->format == PXE_CANVAS_RGB565)) {
+                    bool hits_grip = (dw->flags & PXE_WIN_RESIZABLE) &&
+                                     (drx + drw > dw->client_w - 10) &&
+                                     (dry + drh > dw->client_h - 10);
+                    if (!hits_grip) {
+                        const uint8_t* front = (const uint8_t*)dw->canvas_kvirt +
+                                               (size_t)dw->front_buf * dw->slot_bytes;
+                        direct_ok = copy_direct_surface_to_lfb(
+                            front, dw->pitch, dw->format,
+                            drx, dry, sx, sy, drw, drh);
+                    }
+                }
+                if (!direct_ok) {
+                    blit_dyn_client_rect(v, dw, drx, dry, drw, drh);
+                    wm_push_dirty_rect(sx, sy, drw, drh);
+                }
             }
             if (need_full) {
                 redraw = 1;
@@ -2273,10 +2343,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Poll RTC once every 100 ticks (1 Hz / 1 second) to prevent ISA bus stalls
+    // Poll RTC once every 500 ticks (~0.5s at 1000 Hz) to prevent ISA bus stalls
     static int last_rtc_tick = 0;
     static char last_clock_text[32];
-    if (global_tick - last_rtc_tick >= 100 || last_s == -1) {
+    if (global_tick - last_rtc_tick >= 500 || last_s == -1) {
         last_rtc_tick = global_tick;
         int h, m, s;
         get_time(&h, &m, &s);
@@ -3443,7 +3513,9 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
         win_flags &= ~PXE_WIN_RESIZABLE;
     }
 
-    uint32_t format = (desc->format == PXE_CANVAS_RGB32) ? PXE_CANVAS_RGB32 : PXE_CANVAS_PAL8;
+    uint32_t format = PXE_CANVAS_PAL8;
+    if (desc->format == PXE_CANVAS_RGB32) format = PXE_CANVAS_RGB32;
+    else if (desc->format == PXE_CANVAS_RGB565) format = PXE_CANVAS_RGB565;
     int max_cw = (screen_w > 64) ? (screen_w - 2) : 638;
     int max_ch = (screen_h > 64) ? (screen_h - 40) : 440;
     int cw = install_locked ? max_cw : desc->w;
@@ -3465,21 +3537,29 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
 
     int alloc_stride = (win_flags & PXE_WIN_RESIZABLE) ? res_w : cw;
     int alloc_h      = (win_flags & PXE_WIN_RESIZABLE) ? res_h : ch;
-    int bpp_bytes    = (format == PXE_CANVAS_RGB32) ? 4 : 1;
-    uint64_t need64  = (uint64_t)(unsigned int)alloc_stride *
-                       (uint64_t)(unsigned int)alloc_h *
-                       (uint64_t)(unsigned int)bpp_bytes;
-    if (need64 > NEKO_SHM_STRIDE) {
+    int bpp_bytes    = (format == PXE_CANVAS_RGB32) ? 4 :
+                       (format == PXE_CANVAS_RGB565 ? 2 : 1);
+    uint32_t req_bufs = (win_flags & PXE_WIN_TRIPLE_BUF) ? 3U : 1U;
+    uint64_t slot_raw = (uint64_t)(unsigned int)alloc_stride *
+                        (uint64_t)(unsigned int)alloc_h *
+                        (uint64_t)(unsigned int)bpp_bytes;
+    uint64_t slot_aligned = (slot_raw + PAGE_SIZE - 1ULL) & ~(uint64_t)(PAGE_SIZE - 1ULL);
+    if (slot_aligned * req_bufs > NEKO_SHM_STRIDE) {
         /* Fallback clamp within SHM stride */
         alloc_stride = cw;
         alloc_h = ch;
-        need64 = (uint64_t)(unsigned int)alloc_stride *
-                 (uint64_t)(unsigned int)alloc_h *
-                 (uint64_t)(unsigned int)bpp_bytes;
-        if (need64 > NEKO_SHM_STRIDE) return -1;
+        slot_raw = (uint64_t)(unsigned int)alloc_stride *
+                   (uint64_t)(unsigned int)alloc_h *
+                   (uint64_t)(unsigned int)bpp_bytes;
+        slot_aligned = (slot_raw + PAGE_SIZE - 1ULL) & ~(uint64_t)(PAGE_SIZE - 1ULL);
+        if (slot_aligned * req_bufs > NEKO_SHM_STRIDE) {
+            req_bufs = 1U;
+            if (slot_aligned > NEKO_SHM_STRIDE) return -1;
+        }
     }
     int pitch        = alloc_stride * bpp_bytes;
-    size_t total_sz  = (size_t)pitch * (size_t)alloc_h;
+    size_t slot_sz   = (size_t)slot_aligned;
+    size_t total_sz  = slot_sz * (size_t)req_bufs;
     size_t pages     = (total_sz + PAGE_SIZE - 1) / PAGE_SIZE;
 
     uint64_t irq_flags = wm_irq_save();
@@ -3508,6 +3588,10 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
         uint32_t* p32 = (uint32_t*)kvirt;
         size_t count = (pages * PAGE_SIZE) / 4;
         for (size_t k = 0; k < count; k++) p32[k] = 0x00C0C0C0u;
+    } else if (format == PXE_CANVAS_RGB565) {
+        uint16_t* p16 = (uint16_t*)kvirt;
+        size_t count = (pages * PAGE_SIZE) / 2;
+        for (size_t k = 0; k < count; k++) p16[k] = 0x0000u;
     } else {
         memset(kvirt, PXE_COL_LIGHT_GRAY, pages * PAGE_SIZE);
     }
@@ -3563,10 +3647,17 @@ int wm_pxe_win_create(struct process* proc, const pxe_win_desc_t* desc, pxe_win_
     dw->canvas_pages = pages;
     dw->canvas_kvirt = kvirt;
     dw->canvas_uvirt = uvirt;
+    dw->buf_count = req_bufs;
+    dw->front_buf = 0U;
+    dw->back_buf  = (req_bufs > 1U) ? 1U : 0U;
+    dw->slot_bytes = slot_sz;
     strncpy(dw->title, desc->title, sizeof(dw->title) - 1);
     dw->title[sizeof(dw->title) - 1] = '\0';
 
-    out_surf->pixels = (proc->exec_ring == 3) ? (void*)(uintptr_t)uvirt : kvirt;
+    size_t draw_off = (size_t)dw->back_buf * dw->slot_bytes;
+    out_surf->pixels = (proc->exec_ring == 3)
+                           ? (void*)(uintptr_t)(uvirt + draw_off)
+                           : (void*)((uint8_t*)kvirt + draw_off);
     out_surf->width  = cw;
     out_surf->height = ch;
     out_surf->stride = alloc_stride;
@@ -3639,12 +3730,53 @@ int wm_pxe_win_get_surface(struct process* proc, int win_id, pxe_win_surface_t* 
     if (!proc || !out_surf || slot < 0 || slot >= WM_DYN_MAX) return -1;
     wm_dyn_win_t* dw = &g_dyn_wins[slot];
     if (!dw->used || dw->owner_pid != proc->pid) return -1;
-    out_surf->pixels = (proc->exec_ring == 3) ? (void*)(uintptr_t)dw->canvas_uvirt : dw->canvas_kvirt;
+    size_t draw_off = (size_t)dw->back_buf * dw->slot_bytes;
+    out_surf->pixels = (proc->exec_ring == 3)
+                           ? (void*)(uintptr_t)(dw->canvas_uvirt + draw_off)
+                           : (void*)((uint8_t*)dw->canvas_kvirt + draw_off);
     out_surf->width  = dw->client_w;
     out_surf->height = dw->client_h;
     out_surf->stride = dw->alloc_stride;
     out_surf->pitch  = dw->pitch;
     out_surf->format = dw->format;
+    return 0;
+}
+
+int wm_pxe_win_swap_buffer(struct process* proc, int win_id, pxe_win_surface_t* out_surf) {
+    int slot = win_id - WM_DYN_BASE;
+    if (!proc || slot < 0 || slot >= WM_DYN_MAX) return -1;
+    uint64_t flags = wm_irq_save();
+    wm_dyn_win_t* dw = &g_dyn_wins[slot];
+    if (!dw->used || dw->owner_pid != proc->pid) {
+        wm_irq_restore(flags);
+        return -1;
+    }
+    if (dw->buf_count > 1U) {
+        dw->front_buf = dw->back_buf;
+        dw->back_buf  = (dw->back_buf + 1U) % dw->buf_count;
+    }
+    int cw = dw->client_w;
+    int ch = dw->client_h;
+    if (cw > dw->alloc_stride) cw = dw->alloc_stride;
+    if (ch > dw->alloc_h) ch = dw->alloc_h;
+    dw->dirty_rx = 0;
+    dw->dirty_ry = 0;
+    dw->dirty_rw = cw;
+    dw->dirty_rh = ch;
+    dw->present_dirty = true;
+    g_pxe_present_dirty = 1;
+    if (out_surf) {
+        size_t draw_off = (size_t)dw->back_buf * dw->slot_bytes;
+        out_surf->pixels = (proc->exec_ring == 3)
+                               ? (void*)(uintptr_t)(dw->canvas_uvirt + draw_off)
+                               : (void*)((uint8_t*)dw->canvas_kvirt + draw_off);
+        out_surf->width  = dw->client_w;
+        out_surf->height = dw->client_h;
+        out_surf->stride = dw->alloc_stride;
+        out_surf->pitch  = dw->pitch;
+        out_surf->format = dw->format;
+    }
+    wm_irq_restore(flags);
     return 0;
 }
 

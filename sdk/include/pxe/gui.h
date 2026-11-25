@@ -8,6 +8,7 @@ int  pxe_win_destroy(int win_id);
 int  pxe_win_set_title(int win_id, const char* title);
 int  pxe_win_set_menu(int win_id, const pxe_menu_bar_t* menu_bar);
 int  pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface);
+int  pxe_win_swap_buffer(int win_id, pxe_win_surface_t* out_surface);
 int  pxe_win_present(int win_id);
 int  pxe_win_present_rect(int win_id, int x, int y, int w, int h);
 

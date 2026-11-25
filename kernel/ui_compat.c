@@ -2,6 +2,7 @@
 #include "apic.h"
 #include "audio.h"
 #include "boot_framebuffer.h"
+#include "fb_blit_wc.h"
 #include "gfx_accel.h"
 #include "input.h"
 #include "keyboard.h"
@@ -257,6 +258,27 @@ static inline void lfb_put_rgb32(int x, int y, uint32_t rgb) {
     boot_framebuffer_putpixel((uint32_t)x, (uint32_t)y, color);
 }
 
+static bool g_frame_lfb_dirty = false;
+
+static bool ui_lfb_matches_bpp(int bpp) {
+    if (bpp == 8 && g_main_surface.bpp == 8) return true;
+    if (bpp == 16 && g_main_surface.bpp == 16 &&
+        g_main_surface.red_mask_size == 5 &&
+        g_main_surface.green_mask_size == 6 &&
+        g_main_surface.blue_mask_size == 5 &&
+        g_main_surface.red_mask_shift == 11) {
+        return true;
+    }
+    if (bpp == 32 && g_main_surface.bpp == 32 &&
+        ((g_main_surface.red_mask_shift == 16 &&
+          g_main_surface.green_mask_shift == 8 &&
+          g_main_surface.blue_mask_shift == 0) ||
+         g_main_surface.format == PIXEL_FORMAT_RGB888)) {
+        return true;
+    }
+    return false;
+}
+
 void copy_rect_to_lfb(const unsigned char* source, int x, int y,
                       int width, int height) {
     if (!source || !lfb) return;
@@ -278,56 +300,25 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
 
     lfb = (unsigned char*)g_main_surface.framebuffer_virt;
     if (screen_w == hw_w && screen_h == hw_h) {
-        for (int row = 0; row < height; row++) {
-            int sy = y + row;
-            if (screen_bpp == 8 && g_main_surface.bpp == 8) {
-                volatile uint8_t* dst =
-                    (volatile uint8_t*)(lfb +
-                                        (size_t)sy * g_main_surface.pitch +
-                                        (size_t)x);
-                const uint8_t* src =
-                    (const uint8_t*)(source + (size_t)sy * (size_t)screen_pitch +
-                                     (size_t)x);
-                for (int column = 0; column < width; column++) {
-                    dst[column] = src[column];
-                }
-            } else if (screen_bpp == 16 && g_main_surface.bpp == 16 &&
-                       g_main_surface.red_mask_size == 5 &&
-                       g_main_surface.green_mask_size == 6 &&
-                       g_main_surface.blue_mask_size == 5 &&
-                       g_main_surface.red_mask_shift == 11) {
-                volatile uint16_t* dst =
-                    (volatile uint16_t*)(lfb +
-                                         (size_t)sy * g_main_surface.pitch +
-                                         (size_t)x * 2);
-                const uint16_t* src =
-                    (const uint16_t*)(source + (size_t)sy * (size_t)screen_pitch +
-                                      (size_t)x * 2);
-                for (int column = 0; column < width; column++) {
-                    dst[column] = src[column];
-                }
-            } else if (screen_bpp == 32 && g_main_surface.bpp == 32 &&
-                       ((g_main_surface.red_mask_shift == 16 &&
-                         g_main_surface.green_mask_shift == 8 &&
-                         g_main_surface.blue_mask_shift == 0) ||
-                        g_main_surface.format == PIXEL_FORMAT_RGB888)) {
-                volatile uint32_t* dst =
-                    (volatile uint32_t*)(lfb +
-                                         (size_t)sy * g_main_surface.pitch +
-                                         (size_t)x * 4);
-                const uint32_t* src =
-                    (const uint32_t*)(source + (size_t)sy * (size_t)screen_pitch +
-                                      (size_t)x * 4);
-                for (int column = 0; column < width; column++) {
-                    dst[column] = src[column];
-                }
-            } else {
+        if (ui_lfb_matches_bpp(screen_bpp)) {
+            uint32_t bpp_bytes = (uint32_t)(screen_bpp / 8);
+            uint8_t* dst_base =
+                lfb + (size_t)y * (size_t)g_main_surface.pitch + (size_t)x * bpp_bytes;
+            const uint8_t* src_base =
+                source + (size_t)y * (size_t)screen_pitch + (size_t)x * bpp_bytes;
+            fb_blit_wc_rect(dst_base, g_main_surface.pitch,
+                            src_base, (uint32_t)screen_pitch,
+                            (uint32_t)width * bpp_bytes, (uint32_t)height);
+        } else {
+            for (int row = 0; row < height; row++) {
+                int sy = y + row;
                 for (int column = 0; column < width; column++) {
                     lfb_put_rgb32(x + column, sy,
                                   surface_pixel_to_rgb32(source,
                                                          x + column, sy));
                 }
             }
+            boot_framebuffer_flush();
         }
     } else {
         int dst_x0 = (x * hw_w) / screen_w;
@@ -351,10 +342,59 @@ void copy_rect_to_lfb(const unsigned char* source, int x, int y,
         }
         gfx_accel_present_rect(dst_x0, dst_y0, dst_x1 - dst_x0, dst_y1 - dst_y0);
         boot_framebuffer_flush();
+        g_frame_lfb_dirty = true;
         return;
     }
     gfx_accel_present_rect(x, y, width, height);
-    boot_framebuffer_flush();
+    g_frame_lfb_dirty = true;
+}
+
+bool copy_direct_surface_to_lfb(const void* src_pixels, int src_pitch, uint32_t src_format,
+                                int src_x, int src_y, int dst_x, int dst_y,
+                                int width, int height) {
+    if (!src_pixels || !lfb || width <= 0 || height <= 0) return false;
+    int hw_w = (int)g_main_surface.width;
+    int hw_h = (int)g_main_surface.height;
+    if (screen_w != hw_w || screen_h != hw_h) return false;
+
+    uint32_t bpp_bytes = 0;
+    if (src_format == PXE_CANVAS_RGB32 && ui_lfb_matches_bpp(32)) {
+        bpp_bytes = 4U;
+    } else if (src_format == PXE_CANVAS_RGB565 && ui_lfb_matches_bpp(16)) {
+        bpp_bytes = 2U;
+    } else {
+        return false;
+    }
+
+    if (dst_x < 0) { src_x -= dst_x; width += dst_x; dst_x = 0; }
+    if (dst_y < 0) { src_y -= dst_y; height += dst_y; dst_y = 0; }
+    if (dst_x + width > screen_w) width = screen_w - dst_x;
+    if (dst_y + height > screen_h) height = screen_h - dst_y;
+    if (width <= 0 || height <= 0 || src_x < 0 || src_y < 0) return true;
+
+    /* Avoid clobbering the software mouse cursor */
+    if (g_cursor_saved_valid) {
+        int cx0 = g_cursor_saved_x;
+        int cy0 = g_cursor_saved_y;
+        int cx1 = cx0 + CURSOR_W;
+        int cy1 = cy0 + CURSOR_H;
+        if (!(dst_x + width <= cx0 || dst_x >= cx1 ||
+              dst_y + height <= cy0 || dst_y >= cy1)) {
+            return false;
+        }
+    }
+
+    lfb = (unsigned char*)g_main_surface.framebuffer_virt;
+    uint8_t* dst_base =
+        lfb + (size_t)dst_y * (size_t)g_main_surface.pitch + (size_t)dst_x * bpp_bytes;
+    const uint8_t* src_base =
+        (const uint8_t*)src_pixels + (size_t)src_y * (size_t)src_pitch + (size_t)src_x * bpp_bytes;
+    fb_blit_wc_rect(dst_base, g_main_surface.pitch,
+                    src_base, (uint32_t)src_pitch,
+                    (uint32_t)width * bpp_bytes, (uint32_t)height);
+    gfx_accel_present_rect(dst_x, dst_y, width, height);
+    g_frame_lfb_dirty = true;
+    return true;
 }
 
 void copy_fullscreen_to_lfb(const unsigned char* source) {
@@ -583,6 +623,7 @@ static void ui_update_pointer(input_event_t* event) {
 
 void ui_desktop_poll(void) {
     if (!g_started) return;
+    g_frame_lfb_dirty = false;
     if (vfs_sync_usb_drives()) {
         wm_notify_media_changed();
     }
@@ -681,6 +722,10 @@ void ui_desktop_poll(void) {
         if (moved || box_changed) {
             copy_rect_to_lfb(backbuffer, g_mouse_x, g_mouse_y, CURSOR_W, CURSOR_H);
         }
+    }
+    if (g_frame_lfb_dirty) {
+        gfx_accel_sync();
+        g_frame_lfb_dirty = false;
     }
 }
 

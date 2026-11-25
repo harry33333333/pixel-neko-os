@@ -114,8 +114,83 @@ static bool display_make_standard_timing(int width, int height,
     return false;
 }
 
+bool display_modes_calc_cvt_rb(int width, int height, int refresh_hz,
+                               display_timing_t* out_timing) {
+    if (!out_timing || width < 320 || height < 200 || width > 16384 ||
+        height > 16384) {
+        return false;
+    }
+    if (refresh_hz < 24) refresh_hz = 60;
+    if (refresh_hz > 360) refresh_hz = 360;
+
+    /*
+     * Integer-only CVT-RB (<= 100 Hz) / CVT-RBv2 (> 100 Hz) timing generator.
+     * Both use 8-pixel aligned horizontal parameters for full Mach64/NV CRTC
+     * compatibility while keeping pixel clocks minimal at 120/144/165/240 Hz.
+     */
+    bool rbv2 = (refresh_hz > 100);
+    uint16_t h_disp = (uint16_t)width;
+    uint16_t h_blank = rbv2 ? 80U : 160U;
+    uint16_t h_fp    = rbv2 ? 8U  : 48U;
+    uint16_t h_sync  = 32U;
+    uint16_t h_total = (uint16_t)(((h_disp + 7U) & ~7U) + h_blank);
+
+    /* Minimum 460 us vertical blanking interval */
+    uint64_t denom = 1000000ULL - 460ULL * (uint64_t)(unsigned int)refresh_hz;
+    if (denom < 100000ULL) denom = 100000ULL;
+    uint64_t v_total_est = ((uint64_t)(unsigned int)height * 1000000ULL + denom - 1ULL) / denom;
+    uint32_t v_blank = (v_total_est > (uint64_t)(unsigned int)height)
+                           ? (uint32_t)(v_total_est - (uint64_t)(unsigned int)height)
+                           : 16U;
+    uint32_t min_vblank = rbv2 ? 16U : 23U;
+    if (v_blank < min_vblank) v_blank = min_vblank;
+    if (v_blank > 512U) v_blank = 512U;
+
+    uint16_t v_sync = 8U;
+    if (!rbv2) {
+        if (width * 3 == height * 4) v_sync = 4U;
+        else if (width * 9 == height * 16) v_sync = 5U;
+        else if (width * 10 == height * 16) v_sync = 6U;
+        else if (width * 4 == height * 5) v_sync = 7U;
+        else v_sync = 6U;
+    }
+    uint16_t v_bp = 6U;
+    uint16_t v_fp = (v_blank > (uint32_t)(v_sync + v_bp))
+                        ? (uint16_t)(v_blank - v_sync - v_bp)
+                        : 3U;
+    if (!rbv2) {
+        v_fp = 3U;
+        if (v_blank < (uint32_t)(v_fp + v_sync + v_bp)) {
+            v_blank = (uint32_t)(v_fp + v_sync + v_bp);
+        }
+    }
+    uint16_t v_total = (uint16_t)((uint32_t)height + v_blank);
+
+    uint64_t pclk_hz = (uint64_t)h_total * (uint64_t)v_total *
+                       (uint64_t)(unsigned int)refresh_hz;
+    uint32_t pclk_khz = (uint32_t)((pclk_hz + 500ULL) / 1000ULL);
+    if (pclk_khz == 0) return false;
+
+    memset(out_timing, 0, sizeof(*out_timing));
+    out_timing->h_display       = h_disp;
+    out_timing->h_total         = h_total;
+    out_timing->h_sync_start    = (uint16_t)(h_disp + h_fp);
+    out_timing->h_sync_end      = (uint16_t)(h_disp + h_fp + h_sync);
+    out_timing->v_display       = (uint16_t)height;
+    out_timing->v_total         = v_total;
+    out_timing->v_sync_start    = (uint16_t)(height + v_fp);
+    out_timing->v_sync_end      = (uint16_t)(height + v_fp + v_sync);
+    out_timing->pixel_clock_khz = pclk_khz;
+    out_timing->refresh_hz      = (uint16_t)refresh_hz;
+    out_timing->h_sync_positive = 1U;
+    out_timing->v_sync_positive = 0U;
+    out_timing->flags           = rbv2 ? 2U : 1U;
+    return true;
+}
+
 static void display_mode_add_timed(display_mode_t* modes, int* count,
                                    int width, int height, uint8_t bpp_mask,
+                                   uint16_t refresh_hz,
                                    bool preferred, bool from_edid,
                                    const display_timing_t* detailed_timing) {
     if (!modes || !count || *count < 0 || *count >= DISPLAY_MODE_MAX ||
@@ -129,13 +204,25 @@ static void display_mode_add_timed(display_mode_t* modes, int* count,
         has_timing = timing.pixel_clock_khz != 0 &&
                      timing.h_total >= timing.h_display &&
                      timing.v_total >= timing.v_display;
+        if (has_timing && refresh_hz == 0) {
+            refresh_hz = timing.refresh_hz;
+        }
     }
+    if (refresh_hz == 0) refresh_hz = 60U;
     if (!has_timing) {
-        has_timing = display_make_standard_timing(width, height, &timing);
+        if (refresh_hz >= 58U && refresh_hz <= 62U) {
+            has_timing = display_make_standard_timing(width, height, &timing);
+        }
+        if (!has_timing) {
+            has_timing = display_modes_calc_cvt_rb(width, height,
+                                                   (int)refresh_hz, &timing);
+        }
     }
     for (int index = 0; index < *count; index++) {
+        uint16_t existing_hz = modes[index].refresh_hz ? modes[index].refresh_hz : 60U;
         if (modes[index].width == (uint16_t)width &&
-            modes[index].height == (uint16_t)height) {
+            modes[index].height == (uint16_t)height &&
+            existing_hz == refresh_hz) {
             modes[index].bpp_mask |= bpp_mask;
             modes[index].preferred |= preferred ? 1U : 0U;
             modes[index].from_edid |= from_edid ? 1U : 0U;
@@ -155,13 +242,22 @@ static void display_mode_add_timed(display_mode_t* modes, int* count,
     mode->preferred = preferred ? 1U : 0U;
     mode->from_edid = from_edid ? 1U : 0U;
     mode->timing_valid = has_timing ? 1U : 0U;
+    mode->refresh_hz = refresh_hz;
     if (has_timing) mode->timing = timing;
+}
+
+static void display_mode_add_hz(display_mode_t* modes, int* count,
+                                int width, int height, uint8_t bpp_mask,
+                                uint16_t refresh_hz,
+                                bool preferred, bool from_edid) {
+    display_mode_add_timed(modes, count, width, height, bpp_mask, refresh_hz,
+                           preferred, from_edid, NULL);
 }
 
 static void display_mode_add(display_mode_t* modes, int* count,
                              int width, int height, uint8_t bpp_mask,
                              bool preferred, bool from_edid) {
-    display_mode_add_timed(modes, count, width, height, bpp_mask,
+    display_mode_add_timed(modes, count, width, height, bpp_mask, 60U,
                            preferred, from_edid, NULL);
 }
 
@@ -170,8 +266,12 @@ static void display_modes_sort(display_mode_t* modes, int count) {
         for (int right = left + 1; right < count; right++) {
             uint32_t left_area = (uint32_t)modes[left].width * modes[left].height;
             uint32_t right_area = (uint32_t)modes[right].width * modes[right].height;
+            uint16_t left_hz = modes[left].refresh_hz ? modes[left].refresh_hz : 60U;
+            uint16_t right_hz = modes[right].refresh_hz ? modes[right].refresh_hz : 60U;
             if (right_area < left_area ||
-                (right_area == left_area && modes[right].width < modes[left].width)) {
+                (right_area == left_area && modes[right].width < modes[left].width) ||
+                (right_area == left_area && modes[right].width == modes[left].width &&
+                 right_hz < left_hz)) {
                 display_mode_t temporary = modes[left];
                 modes[left] = modes[right];
                 modes[right] = temporary;
@@ -220,7 +320,8 @@ static void edid_add_dtd(const uint8_t* dtd, bool preferred) {
                      divisor)
         : 60U;
     display_mode_add_timed(g_edid_modes, &g_edid_mode_count, width, height,
-                           DISPLAY_BPP_MASK_ALL, preferred, true, &timing);
+                           DISPLAY_BPP_MASK_ALL, timing.refresh_hz,
+                           preferred, true, &timing);
 }
 
 static void edid_add_established(const uint8_t* edid) {
@@ -232,6 +333,10 @@ static void edid_add_established(const uint8_t* edid) {
         400, 400, 480, 480, 480, 480, 600, 600,
         600, 600, 624, 768, 768, 768, 768, 1024, 870
     };
+    static const uint16_t k_hz[] = {
+        70, 88, 60, 67, 72, 75, 56, 60,
+        72, 75, 75, 87, 60, 70, 75, 75, 75
+    };
     static const uint8_t k_mask[] = {
         0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
         0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x80
@@ -239,9 +344,10 @@ static void edid_add_established(const uint8_t* edid) {
     for (int index = 0; index < 17; index++) {
         int byte_index = index < 8 ? 35 : (index < 16 ? 36 : 37);
         if ((edid[byte_index] & k_mask[index]) != 0) {
-            display_mode_add(g_edid_modes, &g_edid_mode_count,
-                             k_width[index], k_height[index],
-                             DISPLAY_BPP_MASK_ALL, false, true);
+            if (index == 11) continue; /* 1024x768@87i interlaced */
+            display_mode_add_hz(g_edid_modes, &g_edid_mode_count,
+                                k_width[index], k_height[index],
+                                DISPLAY_BPP_MASK_ALL, k_hz[index], false, true);
         }
     }
 }
@@ -259,47 +365,134 @@ static void edid_add_standard(const uint8_t* edid) {
         }
         int width = ((int)first + 31) * 8;
         int aspect = (second >> 6) & 0x03;
+        int refresh_hz = (second & 0x3F) + 60;
         int height;
         if (aspect == 0) height = has_16_10 ? (width * 10) / 16 : width;
         else if (aspect == 1) height = (width * 3) / 4;
         else if (aspect == 2) height = (width * 4) / 5;
         else height = (width * 9) / 16;
-        display_mode_add(g_edid_modes, &g_edid_mode_count, width, height,
-                         DISPLAY_BPP_MASK_ALL, false, true);
+        display_mode_add_hz(g_edid_modes, &g_edid_mode_count, width, height,
+                            DISPLAY_BPP_MASK_ALL, (uint16_t)refresh_hz, false, true);
     }
 }
 
 static void edid_add_vic(uint8_t vic) {
     int width = 0;
     int height = 0;
+    uint16_t refresh_hz = 60U;
     switch (vic) {
-        case 1:  width = 640; height = 480; break;
+        case 1:  width = 640;  height = 480;  refresh_hz = 60U;  break;
         case 2:
-        case 3:  width = 720; height = 480; break;
-        case 4:  width = 1280; height = 720; break;
-        case 16: width = 1920; height = 1080; break;
+        case 3:  width = 720;  height = 480;  refresh_hz = 60U;  break;
+        case 4:  width = 1280; height = 720;  refresh_hz = 60U;  break;
+        case 16: width = 1920; height = 1080; refresh_hz = 60U;  break;
         case 17:
-        case 18: width = 720; height = 576; break;
-        case 19: width = 1280; height = 720; break;
-        case 31:
+        case 18: width = 720;  height = 576;  refresh_hz = 50U;  break;
+        case 19: width = 1280; height = 720;  refresh_hz = 50U;  break;
+        case 31: width = 1920; height = 1080; refresh_hz = 50U;  break;
         case 32:
         case 33:
-        case 34: width = 1920; height = 1080; break;
+        case 34: width = 1920; height = 1080; refresh_hz = 60U;  break;
+        case 41: width = 1280; height = 720;  refresh_hz = 100U; break;
+        case 47: width = 1280; height = 720;  refresh_hz = 120U; break;
+        case 63: width = 1920; height = 1080; refresh_hz = 120U; break;
+        case 64: width = 1920; height = 1080; refresh_hz = 100U; break;
         case 93:
         case 94:
         case 95:
         case 96:
-        case 97: width = 3840; height = 2160; break;
+        case 97: width = 3840; height = 2160; refresh_hz = 60U;  break;
+        case 117: width = 3840; height = 2160; refresh_hz = 100U; break;
+        case 118: width = 3840; height = 2160; refresh_hz = 120U; break;
         default: break;
     }
     if (width) {
-        display_mode_add(g_edid_modes, &g_edid_mode_count, width, height,
-                         DISPLAY_BPP_MASK_ALL, false, true);
+        display_mode_add_hz(g_edid_modes, &g_edid_mode_count, width, height,
+                            DISPLAY_BPP_MASK_ALL, refresh_hz, false, true);
+    }
+}
+
+static void edid_parse_displayid_dtd(const uint8_t* p, bool is_type7) {
+    if (!p) return;
+    uint32_t raw_pclk = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+    uint32_t pclk_khz = is_type7 ? (raw_pclk + 1U) : ((raw_pclk + 1U) * 10U);
+    if (pclk_khz < 10000U || pclk_khz > 2000000U) return;
+    /* Skip interlaced timings (bit 4 of flags byte p[3]) */
+    if (p[3] & 0x10U) return;
+
+    int h_active = (int)display_le16(p + 4) + 1;
+    int h_blank  = (int)display_le16(p + 6) + 1;
+    int h_fp     = (int)(p[8] | ((p[9] & 0x7FU) << 8)) + 1;
+    uint8_t h_pos = (p[9] & 0x80U) ? 1U : 0U;
+    int h_sw     = (int)display_le16(p + 10) + 1;
+
+    int v_active = (int)display_le16(p + 12) + 1;
+    int v_blank  = (int)display_le16(p + 14) + 1;
+    int v_fp     = (int)(p[16] | ((p[17] & 0x7FU) << 8)) + 1;
+    uint8_t v_pos = (p[17] & 0x80U) ? 1U : 0U;
+    int v_sw     = (int)display_le16(p + 18) + 1;
+
+    if (h_active < 640 || v_active < 480 || h_blank <= 0 || v_blank <= 0) return;
+
+    display_timing_t timing;
+    memset(&timing, 0, sizeof(timing));
+    timing.h_display       = (uint16_t)h_active;
+    timing.h_total         = (uint16_t)(h_active + h_blank);
+    timing.h_sync_start    = (uint16_t)(h_active + h_fp);
+    timing.h_sync_end      = (uint16_t)(h_active + h_fp + h_sw);
+    timing.v_display       = (uint16_t)v_active;
+    timing.v_total         = (uint16_t)(v_active + v_blank);
+    timing.v_sync_start    = (uint16_t)(v_active + v_fp);
+    timing.v_sync_end      = (uint16_t)(v_active + v_fp + v_sw);
+    timing.pixel_clock_khz = pclk_khz;
+    timing.h_sync_positive = h_pos;
+    timing.v_sync_positive = v_pos;
+    timing.flags           = is_type7 ? 4U : 3U;
+
+    uint64_t divisor = (uint64_t)timing.h_total * (uint64_t)timing.v_total;
+    timing.refresh_hz = divisor
+        ? (uint16_t)(((uint64_t)timing.pixel_clock_khz * 1000ULL + divisor / 2ULL) / divisor)
+        : 60U;
+    if (timing.refresh_hz < 24U || timing.refresh_hz > 360U) return;
+
+    bool preferred = (p[3] & 0x80U) != 0;
+    display_mode_add_timed(g_edid_modes, &g_edid_mode_count, h_active, v_active,
+                           DISPLAY_BPP_MASK_ALL, timing.refresh_hz,
+                           preferred, true, &timing);
+}
+
+static void edid_add_displayid_extension(const uint8_t* block) {
+    if (!block || block[0] != 0x70U) return;
+    /* DisplayID section starts at offset 1: [ver, len, prod_type, ext_count, blocks...] */
+    int sec_len = (int)block[2];
+    if (sec_len <= 0 || 5 + sec_len > 127) {
+        sec_len = 122;
+    }
+    int cursor = 5;
+    int end = 5 + sec_len;
+    if (end > 127) end = 127;
+    while (cursor + 3 <= end) {
+        uint8_t tag = block[cursor];
+        int len = (int)block[cursor + 2];
+        cursor += 3;
+        if (cursor + len > end) break;
+        if (tag == 0x03U || tag == 0x22U) {
+            bool is_type7 = (tag == 0x22U);
+            for (int off = 0; off + 20 <= len; off += 20) {
+                edid_parse_displayid_dtd(block + cursor + off, is_type7);
+            }
+        }
+        cursor += len;
     }
 }
 
 static void edid_add_extension(const uint8_t* block) {
-    if (!block || block[0] != 0x02) return;
+    if (!block) return;
+    if (block[0] == 0x70U) {
+        edid_add_displayid_extension(block);
+        return;
+    }
+    if (block[0] != 0x02U) return;
     int dtd_offset = block[2];
     if (dtd_offset == 0) return;
     if (dtd_offset > 127) dtd_offset = 127;
@@ -494,6 +687,28 @@ bool display_modes_get(int index, display_mode_t* out_mode) {
     return true;
 }
 
+bool display_modes_timing_ex(int width, int height, int refresh_hz,
+                             display_timing_t* out_timing) {
+    if (!out_timing || width <= 0 || height <= 0) return false;
+    if (refresh_hz <= 0) refresh_hz = 60;
+    for (int index = 0; index < g_mode_count; index++) {
+        uint16_t mode_hz = g_modes[index].refresh_hz ? g_modes[index].refresh_hz : 60U;
+        if (g_modes[index].width == (uint16_t)width &&
+            g_modes[index].height == (uint16_t)height &&
+            (int)mode_hz == refresh_hz &&
+            g_modes[index].timing_valid) {
+            *out_timing = g_modes[index].timing;
+            return true;
+        }
+    }
+    if (refresh_hz >= 58 && refresh_hz <= 62) {
+        if (display_make_standard_timing(width, height, out_timing)) {
+            return true;
+        }
+    }
+    return display_modes_calc_cvt_rb(width, height, refresh_hz, out_timing);
+}
+
 bool display_modes_timing(int width, int height, display_timing_t* out_timing) {
     if (!out_timing || width <= 0 || height <= 0) return false;
     for (int index = 0; index < g_mode_count; index++) {
@@ -506,7 +721,10 @@ bool display_modes_timing(int width, int height, display_timing_t* out_timing) {
             break;
         }
     }
-    return display_make_standard_timing(width, height, out_timing);
+    if (display_make_standard_timing(width, height, out_timing)) {
+        return true;
+    }
+    return display_modes_calc_cvt_rb(width, height, 60, out_timing);
 }
 
 bool display_modes_has_edid(void) {

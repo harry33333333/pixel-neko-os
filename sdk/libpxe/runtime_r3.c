@@ -149,6 +149,20 @@ int pxe_display_apply_mode(int width, int height, int bpp) {
                               (long)wh, (long)bpp, 0);
 }
 
+int pxe_display_set_mode_ex(int width, int height, int bpp, int refresh_hz) {
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    int br = (bpp & 0xFFFF) | (((refresh_hz > 0 ? refresh_hz : 0) & 0xFFFF) << 16);
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SET_RESOLUTION,
+                              (long)wh, (long)br, 0);
+}
+
+int pxe_display_apply_mode_ex(int width, int height, int bpp, int refresh_hz) {
+    int wh = (width & 0xFFFF) | ((height & 0xFFFF) << 16);
+    int br = (bpp & 0xFFFF) | (((refresh_hz > 0 ? refresh_hz : 0) & 0xFFFF) << 16);
+    return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_APPLY_RESOLUTION,
+                              (long)wh, (long)br, 0);
+}
+
 int pxe_system_reboot(void) {
     return (int)_pxe_syscall4(NEKO_SYSCALL_SYS_CONFIG, PXE_CFG_SYSTEM_REBOOT,
                               0, 0, 0);
@@ -419,6 +433,10 @@ int pxe_win_set_menu(int win_id, const pxe_menu_bar_t* menu_bar) {
 
 int pxe_win_get_surface(int win_id, pxe_win_surface_t* out_surface) {
     return (int)_pxe_syscall2(NEKO_SYSCALL_WIN_GET_SURF, (long)win_id, (long)out_surface);
+}
+
+int pxe_win_swap_buffer(int win_id, pxe_win_surface_t* out_surface) {
+    return (int)_pxe_syscall2(NEKO_SYSCALL_WIN_SWAP_BUF, (long)win_id, (long)out_surface);
 }
 
 int pxe_win_present(int win_id) {

@@ -33,10 +33,20 @@ int          gfx_accel_get_mode_count(void);
 int          gfx_accel_get_mode(int index, int* out_w, int* out_h,
                                 unsigned char* out_bpp_mask,
                                 unsigned char* out_preferred);
+int          gfx_accel_get_mode_ex(int index, int* out_w, int* out_h,
+                                   unsigned char* out_bpp_mask,
+                                   unsigned char* out_preferred,
+                                   unsigned short* out_refresh_hz);
 int          gfx_accel_can_change_mode(int w, int h, int bpp);
+int          gfx_accel_can_change_mode_ex(int w, int h, int bpp, int refresh_hz);
 int          gfx_accel_supports_bpp(int w, int h, int bpp);
 int          gfx_accel_try_set_mode(int w, int h, int bpp);
+int          gfx_accel_try_set_mode_ex(int w, int h, int bpp, int refresh_hz);
 void         gfx_accel_set_mode(int w, int h, int bpp);
+int          gfx_accel_get_current_refresh_hz(void);
+void         gfx_accel_wait_vblank(void);
+int          gfx_accel_enable_vblank_irq(void (*cb)(void));
+int          gfx_accel_flip_scanout(unsigned long long fb_offset_bytes);
 void         gfx_accel_fill_rect(int x, int y, int w, int h, unsigned int color);
 void         gfx_accel_screen_blt(int sx, int sy, int dx, int dy, int w, int h);
 void         gfx_accel_present_rect(int x, int y, int w, int h);

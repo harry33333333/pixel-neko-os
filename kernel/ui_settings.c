@@ -55,6 +55,7 @@ static uint32_t g_sequence = 0;
 static int g_saved_width = 0;
 static int g_saved_height = 0;
 static int g_saved_bpp = 0;
+static int g_saved_refresh_hz = 60;
 static char g_wallpaper_path[PSE_WALLPAPER_PATH_MAX];
 static bool g_missing_notice_logged = false;
 static bool g_clock_show_date = true;
@@ -353,45 +354,53 @@ static void apply_resolution(const pse_config_t* config) {
     int old_w = screen_w;
     int old_h = screen_h;
     int old_bpp = screen_bpp;
+    int old_hz = gfx_accel_get_current_refresh_hz();
     int width = config->width;
     int height = config->height;
     int bpp = config->bpp;
+    int hz = (config->reserved[2] >= 24u) ? (int)config->reserved[2] : 60;
 
     if (!pse_resolution_known(width, height, bpp)) {
         log_printf("[SETTINGS] invalid resolution %dx%d@%d; using %dx%d@%d\n",
                    width, height, bpp, old_w, old_h, old_bpp);
         goto fallback;
     }
-    if (width == old_w && height == old_h && bpp == old_bpp) {
+    if (width == old_w && height == old_h && bpp == old_bpp && hz == old_hz) {
         g_saved_width = width;
         g_saved_height = height;
         g_saved_bpp = bpp;
+        g_saved_refresh_hz = hz;
         return;
     }
-    if (!gfx_accel_can_change_mode(width, height, bpp)) {
-        log_printf("[SETTINGS] unsupported resolution %dx%d@%d; "
-                   "keeping %dx%d@%d\n",
-                   width, height, bpp, old_w, old_h, old_bpp);
-        goto fallback;
+    if (!gfx_accel_can_change_mode_ex(width, height, bpp, hz)) {
+        hz = 60;
+        if (!gfx_accel_can_change_mode_ex(width, height, bpp, hz)) {
+            log_printf("[SETTINGS] unsupported resolution %dx%d@%d; "
+                       "keeping %dx%d@%d\n",
+                       width, height, bpp, old_w, old_h, old_bpp);
+            goto fallback;
+        }
     }
-    if (!gfx_accel_try_set_mode(width, height, bpp)) {
-        log_printf("[SETTINGS] failed resolution %dx%d@%d; "
+    if (!gfx_accel_try_set_mode_ex(width, height, bpp, hz)) {
+        log_printf("[SETTINGS] failed resolution %dx%d@%d (%dHz); "
                    "rolling back to %dx%d@%d\n",
-                   width, height, bpp, old_w, old_h, old_bpp);
-        gfx_accel_try_set_mode(old_w, old_h, old_bpp);
+                   width, height, bpp, hz, old_w, old_h, old_bpp);
+        gfx_accel_try_set_mode_ex(old_w, old_h, old_bpp, old_hz);
         goto fallback;
     }
     g_saved_width = width;
     g_saved_height = height;
     g_saved_bpp = bpp;
-    log_printf("[SETTINGS] restored resolution %dx%d@%d\n",
-               width, height, bpp);
+    g_saved_refresh_hz = gfx_accel_get_current_refresh_hz();
+    log_printf("[SETTINGS] restored resolution %dx%d@%d (%dHz)\n",
+               width, height, bpp, g_saved_refresh_hz);
     return;
 
 fallback:
     g_saved_width = old_w;
     g_saved_height = old_h;
     g_saved_bpp = old_bpp;
+    g_saved_refresh_hz = old_hz;
 }
 
 static void resolve_wallpaper_path(const char* stored, char* output,
@@ -563,6 +572,18 @@ void settings_set_resolution(int width, int height, int bpp) {
     g_saved_width = width;
     g_saved_height = height;
     g_saved_bpp = bpp;
+    g_saved_refresh_hz = gfx_accel_get_current_refresh_hz();
+}
+
+void settings_set_resolution_ex(int width, int height, int bpp, int refresh_hz) {
+    g_saved_width = width;
+    g_saved_height = height;
+    g_saved_bpp = bpp;
+    g_saved_refresh_hz = (refresh_hz >= 24 && refresh_hz <= 255) ? refresh_hz : 60;
+}
+
+int settings_get_refresh_hz(void) {
+    return g_saved_refresh_hz > 0 ? g_saved_refresh_hz : 60;
 }
 
 void settings_set_pattern(int pattern) {
@@ -644,6 +665,8 @@ bool settings_save(void) {
         (audio_is_muted() ? PSE_VOLUME_MUTED : 0u) |
         (g_lang_zh ? 0u : PSE_FLAG_LANG_EN));
     config.reserved[1] = (uint8_t)audio_get_master_volume();
+    config.reserved[2] = (uint8_t)((g_saved_refresh_hz >= 24 && g_saved_refresh_hz <= 255)
+                                       ? g_saved_refresh_hz : 60);
     copy_text(config.wallpaper_path, sizeof(config.wallpaper_path),
               g_wallpaper_path);
     config.checksum = pse_crc32(

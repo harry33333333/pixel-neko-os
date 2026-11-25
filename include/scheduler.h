@@ -31,6 +31,7 @@ void scheduler_wake_joiners(uint64_t exited_tid);
 int  scheduler_futex_wait(process_t* proc, uint64_t uaddr, uint32_t expected, uint64_t timeout_ns);
 int  scheduler_futex_wake(process_t* proc, uint64_t uaddr, int max_wake);
 void scheduler_wake_thread(thread_t* thread);
+void scheduler_wake_compositor(void);
 void scheduler_wake_win_waiters(int32_t win_id);
 thread_t* scheduler_find_ipc_waiter(uint64_t queue_id);
 bool scheduler_has_runnable_user(void);

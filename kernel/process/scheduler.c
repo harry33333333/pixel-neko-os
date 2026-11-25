@@ -14,6 +14,7 @@
 #include "ui_compat.h"
 #include "power.h"
 #include "pxe.h"
+#include "gfx_accel.h"
 
 extern void audio_poll(void);
 
@@ -444,7 +445,13 @@ void scheduler_reap_zombies(void) {
     }
 }
 
+void scheduler_wake_compositor(void) {
+    if (!g_scheduler_ready || !g_compositor_thread) return;
+    scheduler_wake_thread(g_compositor_thread);
+}
+
 void scheduler_compositor_entry(void) {
+    uint64_t next_frame_ns = cpu_monotonic_ns();
     for (;;) {
         usb_poll();
         audio_poll();
@@ -458,7 +465,16 @@ void scheduler_compositor_entry(void) {
             sys_shutdown();
         }
 
-        scheduler_block_current(scheduler_get_ticks() + 1);
+        int hz = gfx_accel_get_current_refresh_hz();
+        if (hz < 60) hz = 60;
+        if (hz > 240) hz = 240;
+        uint64_t frame_ns = 1000000000ULL / (uint64_t)(unsigned int)hz;
+        uint64_t now_ns = cpu_monotonic_ns();
+        next_frame_ns += frame_ns;
+        if (next_frame_ns <= now_ns || next_frame_ns - now_ns > frame_ns * 2ULL) {
+            next_frame_ns = now_ns + frame_ns;
+        }
+        scheduler_block_current_ns(next_frame_ns);
         scheduler_yield_kernel();
     }
 }

@@ -216,6 +216,7 @@ typedef struct pxe_ring0_api {
     int      (*get_cpu_stats)(pxe_r0_cpu_summary_t* out_summary,
                               pxe_r0_cpu_core_stat_t* out_cores, int max_cores);
     uint64_t (*get_time_ns)(void);
+    int      (*win_swap_buffer)(int win_id, pxe_win_surface_t* out_surf);
 } pxe_ring0_api_t;
 
 /* Public Ring 0 C API Wrappers (implemented in libpxe_r0.a) */

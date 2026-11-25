@@ -23,6 +23,7 @@
 #include "power.h"
 #include "scheduler.h"
 #include "settings.h"
+#include "spinlock.h"
 #include "speaker.h"
 #include "string.h"
 #include "timer.h"
@@ -240,6 +241,8 @@ bool pxe_is_trusted_apps_path(const char* path) {
  * Shared Kernel Runtime Backend (Ring 3 Syscalls + Ring 0 Direct Dispatch)
  * ========================================================================= */
 
+static spinlock_t g_cmos_rtc_lock = SPINLOCK_INIT;
+
 static unsigned char pxe_cmos_read(unsigned char reg) {
     outb(0x70, reg);
     return inb(0x71);
@@ -251,16 +254,30 @@ static uint8_t pxe_bcd_to_bin(uint8_t b) {
 
 int pxe_kern_get_rtc(pxe_rtc_time_t* out) {
     if (!out) return -1;
-    int timeout = 10000;
-    while ((pxe_cmos_read(0x0A) & 0x80U) && --timeout > 0) {}
+    uint64_t irq_flags = spin_lock_irqsave(&g_cmos_rtc_lock);
 
-    uint8_t sec  = pxe_cmos_read(0x00);
-    uint8_t min  = pxe_cmos_read(0x02);
-    uint8_t hr   = pxe_cmos_read(0x04);
-    uint8_t day  = pxe_cmos_read(0x07);
-    uint8_t mon  = pxe_cmos_read(0x08);
-    uint8_t yr   = pxe_cmos_read(0x09);
-    uint8_t regb = pxe_cmos_read(0x0B);
+    uint8_t sec = 0, min = 0, hr = 0, day = 0, mon = 0, yr = 0, regb = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        int timeout = 10000;
+        while ((pxe_cmos_read(0x0A) & 0x80U) && --timeout > 0) {}
+
+        uint8_t s1 = pxe_cmos_read(0x00);
+        uint8_t m1 = pxe_cmos_read(0x02);
+        uint8_t h1 = pxe_cmos_read(0x04);
+        uint8_t d1 = pxe_cmos_read(0x07);
+        uint8_t mo1 = pxe_cmos_read(0x08);
+        uint8_t y1 = pxe_cmos_read(0x09);
+        regb = pxe_cmos_read(0x0B);
+
+        uint8_t s2 = pxe_cmos_read(0x00);
+        uint8_t m2 = pxe_cmos_read(0x02);
+        uint8_t h2 = pxe_cmos_read(0x04);
+        sec = s1; min = m1; hr = h1; day = d1; mon = mo1; yr = y1;
+        if (s1 == s2 && m1 == m2 && h1 == h2) {
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_cmos_rtc_lock, irq_flags);
 
     if (!(regb & 0x04U)) {
         sec = pxe_bcd_to_bin(sec);
@@ -414,6 +431,8 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
         }
     }
 
+    out->current_refresh_hz = gfx_accel_get_current_refresh_hz();
+
     int total = gfx_accel_get_mode_count();
     if (total > (int)PXE_DISP_MAX_MODES) total = (int)PXE_DISP_MAX_MODES;
     int written = 0;
@@ -421,12 +440,13 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
         int mw = 0, mh = 0;
         unsigned char bmask = 0;
         unsigned char pref = 0;
-        if (gfx_accel_get_mode(i, &mw, &mh, &bmask, &pref)) {
+        unsigned short hz = 60U;
+        if (gfx_accel_get_mode_ex(i, &mw, &mh, &bmask, &pref, &hz)) {
             out->modes[written].width = (uint16_t)mw;
             out->modes[written].height = (uint16_t)mh;
             out->modes[written].bpp_mask = bmask;
             out->modes[written].preferred = pref;
-            out->modes[written].reserved = 0U;
+            out->modes[written].refresh_hz = hz ? hz : 60U;
             written++;
         }
     }
@@ -435,21 +455,25 @@ int pxe_kern_get_display_caps(pxe_display_caps_t* out) {
 }
 
 static int pxe_display_mode_request(int width, int height, int bpp,
-                                    bool commit) {
-    if (!gfx_accel_can_change_mode(width, height, bpp)) {
+                                    int refresh_hz, bool commit) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (!gfx_accel_can_change_mode_ex(width, height, bpp, refresh_hz)) {
         return -NEKO_EINVAL;
     }
+    int cur_hz = gfx_accel_get_current_refresh_hz();
     if (gfx_accel_can_modeset_hw()) {
         if (width != screen_w || height != screen_h || bpp != screen_bpp ||
+            refresh_hz != cur_hz ||
             (int)g_main_surface.width != width ||
             (int)g_main_surface.height != height ||
             (int)g_main_surface.bpp != bpp) {
-            if (!gfx_accel_try_set_mode(width, height, bpp)) {
+            if (!gfx_accel_try_set_mode_ex(width, height, bpp, refresh_hz)) {
                 if (settings_get_boot_mode() == SETTINGS_BOOT_LOCAL) {
                     if (!commit) return 1;
                     if (!settings_stage_boot_resolution(width, height, bpp)) {
                         return -NEKO_EINVAL;
                     }
+                    settings_set_resolution_ex(width, height, bpp, refresh_hz);
                     wm_notify_banner("Display mode staged; restart confirmation required.");
                     return 0;
                 }
@@ -457,7 +481,7 @@ static int pxe_display_mode_request(int width, int height, int bpp,
             }
         }
         if (commit) {
-            settings_set_resolution(width, height, bpp);
+            settings_set_resolution_ex(width, height, bpp, gfx_accel_get_current_refresh_hz());
         }
         wm_request_desktop_redraw();
         return 0;
@@ -465,6 +489,9 @@ static int pxe_display_mode_request(int width, int height, int bpp,
 
     if (!commit) {
         if (width == screen_w && height == screen_h && bpp == screen_bpp) {
+            if (refresh_hz != cur_hz) {
+                (void)gfx_accel_try_set_mode_ex(width, height, bpp, refresh_hz);
+            }
             return 0;
         }
         if (settings_get_boot_mode() != SETTINGS_BOOT_LOCAL) {
@@ -478,7 +505,9 @@ static int pxe_display_mode_request(int width, int height, int bpp,
     int target_bpp = bpp;
     if (target_w == screen_w && target_h == screen_h &&
         target_bpp == screen_bpp) {
-        settings_set_resolution(target_w, target_h, target_bpp);
+        (void)gfx_accel_try_set_mode_ex(target_w, target_h, target_bpp, refresh_hz);
+        settings_set_resolution_ex(target_w, target_h, target_bpp,
+                                   gfx_accel_get_current_refresh_hz());
         wm_request_desktop_redraw();
         return 0;
     }
@@ -504,16 +533,18 @@ int pxe_kern_sys_config(process_t* proc, int cmd, int arg0, int arg1, const char
         case PXE_CFG_SET_RESOLUTION: {
             int w = arg0 & 0xFFFF;
             int h = (arg0 >> 16) & 0xFFFF;
-            int bpp = arg1;
+            int bpp = arg1 & 0xFFFF;
+            int refresh_hz = (arg1 >> 16) & 0xFFFF;
             if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT) return -NEKO_EINVAL;
-            return pxe_display_mode_request(w, h, bpp, true);
+            return pxe_display_mode_request(w, h, bpp, refresh_hz, true);
         }
         case PXE_CFG_APPLY_RESOLUTION: {
             int w = arg0 & 0xFFFF;
             int h = (arg0 >> 16) & 0xFFFF;
-            int bpp = arg1;
+            int bpp = arg1 & 0xFFFF;
+            int refresh_hz = (arg1 >> 16) & 0xFFFF;
             if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT) return -NEKO_EINVAL;
-            return pxe_display_mode_request(w, h, bpp, false);
+            return pxe_display_mode_request(w, h, bpp, refresh_hz, false);
         }
         case PXE_CFG_SYSTEM_REBOOT:
             sys_reboot();
@@ -1028,6 +1059,10 @@ static int r0_api_win_get_surface(int win_id, pxe_win_surface_t* out_surf) {
     return wm_pxe_win_get_surface(process_current(), win_id, out_surf);
 }
 
+static int r0_api_win_swap_buffer(int win_id, pxe_win_surface_t* out_surf) {
+    return wm_pxe_win_swap_buffer(process_current(), win_id, out_surf);
+}
+
 static int r0_api_win_present(int win_id, int x, int y, int w, int h) {
     return wm_pxe_win_present(process_current_pid(), win_id, x, y, w, h);
 }
@@ -1408,7 +1443,8 @@ static const pxe_ring0_api_t g_pxe_ring0_api = {
     .fs_write             = r0_api_fs_write,
     .get_cjk_font         = r0_api_get_cjk_font,
     .get_cpu_stats        = r0_api_get_cpu_stats,
-    .get_time_ns          = r0_api_get_time_ns
+    .get_time_ns          = r0_api_get_time_ns,
+    .win_swap_buffer      = r0_api_win_swap_buffer
 };
 
 /* =========================================================================

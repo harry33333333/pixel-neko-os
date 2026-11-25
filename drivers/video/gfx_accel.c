@@ -5,6 +5,7 @@
 #include "log.h"
 #include "pci.h"
 #include "pdv.h"
+#include "scheduler.h"
 #include "string.h"
 
 extern int screen_w;
@@ -17,7 +18,7 @@ extern bool set_resolution_ex(int width, int height, int bpp);
 extern bool ui_can_allocate_resolution(int width, int height, int bpp);
 
 #define MAX_PDV_DISPLAY_DRIVERS 8
-#define MAX_SYNTH_MODES 48
+#define MAX_SYNTH_MODES 128
 
 static pdv_display_driver_t g_pdv_display_drivers[MAX_PDV_DISPLAY_DRIVERS];
 static driver_descriptor_t  g_pdv_display_descs[MAX_PDV_DISPLAY_DRIVERS];
@@ -28,6 +29,7 @@ static const pdv_display_driver_t* g_active_drv = NULL;
 static const char* g_fallback_reason = "Fallback LFB (firmware mode table)";
 static const char* g_generic_vga_name = "Limine Linear Framebuffer";
 static unsigned int g_generic_vram_bytes = 0;
+static int g_current_refresh_hz = 60;
 
 static int gfx_is_valid_std_bpp(int bpp) {
     return (bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32);
@@ -92,7 +94,7 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
                 out_modes[cnt].height = (uint16_t)h;
                 out_modes[cnt].bpp_mask = mask;
                 out_modes[cnt].preferred = catalog_mode.preferred;
-                out_modes[cnt].reserved = 0U;
+                out_modes[cnt].refresh_hz = catalog_mode.refresh_hz ? catalog_mode.refresh_hz : 60U;
                 cnt++;
             }
         }
@@ -116,7 +118,7 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
             out_modes[cnt].height = k_height[index];
             out_modes[cnt].bpp_mask = PDV_BPP_MASK_16;
             out_modes[cnt].preferred = 0U;
-            out_modes[cnt].reserved = 0U;
+            out_modes[cnt].refresh_hz = 60U;
             cnt++;
         }
     }
@@ -146,8 +148,17 @@ static void gfx_build_synth_modes(pdv_display_mode_t* out_modes, int* out_count,
                 out_modes[cnt].height = (uint16_t)boot_h;
                 out_modes[cnt].bpp_mask = mask;
                 out_modes[cnt].preferred = 1U;
-                out_modes[cnt].reserved = 0U;
+                out_modes[cnt].refresh_hz = 60U;
                 cnt++;
+                /* In virtual environments without a modeset driver, offer 120 Hz pacing */
+                if (!g_active_drv && display_modes_is_virtual() && cnt < max_out) {
+                    out_modes[cnt].width = (uint16_t)boot_w;
+                    out_modes[cnt].height = (uint16_t)boot_h;
+                    out_modes[cnt].bpp_mask = mask;
+                    out_modes[cnt].preferred = 0U;
+                    out_modes[cnt].refresh_hz = 120U;
+                    cnt++;
+                }
             }
         }
     }
@@ -289,9 +300,17 @@ void gfx_accel_init(void) {
                 }
             }
         }
-        klog_info("[GFX ] active backend: %s, status: %s (VRAM=%uKB)",
+        if (g_active_drv->get_current_refresh_hz) {
+            int hz = g_active_drv->get_current_refresh_hz();
+            if (hz >= 24 && hz <= 360) g_current_refresh_hz = hz;
+        }
+        if (g_active_drv->enable_vblank_irq) {
+            (void)g_active_drv->enable_vblank_irq(scheduler_wake_compositor);
+        }
+        klog_info("[GFX ] active backend: %s, status: %s (VRAM=%uKB, %dHz)",
                   gfx_accel_get_name(), gfx_accel_get_status(),
-                  gfx_accel_get_vram_size() / 1024U);
+                  gfx_accel_get_vram_size() / 1024U,
+                  gfx_accel_get_current_refresh_hz());
     }
 }
 
@@ -456,9 +475,10 @@ int gfx_accel_get_mode_count(void) {
     return gfx_collect_modes(modes, MAX_SYNTH_MODES);
 }
 
-int gfx_accel_get_mode(int index, int* out_w, int* out_h,
-                       unsigned char* out_bpp_mask,
-                       unsigned char* out_preferred) {
+int gfx_accel_get_mode_ex(int index, int* out_w, int* out_h,
+                          unsigned char* out_bpp_mask,
+                          unsigned char* out_preferred,
+                          unsigned short* out_refresh_hz) {
     if (!g_initialized) gfx_accel_init();
     if (index < 0) return 0;
     pdv_display_mode_t modes[MAX_SYNTH_MODES];
@@ -468,7 +488,14 @@ int gfx_accel_get_mode(int index, int* out_w, int* out_h,
     if (out_h) *out_h = (int)modes[index].height;
     if (out_bpp_mask) *out_bpp_mask = (unsigned char)(modes[index].bpp_mask & PDV_BPP_MASK_ALL_STD);
     if (out_preferred) *out_preferred = modes[index].preferred;
+    if (out_refresh_hz) *out_refresh_hz = modes[index].refresh_hz ? modes[index].refresh_hz : 60U;
     return 1;
+}
+
+int gfx_accel_get_mode(int index, int* out_w, int* out_h,
+                       unsigned char* out_bpp_mask,
+                       unsigned char* out_preferred) {
+    return gfx_accel_get_mode_ex(index, out_w, out_h, out_bpp_mask, out_preferred, NULL);
 }
 
 int gfx_accel_is_hardware_2d_active(void) {
@@ -529,33 +556,111 @@ int gfx_accel_supports_bpp(int w, int h, int bpp) {
     return gfx_accel_can_change_mode(w, h, bpp);
 }
 
-int gfx_accel_try_set_mode(int w, int h, int bpp) {
-    if (!gfx_accel_can_change_mode(w, h, bpp)) return 0;
+int gfx_accel_can_change_mode_ex(int w, int h, int bpp, int refresh_hz) {
+    if (!g_initialized) gfx_accel_init();
+    if (refresh_hz <= 0) return gfx_accel_can_change_mode(w, h, bpp);
+    if (refresh_hz < 24 || refresh_hz > 360) return 0;
+    if (w < GFX_MIN_WIDTH || h < GFX_MIN_HEIGHT || w > 16384 || h > 16384) return 0;
+    if (!gfx_is_valid_std_bpp(bpp)) return 0;
+
+    if (g_active_drv && g_active_drv->can_set_mode_ex) {
+        if (!g_active_drv->can_set_mode_ex(w, h, bpp, refresh_hz)) return 0;
+        return ui_can_allocate_resolution(w, h, bpp) ? 1 : 0;
+    }
+    if (!g_active_drv && display_modes_is_virtual() &&
+        w == gfx_fallback_max_w() && h == gfx_fallback_max_h() &&
+        (refresh_hz == 60 || refresh_hz == 120)) {
+        return gfx_accel_can_change_mode(w, h, bpp);
+    }
+    if (refresh_hz == 60) {
+        return gfx_accel_can_change_mode(w, h, bpp);
+    }
+    return 0;
+}
+
+int gfx_accel_try_set_mode_ex(int w, int h, int bpp, int refresh_hz) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (!gfx_accel_can_change_mode_ex(w, h, bpp, refresh_hz)) return 0;
+
     if (g_active_drv && g_active_drv->requires_hw_mode_set) {
         if (!ui_can_allocate_resolution(w, h, bpp)) return 0;
         int prev_w = screen_w;
         int prev_h = screen_h;
         int prev_bpp = screen_bpp;
-        if (!g_active_drv->set_mode || !g_active_drv->set_mode(w, h, bpp)) return 0;
+        int prev_hz = gfx_accel_get_current_refresh_hz();
+
+        int ok = 0;
+        if (g_active_drv->set_mode_ex) {
+            display_timing_t timing;
+            pdv_display_timing_t pdv_t;
+            const pdv_display_timing_t* t_ptr = NULL;
+            if (display_modes_timing_ex(w, h, refresh_hz, &timing)) {
+                memcpy(&pdv_t, &timing, sizeof(pdv_t));
+                t_ptr = &pdv_t;
+            }
+            ok = g_active_drv->set_mode_ex(w, h, bpp, refresh_hz, t_ptr);
+        } else if (g_active_drv->set_mode) {
+            ok = g_active_drv->set_mode(w, h, bpp);
+        }
+        if (!ok) return 0;
+
         if (!set_resolution_ex(w, h, bpp)) {
             if (prev_w >= GFX_MIN_WIDTH && prev_h >= GFX_MIN_HEIGHT) {
-                (void)g_active_drv->set_mode(prev_w, prev_h, prev_bpp);
+                if (g_active_drv->set_mode_ex) {
+                    (void)g_active_drv->set_mode_ex(prev_w, prev_h, prev_bpp, prev_hz, NULL);
+                } else if (g_active_drv->set_mode) {
+                    (void)g_active_drv->set_mode(prev_w, prev_h, prev_bpp);
+                }
             }
             return 0;
+        }
+        if (g_active_drv->get_current_refresh_hz) {
+            int cur_hz = g_active_drv->get_current_refresh_hz();
+            g_current_refresh_hz = (cur_hz >= 24 && cur_hz <= 360) ? cur_hz : refresh_hz;
+        } else {
+            g_current_refresh_hz = refresh_hz;
         }
         return 1;
     }
 
-    /*
-     * Limine framebuffer and the non-PLL display drivers cannot program a new
-     * physical scanout at runtime. Changing only the software canvas would
-     * produce a scaled image, so such modes must go through the boot-mode
-     * staging path and a real reboot instead.
-     */
     if (w == (int)g_main_surface.width &&
         h == (int)g_main_surface.height &&
         bpp == (int)g_main_surface.bpp) {
-        return set_resolution_ex(w, h, bpp) ? 1 : 0;
+        if (!set_resolution_ex(w, h, bpp)) return 0;
+        g_current_refresh_hz = refresh_hz;
+        return 1;
+    }
+    return 0;
+}
+
+int gfx_accel_try_set_mode(int w, int h, int bpp) {
+    return gfx_accel_try_set_mode_ex(w, h, bpp, 60);
+}
+
+int gfx_accel_get_current_refresh_hz(void) {
+    if (g_active_drv && g_active_drv->get_current_refresh_hz) {
+        int hz = g_active_drv->get_current_refresh_hz();
+        if (hz >= 24 && hz <= 360) return hz;
+    }
+    return g_current_refresh_hz > 0 ? g_current_refresh_hz : 60;
+}
+
+void gfx_accel_wait_vblank(void) {
+    if (g_active_drv && g_active_drv->wait_vblank) {
+        g_active_drv->wait_vblank();
+    }
+}
+
+int gfx_accel_enable_vblank_irq(void (*cb)(void)) {
+    if (g_active_drv && g_active_drv->enable_vblank_irq) {
+        return g_active_drv->enable_vblank_irq(cb);
+    }
+    return 0;
+}
+
+int gfx_accel_flip_scanout(unsigned long long fb_offset_bytes) {
+    if (g_active_drv && g_active_drv->flip_scanout) {
+        return g_active_drv->flip_scanout((uint64_t)fb_offset_bytes);
     }
     return 0;
 }

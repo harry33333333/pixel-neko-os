@@ -29,6 +29,7 @@ void wm_pxe_destroy_all_for_pid(uint32_t pid);
 int  wm_pxe_win_set_title(uint32_t owner_pid, int win_id, const char* title);
 int  wm_pxe_win_set_menu(uint32_t owner_pid, int win_id, const pxe_menu_bar_t* menu);
 int  wm_pxe_win_get_surface(struct process* proc, int win_id, pxe_win_surface_t* out_surf);
+int  wm_pxe_win_swap_buffer(struct process* proc, int win_id, pxe_win_surface_t* out_surf);
 int  wm_pxe_win_present(uint32_t owner_pid, int win_id, int rx, int ry, int rw, int rh);
 int  wm_pxe_win_poll_event(uint32_t owner_pid, int win_id, pxe_event_t* out_ev);
 int  wm_pxe_count_windows_for_pid(uint32_t pid);
@@ -42,6 +43,9 @@ void wm_request_ring0_launch(const char* path, const char* arg1);
 
 void copy_fullscreen_to_lfb(const unsigned char* s_buf);
 void copy_rect_to_lfb(const unsigned char* src, int rx, int ry, int rw, int rh);
+bool copy_direct_surface_to_lfb(const void* src_pixels, int src_pitch, uint32_t src_format,
+                                int src_x, int src_y, int dst_x, int dst_y,
+                                int width, int height);
 
 extern int screen_w;
 extern int screen_h;

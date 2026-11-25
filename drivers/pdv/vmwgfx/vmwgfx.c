@@ -81,7 +81,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_REG_ENABLE_ENABLE  (1U << 0)
 #define SVGA_REG_ENABLE_HIDE    (1U << 1)
 
-#define SVGA_MAX_MODES          32
+#define SVGA_MAX_MODES          128
 #define SVGA_MAX_VRAM_CAP_BYTES 0xFFF00000ULL
 
 #define SVGA_FIFO_MIN           0
@@ -90,8 +90,10 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_FIFO_STOP          3
 #define SVGA_FIFO_CAPABILITIES  4
 #define SVGA_FIFO_FLAGS         5
+#define SVGA_FIFO_FENCE         6
 #define SVGA_FIFO_BUSY          290
 
+#define SVGA_FIFO_CAP_FENCE           (1U << 0)
 #define SVGA_FIFO_CAP_GMR2            (1U << 8)
 #define SVGA_FIFO_CAP_SCREEN_OBJECT_2 (1U << 9)
 
@@ -100,6 +102,7 @@ static const pdv_kernel_api_t* g_kapi;
 #define SVGA_CMD_RECT_COPY              3
 #define SVGA_CMD_DEFINE_CURSOR          19
 #define SVGA_CMD_MOVE_CURSOR            20
+#define SVGA_CMD_FENCE                  30
 #define SVGA_CMD_DEFINE_SCREEN          34
 #define SVGA_CMD_DESTROY_SCREEN         35
 #define SVGA_CMD_DEFINE_GMRFB           36
@@ -191,6 +194,9 @@ static int g_width;
 static int g_height;
 static int g_bpp;
 static int g_pitch;
+static int g_refresh_hz = 60;
+static unsigned int g_fence_seq = 0;
+static unsigned int g_pending_updates = 0;
 static const char* g_name = "VMware SVGA II";
 static const char* g_status = "Not detected";
 static volatile unsigned int* g_fifo;
@@ -232,7 +238,9 @@ static unsigned int svga_bytes_per_pixel(int bpp) {
     return 4;
 }
 
-static void vmware_svga_sync(void) {
+static int svga_fifo_emit(const unsigned int* words, unsigned int count);
+
+static void vmware_svga_sync_hard(void) {
     if (!g_active) return;
     svga_write_reg(SVGA_REG_SYNC, 1);
     for (int i = 0; i < SVGA_WAIT_LOOPS; i++) {
@@ -243,6 +251,32 @@ static void vmware_svga_sync(void) {
     g_status = "FIFO timeout (linear framebuffer fallback)";
     klog_warn("[SVGA] FIFO sync timeout (busy=%u)",
               svga_read_reg(SVGA_REG_BUSY));
+}
+
+static void vmware_svga_sync(void) {
+    if (!g_active) return;
+    if (g_fifo_ready && g_pending_updates > 0U &&
+        (svga_fifo_read(SVGA_FIFO_CAPABILITIES) & SVGA_FIFO_CAP_FENCE)) {
+        unsigned int seq = ++g_fence_seq;
+        if (seq == 0U) seq = ++g_fence_seq;
+        unsigned int cmd[2];
+        cmd[0] = SVGA_CMD_FENCE;
+        cmd[1] = seq;
+        g_pending_updates = 0U;
+        if (svga_fifo_emit(cmd, 2U)) {
+            if (svga_fifo_read(SVGA_FIFO_FENCE) >= seq) {
+                return;
+            }
+            for (int i = 0; i < 4000; i++) {
+                if ((int)(svga_fifo_read(SVGA_FIFO_FENCE) - seq) >= 0) {
+                    return;
+                }
+                __asm__ __volatile__("pause");
+            }
+        }
+    }
+    g_pending_updates = 0U;
+    vmware_svga_sync_hard();
 }
 
 static int svga_fifo_emit(const unsigned int* words, unsigned int count) {
@@ -434,6 +468,7 @@ static void svga_rebuild_mode_table(void) {
         768, 1050, 900, 900, 1200, 1050, 1080, 1200,
         1440, 1600, 2160
     };
+    static const uint16_t k_hz_list[5] = { 60U, 120U, 144U, 165U, 240U };
     static const int k_bpps[4] = { 8, 16, 24, 32 };
     int preset_cnt = (int)(sizeof(k_preset_w) / sizeof(k_preset_w[0]));
     int cnt = 0;
@@ -448,12 +483,14 @@ static void svga_rebuild_mode_table(void) {
             }
         }
         if (mask != 0) {
-            g_svga_modes[cnt].width = (uint16_t)w;
-            g_svga_modes[cnt].height = (uint16_t)h;
-            g_svga_modes[cnt].bpp_mask = mask;
-            g_svga_modes[cnt].preferred = (w == g_boot_width && h == g_boot_height) ? 1U : 0U;
-            g_svga_modes[cnt].reserved = 0U;
-            cnt++;
+            for (int r = 0; r < 5 && cnt < SVGA_MAX_MODES; r++) {
+                g_svga_modes[cnt].width = (uint16_t)w;
+                g_svga_modes[cnt].height = (uint16_t)h;
+                g_svga_modes[cnt].bpp_mask = mask;
+                g_svga_modes[cnt].preferred = (r == 0 && w == g_boot_width && h == g_boot_height) ? 1U : 0U;
+                g_svga_modes[cnt].refresh_hz = k_hz_list[r];
+                cnt++;
+            }
         }
     }
 
@@ -479,12 +516,14 @@ static void svga_rebuild_mode_table(void) {
             }
         }
         if (mask != 0) {
-            g_svga_modes[cnt].width = (uint16_t)ew;
-            g_svga_modes[cnt].height = (uint16_t)eh;
-            g_svga_modes[cnt].bpp_mask = mask;
-            g_svga_modes[cnt].preferred = (e == 0) ? 1U : 0U;
-            g_svga_modes[cnt].reserved = 0U;
-            cnt++;
+            for (int r = 0; r < 5 && cnt < SVGA_MAX_MODES; r++) {
+                g_svga_modes[cnt].width = (uint16_t)ew;
+                g_svga_modes[cnt].height = (uint16_t)eh;
+                g_svga_modes[cnt].bpp_mask = mask;
+                g_svga_modes[cnt].preferred = (e == 0 && r == 0) ? 1U : 0U;
+                g_svga_modes[cnt].refresh_hz = k_hz_list[r];
+                cnt++;
+            }
         }
     }
 
@@ -1616,7 +1655,7 @@ static void vmware_svga_present_rect(int x, int y, int width, int height) {
         command[16] = (unsigned int)width;
         command[17] = (unsigned int)height;
         if (svga_fifo_emit(command, 18U)) {
-            vmware_svga_sync();
+            g_pending_updates++;
         } else {
             g_fifo_ready = 0;
             g_status = "FIFO full (STDU update stalled)";
@@ -1636,7 +1675,7 @@ static void vmware_svga_present_rect(int x, int y, int width, int height) {
         command[6] = (unsigned int)(y + height);
         command[7] = 0U;
         if (svga_fifo_emit(command, 8U)) {
-            vmware_svga_sync();
+            g_pending_updates++;
         } else {
             g_fifo_ready = 0;
             g_status = "FIFO full (ScreenObject2 blit stalled)";
@@ -1651,7 +1690,7 @@ static void vmware_svga_present_rect(int x, int y, int width, int height) {
     command[3] = (unsigned int)width;
     command[4] = (unsigned int)height;
     if (svga_fifo_emit(command, 5)) {
-        vmware_svga_sync();
+        g_pending_updates++;
     } else {
         g_fifo_ready = 0;
         g_status = "FIFO full (linear framebuffer fallback)";
@@ -1766,31 +1805,63 @@ static void vmware_svga_screen_blt(int sx, int sy, int dx, int dy,
     vmware_svga_present_rect(dx, dy, width, height);
 }
 
+static int vmware_svga_can_set_mode_ex(int w, int h, int bpp, int refresh_hz) {
+    if (!vmware_svga_supports_mode(w, h, bpp)) return 0;
+    if (refresh_hz <= 0) return 1;
+    return (refresh_hz == 60 || refresh_hz == 120 || refresh_hz == 144 ||
+            refresh_hz == 165 || refresh_hz == 240) ? 1 : 0;
+}
+
+static int vmware_svga_set_mode_ex(int w, int h, int bpp, int refresh_hz,
+                                   const pdv_display_timing_t* timing) {
+    (void)timing;
+    if (!vmware_svga_can_set_mode_ex(w, h, bpp, refresh_hz)) return 0;
+    if (refresh_hz <= 0) refresh_hz = 60;
+    if (g_active && w == g_width && h == g_height && bpp == g_bpp) {
+        g_refresh_hz = refresh_hz;
+        klog_info("[SVGA] pacing updated to %dx%dx%d @ %dHz", w, h, bpp, g_refresh_hz);
+        return 1;
+    }
+    if (!vmware_svga_set_mode(w, h, bpp)) return 0;
+    g_refresh_hz = refresh_hz;
+    return 1;
+}
+
+static int vmware_svga_get_current_refresh_hz(void) {
+    return g_refresh_hz > 0 ? g_refresh_hz : 60;
+}
+
 static const pdv_display_driver_t g_vmwgfx_drv = {
-    .name                 = "VMware SVGA II",
-    .priority             = 100,
-    .requires_hw_mode_set = 1,
-    .probe                = vmware_svga_probe_entry,
-    .start                = 0,
-    .stop                 = 0,
-    .get_name             = vmware_svga_get_name,
-    .get_status           = vmware_svga_get_status,
-    .is_active            = vmware_svga_is_active,
-    .is_2d_active         = vmware_svga_is_2d_active,
-    .get_vram_size        = vmware_svga_get_vram_size,
-    .can_set_mode         = vmware_svga_supports_mode,
-    .supports_bpp         = vmware_svga_supports_mode,
-    .set_mode             = vmware_svga_set_mode,
-    .fill_rect            = vmware_svga_fill_rect,
-    .screen_blt           = vmware_svga_screen_blt,
-    .present_rect         = vmware_svga_present_rect,
-    .sync                 = vmware_svga_sync,
-    .has_hw_cursor        = 0,
-    .set_cursor           = 0,
-    .get_mode_count       = vmware_svga_get_mode_count,
-    .get_mode             = vmware_svga_get_mode,
-    .get_max_width        = vmware_svga_get_max_width,
-    .get_max_height       = vmware_svga_get_max_height,
+    .name                   = "VMware SVGA II",
+    .priority               = 100,
+    .requires_hw_mode_set   = 1,
+    .probe                  = vmware_svga_probe_entry,
+    .start                  = 0,
+    .stop                   = 0,
+    .get_name               = vmware_svga_get_name,
+    .get_status             = vmware_svga_get_status,
+    .is_active              = vmware_svga_is_active,
+    .is_2d_active           = vmware_svga_is_2d_active,
+    .get_vram_size          = vmware_svga_get_vram_size,
+    .can_set_mode           = vmware_svga_supports_mode,
+    .supports_bpp           = vmware_svga_supports_mode,
+    .set_mode               = vmware_svga_set_mode,
+    .fill_rect              = vmware_svga_fill_rect,
+    .screen_blt             = vmware_svga_screen_blt,
+    .present_rect           = vmware_svga_present_rect,
+    .sync                   = vmware_svga_sync,
+    .has_hw_cursor          = 0,
+    .set_cursor             = 0,
+    .get_mode_count         = vmware_svga_get_mode_count,
+    .get_mode               = vmware_svga_get_mode,
+    .get_max_width          = vmware_svga_get_max_width,
+    .get_max_height         = vmware_svga_get_max_height,
+    .can_set_mode_ex        = vmware_svga_can_set_mode_ex,
+    .set_mode_ex            = vmware_svga_set_mode_ex,
+    .get_current_refresh_hz = vmware_svga_get_current_refresh_hz,
+    .wait_vblank            = 0,
+    .enable_vblank_irq      = 0,
+    .flip_scanout           = 0,
 };
 
 int pdv_driver_entry(const pdv_kernel_api_t* kapi) {

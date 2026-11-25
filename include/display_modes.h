@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "limine.h"
 
-#define DISPLAY_MODE_MAX        64
+#define DISPLAY_MODE_MAX        128
 #define DISPLAY_EDID_MAX_BYTES  512
 
 #define DISPLAY_BPP_MASK_8      (1U << 0)
@@ -40,7 +40,7 @@ typedef struct {
     uint8_t  preferred;
     uint8_t  from_edid;
     uint8_t  timing_valid;
-    uint16_t reserved;
+    uint16_t refresh_hz;
     display_timing_t timing;
 } display_mode_t;
 
@@ -49,6 +49,10 @@ void display_modes_set_virtual(bool virtual_display);
 int display_modes_count(void);
 bool display_modes_get(int index, display_mode_t* out_mode);
 bool display_modes_timing(int width, int height, display_timing_t* out_timing);
+bool display_modes_timing_ex(int width, int height, int refresh_hz,
+                             display_timing_t* out_timing);
+bool display_modes_calc_cvt_rb(int width, int height, int refresh_hz,
+                               display_timing_t* out_timing);
 bool display_modes_has_edid(void);
 const uint8_t* display_modes_edid(size_t* out_size);
 bool display_modes_is_virtual(void);

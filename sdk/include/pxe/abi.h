@@ -53,12 +53,14 @@
 /* Canvas pixel format */
 #define PXE_CANVAS_PAL8      1u  /* 1 byte/pixel: 256-color classic palette */
 #define PXE_CANVAS_RGB32     2u  /* 4 bytes/pixel: 0x00RRGGBB truecolor */
+#define PXE_CANVAS_RGB565    3u  /* 2 bytes/pixel: native 16-bit RGB565 */
 
 /* Window creation flags */
 #define PXE_WIN_DEFAULT      0u
 #define PXE_WIN_RESIZABLE    (1u << 0)
 #define PXE_WIN_NO_CLOSE     (1u << 1)
 #define PXE_WIN_CENTERED     (1u << 2)
+#define PXE_WIN_TRIPLE_BUF   (1u << 3) /* Allocate 3 SHM buffers for tear-free video */
 
 /* Window event types */
 #define PXE_EV_NONE          0u
@@ -215,7 +217,7 @@ typedef struct {
 #define PXE_DISP_BPP_32             (1u << 3)
 #define PXE_DISP_BPP_ALL            (PXE_DISP_BPP_8 | PXE_DISP_BPP_16 | PXE_DISP_BPP_24 | PXE_DISP_BPP_32)
 
-#define PXE_DISP_MAX_MODES          48u
+#define PXE_DISP_MAX_MODES          128u
 #define PXE_DISP_FLAG_DRIVER_ACTIVE (1u << 0)
 #define PXE_DISP_FLAG_HW_2D         (1u << 1)
 #define PXE_DISP_FLAG_UNLIMITED_RES (1u << 2)
@@ -225,7 +227,7 @@ typedef struct {
     uint16_t height;
     uint8_t  bpp_mask;
     uint8_t  preferred;
-    uint16_t reserved;
+    uint16_t refresh_hz; /* 0 = default 60 Hz for legacy compatibility */
 } pxe_display_mode_t;
 
 typedef struct {
@@ -241,7 +243,7 @@ typedef struct {
     uint32_t           bpp_mask;
     uint64_t           vram_bytes;
     int32_t            mode_count;
-    int32_t            reserved;
+    int32_t            current_refresh_hz;
     char               driver_name[48];
     char               driver_status[48];
     pxe_display_mode_t modes[PXE_DISP_MAX_MODES];

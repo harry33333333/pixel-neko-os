@@ -462,6 +462,18 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
             break;
         }
 
+        case NEKO_SYSCALL_WIN_SWAP_BUF: {
+            pxe_win_surface_t surf;
+            memset(&surf, 0, sizeof(surf));
+            result = wm_pxe_win_swap_buffer(process, (int)frame->rdi,
+                                            frame->rsi ? &surf : NULL);
+            if (result == 0 && frame->rsi &&
+                !process_copy_to_user(process, frame->rsi, &surf, sizeof(surf))) {
+                result = -NEKO_EFAULT;
+            }
+            break;
+        }
+
         case NEKO_SYSCALL_WIN_CREATE: {
             if (!frame->rdi || !frame->rsi) { result = -NEKO_EINVAL; break; }
             pxe_win_desc_t desc;

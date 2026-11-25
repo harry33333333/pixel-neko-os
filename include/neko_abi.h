@@ -30,7 +30,8 @@
 #define NEKO_SYSCALL_SYS_CONFIG    24
 #define NEKO_SYSCALL_GET_DISP_CAPS 25
 
-/* PXE GUI & Compositor Syscalls (30..39) */
+/* PXE GUI & Compositor Syscalls (29..39) */
+#define NEKO_SYSCALL_WIN_SWAP_BUF  29
 #define NEKO_SYSCALL_WIN_CREATE    30
 #define NEKO_SYSCALL_WIN_DESTROY   31
 #define NEKO_SYSCALL_WIN_SET_TITLE 32

@@ -20,6 +20,8 @@ bool settings_storage_available(void);
 bool settings_stage_boot_resolution(int width, int height, int bpp);
 void settings_set_mouse_speed(int speed);
 void settings_set_resolution(int w, int h, int bpp);
+void settings_set_resolution_ex(int w, int h, int bpp, int refresh_hz);
+int  settings_get_refresh_hz(void);
 void settings_set_pattern(int pattern);
 void settings_set_clock_options(bool show_date, bool show_seconds);
 bool settings_get_clock_show_date(void);

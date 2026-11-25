@@ -16,33 +16,51 @@ static const char* k_pat_names[6] = {
 };
 
 #define CPANEL_DROPDOWN_VIS 8
+#define CPANEL_MAX_RES      64
+#define CPANEL_MAX_HZ       16
 
 typedef struct {
     pxe_basic_sysinfo_t info;
     pxe_display_caps_t  caps;
+
+    /* Unique resolutions grouped from bound caps.modes[] */
+    uint16_t res_w[CPANEL_MAX_RES];
+    uint16_t res_h[CPANEL_MAX_RES];
+    uint8_t  res_pref[CPANEL_MAX_RES];
+    int      res_count;
+
+    /* Legal refresh rates bound to currently selected resolution */
+    uint16_t hz_vals[CPANEL_MAX_HZ];
+    uint8_t  hz_bpp_masks[CPANEL_MAX_HZ];
+    int      hz_count;
+
     int sel_res;
     int sel_bpp;
+    int sel_hz;
     int res_scroll;
     int pattern;
     int mouse_speed; /* 1..5 */
     int volume;      /* 0..100 */
     int res_open;
     int bpp_open;
+    int hz_open;
     int drag_mouse;
     int drag_vol;
     int drag_res_sb;
     int res_sb_drag_y;
     int res_sb_drag_off;
 
-    int revert_sec;
-    int last_rtc_sec;
+    int      revert_sec;
+    uint64_t revert_start_ns;
     int prev_w;
     int prev_h;
     int prev_bpp;
+    int prev_hz;
     int pending_reboot;
     int pending_w;
     int pending_h;
     int pending_bpp;
+    int pending_hz;
     int restart_confirm;
 
     int wp_modal;
@@ -70,12 +88,82 @@ static uint8_t bpp_idx_to_mask(int b_idx) {
     return 0u;
 }
 
+static void rebuild_hz_list(cpanel_t* cp, int prefer_hz) {
+    cp->hz_count = 0;
+    if (cp->sel_res < 0 || cp->sel_res >= cp->res_count) {
+        cp->sel_hz = 0;
+        return;
+    }
+    uint16_t tw = cp->res_w[cp->sel_res];
+    uint16_t th = cp->res_h[cp->sel_res];
+    for (int i = 0; i < cp->caps.mode_count && cp->hz_count < CPANEL_MAX_HZ; i++) {
+        if (cp->caps.modes[i].width != tw || cp->caps.modes[i].height != th) continue;
+        uint16_t hz = cp->caps.modes[i].refresh_hz ? cp->caps.modes[i].refresh_hz : 60U;
+        int dup = -1;
+        for (int j = 0; j < cp->hz_count; j++) {
+            if (cp->hz_vals[j] == hz) {
+                dup = j;
+                break;
+            }
+        }
+        if (dup >= 0) {
+            cp->hz_bpp_masks[dup] |= cp->caps.modes[i].bpp_mask;
+        } else {
+            cp->hz_vals[cp->hz_count] = hz;
+            cp->hz_bpp_masks[cp->hz_count] = cp->caps.modes[i].bpp_mask;
+            cp->hz_count++;
+        }
+    }
+    if (cp->hz_count == 0) {
+        cp->hz_vals[0] = 60U;
+        cp->hz_bpp_masks[0] = PXE_DISP_BPP_16 | PXE_DISP_BPP_32;
+        cp->hz_count = 1;
+    }
+    /* Sort ascending by Hz */
+    for (int i = 0; i < cp->hz_count; i++) {
+        for (int j = i + 1; j < cp->hz_count; j++) {
+            if (cp->hz_vals[j] < cp->hz_vals[i]) {
+                uint16_t thz = cp->hz_vals[i];
+                uint8_t tm = cp->hz_bpp_masks[i];
+                cp->hz_vals[i] = cp->hz_vals[j];
+                cp->hz_bpp_masks[i] = cp->hz_bpp_masks[j];
+                cp->hz_vals[j] = thz;
+                cp->hz_bpp_masks[j] = tm;
+            }
+        }
+    }
+    int found = -1;
+    for (int i = 0; i < cp->hz_count; i++) {
+        if ((int)cp->hz_vals[i] == prefer_hz) {
+            found = i;
+            break;
+        }
+    }
+    cp->sel_hz = (found >= 0) ? found : 0;
+}
+
+static uint8_t current_sel_bpp_mask(const cpanel_t* cp) {
+    if (!cp || cp->sel_hz < 0 || cp->sel_hz >= cp->hz_count) return 0u;
+    return cp->hz_bpp_masks[cp->sel_hz];
+}
+
 static int mode_supported(const cpanel_t* cp, int r_idx, int b_idx) {
-    if (!cp || r_idx < 0 || r_idx >= cp->caps.mode_count || b_idx < 0 || b_idx > 3) {
+    if (!cp || r_idx < 0 || r_idx >= cp->res_count || b_idx < 0 || b_idx > 3) {
         return 0;
     }
     uint8_t bit = bpp_idx_to_mask(b_idx);
-    return (cp->caps.modes[r_idx].bpp_mask & bit) ? 1 : 0;
+    if (r_idx == cp->sel_res && cp->sel_hz >= 0 && cp->sel_hz < cp->hz_count) {
+        return (cp->hz_bpp_masks[cp->sel_hz] & bit) ? 1 : 0;
+    }
+    uint16_t tw = cp->res_w[r_idx];
+    uint16_t th = cp->res_h[r_idx];
+    for (int i = 0; i < cp->caps.mode_count; i++) {
+        if (cp->caps.modes[i].width == tw && cp->caps.modes[i].height == th &&
+            (cp->caps.modes[i].bpp_mask & bit)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void format_vram_str(uint64_t bytes, char* out, size_t cap) {
@@ -133,7 +221,7 @@ static void cpanel_apply_volume(cpanel_t* cp, int vol) {
 }
 
 static void clamp_res_scroll(cpanel_t* cp) {
-    int max_scroll = cp->caps.mode_count - CPANEL_DROPDOWN_VIS;
+    int max_scroll = cp->res_count - CPANEL_DROPDOWN_VIS;
     if (max_scroll < 0) max_scroll = 0;
     if (cp->res_scroll > max_scroll) cp->res_scroll = max_scroll;
     if (cp->res_scroll < 0) cp->res_scroll = 0;
@@ -149,6 +237,7 @@ static void sync_from_sysinfo(cpanel_t* cp) {
         cp->caps.current_h = cp->info.screen_h > 0 ? cp->info.screen_h : 480;
         cp->caps.current_bpp = (cp->info.screen_bpp == 8 || cp->info.screen_bpp == 16)
                                ? cp->info.screen_bpp : 16;
+        cp->caps.current_refresh_hz = 60;
         cp->caps.min_w = 640;
         cp->caps.min_h = 480;
         cp->caps.max_w = 1024;
@@ -157,11 +246,39 @@ static void sync_from_sysinfo(cpanel_t* cp) {
         cp->caps.vram_bytes = cp->info.vram_bytes;
         cp->caps.modes[0].width = 640;  cp->caps.modes[0].height = 480;
         cp->caps.modes[0].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.modes[0].refresh_hz = 60;
         cp->caps.modes[1].width = 800;  cp->caps.modes[1].height = 600;
         cp->caps.modes[1].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.modes[1].refresh_hz = 60;
         cp->caps.modes[2].width = 1024; cp->caps.modes[2].height = 768;
         cp->caps.modes[2].bpp_mask = PXE_DISP_BPP_8 | PXE_DISP_BPP_16;
+        cp->caps.modes[2].refresh_hz = 60;
         cp->caps.mode_count = 3;
+    }
+    if (cp->caps.current_refresh_hz <= 0) {
+        cp->caps.current_refresh_hz = 60;
+    }
+
+    /* Group unique resolutions from bound caps.modes[] */
+    cp->res_count = 0;
+    for (int i = 0; i < cp->caps.mode_count && cp->res_count < CPANEL_MAX_RES; i++) {
+        uint16_t mw = cp->caps.modes[i].width;
+        uint16_t mh = cp->caps.modes[i].height;
+        int dup = -1;
+        for (int j = 0; j < cp->res_count; j++) {
+            if (cp->res_w[j] == mw && cp->res_h[j] == mh) {
+                dup = j;
+                break;
+            }
+        }
+        if (dup >= 0) {
+            cp->res_pref[dup] |= cp->caps.modes[i].preferred;
+        } else {
+            cp->res_w[cp->res_count] = mw;
+            cp->res_h[cp->res_count] = mh;
+            cp->res_pref[cp->res_count] = cp->caps.modes[i].preferred;
+            cp->res_count++;
+        }
     }
 
     cp->mouse_speed = (int)cp->info.mouse_speed;
@@ -176,17 +293,18 @@ static void sync_from_sysinfo(cpanel_t* cp) {
     }
 
     int found_res = -1;
-    for (int r = 0; r < cp->caps.mode_count; r++) {
-        if ((int)cp->caps.modes[r].width == cp->info.screen_w &&
-            (int)cp->caps.modes[r].height == cp->info.screen_h) {
+    for (int r = 0; r < cp->res_count; r++) {
+        if ((int)cp->res_w[r] == cp->info.screen_w &&
+            (int)cp->res_h[r] == cp->info.screen_h) {
             found_res = r;
             break;
         }
     }
-    if (found_res < 0 && cp->caps.mode_count > 0) {
-        found_res = cp->caps.mode_count - 1;
+    if (found_res < 0 && cp->res_count > 0) {
+        found_res = cp->res_count - 1;
     }
     cp->sel_res = (found_res >= 0) ? found_res : 0;
+    rebuild_hz_list(cp, cp->caps.current_refresh_hz);
 
     cp->sel_bpp = 2; /* 16-bit fallback default */
     for (int b = 0; b < 4; b++) {
@@ -260,14 +378,14 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     snprintf(v_str, sizeof(v_str), "%d%%", cp->volume);
     pxe_draw_text_small(surf, 236, 38, v_str, PXE_COL_BLACK);
 
-    /* 3. Resolution & Color Depth (y=60, 86) */
+    /* 3. Resolution, Color Depth & Refresh Rate (y=60, 86, 112) */
     pxe_draw_text(surf, 10, 60, CP_TR(cp, "屏幕分辨率:", "Resolution:"), PXE_COL_BLACK);
     char res_lbl[32];
-    if (cp->sel_res >= 0 && cp->sel_res < cp->caps.mode_count) {
+    if (cp->sel_res >= 0 && cp->sel_res < cp->res_count) {
         snprintf(res_lbl, sizeof(res_lbl), "%u x %u%s",
-                 (unsigned)cp->caps.modes[cp->sel_res].width,
-                 (unsigned)cp->caps.modes[cp->sel_res].height,
-                 cp->caps.modes[cp->sel_res].preferred ? " *" : "");
+                 (unsigned)cp->res_w[cp->sel_res],
+                 (unsigned)cp->res_h[cp->sel_res],
+                 cp->res_pref[cp->sel_res] ? " *" : "");
     } else {
         snprintf(res_lbl, sizeof(res_lbl), "%dx%d",
                  cp->info.screen_w, cp->info.screen_h);
@@ -278,54 +396,61 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     draw_combo(surf, 126, 84, 204, 20,
                cp->zh ? k_bpp_names_zh[cp->sel_bpp] : k_bpp_names[cp->sel_bpp]);
 
-    /* 4. Desktop Pattern (y=114) */
-    pxe_draw_text(surf, 10, 114, CP_TR(cp, "桌面图案:", "Pattern:"), PXE_COL_BLACK);
-    pxe_draw_button(surf, 126, 112, 22, 20, "<", 0, 1);
-    pxe_draw_button(surf, 308, 112, 22, 20, ">", 0, 1);
-    pxe_draw_bevel_box(surf, 150, 112, 156, 20, 1, PXE_COL_WHITE);
-    pxe_draw_text_small(surf, 158, 116,
+    pxe_draw_text(surf, 10, 112, CP_TR(cp, "屏幕刷新率:", "Refresh Rate:"), PXE_COL_BLACK);
+    char hz_lbl[24];
+    int cur_sel_hz = (cp->sel_hz >= 0 && cp->sel_hz < cp->hz_count)
+                     ? (int)cp->hz_vals[cp->sel_hz] : 60;
+    snprintf(hz_lbl, sizeof(hz_lbl), "%d Hz", cur_sel_hz);
+    draw_combo(surf, 126, 110, 204, 20, hz_lbl);
+
+    /* 4. Desktop Pattern (y=140) */
+    pxe_draw_text(surf, 10, 140, CP_TR(cp, "桌面图案:", "Pattern:"), PXE_COL_BLACK);
+    pxe_draw_button(surf, 126, 138, 22, 20, "<", 0, 1);
+    pxe_draw_button(surf, 308, 138, 22, 20, ">", 0, 1);
+    pxe_draw_bevel_box(surf, 150, 138, 156, 20, 1, PXE_COL_WHITE);
+    pxe_draw_text_small(surf, 158, 142,
                         cp->zh ? k_pat_names_zh[cp->pattern] : k_pat_names[cp->pattern],
                         PXE_COL_BLACK);
 
-    /* 5. Wallpaper Mode / Clear / Browse (y=142) */
-    pxe_draw_text(surf, 10, 142, CP_TR(cp, "桌面壁纸:", "Wallpaper:"), PXE_COL_BLACK);
+    /* 5. Wallpaper Mode / Clear / Browse (y=168) */
+    pxe_draw_text(surf, 10, 168, CP_TR(cp, "桌面壁纸:", "Wallpaper:"), PXE_COL_BLACK);
     if (cp->info.wallpaper_active) {
         int m = (int)cp->info.wallpaper_mode;
-        draw_mode_btn(surf, 96,  140, 34, 20, CP_TR(cp, "填充", "Fill"), m == 0);
-        draw_mode_btn(surf, 132, 140, 32, 20, CP_TR(cp, "适应", "Fit"),  m == 1);
-        draw_mode_btn(surf, 166, 140, 40, 20, CP_TR(cp, "拉伸", "Strt"), m == 2);
-        draw_mode_btn(surf, 208, 140, 34, 20, CP_TR(cp, "平铺", "Tile"), m == 3);
-        draw_mode_btn(surf, 244, 140, 40, 20, CP_TR(cp, "居中", "Cntr"), m == 4);
-        draw_mode_btn(surf, 286, 140, 30, 20, CP_TR(cp, "关闭", "Off"),  0);
-        draw_mode_btn(surf, 318, 140, 34, 20, CP_TR(cp, "路径", "Path"), 0);
+        draw_mode_btn(surf, 96,  166, 34, 20, CP_TR(cp, "填充", "Fill"), m == 0);
+        draw_mode_btn(surf, 132, 166, 32, 20, CP_TR(cp, "适应", "Fit"),  m == 1);
+        draw_mode_btn(surf, 166, 166, 40, 20, CP_TR(cp, "拉伸", "Strt"), m == 2);
+        draw_mode_btn(surf, 208, 166, 34, 20, CP_TR(cp, "平铺", "Tile"), m == 3);
+        draw_mode_btn(surf, 244, 166, 40, 20, CP_TR(cp, "居中", "Cntr"), m == 4);
+        draw_mode_btn(surf, 286, 166, 30, 20, CP_TR(cp, "关闭", "Off"),  0);
+        draw_mode_btn(surf, 318, 166, 34, 20, CP_TR(cp, "路径", "Path"), 0);
     } else {
-        pxe_draw_text_small(surf, 96, 144,
+        pxe_draw_text_small(surf, 96, 170,
                             CP_TR(cp, "无 (当前使用图案)", "None (Pattern Active)"),
                             PXE_COL_DARK_GRAY);
-        draw_mode_btn(surf, 270, 140, 80, 20, CP_TR(cp, "选择文件..", "Set File.."), 0);
+        draw_mode_btn(surf, 270, 166, 80, 20, CP_TR(cp, "选择文件..", "Set File.."), 0);
     }
 
-    /* 6. Default appearance and top-bar clock */
-    draw_mode_btn(surf, 96, 168, 102, 20, CP_TR(cp, "默认壁纸", "Default Wall"), 0);
-    draw_mode_btn(surf, 204, 168, 56, 20, CP_TR(cp, "日期", "Date"),
+    /* 6. Default appearance and top-bar clock (y=194) */
+    draw_mode_btn(surf, 96, 194, 102, 20, CP_TR(cp, "默认壁纸", "Default Wall"), 0);
+    draw_mode_btn(surf, 204, 194, 56, 20, CP_TR(cp, "日期", "Date"),
                   cp->info.clock_show_date ? 1 : 0);
-    draw_mode_btn(surf, 264, 168, 74, 20, CP_TR(cp, "显示秒", "Seconds"),
+    draw_mode_btn(surf, 264, 194, 74, 20, CP_TR(cp, "显示秒", "Seconds"),
                   cp->info.clock_show_seconds ? 1 : 0);
 
-    /* 6b. System Language Switch (y=194) */
-    pxe_draw_text(surf, 10, 196, CP_TR(cp, "界面语言:", "Language:"), PXE_COL_BLACK);
-    draw_mode_btn(surf, 126, 194, 88, 20, "简体中文", cp->zh ? 1 : 0);
-    draw_mode_btn(surf, 222, 194, 88, 20, "English",  cp->zh ? 0 : 1);
+    /* 6b. System Language Switch (y=220) */
+    pxe_draw_text(surf, 10, 222, CP_TR(cp, "界面语言:", "Language:"), PXE_COL_BLACK);
+    draw_mode_btn(surf, 126, 220, 88, 20, "简体中文", cp->zh ? 1 : 0);
+    draw_mode_btn(surf, 222, 220, 88, 20, "English",  cp->zh ? 0 : 1);
 
     /* 7. Driver / VRAM / Persistence info */
-    pxe_draw_hline(surf, 10, 220, surf->width - 20, PXE_COL_DARK_GRAY);
-    pxe_draw_hline(surf, 10, 221, surf->width - 20, PXE_COL_WHITE);
+    pxe_draw_hline(surf, 10, 246, surf->width - 20, PXE_COL_DARK_GRAY);
+    pxe_draw_hline(surf, 10, 247, surf->width - 20, PXE_COL_WHITE);
 
     const char* drv_name = cp->caps.driver_name[0]
         ? cp->caps.driver_name
         : (cp->info.gfx_backend[0] ? cp->info.gfx_backend : "Framebuffer");
-    pxe_draw_text_small(surf, 10, 228, CP_TR(cp, "显示适配器:", "Display:"), PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 82, 228, drv_name,
+    pxe_draw_text_small(surf, 10, 254, CP_TR(cp, "显示适配器:", "Display:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 254, drv_name,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_DARK_GREEN : PXE_COL_DARK_BLUE);
 
@@ -334,24 +459,23 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
     format_vram_str(cp->caps.vram_bytes, vram_str, sizeof(vram_str));
     if (cp->caps.flags & PXE_DISP_FLAG_UNLIMITED_RES) {
         snprintf(cap_line, sizeof(cap_line),
-                 cp->zh ? "显存:%s  上限:%dx%d" : "VRAM:%s  Max:%dx%d  Min:640x480",
-                 vram_str, cp->caps.max_w, cp->caps.max_h);
+                 cp->zh ? "显存:%s 上限:%dx%d 当前:%dHz" : "VRAM:%s Max:%dx%d @%dHz",
+                 vram_str, cp->caps.max_w, cp->caps.max_h, cp->caps.current_refresh_hz);
     } else if (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE) {
         snprintf(cap_line, sizeof(cap_line),
-                 cp->zh ? "固定扫描输出: %dx%d" : "Fixed Scanout (No Modeset): %dx%d",
-                 cp->caps.current_w, cp->caps.current_h);
+                 cp->zh ? "固定扫描输出: %dx%d @ %dHz" : "Fixed Scanout: %dx%d @ %dHz",
+                 cp->caps.current_w, cp->caps.current_h, cp->caps.current_refresh_hz);
     } else {
         snprintf(cap_line, sizeof(cap_line),
-                 cp->zh ? "固定帧缓冲: %dx%d" : "Fixed GOP/VBE LFB: %dx%d",
-                 cp->caps.current_w, cp->caps.current_h);
+                 cp->zh ? "固定帧缓冲: %dx%d @ %dHz" : "Fixed LFB: %dx%d @ %dHz",
+                 cp->caps.current_w, cp->caps.current_h, cp->caps.current_refresh_hz);
     }
-    pxe_draw_text_small(surf, 10, 246, CP_TR(cp, "能力限制:", "Limits:"), PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 82, 246, cap_line,
+    pxe_draw_text_small(surf, 10, 272, CP_TR(cp, "能力限制:", "Limits:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 272, cap_line,
                         (cp->caps.flags & PXE_DISP_FLAG_DRIVER_ACTIVE)
                             ? PXE_COL_BLACK : PXE_COL_BROWN);
 
-    uint8_t sel_mask = (cp->sel_res >= 0 && cp->sel_res < cp->caps.mode_count)
-                       ? cp->caps.modes[cp->sel_res].bpp_mask : 0u;
+    uint8_t sel_mask = current_sel_bpp_mask(cp);
     char bpp_line[48];
     snprintf(bpp_line, sizeof(bpp_line), "%s%s%s%s%s",
              (sel_mask & PXE_DISP_BPP_8)  ? "8b "  : "",
@@ -359,64 +483,64 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
              (sel_mask & PXE_DISP_BPP_24) ? "24b " : "",
              (sel_mask & PXE_DISP_BPP_32) ? "32b"  : "",
              (sel_mask == 0) ? CP_TR(cp, "无", "None") : "");
-    pxe_draw_text_small(surf, 10, 264, CP_TR(cp, "支持色深:", "BPP Mode:"), PXE_COL_BLACK);
-    pxe_draw_text_small(surf, 82, 264, bpp_line, PXE_COL_DARK_BLUE);
+    pxe_draw_text_small(surf, 10, 290, CP_TR(cp, "支持色深:", "BPP Mode:"), PXE_COL_BLACK);
+    pxe_draw_text_small(surf, 82, 290, bpp_line, PXE_COL_DARK_BLUE);
 
     if (cp->notice[0]) {
-        pxe_draw_text_small(surf, 10, 286, cp->notice, PXE_COL_DARK_GREEN);
+        pxe_draw_text_small(surf, 10, 312, cp->notice, PXE_COL_DARK_GREEN);
     } else if (!cp->info.settings_writable) {
-        pxe_draw_text_small(surf, 10, 286,
+        pxe_draw_text_small(surf, 10, 312,
                             CP_TR(cp, "实时模式: 设置仅在本次会话生效",
                                       "Live Mode: settings apply for this session"),
                             PXE_COL_BROWN);
     } else {
-        pxe_draw_text_small(surf, 10, 286,
+        pxe_draw_text_small(surf, 10, 312,
                             CP_TR(cp, "设置变更将持久保存至 SYSTEM.PSE",
                                       "Changes persist to SYSTEM.PSE"),
                             PXE_COL_DARK_GRAY);
     }
 
-    /* 8. Bottom Actions (y=312) */
+    /* 8. Bottom Actions (y=338) */
     if (cp->revert_sec > 0) {
         char rbuf[32];
         snprintf(rbuf, sizeof(rbuf),
                  CP_TR(cp, "%2d 秒后还原...", "Revert in %2ds..."), cp->revert_sec);
-        pxe_draw_text(surf, 12, 316, rbuf, PXE_COL_DARK_RED);
-        pxe_draw_button(surf, 188, 312, 156, 24, CP_TR(cp, "保留更改", "Keep (OK)"), 0, 1);
+        pxe_draw_text(surf, 12, 342, rbuf, PXE_COL_DARK_RED);
+        pxe_draw_button(surf, 188, 338, 156, 24, CP_TR(cp, "保留更改", "Keep (OK)"), 0, 1);
     } else {
-        pxe_draw_button(surf, 10,  312, 108, 24, CP_TR(cp, "应用模式", "Apply Mode"), 0, 1);
-        pxe_draw_button(surf, 126, 312, 108, 24, CP_TR(cp, "保存 (.pse)", "Save (.pse)"), 0, 1);
-        pxe_draw_button(surf, 242, 312, 108, 24, CP_TR(cp, "确定", "OK"), 0, 1);
+        pxe_draw_button(surf, 10,  338, 108, 24, CP_TR(cp, "应用模式", "Apply Mode"), 0, 1);
+        pxe_draw_button(surf, 126, 338, 108, 24, CP_TR(cp, "保存 (.pse)", "Save (.pse)"), 0, 1);
+        pxe_draw_button(surf, 242, 338, 108, 24, CP_TR(cp, "确定", "OK"), 0, 1);
     }
 
     /* 9. Open Dropdowns on top */
     if (cp->res_open) {
-        int vis = (cp->caps.mode_count <= CPANEL_DROPDOWN_VIS)
-                  ? cp->caps.mode_count : CPANEL_DROPDOWN_VIS;
+        int vis = (cp->res_count <= CPANEL_DROPDOWN_VIS)
+                  ? cp->res_count : CPANEL_DROPDOWN_VIS;
         if (vis < 1) vis = 1;
-        int has_sb = (cp->caps.mode_count > CPANEL_DROPDOWN_VIS);
+        int has_sb = (cp->res_count > CPANEL_DROPDOWN_VIS);
         int dx = 126, dy = 78, dw = 204, dh = vis * 18 + 2;
         int list_w = has_sb ? (dw - 18) : (dw - 2);
         pxe_fill_rect(surf, dx, dy, dw, dh, PXE_COL_WHITE);
         pxe_draw_rect(surf, dx, dy, dw, dh, PXE_COL_BLACK);
         for (int row = 0; row < vis; row++) {
             int idx = cp->res_scroll + row;
-            if (idx >= cp->caps.mode_count) break;
+            if (idx >= cp->res_count) break;
             int iy = dy + 1 + row * 18;
             if (idx == cp->sel_res) {
                 pxe_fill_rect(surf, dx + 1, iy, list_w, 18, PXE_COL_BLUE);
             }
             char item_lbl[32];
             snprintf(item_lbl, sizeof(item_lbl), "%u x %u%s",
-                     (unsigned)cp->caps.modes[idx].width,
-                     (unsigned)cp->caps.modes[idx].height,
-                     cp->caps.modes[idx].preferred ? " *" : "");
+                     (unsigned)cp->res_w[idx],
+                     (unsigned)cp->res_h[idx],
+                     cp->res_pref[idx] ? " *" : "");
             uint32_t fg = (idx == cp->sel_res) ? PXE_COL_WHITE : PXE_COL_BLACK;
             pxe_draw_text_small(surf, dx + 6, iy + 5, item_lbl, fg);
         }
         if (has_sb) {
             pxe_draw_scrollbar(surf, dx + dw - 17, dy + 1, 16, dh - 2,
-                               cp->res_scroll, vis, cp->caps.mode_count);
+                               cp->res_scroll, vis, cp->res_count);
         }
     } else if (cp->bpp_open) {
         int dx = 126, dy = 104, dw = 204, dh = 4 * 18 + 2;
@@ -438,6 +562,22 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
             uint32_t fg = !sup ? PXE_COL_DARK_GRAY :
                           (i == cp->sel_bpp ? PXE_COL_WHITE : PXE_COL_BLACK);
             pxe_draw_text_small(surf, dx + 6, iy + 4, lbl, fg);
+        }
+    } else if (cp->hz_open) {
+        int vis = (cp->hz_count > 0) ? cp->hz_count : 1;
+        if (vis > 8) vis = 8;
+        int dx = 126, dy = 130, dw = 204, dh = vis * 18 + 2;
+        pxe_fill_rect(surf, dx, dy, dw, dh, PXE_COL_WHITE);
+        pxe_draw_rect(surf, dx, dy, dw, dh, PXE_COL_BLACK);
+        for (int i = 0; i < vis && i < cp->hz_count; i++) {
+            int iy = dy + 1 + i * 18;
+            if (i == cp->sel_hz) {
+                pxe_fill_rect(surf, dx + 1, iy, dw - 2, 18, PXE_COL_BLUE);
+            }
+            char item_lbl[32];
+            snprintf(item_lbl, sizeof(item_lbl), "%u Hz", (unsigned)cp->hz_vals[i]);
+            uint32_t fg = (i == cp->sel_hz) ? PXE_COL_WHITE : PXE_COL_BLACK;
+            pxe_draw_text_small(surf, dx + 6, iy + 4, item_lbl, fg);
         }
     }
 
@@ -487,49 +627,53 @@ static void render_cpanel(const pxe_win_surface_t* surf, const cpanel_t* cp) {
 }
 
 static void start_apply_mode(cpanel_t* cp) {
-    if (cp->sel_res < 0 || cp->sel_res >= cp->caps.mode_count) {
+    if (cp->sel_res < 0 || cp->sel_res >= cp->res_count) {
         pxe_beep();
         snprintf(cp->notice, sizeof(cp->notice), "No valid resolution selected.");
         return;
     }
-    int tw = (int)cp->caps.modes[cp->sel_res].width;
-    int th = (int)cp->caps.modes[cp->sel_res].height;
+    int tw = (int)cp->res_w[cp->sel_res];
+    int th = (int)cp->res_h[cp->sel_res];
     int tb = k_bpps[cp->sel_bpp];
+    int thz = (cp->sel_hz >= 0 && cp->sel_hz < cp->hz_count)
+              ? (int)cp->hz_vals[cp->sel_hz] : 60;
     if (!mode_supported(cp, cp->sel_res, cp->sel_bpp)) {
         pxe_beep();
         snprintf(cp->notice, sizeof(cp->notice), "Unsupported mode / VRAM limit.");
         return;
     }
-    if (tw == cp->info.screen_w && th == cp->info.screen_h && tb == cp->info.screen_bpp) {
+    if (tw == cp->info.screen_w && th == cp->info.screen_h &&
+        tb == cp->info.screen_bpp && thz == cp->caps.current_refresh_hz) {
         snprintf(cp->notice, sizeof(cp->notice), "Already using this display mode.");
         return;
     }
     cp->prev_w = cp->info.screen_w;
     cp->prev_h = cp->info.screen_h;
     cp->prev_bpp = cp->info.screen_bpp;
+    cp->prev_hz = cp->caps.current_refresh_hz > 0 ? cp->caps.current_refresh_hz : 60;
     cp->pending_reboot = 0;
-    int mode_result = pxe_display_apply_mode(tw, th, tb);
+    int mode_result = pxe_display_apply_mode_ex(tw, th, tb, thz);
     if (mode_result == 0) {
-        pxe_rtc_time_t rtc;
-        pxe_get_rtc_time(&rtc);
         cp->revert_sec = 15;
-        cp->last_rtc_sec = (int)rtc.second;
+        cp->revert_start_ns = pxe_get_time_ns();
         sync_from_sysinfo(cp);
-        snprintf(cp->notice, sizeof(cp->notice), "Click Keep (OK) to confirm mode.");
+        snprintf(cp->notice, sizeof(cp->notice),
+                 CP_TR(cp, "请点击“保留更改”确认显示模式。", "Click Keep (OK) to confirm mode."));
     } else if (mode_result > 0) {
         cp->pending_reboot = 1;
         cp->pending_w = tw;
         cp->pending_h = th;
         cp->pending_bpp = tb;
-        pxe_rtc_time_t rtc;
-        pxe_get_rtc_time(&rtc);
+        cp->pending_hz = thz;
         cp->revert_sec = 15;
-        cp->last_rtc_sec = (int)rtc.second;
+        cp->revert_start_ns = pxe_get_time_ns();
         snprintf(cp->notice, sizeof(cp->notice),
-                 "Restart required. Click Keep to confirm.");
+                 CP_TR(cp, "需要重启生效，请点击“保留更改”。",
+                           "Restart required. Click Keep to confirm."));
     } else {
         pxe_beep();
-        snprintf(cp->notice, sizeof(cp->notice), "Display mode switch rejected.");
+        snprintf(cp->notice, sizeof(cp->notice),
+                 CP_TR(cp, "显示模式切换被拒绝。", "Display mode switch rejected."));
     }
 }
 
@@ -539,7 +683,8 @@ static void discard_display_change(cpanel_t* cp) {
     cp->pending_reboot = 0;
     cp->revert_sec = 0;
     if (cp->prev_w >= 640 && cp->prev_h >= 480) {
-        (void)pxe_display_apply_mode(cp->prev_w, cp->prev_h, cp->prev_bpp);
+        (void)pxe_display_apply_mode_ex(cp->prev_w, cp->prev_h, cp->prev_bpp,
+                                        cp->prev_hz > 0 ? cp->prev_hz : 60);
     }
     sync_from_sysinfo(cp);
 }
@@ -549,8 +694,9 @@ static void confirm_restart_mode(cpanel_t* cp) {
     int width = cp->pending_w;
     int height = cp->pending_h;
     int bpp = cp->pending_bpp;
+    int hz = cp->pending_hz > 0 ? cp->pending_hz : 60;
     cp->restart_confirm = 0;
-    if (pxe_display_set_mode(width, height, bpp) != 0 ||
+    if (pxe_display_set_mode_ex(width, height, bpp, hz) != 0 ||
         pxe_system_reboot() != 0) {
         pxe_beep();
         discard_display_change(cp);
@@ -568,9 +714,9 @@ int main(int argc, char** argv) {
     desc.x = 120;
     desc.y = 48;
     desc.w = 360;
-    desc.h = 356;
+    desc.h = 382;
     desc.min_w = 360;
-    desc.min_h = 356;
+    desc.min_h = 382;
     desc.format = PXE_CANVAS_PAL8;
     desc.flags = PXE_WIN_DEFAULT;
     strcpy(desc.title, pxe_is_zh() ? "控制面板" : "Control Panel");
@@ -606,8 +752,11 @@ int main(int argc, char** argv) {
                 int old_w = cp.info.screen_w;
                 int old_h = cp.info.screen_h;
                 int old_bpp = cp.info.screen_bpp;
+                int old_hz = cp.caps.current_refresh_hz;
                 int old_sel_res = cp.sel_res;
                 int old_sel_bpp = cp.sel_bpp;
+                int old_sel_hz_val = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                     ? (int)cp.hz_vals[cp.sel_hz] : 60;
                 int old_scroll = cp.res_scroll;
                 sync_from_sysinfo(&cp);
                 if (cp.zh != old_zh) {
@@ -616,10 +765,13 @@ int main(int argc, char** argv) {
                 if (cp.info.screen_w == old_w &&
                     cp.info.screen_h == old_h &&
                     cp.info.screen_bpp == old_bpp &&
-                    old_sel_res >= 0 && old_sel_res < cp.caps.mode_count &&
-                    mode_supported(&cp, old_sel_res, old_sel_bpp)) {
+                    cp.caps.current_refresh_hz == old_hz &&
+                    old_sel_res >= 0 && old_sel_res < cp.res_count) {
                     cp.sel_res = old_sel_res;
-                    cp.sel_bpp = old_sel_bpp;
+                    rebuild_hz_list(&cp, old_sel_hz_val);
+                    if (mode_supported(&cp, cp.sel_res, old_sel_bpp)) {
+                        cp.sel_bpp = old_sel_bpp;
+                    }
                     cp.res_scroll = old_scroll;
                     clamp_res_scroll(&cp);
                 }
@@ -640,15 +792,15 @@ int main(int argc, char** argv) {
                         cpanel_apply_volume(&cp, vol);
                         dirty = 1;
                     }
-                } else if (cp.drag_res_sb && cp.res_open && cp.caps.mode_count > CPANEL_DROPDOWN_VIS) {
+                } else if (cp.drag_res_sb && cp.res_open && cp.res_count > CPANEL_DROPDOWN_VIS) {
                     int vis = CPANEL_DROPDOWN_VIS;
                     int dh = vis * 18 + 2;
                     int track_h = (dh - 2) - 28;
-                    int thumb_h = (track_h * vis) / cp.caps.mode_count;
+                    int thumb_h = (track_h * vis) / cp.res_count;
                     if (thumb_h < 12) thumb_h = 12;
                     if (thumb_h > track_h) thumb_h = track_h;
                     int avail = track_h - thumb_h;
-                    int max_sc = cp.caps.mode_count - vis;
+                    int max_sc = cp.res_count - vis;
                     if (avail > 0 && max_sc > 0) {
                         int dy_drag = ev.y - cp.res_sb_drag_y;
                         int half = (dy_drag >= 0) ? (avail / 2) : -(avail / 2);
@@ -722,8 +874,11 @@ int main(int argc, char** argv) {
                     cp.drag_res_sb = 0;
                     dirty = 1;
                 } else if (ev.key == PXE_KEY_UP && cp.sel_res > 0) {
+                    int prev_hz_val = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                      ? (int)cp.hz_vals[cp.sel_hz] : 60;
                     cp.sel_res--;
                     if (cp.sel_res < cp.res_scroll) cp.res_scroll = cp.sel_res;
+                    rebuild_hz_list(&cp, prev_hz_val);
                     if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
                         for (int b = 0; b < 4; b++) {
                             if (mode_supported(&cp, cp.sel_res, b)) {
@@ -733,11 +888,14 @@ int main(int argc, char** argv) {
                         }
                     }
                     dirty = 1;
-                } else if (ev.key == PXE_KEY_DOWN && cp.sel_res + 1 < cp.caps.mode_count) {
+                } else if (ev.key == PXE_KEY_DOWN && cp.sel_res + 1 < cp.res_count) {
+                    int prev_hz_val = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                      ? (int)cp.hz_vals[cp.sel_hz] : 60;
                     cp.sel_res++;
                     if (cp.sel_res >= cp.res_scroll + CPANEL_DROPDOWN_VIS) {
                         cp.res_scroll = cp.sel_res - CPANEL_DROPDOWN_VIS + 1;
                     }
+                    rebuild_hz_list(&cp, prev_hz_val);
                     if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
                         for (int b = 0; b < 4; b++) {
                             if (mode_supported(&cp, cp.sel_res, b)) {
@@ -749,10 +907,9 @@ int main(int argc, char** argv) {
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_MOUSE_WHEEL && ev.arg0 != 0) {
-                if (cp.res_open && cp.caps.mode_count > 0) {
+                if (cp.res_open && cp.res_count > 0) {
                     cp.res_scroll -= ev.arg0;
-                    int max_scroll = cp.caps.mode_count -
-                                     CPANEL_DROPDOWN_VIS;
+                    int max_scroll = cp.res_count - CPANEL_DROPDOWN_VIS;
                     if (max_scroll < 0) max_scroll = 0;
                     if (cp.res_scroll < 0) cp.res_scroll = 0;
                     if (cp.res_scroll > max_scroll) cp.res_scroll = max_scroll;
@@ -763,12 +920,19 @@ int main(int argc, char** argv) {
                     pxe_settings_save();
                     dirty = 1;
                 } else if (pxe_point_in_rect(ev.x, ev.y, 126, 58, 204, 20) &&
-                           cp.caps.mode_count > 0) {
+                           cp.res_count > 0) {
+                    int prev_hz_val = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                      ? (int)cp.hz_vals[cp.sel_hz] : 60;
                     cp.sel_res -= ev.arg0;
                     if (cp.sel_res < 0) cp.sel_res = 0;
-                    if (cp.sel_res >= cp.caps.mode_count) {
-                        cp.sel_res = cp.caps.mode_count - 1;
-                    }
+                    if (cp.sel_res >= cp.res_count) cp.sel_res = cp.res_count - 1;
+                    rebuild_hz_list(&cp, prev_hz_val);
+                    dirty = 1;
+                } else if (pxe_point_in_rect(ev.x, ev.y, 126, 110, 204, 20) &&
+                           cp.hz_count > 0) {
+                    cp.sel_hz -= ev.arg0;
+                    if (cp.sel_hz < 0) cp.sel_hz = 0;
+                    if (cp.sel_hz >= cp.hz_count) cp.sel_hz = cp.hz_count - 1;
                     dirty = 1;
                 }
             } else if (ev.type == PXE_EV_MOUSE_DOWN && (ev.buttons & PXE_BTN_LEFT)) {
@@ -813,10 +977,10 @@ int main(int argc, char** argv) {
                 }
 
                 if (cp.res_open) {
-                    int vis = (cp.caps.mode_count <= CPANEL_DROPDOWN_VIS)
-                              ? cp.caps.mode_count : CPANEL_DROPDOWN_VIS;
+                    int vis = (cp.res_count <= CPANEL_DROPDOWN_VIS)
+                              ? cp.res_count : CPANEL_DROPDOWN_VIS;
                     if (vis < 1) vis = 1;
-                    int has_sb = (cp.caps.mode_count > CPANEL_DROPDOWN_VIS);
+                    int has_sb = (cp.res_count > CPANEL_DROPDOWN_VIS);
                     int dx = 126, dy = 78, dw = 204, dh = vis * 18 + 2;
                     int list_w = has_sb ? (dw - 18) : (dw - 2);
                     int sbx = dx + dw - 17;
@@ -824,7 +988,7 @@ int main(int argc, char** argv) {
                     int sbw = 16;
                     int sbh = dh - 2;
                     if (has_sb && pxe_point_in_rect(mx, my, sbx - 1, sby, sbw + 1, sbh)) {
-                        int max_sc = cp.caps.mode_count - CPANEL_DROPDOWN_VIS;
+                        int max_sc = cp.res_count - CPANEL_DROPDOWN_VIS;
                         if (max_sc < 1) max_sc = 1;
                         int btn_h = 14;
                         int track_y = sby + btn_h;
@@ -835,7 +999,7 @@ int main(int argc, char** argv) {
                         } else if (my >= track_bot) {
                             if (cp.res_scroll < max_sc) cp.res_scroll++;
                         } else {
-                            int thumb_h = (track_h * vis) / cp.caps.mode_count;
+                            int thumb_h = (track_h * vis) / cp.res_count;
                             if (thumb_h < 12) thumb_h = 12;
                             if (thumb_h > track_h) thumb_h = track_h;
                             int avail = track_h - thumb_h;
@@ -858,8 +1022,11 @@ int main(int argc, char** argv) {
                     if (pxe_point_in_rect(mx, my, dx + 1, dy + 1, list_w, vis * 18)) {
                         int row = (my - (dy + 1)) / 18;
                         int idx = cp.res_scroll + row;
-                        if (idx >= 0 && idx < cp.caps.mode_count) {
+                        if (idx >= 0 && idx < cp.res_count) {
+                            int prev_hz_val = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                              ? (int)cp.hz_vals[cp.sel_hz] : 60;
                             cp.sel_res = idx;
+                            rebuild_hz_list(&cp, prev_hz_val);
                             if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
                                 for (int b = 0; b < 4; b++) {
                                     if (mode_supported(&cp, cp.sel_res, b)) {
@@ -884,6 +1051,28 @@ int main(int argc, char** argv) {
                         }
                     }
                     cp.bpp_open = 0;
+                    dirty = 1;
+                    continue;
+                }
+
+                if (cp.hz_open) {
+                    int vis = (cp.hz_count > 0) ? cp.hz_count : 1;
+                    if (vis > 8) vis = 8;
+                    if (pxe_point_in_rect(mx, my, 126, 131, 204, vis * 18)) {
+                        int idx = (my - 131) / 18;
+                        if (idx >= 0 && idx < cp.hz_count) {
+                            cp.sel_hz = idx;
+                            if (!mode_supported(&cp, cp.sel_res, cp.sel_bpp)) {
+                                for (int b = 0; b < 4; b++) {
+                                    if (mode_supported(&cp, cp.sel_res, b)) {
+                                        cp.sel_bpp = b;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cp.hz_open = 0;
                     dirty = 1;
                     continue;
                 }
@@ -920,9 +1109,14 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
+                if (pxe_point_in_rect(mx, my, 126, 110, 204, 20)) {
+                    cp.hz_open = 1;
+                    dirty = 1;
+                    continue;
+                }
 
-                /* Pattern arrows */
-                if (pxe_point_in_rect(mx, my, 126, 112, 22, 20)) {
+                /* Pattern arrows (y=138) */
+                if (pxe_point_in_rect(mx, my, 126, 138, 22, 20)) {
                     cp.pattern = (cp.pattern + 5) % 6;
                     pxe_desktop_set_pattern(cp.pattern);
                     pxe_settings_save();
@@ -930,7 +1124,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 308, 112, 22, 20)) {
+                if (pxe_point_in_rect(mx, my, 308, 138, 22, 20)) {
                     cp.pattern = (cp.pattern + 1) % 6;
                     pxe_desktop_set_pattern(cp.pattern);
                     pxe_settings_save();
@@ -939,55 +1133,55 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                /* Wallpaper row */
+                /* Wallpaper row (y=166) */
                 if (cp.info.wallpaper_active) {
-                    if (pxe_point_in_rect(mx, my, 96, 140, 34, 20)) {
+                    if (pxe_point_in_rect(mx, my, 96, 166, 34, 20)) {
                         pxe_desktop_set_wallpaper_mode(0);
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Fill.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 132, 140, 32, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 132, 166, 32, 20)) {
                         pxe_desktop_set_wallpaper_mode(1);
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Fit.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 166, 140, 40, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 166, 166, 40, 20)) {
                         pxe_desktop_set_wallpaper_mode(2);
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Stretch.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 208, 140, 34, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 208, 166, 34, 20)) {
                         pxe_desktop_set_wallpaper_mode(3);
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Tile.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 244, 140, 40, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 244, 166, 40, 20)) {
                         pxe_desktop_set_wallpaper_mode(4);
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper mode: Center.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 286, 140, 30, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 286, 166, 30, 20)) {
                         pxe_desktop_clear_wallpaper();
                         pxe_settings_save();
                         sync_from_sysinfo(&cp);
                         snprintf(cp.notice, sizeof(cp.notice), "Wallpaper cleared.");
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 318, 140, 34, 20)) {
+                    } else if (pxe_point_in_rect(mx, my, 318, 166, 34, 20)) {
                         cp.wp_modal = 1;
                         dirty = 1;
                     }
-                } else if (pxe_point_in_rect(mx, my, 270, 140, 80, 20)) {
+                } else if (pxe_point_in_rect(mx, my, 270, 166, 80, 20)) {
                     cp.wp_modal = 1;
                     dirty = 1;
                 }
 
-                /* Default appearance and clock options */
-                if (pxe_point_in_rect(mx, my, 96, 168, 102, 20)) {
+                /* Default appearance and clock options (y=194) */
+                if (pxe_point_in_rect(mx, my, 96, 194, 102, 20)) {
                     if (pxe_desktop_restore_default_wallpaper() == 0) {
                         cp.pattern = 0;
                         pxe_settings_save();
@@ -1002,7 +1196,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 204, 168, 56, 20)) {
+                if (pxe_point_in_rect(mx, my, 204, 194, 56, 20)) {
                     pxe_clock_set_options(!cp.info.clock_show_date,
                                           cp.info.clock_show_seconds);
                     pxe_settings_save();
@@ -1010,7 +1204,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 264, 168, 74, 20)) {
+                if (pxe_point_in_rect(mx, my, 264, 194, 74, 20)) {
                     pxe_clock_set_options(cp.info.clock_show_date,
                                           !cp.info.clock_show_seconds);
                     pxe_settings_save();
@@ -1019,8 +1213,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                /* Language selector (y=194) */
-                if (pxe_point_in_rect(mx, my, 126, 194, 88, 20)) {
+                /* Language selector (y=220) */
+                if (pxe_point_in_rect(mx, my, 126, 220, 88, 20)) {
                     pxe_set_language(PXE_LANG_ZH);
                     pxe_settings_save();
                     sync_from_sysinfo(&cp);
@@ -1029,7 +1223,7 @@ int main(int argc, char** argv) {
                     dirty = 1;
                     continue;
                 }
-                if (pxe_point_in_rect(mx, my, 222, 194, 88, 20)) {
+                if (pxe_point_in_rect(mx, my, 222, 220, 88, 20)) {
                     pxe_set_language(PXE_LANG_EN);
                     pxe_settings_save();
                     sync_from_sysinfo(&cp);
@@ -1039,16 +1233,17 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                /* Bottom actions */
+                /* Bottom actions (y=338) */
                 if (cp.revert_sec > 0) {
-                    if (pxe_point_in_rect(mx, my, 188, 312, 156, 24)) {
+                    if (pxe_point_in_rect(mx, my, 188, 338, 156, 24)) {
                         cp.revert_sec = 0;
                         if (cp.pending_reboot) {
                             cp.restart_confirm = 1;
                         } else {
-                            if (pxe_display_set_mode(cp.info.screen_w,
-                                                     cp.info.screen_h,
-                                                     cp.info.screen_bpp) == 0) {
+                            if (pxe_display_set_mode_ex(cp.info.screen_w,
+                                                        cp.info.screen_h,
+                                                        cp.info.screen_bpp,
+                                                        cp.caps.current_refresh_hz) == 0) {
                                 pxe_settings_save();
                                 sync_from_sysinfo(&cp);
                                 snprintf(cp.notice, sizeof(cp.notice),
@@ -1063,10 +1258,10 @@ int main(int argc, char** argv) {
                         dirty = 1;
                     }
                 } else {
-                    if (pxe_point_in_rect(mx, my, 10, 312, 108, 24)) {
+                    if (pxe_point_in_rect(mx, my, 10, 338, 108, 24)) {
                         start_apply_mode(&cp);
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 126, 312, 108, 24)) {
+                    } else if (pxe_point_in_rect(mx, my, 126, 338, 108, 24)) {
                         if (pxe_settings_save() == 0) {
                             snprintf(cp.notice, sizeof(cp.notice),
                                      CP_TR(&cp, "已保存设置到 .pse 文件。", "Saved settings to .pse."));
@@ -1076,13 +1271,16 @@ int main(int argc, char** argv) {
                                      CP_TR(&cp, "保存失败 (当前介质只读?)。", "Save failed (read-only medium?)."));
                         }
                         dirty = 1;
-                    } else if (pxe_point_in_rect(mx, my, 242, 312, 108, 24)) {
-                        int tw = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
-                                 ? (int)cp.caps.modes[cp.sel_res].width : cp.info.screen_w;
-                        int th = (cp.sel_res >= 0 && cp.sel_res < cp.caps.mode_count)
-                                 ? (int)cp.caps.modes[cp.sel_res].height : cp.info.screen_h;
+                    } else if (pxe_point_in_rect(mx, my, 242, 338, 108, 24)) {
+                        int tw = (cp.sel_res >= 0 && cp.sel_res < cp.res_count)
+                                 ? (int)cp.res_w[cp.sel_res] : cp.info.screen_w;
+                        int th = (cp.sel_res >= 0 && cp.sel_res < cp.res_count)
+                                 ? (int)cp.res_h[cp.sel_res] : cp.info.screen_h;
                         int tb = k_bpps[cp.sel_bpp];
-                        if (tw != cp.info.screen_w || th != cp.info.screen_h || tb != cp.info.screen_bpp) {
+                        int thz = (cp.sel_hz >= 0 && cp.sel_hz < cp.hz_count)
+                                  ? (int)cp.hz_vals[cp.sel_hz] : 60;
+                        if (tw != cp.info.screen_w || th != cp.info.screen_h ||
+                            tb != cp.info.screen_bpp || thz != cp.caps.current_refresh_hz) {
                             start_apply_mode(&cp);
                             dirty = 1;
                         } else {
@@ -1097,18 +1295,25 @@ int main(int argc, char** argv) {
         }
         if (rc < 0) break;
 
+        /* Strict 1-second monotonic countdown using pxe_get_time_ns() */
         if (running && cp.revert_sec > 0) {
-            pxe_rtc_time_t rtc;
-            if (pxe_get_rtc_time(&rtc) == 0 && (int)rtc.second != cp.last_rtc_sec) {
-                cp.last_rtc_sec = (int)rtc.second;
-                cp.revert_sec--;
+            uint64_t now_ns = pxe_get_time_ns();
+            uint64_t elapsed_sec = (now_ns >= cp.revert_start_ns)
+                                       ? ((now_ns - cp.revert_start_ns) / 1000000000ULL)
+                                       : 0ULL;
+            int remain = 15 - (int)elapsed_sec;
+            if (remain < 0) remain = 0;
+            if (remain != cp.revert_sec) {
+                cp.revert_sec = remain;
                 if (cp.revert_sec <= 0) {
                     cp.revert_sec = 0;
                     cp.pending_reboot = 0;
                     cp.restart_confirm = 0;
-                    pxe_display_apply_mode(cp.prev_w, cp.prev_h, cp.prev_bpp);
+                    pxe_display_apply_mode_ex(cp.prev_w, cp.prev_h, cp.prev_bpp,
+                                              cp.prev_hz > 0 ? cp.prev_hz : 60);
                     sync_from_sysinfo(&cp);
-                    snprintf(cp.notice, sizeof(cp.notice), "Reverted display mode.");
+                    snprintf(cp.notice, sizeof(cp.notice),
+                             CP_TR(&cp, "已自动还原显示模式。", "Reverted display mode."));
                 }
                 dirty = 1;
             }
