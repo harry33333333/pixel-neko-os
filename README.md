@@ -2,7 +2,7 @@
 
 [![Build and Release OS ISO](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml/badge.svg)](https://github.com/harry33333333/pixel-neko-os/actions/workflows/build.yml)
 
-> **Pixel Neko OS (Version Darwin 26A300c - Codename Snow Neko)**
+> **Pixel Neko OS (Version Darwin 26A350d - Codename Snow Neko)**
 > 现代化 64 位模块化宏内核与复古像素桌面操作系统（完整支持简体中文 / English 双语与拼音输入法）
 
 ---
@@ -13,7 +13,8 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 
 ### 1. 引导与内核体系结构
 - **Limine v8.x 双模引导**：原生支持现代 UEFI 固件与传统 Legacy BIOS (El Torito Hybrid MBR/GPT ISO)，提供 Live Desktop、Graphical Installer、Safe Mode（`nopdv=1` 跳过外部 `.pdv` 并回退安全显示模式）与 Safe Graphics 引导入口。
-- **64 位长模式与特权级隔离**：建立规范的 Ring 0 内核态与 Ring 3 用户态隔离，支持 4 级分页虚拟内存（PML4）与安全 Checked HHDM 映射。
+- **SMP 多核对称多处理（高达 128 CPU）**：支持多核 AP 启动与负载均衡、1000 Hz 每核 LAPIC 定时器、XSAVE/AVX2 扩展上下文保存、内核互斥锁（`kmutex_t`）与自旋锁，以及合成器 CPU0 隔离调度。
+- **64 位长模式与特权级隔离**：建立规范的 Ring 0 内核态与 Ring 3 用户态隔离，支持 4 级分页虚拟内存（PML4）与安全 Checked HHDM 映射，并提供 Ring 3 多线程与 Futex 同步原语（`<pxe/thread.h>`）。
 - **严密系统调用安全边界**：
   - 在 `SYSRET` 前严格校验用户 RIP 与用户 RSP 是否为规范地址（Canonical）且位于合法用户低半区空间（`< 0x0000800000000000`）。
   - 强制校验 CS/SS 选择子 RPL 为 3，严格限制 RFLAGS 掩码（IOPL 强制为 0、IF 强制置位、拦截 NT 任务嵌套与 VM 虚拟8086模式）。
@@ -34,8 +35,8 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 - **开机画面与双语加载**：纯黑背景 Windows XP 风格四色徽标与三段式微光流动进度条，随后进入支持简体中文/英文的内核与扩展初始化加载界面。
 - **EDID 解析与动态分辨率/色深切换**：
   - 启动时优先解析 UEFI GOP / Legacy VBE 获取的 EDID 1.3/1.4 时序（含 Established/Standard/DTD 与常见 CEA-861 模式），EDID 缺失时回退固件模式表。
-  - 由已加载显卡 `.pdv` 动态枚举分辨率与 `8/16/24/32-bit` 色深，结合动态 PAT Write-Combining 显存窗口双缓冲与 64 MiB `SHM` 共享窗口画布槽实现无撕裂流畅刷新：
-    - **NVIDIA**：支持 NV43 (GeForce 6600 LE `10DE:0142`)、G72/G73 与 GeForce GTX 1060 3GB (`10DE:1C02`, GP106 Pascal)，支持运行时两级 VPLL/PCRTC/RAMDAC 无重启模式切换与同步极性配置。
+  - 由已加载显卡 `.pdv` 动态枚举分辨率与 `8/16/24/32-bit` 色深，结合快速 Write-Combining SSE2/AVX2 合成器（`fb_blit_wc`）与三缓冲 `SHM` 共享窗口画布槽实现无撕裂流畅刷新：
+    - **NVIDIA**：支持 NV43 (GeForce 6600 LE `10DE:0142`)、G72/G73 与 GeForce GTX 1060 3GB (`10DE:1C02`, GP106 Pascal)，支持运行时两级 VPLL/PCRTC/RAMDAC 无重启模式切换、同步极性配置与 EDID 刷新率范围校验（防止超出显示器支持范围）。
     - **ATI Mach64 / 3D Rage II+DVD**：支持内部 PLL、CRTC、`32-qword` Display FIFO 水位线校准与晶振自动标定，按 2MB/4MB 真实显存过滤并运行时切换模式。
     - **VMware SVGA II / SVGA3D**：支持完整虚拟模式列表、2D 加速与 Screen Target (`STDU`)。
     - 通用 LFB / 回退路径提供安全兼容模式，需重启切换时先弹出确认框。
@@ -52,10 +53,11 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
   - `notepad`（记事本）：完整接入 UTF-8 与拼音输入法（`PXE_KEY_UTF8`），支持中文编辑与滚轮浏览。
   - `cpanel`（控制面板）：配置屏幕分辨率/色深、桌面壁纸模式、顶栏时钟选项、系统音量及简体中文/英文界面语言。
   - `player`（媒体播放器）：支持 WAV、FLAC 与 MP3 解码播放与播放列表控制。
+  - `vplayer`（视频播放器，Ring 3 SMP）：集成 OpenH264、FAAD2 (AAC-LC) 与 minimp4，支持 1080p60 MP4/H.264 多线程视频解码与低延迟音画同步播放。
   - `viewer`（图片查看器）、`calc`（计算器）、`clock`（数字时钟）、`about`（关于本机）。
   - `cpuz`（Pixel CPU Detect，Ring 0）：基于裁剪版 libcpuid 0.8.2 的处理器、缓存、PCI 拓扑、内存、显卡检测工具，支持将完整诊断报告导出为 `*.TXT`。
   - `sysinfo`（系统信息，Ring 0）：查看系统资源、PCI/USB 设备及已加载 `.pdv` 驱动，支持手动加载与重扫 `PDEVICE\`。
-  - `taskmgr`（任务管理器，Ring 0）：实时监控并管理运行进程与内存，支持终止系统核心进程的风险警告确认（终止 `idle` 将触发蓝屏停机）。
+  - `taskmgr`（任务管理器，Ring 0）：实时监控并管理运行进程、内存及多核 CPU 性能曲线（Performance 标签页），支持终止系统核心进程的风险警告确认（终止 `idle` 将触发蓝屏停机）。
   - `install`（图形化离线安装器，Ring 0）：仅在安装引导模式下运行，支持全新安装或保留文件系统的升级安装。
 - **内置游戏（`GAME\*.pxe`）**：
   - 全部 7 款游戏均支持简体中文/英文实时切换：`puzzle`（数字推盘）、`solitaire`（纸牌接龙）、`gomoku`（五子棋）、`aerochess`（飞行棋）、`2048`（2048 数字方块）、`minesweeper`（扫雷，含难度与音效设置）、`othello`（黑白棋）。
@@ -66,10 +68,11 @@ Pixel Neko OS 是一款兼具**现代 64 位内核架构（AMD64 / x86-64 长模
 
 ### 6. 统一 64 位音频引擎与抗卡顿流调度
 - **多硬件驱动支持（`PDV_CLASS_AUDIO`）**：原生 `.pdv` 驱动支持 Intel High Definition Audio (HDAudio Azalia)、AC'97 2.3、Ensoniq AudioPCI / Creative Sound Blaster PCI (ES1371 / `ct4810`，支持 PCI IRQ 9 中断续传双半区 DMA)、C-Media CMI8738 及 PC Speaker；音频随播放进程退出或终止自动释放停止。
-- **多格式解码与低延迟缓冲**：支持 WAV (PCM 8/16/24-bit 智能降采样)、FLAC 无损及 MP3 (minimp3 16 字节栈/内存对齐)；采用 256 KiB PCM 环形缓冲队列、预填充双 DMA 半缓冲及空闲循环多点轮询。详情参阅 [`docs/AUDIO.md`](docs/AUDIO.md)。
+- **多格式解码与低延迟缓冲**：支持 WAV (PCM 8/16/24-bit 智能降采样)、FLAC 无损及 MP3 (minimp3 16 字节栈/内存对齐)；采用 256 KiB PCM 环形缓冲队列、预填充双 DMA 半缓冲、低延迟音频流（`audio_stream_open`）与微秒级主时钟音画同步机制。详情参阅 [`docs/AUDIO.md`](docs/AUDIO.md)。
 
 ### 7. 存储堆栈与用户数据安全防线
 - **未初始化磁盘保护机制**：面对全新或未分区的硬盘，内核严禁静默自动分区与格式化，通过窗口管理器交互式弹窗向用户请求显式授权，防止误抹除数据。
+- **批量 I/O、预读与多核并发安全**：支持批量存储 I/O、VFS 256–512 KiB 顺序预读加速及 SMP 存储/VFS 并发锁保护。
 - **多文件系统与软盘驱动**：全面支持 MBR/GPT、FAT12/16/32（UTF-8 VFAT 长文件名）、exFAT（UTF-16LE 长文件名）、ISO9660/Joliet（512/2048 字节扇区转换）与 8237 DMA 软盘驱动器（A:/B: 换盘与弹出检测）。详情参阅 [`docs/STORAGE.md`](docs/STORAGE.md)。
 
 ---
@@ -85,18 +88,18 @@ make iso
 ### QEMU 启动测试
 - **UEFI 模式**:
 ```bash
-qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A300c.iso -m 512M -serial stdio
+qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom pixel-neko-os_26A350d.iso -m 512M -serial stdio
 ```
 - **Legacy BIOS 模式**:
 ```bash
-qemu-system-x86_64 -cdrom pixel-neko-os_26A300c.iso -m 512M -serial stdio -boot d
+qemu-system-x86_64 -cdrom pixel-neko-os_26A350d.iso -m 512M -serial stdio -boot d
 ```
 
 ### 自动化冒烟测试
 `scripts/qemu_smoke_test.sh` 执行桌面引导、多控制器热插拔与安装器全流程测试：
 
 ```bash
-bash scripts/qemu_smoke_test.sh pixel-neko-os_26A300c.iso
+bash scripts/qemu_smoke_test.sh pixel-neko-os_26A350d.iso
 ```
 
 图形化安装器、离线载荷与独立启动流程详见 [`docs/P6_INSTALLER.md`](docs/P6_INSTALLER.md)。

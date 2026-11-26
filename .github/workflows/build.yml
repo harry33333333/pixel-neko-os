@@ -2,9 +2,9 @@ name: Build and Release OS ISO
 
 on:
   push:
-    branches: [ "main", "master", "beta", "dev" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main", "master", "beta", "dev" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 permissions:
@@ -78,9 +78,7 @@ jobs:
       if: >-
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
-         github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta' ||
-         github.ref == 'refs/heads/dev')
+         github.ref == 'refs/heads/master')
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
@@ -91,9 +89,7 @@ jobs:
       if: >-
         success() && github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' ||
-         github.ref == 'refs/heads/master' ||
-         github.ref == 'refs/heads/beta' ||
-         github.ref == 'refs/heads/dev')
+         github.ref == 'refs/heads/master')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}

@@ -44,3 +44,7 @@ To eliminate playback stuttering and audio glitches under high CPU or UI load:
 
 The audio engine computes real-time 128-band frequency spectrum and stereo peak levels directly from the active hardware DMA buffer. The visualizer feeds the vintage Mac OS 9-style media player application without adding extra decoding passes.
 
+## Low-Latency Streaming & Master Clock
+
+For external decoders and video playback (`vplayer.pxe`), the kernel exposes a low-latency PCM streaming interface (`audio_stream_open`, `audio_stream_flush`) and a microsecond-precision audio master clock reporting `dma_latency_us` for A/V synchronization.
+

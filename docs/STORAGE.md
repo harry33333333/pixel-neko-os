@@ -15,6 +15,7 @@ The mount and drive layer contains:
 - ISO9660/Joliet for installation media.
 - FAT16 and FAT32 formatting with VBR/BPB, mirrored FATs, FAT32 FSInfo and a
   reserved, initialized root cluster.
+- Batch storage I/O, VFS 256–512 KiB sequential readahead, and SMP storage/VFS locking for multi-core safety.
 
 ## Drive Letters
 

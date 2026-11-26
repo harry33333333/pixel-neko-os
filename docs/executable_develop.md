@@ -1,6 +1,6 @@
-# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A300c`）
+# Pixel Neko OS 原生可执行程序开发指南（PXE v1.0 / `v26A350d`）
 
-在当前 **`v26A300c`** 中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，全面支持 UTF-8 简体中文显示、Rime 拼音输入法（`PXE_KEY_UTF8`）、动态界面语言切换、图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
+在当前 **`v26A350d`** 中，Pixel Neko OS 的应用程序与系统工具统一采用**双特权环原生可执行文件体系（`*.pxe`, Pixel Executable v1.0）**，通过统一的 `sdk/` 工具链与头文件构建，全面支持 UTF-8 简体中文显示、Rime 拼音输入法（`PXE_KEY_UTF8`）、动态界面语言切换、Ring 3 SMP 多线程与 Futex（`<pxe/thread.h>`）、图形窗口合成（Compositor）、VFS 文件系统、音频引擎、动态显示能力查询及特权系统管理。
 
 ---
 
@@ -13,7 +13,7 @@
   - **384 字节 `pxe_resource_t`**：内嵌 `16x16` 8-bit 索引色图标（`255` 为透明）、窗口标题 `title`、作者 `author`、文件扩展名关联 `ext_assoc`（如 `"txt,log,md"`）。
   - **4096 字节对齐的 ELF64 PIE 载荷**：单文件大小上限 `8 MB`（`PXE_MAX_FILE_BYTES`）。
 - **磁盘部署路径**：
-  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`notepad`、`cpanel`、`player`、`viewer`、`files`、`sysinfo`、`cpuz`、`taskmgr`、`install`）
+  - 内置系统应用：`\APPS\*.pxe`（包含 `about`、`clock`、`calc`、`notepad`、`cpanel`、`player`、`vplayer`、`viewer`、`files`、`sysinfo`、`cpuz`、`taskmgr`、`install`）
   - 默认游戏：`\GAME\*.pxe`（`puzzle`、`solitaire`、`gomoku`、`aerochess`、`2048`、`minesweeper`、`othello`）
   - 桌面快捷方式：`\Desktop\*.pnk`，图标位置保存在 `\Desktop\.desktop-layout`
   - 用户双击文件管理（`files.pxe`）中任意 `.pxe`（或关联扩展名的文件）即可由内核动态加载运行。
@@ -131,6 +131,9 @@ row15 = ................
   - `pxe_open`、`pxe_read`、`pxe_seek`、`pxe_close`、`pxe_stat`、`pxe_read_file`、`pxe_write_file`、`pxe_copy_file`、`pxe_listdir`、`pxe_mkdir`、`pxe_unlink`、`pxe_rename`、`pxe_get_drives`、`pxe_eject_drive`。
 - **音频控制与流式输入（`<pxe/audio.h>`）**：
   - `pxe_audio_play_file`、`pxe_audio_pause`、`pxe_audio_resume`、`pxe_audio_stop`、`pxe_audio_seek`、`pxe_audio_set_volume`、`pxe_audio_toggle_mute`、`pxe_audio_get_status`、`pxe_audio_feed_pcm`。
+- **Ring 3 多线程与同步原语（`<pxe/thread.h>`）**：
+  - 线程生命周期：`pxe_thread_create`、`pxe_thread_create_ex`、`pxe_thread_exit`、`pxe_thread_join`
+  - 底层 Futex 与同步：`pxe_futex_wait`、`pxe_futex_wake`、`pxe_mutex_*`、`pxe_cond_*`、`pxe_sem_*`
 
 ### 3.4 Ring 0 专属硬件与系统接口（`<pxe/ring0.h>`，仅 `PXE_RING = 0`）
 
