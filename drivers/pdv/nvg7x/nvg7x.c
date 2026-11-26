@@ -615,6 +615,12 @@ static void nvidia_load_linear_palette(void) {
         pdv_mmio_write8(pdio + 0x03C9U, c);
         pdv_mmio_write8(pdio + 0x03C9U, c);
     }
+    pdv_mmio_write8(pdio + 0x03C7U, 0xFFU);
+    unsigned char r255 = pdv_mmio_read8(pdio + 0x03C9U);
+    unsigned char g255 = pdv_mmio_read8(pdio + 0x03C9U);
+    unsigned char b255 = pdv_mmio_read8(pdio + 0x03C9U);
+    klog_info("[NV  ] RAMDAC gen=0x%08x lut[255]=(%u,%u,%u)",
+              nvidia_ramdac_read(NV_RAMDAC_GENERAL_REG), r255, g255, b255);
 }
 
 static int nvidia_calc_vpll(uint32_t target_khz, uint32_t ref_khz,
@@ -1024,6 +1030,12 @@ static void nvidia_g7x_wait_vblank_pub(void) {
 
 static int nvidia_g7x_enable_vblank_irq(void (*cb)(void)) {
     if (!g_active || !g_regs || g_is_pascal_nvdisplay || !g_pci) return 0;
+    if (g_is_nv4x) {
+        pdv_mmio_write32(g_regs + 0x00000140U, 0U);
+        nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 0U);
+        g_vblank_cb = 0;
+        return 0;
+    }
     g_vblank_cb = cb;
     if (cb) {
         if (!g_vblank_irq_registered && g_kapi->pci_register_irq) {
