@@ -866,11 +866,13 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
         }
     }
 
-    unsigned int dac_control =
-        nvidia_ramdac_read(0x00000404U) | (1U << 25);
-    nvidia_ramdac_write(0x00000404U, dac_control);
-    nvidia_ramdac_write(0x00000608U,
-        nvidia_ramdac_read(0x00000608U) | (1U << 20));
+    unsigned int old_404 = nvidia_ramdac_read(0x00000404U);
+    unsigned int old_608 = nvidia_ramdac_read(0x00000608U);
+    unsigned int old_gen = nvidia_ramdac_read(NV_RAMDAC_GENERAL_REG);
+    if (!g_is_nv4x) {
+        nvidia_ramdac_write(0x00000404U, old_404 | (1U << 25));
+        nvidia_ramdac_write(0x00000608U, old_608 | (1U << 20));
+    }
     unsigned int pll_sel = nvidia_ramdac0_read(NV_RAMDAC_PLL_SEL_REG);
     if (pll_sel == 0xFFFFFFFFU || pll_sel == 0U) {
         pll_sel = 0x10000700U;
@@ -891,8 +893,11 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
         nvidia_ramdac0_write(NV_RAMDAC_PLL_B_REG, 0x80000401U);
         nvidia_ramdac0_write(0x0000057CU, 0x80000401U);
     }
-    unsigned int general = bpp == 16 ? 0x00101100U : 0x00100100U;
-    nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, general | 0x30U);
+    unsigned int general = bpp == 16 ? 0x00101130U : 0x00100130U;
+    unsigned int new_gen = g_is_nv4x ? ((old_gen & ~0x00101130U) | general) : general;
+    nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, new_gen);
+    klog_info("[NV  ] RAMDAC pre 404=0x%08x 608=0x%08x gen=0x%08x->0x%08x",
+              old_404, old_608, old_gen, new_gen);
     nvidia_load_linear_palette();
     nvidia_write_graphics(0, 0x00U);
     nvidia_write_graphics(1, 0x00U);
