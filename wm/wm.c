@@ -2343,10 +2343,10 @@ void wm_update(unsigned char* v, int mx, int my, int mb, int mb_press, int mb_re
         }
     }
 
-    // Poll RTC once every 500 ticks (~0.5s at 1000 Hz) to prevent ISA bus stalls
+    // Poll RTC every ~0.5s. global_tick is a 100 Hz counter (apic_get_ticks), so 50 ticks.
     static int last_rtc_tick = 0;
     static char last_clock_text[32];
-    if (global_tick - last_rtc_tick >= 500 || last_s == -1) {
+    if (global_tick - last_rtc_tick >= 50 || global_tick < last_rtc_tick || last_s == -1) {
         last_rtc_tick = global_tick;
         int h, m, s;
         get_time(&h, &m, &s);

@@ -780,10 +780,11 @@ static int attach_hid_endpoint(usb_device_t* device, usb_endpoint_t* endpoint) {
                 memset(existing_mouse, 0, sizeof(*existing_mouse));
                 slot = existing_slot;
             } else if (!descriptor.keyboard) {
-                log_printf("[USBHID] Skipping secondary mouse endpoint 0x%02x on address=%u (primary endpoint 0x%02x active)\n",
+                /* Keep secondary mouse endpoints: VMware/QEMU tablets report
+                 * buttons on a separate endpoint; skipping it breaks clicks. */
+                log_printf("[USBHID] Attaching secondary mouse endpoint 0x%02x on address=%u (primary endpoint 0x%02x)\n",
                            endpoint->address, device->address,
                            existing_mouse->endpoint->address);
-                return 0;
             } else {
                 descriptor.mouse = false;
             }
