@@ -98,6 +98,8 @@ struct process {
     bool is_pxe;
     bool is_system_daemon;
     bool waited;
+    bool terminating;
+    bool zombie_committed;
     bool runtime_cleaned;
     uint64_t zombie_reap_tick;
     volatile uint64_t cpu_ticks_total;
@@ -127,7 +129,12 @@ struct process {
 
 void process_subsystem_init(void);
 process_t* process_head(void);
+uint64_t process_lock_list(void);
+void process_unlock_list(uint64_t flags);
+void process_unlink_locked(process_t* process);
 void process_unlink(process_t* process);
+uint32_t process_alloc_task_id(void);
+void process_free_task_id(uint64_t id);
 process_t* process_create_idle(void);
 thread_t* process_create_ap_idle(uint32_t cpu_id);
 process_t* process_create_compositor(void);

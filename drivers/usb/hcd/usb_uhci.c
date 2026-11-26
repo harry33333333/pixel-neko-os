@@ -125,11 +125,42 @@ static void uhci_rebuild(uhci_controller_t* c) {
         else first = &slot->qh;
         previous = &slot->qh;
     }
-    c->mem->control_qh.head = first ? uhci_link_qh(c, first) : 1;
-    for (int i = 0; i < 1024; i++) {
-        c->mem->frame_list[i] = uhci_link_qh(c, &c->mem->control_qh);
+    /* UHCI 1.1 schedule order: Periodic Interrupt QHs -> Async Control/Bulk QH */
+    c->mem->control_qh.head = 1;
+    if (previous) {
+        previous->head = uhci_link_qh(c, &c->mem->control_qh);
+    } else {
+        first = &c->mem->control_qh;
     }
-    if (was_running) outw(c->io_base, (uint16_t)(command | UHCI_CMD_RUN));
+    uint32_t root_link = uhci_link_qh(c, first);
+    for (int i = 0; i < 1024; i++) {
+        c->mem->frame_list[i] = root_link;
+    }
+    dma_sync_for_device(&c->dma);
+    if (was_running) {
+        uint16_t sts = inw(c->io_base + 0x02);
+        if (sts & 0x003Eu) outw(c->io_base + 0x02, (uint16_t)(sts & 0x003Eu));
+        outw(c->io_base, (uint16_t)((command & ~0x0018u) | UHCI_CMD_RUN | UHCI_CMD_MAXPACK));
+    }
+}
+
+static void uhci_ensure_running(uhci_controller_t* c, bool force_kick) {
+    uint16_t sts = inw(c->io_base + 0x02);
+    if (sts & 0x003Eu) {
+        outw(c->io_base + 0x02, (uint16_t)(sts & 0x003Eu));
+    }
+    uint16_t cmd = inw(c->io_base);
+    if (force_kick || (sts & UHCI_STS_HALTED) || !(cmd & UHCI_CMD_RUN)) {
+        uint16_t saved = 0;
+        (void)uhci_stop(c, &saved);
+        outw(c->io_base + 0x02, 0x003Eu);
+        outl(c->io_base + 0x08, uhci_phys(c, c->mem->frame_list));
+        outw(c->io_base + 0x06, (uint16_t)(inw(c->io_base + 0x06) & 0x03FFu));
+        dma_sync_for_device(&c->dma);
+        outw(c->io_base, UHCI_CMD_RUN | UHCI_CMD_MAXPACK);
+    } else if ((cmd & 0x0018u) || !(cmd & UHCI_CMD_MAXPACK)) {
+        outw(c->io_base, (uint16_t)((cmd & ~0x0018u) | UHCI_CMD_RUN | UHCI_CMD_MAXPACK));
+    }
 }
 
 static void uhci_program_td(uhci_controller_t* c, uhci_td_t* td,
@@ -215,14 +246,22 @@ static int uhci_control(usb_hci_t* hci, usb_device_t* device,
     c->mem->control_qh.element = uhci_phys(c, &c->mem->setup_td) & ~0x0Fu;
     dma_sync_for_device(&c->dma);
 
-    outw(c->io_base, (uint16_t)(inw(c->io_base) | UHCI_CMD_RUN));
+    uhci_ensure_running(c, false);
     int result = -1;
     bool failed = false;
     for (int timeout = 0; timeout < 500; timeout++) {
         dma_sync_for_cpu(&c->dma);
-        if (c->mem->setup_td.control & UHCI_TD_ERROR) {
+        uint32_t setup_ctrl = c->mem->setup_td.control;
+        if (setup_ctrl & UHCI_TD_ERROR) {
             failed = true;
             break;
+        }
+        /* Wake idle UHCI schedule walker (e.g. VMware virtual UHCI) if TD untouched */
+        if ((timeout == 5 || timeout == 25) &&
+            (setup_ctrl & UHCI_TD_ACTIVE) &&
+            (setup_ctrl & 0x007F0000u) == 0) {
+            c->mem->control_qh.element = uhci_phys(c, &c->mem->setup_td) & ~0x0Fu;
+            uhci_ensure_running(c, true);
         }
         for (int k = 0; k < num_data_tds; k++) {
             uint32_t ctrl = c->mem->data_tds[k].control;
@@ -408,12 +447,19 @@ static int uhci_bulk(usb_hci_t* hci, usb_device_t* device,
     c->mem->control_qh.element =
         uhci_phys(c, &c->mem->data_tds[0]) & ~0x0Fu;
     dma_sync_for_device(&c->dma);
-    outw(c->io_base, (uint16_t)(inw(c->io_base) | UHCI_CMD_RUN));
+    uhci_ensure_running(c, false);
 
     int result = -1;
     bool failed = false;
     for (int timeout = 0; timeout < 500; timeout++) {
         dma_sync_for_cpu(&c->dma);
+        if ((timeout == 5 || timeout == 25) &&
+            (c->mem->data_tds[0].control & UHCI_TD_ACTIVE) &&
+            (c->mem->data_tds[0].control & 0x007F0000u) == 0) {
+            c->mem->control_qh.element =
+                uhci_phys(c, &c->mem->data_tds[0]) & ~0x0Fu;
+            uhci_ensure_running(c, true);
+        }
         bool all_done = true;
         for (int k = 0; k < num_tds; k++) {
             uint32_t ctrl = c->mem->data_tds[k].control;

@@ -1802,7 +1802,9 @@ static process_t* pxe_load_ring3_process(const pxe_header_t* hdr, const uint8_t*
     uint64_t entry_va = load_bias + eh->e_entry;
     process_register(proc);
     if (!process_create_user_thread(proc, entry_va, sp)) {
+        uint32_t fpid = proc->pid;
         process_unlink(proc);
+        if (fpid) process_free_task_id(fpid);
         vmm_destroy_address_space(proc->pml4);
         kfree(proc);
         return NULL;
@@ -1937,7 +1939,9 @@ static process_t* pxe_load_ring0_process(const pxe_header_t* hdr, const uint8_t*
     process_register(proc);
     if (!process_create_r0_thread(proc, entry_va, argc, argv,
                                   (uint64_t)(uintptr_t)&g_pxe_ring0_api, stack_pages)) {
+        uint32_t fpid = proc->pid;
         process_unlink(proc);
+        if (fpid) process_free_task_id(fpid);
         pxe_release_r0_image(proc);
         kfree(proc);
         return NULL;

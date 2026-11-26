@@ -12,7 +12,7 @@ _Static_assert(offsetof(per_cpu_t, nmi_swapgs) == 40, "nmi_swapgs offset");
 _Static_assert(offsetof(per_cpu_t, syscall_count) == 48, "syscall_count offset");
 _Static_assert(offsetof(per_cpu_t, nmi_count) == 56, "nmi_count offset");
 _Static_assert(offsetof(per_cpu_t, self) == 64, "self offset");
-_Static_assert(offsetof(per_cpu_t, prev_release_ptr) == 160, "prev_release_ptr offset");
+_Static_assert(offsetof(per_cpu_t, prev_switch_thread) == 160, "prev_switch_thread offset");
 _Static_assert((sizeof(per_cpu_t) % 64) == 0, "per_cpu_t must be cache-line aligned");
 
 __attribute__((aligned(64)))

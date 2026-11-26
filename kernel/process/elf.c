@@ -147,7 +147,9 @@ static bool load_segment(process_t* process, const uint8_t* image, size_t image_
     }
 
     log_printf("[ELF] LOAD vaddr=0x%016llx mem=%llu KB file=%llu KB flags=%c%c%c\n",
-               phdr->p_vaddr, phdr->p_memsz / 1024, phdr->p_filesz / 1024,
+               phdr->p_vaddr,
+               (unsigned long long)((phdr->p_memsz + 1023ULL) / 1024ULL),
+               (unsigned long long)(phdr->p_filesz ? ((phdr->p_filesz + 1023ULL) / 1024ULL) : 0ULL),
                (phdr->p_flags & PF_R) ? 'R' : '-',
                (phdr->p_flags & PF_W) ? 'W' : '-',
                (phdr->p_flags & PF_X) ? 'X' : '-');
@@ -219,7 +221,7 @@ process_t* elf_load_process(const uint8_t* image, size_t size,
         const elf64_phdr_t* phdr =
             (const elf64_phdr_t*)(image + ehdr->e_phoff +
                                   (uint64_t)i * ehdr->e_phentsize);
-        if (phdr->p_type != PT_LOAD) continue;
+        if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) continue;
         if (!load_segment(process, image, size, phdr)) {
             log_printf("[ELF] Failed to load program header %u for %s.\n",
                        i, name ? name : "user");

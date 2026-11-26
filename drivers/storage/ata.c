@@ -45,6 +45,7 @@ typedef struct {
     uint64_t sectors;
     uint32_t sector_size;
     char model[48];
+    char serial[24];
 } ata_drive_t;
 
 static ata_drive_t g_ata_drives[ATA_MAX_CHANNELS * ATA_DRIVES_PER_CHANNEL];
@@ -114,6 +115,12 @@ static void ata_identify_string(char* output, uint16_t capacity,
         if (high && out + 1 < capacity) output[out++] = high;
         if (low && out + 1 < capacity) output[out++] = low;
     }
+    int start = 0;
+    while (start < out && output[start] == ' ') start++;
+    if (start > 0) {
+        memmove(output, output + start, (size_t)(out - start));
+        out -= start;
+    }
     while (out > 0 && output[out - 1] == ' ') out--;
     output[out] = '\0';
 }
@@ -162,6 +169,7 @@ static bool identify_drive(ata_drive_t* drive) {
     uint16_t identify[256];
     ata_read_words(drive->base + ATA_REG_DATA, identify, 256);
     ata_identify_string(drive->model, sizeof(drive->model), identify, 27, 20);
+    ata_identify_string(drive->serial, sizeof(drive->serial), identify, 10, 10);
     if (drive->packet) {
         drive->sector_size = 2048;
         drive->sectors = 0;
@@ -492,6 +500,86 @@ int ata_atapi_eject(blkdev_t* block) {
     return result;
 }
 
+static bool sector_has_nonzero(const uint8_t* sec) {
+    for (int i = 0; i < 512; i++) {
+        if (sec[i] != 0) return true;
+    }
+    return false;
+}
+
+static int ata_read_raw_sector(ata_drive_t* drive, uint64_t lba, void* buffer) {
+    blkdev_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.priv = drive;
+    return ata_read_blocks(&tmp, lba, 1, buffer);
+}
+
+static blkdev_t* ata_find_ahci_duplicate(ata_drive_t* drive) {
+    if (!drive || drive->packet || drive->sector_size != 512 || !drive->sectors) {
+        return NULL;
+    }
+
+    uint8_t ata_s0[512];
+    uint8_t ahci_s0[512];
+    uint8_t ata_sx[512];
+    uint8_t ahci_sx[512];
+    bool ata_s0_loaded = false;
+
+    for (int i = 0; i < blkdev_count(); i++) {
+        blkdev_t* ahci = blkdev_get(i);
+        if (!ahci || ahci->type != BLK_TYPE_AHCI || ahci->is_removable ||
+            ahci->sector_size != 512 || ahci->total_sectors != drive->sectors) {
+            continue;
+        }
+        /* Only deduplicate if the AHCI disk can actually complete DMA reads */
+        if (block_read(ahci, 0, 1, ahci_s0) != 0) {
+            continue;
+        }
+        if (!ata_s0_loaded) {
+            if (ata_read_raw_sector(drive, 0, ata_s0) != 0) return NULL;
+            ata_s0_loaded = true;
+        }
+        if (memcmp(ahci_s0, ata_s0, 512) != 0) continue;
+
+        bool any_nonzero = sector_has_nonzero(ata_s0);
+        if (drive->sectors > 1) {
+            if (block_read(ahci, 1, 1, ahci_sx) != 0 ||
+                ata_read_raw_sector(drive, 1, ata_sx) != 0) {
+                continue;
+            }
+            if (memcmp(ahci_sx, ata_sx, 512) != 0) continue;
+            if (sector_has_nonzero(ata_sx)) any_nonzero = true;
+        }
+
+        uint64_t probe_lba = 0;
+        if (ata_s0[510] == 0x55 && ata_s0[511] == 0xAA) {
+            uint32_t p0_lba = (uint32_t)ata_s0[0x1BE + 8] |
+                              ((uint32_t)ata_s0[0x1BE + 9] << 8) |
+                              ((uint32_t)ata_s0[0x1BE + 10] << 16) |
+                              ((uint32_t)ata_s0[0x1BE + 11] << 24);
+            if (p0_lba > 1 && p0_lba < drive->sectors) probe_lba = p0_lba;
+        }
+        if (!probe_lba && drive->sectors > 2048) probe_lba = 2048;
+        if (probe_lba) {
+            if (block_read(ahci, probe_lba, 1, ahci_sx) != 0 ||
+                ata_read_raw_sector(drive, probe_lba, ata_sx) != 0) {
+                continue;
+            }
+            if (memcmp(ahci_sx, ata_sx, 512) != 0) continue;
+            if (sector_has_nonzero(ata_sx)) any_nonzero = true;
+        }
+
+        if (any_nonzero) {
+            return ahci;
+        }
+        if (drive->serial[0] && ahci->serial[0] &&
+            strcmp(drive->serial, ahci->serial) == 0) {
+            return ahci;
+        }
+    }
+    return NULL;
+}
+
 static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
     for (uint8_t slave = 0; slave < 2; slave++) {
         if (g_ata_count >= ATA_MAX_CHANNELS * ATA_DRIVES_PER_CHANNEL) return;
@@ -502,7 +590,17 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
         drive->channel = channel;
         drive->slave = slave;
         if (!identify_drive(drive)) continue;
-        if (drive->packet) (void)atapi_probe_capacity(drive);
+        if (drive->packet) {
+            (void)atapi_probe_capacity(drive);
+        } else {
+            blkdev_t* dup = ata_find_ahci_duplicate(drive);
+            if (dup) {
+                log_printf("[ATA ] Skipping duplicate ATA %u:%u (%s, %llu sectors): already bound via %s\n",
+                           channel, slave, drive->model,
+                           (unsigned long long)drive->sectors, dup->name);
+                continue;
+            }
+        }
         int unit = channel * 2 + slave;
         blkdev_t* block = block_register(
             drive->packet ? "ata-atapi" : "ata-pio",
@@ -515,6 +613,7 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
         if (block) {
             if (drive->packet) block_set_scsi_cmd(block, ata_atapi_scsi_cmd);
             memcpy(block->model, drive->model, sizeof(block->model));
+            memcpy(block->serial, drive->serial, sizeof(block->serial));
             log_printf("[ATA ] %s %u:%u %s sectors=%llu\n",
                        drive->packet ? "ATAPI" : "ATA", channel, slave,
                        drive->model, (unsigned long long)drive->sectors);

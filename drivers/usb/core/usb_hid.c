@@ -695,6 +695,17 @@ static bool ensure_boot_layout(hid_descriptor_t* descriptor, bool keyboard) {
     return true;
 }
 
+static bool hid_descriptor_has_abs_mouse(const hid_descriptor_t* descriptor) {
+    if (!descriptor) return false;
+    for (uint8_t i = 0; i < descriptor->report_count; i++) {
+        if (descriptor->reports[i].used &&
+            (descriptor->reports[i].x_absolute || descriptor->reports[i].y_absolute)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static int attach_hid_endpoint(usb_device_t* device, usb_endpoint_t* endpoint) {
     uint8_t if_num = endpoint->interface_number;
     uint8_t if_subclass = endpoint->interface_subclass;
@@ -748,10 +759,43 @@ static int attach_hid_endpoint(usb_device_t* device, usb_endpoint_t* endpoint) {
     }
 
     int slot = -1;
-    for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
-        if (!g_hids[i].used) {
-            slot = i;
-            break;
+    if (descriptor.mouse) {
+        hid_state_t* existing_mouse = NULL;
+        int existing_slot = -1;
+        for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
+            if (g_hids[i].used && g_hids[i].device == device && g_hids[i].mouse) {
+                existing_mouse = &g_hids[i];
+                existing_slot = i;
+                break;
+            }
+        }
+        if (existing_mouse) {
+            bool new_abs = hid_descriptor_has_abs_mouse(&descriptor);
+            bool old_abs = hid_descriptor_has_abs_mouse(&existing_mouse->descriptor);
+            if (new_abs && !old_abs && !existing_mouse->keyboard) {
+                log_printf("[USBHID] Upgrading mouse on address=%u from endpoint 0x%02x to absolute endpoint 0x%02x\n",
+                           device->address, existing_mouse->endpoint->address,
+                           endpoint->address);
+                if (g_mice > 0) g_mice--;
+                memset(existing_mouse, 0, sizeof(*existing_mouse));
+                slot = existing_slot;
+            } else if (!descriptor.keyboard) {
+                log_printf("[USBHID] Skipping secondary mouse endpoint 0x%02x on address=%u (primary endpoint 0x%02x active)\n",
+                           endpoint->address, device->address,
+                           existing_mouse->endpoint->address);
+                return 0;
+            } else {
+                descriptor.mouse = false;
+            }
+        }
+    }
+
+    if (slot < 0) {
+        for (int i = 0; i < USB_HID_MAX_DEVICES; i++) {
+            if (!g_hids[i].used) {
+                slot = i;
+                break;
+            }
         }
     }
     if (slot < 0) return -1;

@@ -355,11 +355,15 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
 
     process_t* process = process_current();
     thread_t* thread = scheduler_current_thread();
-    if (!process || !thread || process->state == PROCESS_ZOMBIE) {
+    if (!process || !thread || process->terminating ||
+        process->state == PROCESS_ZOMBIE || thread->state == THREAD_ZOMBIE) {
+        per_cpu_request_reschedule();
         return -NEKO_EPERM;
     }
+    thread->resume_frame = frame;
 
     int64_t result = 0;
+    bool preserve_frame_rax = false;
     switch (frame->rax) {
         case NEKO_SYSCALL_EXIT:
             process_exit_current((int)frame->rdi);
@@ -409,9 +413,11 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_IPC_RECV: {
+            frame->rax = 0;
             result = ipc_recv_block(process, thread, frame->rdi, frame->rsi);
-            if (thread->state == THREAD_BLOCKED) {
-                result = 0;
+            if (result == 0) {
+                preserve_frame_rax = true;
+                result = (int64_t)frame->rax;
             }
             break;
         }
@@ -942,7 +948,12 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
         }
 
         case NEKO_SYSCALL_FUTEX_WAIT:
+            frame->rax = 0;
             result = scheduler_futex_wait(process, frame->rdi, (uint32_t)frame->rsi, frame->rdx);
+            if (result == 0) {
+                preserve_frame_rax = true;
+                result = (int64_t)frame->rax;
+            }
             break;
 
         case NEKO_SYSCALL_FUTEX_WAKE:
@@ -954,7 +965,11 @@ int64_t syscall_dispatcher(trap_frame_t* frame) {
             break;
     }
 
-    frame->rax = (uint64_t)result;
+    if (!preserve_frame_rax) {
+        frame->rax = (uint64_t)result;
+    } else {
+        result = (int64_t)frame->rax;
+    }
     return result;
 }
 

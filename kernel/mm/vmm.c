@@ -429,11 +429,12 @@ void vmm_init(void) {
     vmm_map_page(g_kernel_pml4, g_hhdm.hhdm_offset + 0xFEC00000, 0xFEC00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
     vmm_map_page(g_kernel_pml4, 0xFEC00000, 0xFEC00000, PTE_PRESENT | PTE_WRITABLE | PTE_PCD);
     log_printf("[VMM] LAPIC (0xFEE00000) & IOAPIC (0xFEC00000) MMIO pages mapped (PCD enabled).\n");
-
-    (void)vmm_remap_framebuffer_wc();
 }
 
 bool vmm_remap_framebuffer_wc(void) {
+    static phys_addr_t g_wc_mapped_page_phys = 0;
+    static uint64_t g_wc_mapped_pages = 0;
+
     if (!g_kernel_pml4) return false;
     if (!g_main_surface.framebuffer_virt || !g_main_surface.framebuffer_phys) {
         return false;
@@ -459,6 +460,12 @@ bool vmm_remap_framebuffer_wc(void) {
     phys_addr_t page_phys = fb_phys & PAGE_MASK;
     uint64_t fb_pages =
         (fb_size + page_offset + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    if (g_wc_mapped_pages == fb_pages && g_wc_mapped_page_phys == page_phys) {
+        g_main_surface.framebuffer_virt = (void*)(wc_base + page_offset);
+        return true;
+    }
+
     uint64_t wc_flags =
         PTE_PRESENT | PTE_WRITABLE | PTE_PWT | PTE_NX;
 
@@ -471,6 +478,8 @@ bool vmm_remap_framebuffer_wc(void) {
         }
     }
 
+    g_wc_mapped_page_phys = page_phys;
+    g_wc_mapped_pages = fb_pages;
     g_main_surface.framebuffer_virt = (void*)(wc_base + page_offset);
     __asm__ volatile ("mfence" : : : "memory");
     log_printf("[VMM] Framebuffer (%llu KB, %llu pages) mapped to dedicated PAT Write-Combining window @ %p!\n",

@@ -293,10 +293,6 @@ typedef struct {
     void (*exec)(void);
 } boot_step_t;
 
-static void run_vfs_init(void) {
-    vfs_init();
-}
-
 static void splash_draw_welcome_backdrop(unsigned char* v,
                                          int* out_win_x, int* out_win_y,
                                          int* out_win_w, int* out_win_h,
@@ -421,13 +417,13 @@ void splash_run(void)
         { zh ? "正在配置 PS/2 键盘缓冲区..." : "Configuring PS/2 keyboard buffer...",
           zh ? "IRQ1 中断已重映射" : "IRQ1 Remapped", 3, 56, 340, NULL },
         { zh ? "正在初始化 PS/2 鼠标流..." : "Initializing PS/2 mouse streaming...",
-          zh ? "辅助输入设备已启用" : "Auxiliary Device Enabled", 4, 70, 360, mouse_init },
+          zh ? "辅助输入设备已启用" : "Auxiliary Device Enabled", 4, 70, 360, NULL },
         { zh ? "正在探测磁盘存储与分区..." : "Probing ATA IDE storage & partitions...",
           zh ? "主从驱动器检测完成" : "Master/Slave Drive Check", 5, 82, 380, NULL },
         { zh ? "正在挂载驱动器与卷 (VFS)..." : "Mounting drives & volumes (VFS)...",
-          zh ? "虚拟文件系统已就绪" : "Virtual File System Ready", 6, 92, 380, run_vfs_init },
+          zh ? "虚拟文件系统已就绪" : "Virtual File System Ready", 6, 92, 380, NULL },
         { zh ? "正在加载桌面环境..." : "Loading desktop environment...",
-          zh ? "窗口管理器已就绪" : "Window Manager Ready", 7, 100, 360, wm_init }
+          zh ? "窗口管理器已就绪" : "Window Manager Ready", 7, 100, 360, NULL }
     };
 
     int current_percent = 5;

@@ -3,6 +3,7 @@
 #include "percpu.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "spinlock.h"
 #include "string.h"
 #include "log.h"
 
@@ -23,6 +24,7 @@ typedef struct {
     phys_addr_t phys;
 } ipc_shm_t;
 
+static spinlock_t g_ipc_lock = SPINLOCK_INIT;
 static ipc_queue_t g_queues[IPC_MAX_QUEUES];
 static ipc_shm_t g_shm_regions[IPC_MAX_SHM];
 
@@ -77,6 +79,7 @@ static bool create_shm(uint64_t id, size_t size) {
 }
 
 void ipc_init(void) {
+    spin_lock_init(&g_ipc_lock);
     memset(g_queues, 0, sizeof(g_queues));
     memset(g_shm_regions, 0, sizeof(g_shm_regions));
 
@@ -132,26 +135,41 @@ void ipc_wake_next_receiver(uint64_t queue_id) {
 
 int64_t ipc_send(uint64_t queue_id, const neko_message_t* message,
                  uint32_t sender_pid) {
-    ipc_queue_t* queue = find_queue(queue_id);
     log_printf("[IPC] PID %u send queue=%llu type=0x%llx\n",
                sender_pid, (unsigned long long)queue_id,
                message ? (unsigned long long)message->type : 0);
-    if (!queue) return -NEKO_ENOENT;
     if (!message) return -NEKO_EINVAL;
+
+    uint64_t flags = spin_lock_irqsave(&g_ipc_lock);
+    ipc_queue_t* queue = find_queue(queue_id);
+    if (!queue) {
+        spin_unlock_irqrestore(&g_ipc_lock, flags);
+        return -NEKO_ENOENT;
+    }
 
     neko_message_t copy = *message;
     copy.sender_pid = sender_pid;
-    if (!enqueue(queue, &copy)) return -NEKO_ENOSPC;
+    if (!enqueue(queue, &copy)) {
+        spin_unlock_irqrestore(&g_ipc_lock, flags);
+        return -NEKO_ENOSPC;
+    }
 
     ipc_wake_next_receiver(queue_id);
+    spin_unlock_irqrestore(&g_ipc_lock, flags);
     return 0;
 }
 
 int64_t ipc_recv(uint64_t queue_id, neko_message_t* message) {
-    ipc_queue_t* queue = find_queue(queue_id);
-    if (!queue) return -NEKO_ENOENT;
     if (!message) return -NEKO_EINVAL;
-    return dequeue(queue, message) ? 0 : -NEKO_EAGAIN;
+    uint64_t flags = spin_lock_irqsave(&g_ipc_lock);
+    ipc_queue_t* queue = find_queue(queue_id);
+    if (!queue) {
+        spin_unlock_irqrestore(&g_ipc_lock, flags);
+        return -NEKO_ENOENT;
+    }
+    bool ok = dequeue(queue, message);
+    spin_unlock_irqrestore(&g_ipc_lock, flags);
+    return ok ? 0 : -NEKO_EAGAIN;
 }
 
 int64_t ipc_recv_block(process_t* process, thread_t* thread, uint64_t queue_id,
@@ -161,8 +179,10 @@ int64_t ipc_recv_block(process_t* process, thread_t* thread, uint64_t queue_id,
         return -NEKO_EFAULT;
     }
 
+    uint64_t flags = spin_lock_irqsave(&g_ipc_lock);
     ipc_queue_t* queue = find_queue(queue_id);
     if (!queue) {
+        spin_unlock_irqrestore(&g_ipc_lock, flags);
         log_printf("[IPC] PID %u receive missing queue=%llu\n",
                    process->pid, (unsigned long long)queue_id);
         return -NEKO_ENOENT;
@@ -170,6 +190,7 @@ int64_t ipc_recv_block(process_t* process, thread_t* thread, uint64_t queue_id,
 
     neko_message_t message;
     if (dequeue(queue, &message)) {
+        spin_unlock_irqrestore(&g_ipc_lock, flags);
         log_printf("[IPC] PID %u received queue=%llu immediately.\n",
                    process->pid, (unsigned long long)queue_id);
         return process_copy_to_user(process, user_dst, &message, sizeof(message))
@@ -177,14 +198,14 @@ int64_t ipc_recv_block(process_t* process, thread_t* thread, uint64_t queue_id,
                    : -NEKO_EFAULT;
     }
 
+    bool blocked = scheduler_block_ipc(thread, queue_id, user_dst);
+    spin_unlock_irqrestore(&g_ipc_lock, flags);
+    if (!blocked) {
+        return -NEKO_ESRCH;
+    }
     log_printf("[IPC] PID %u blocking on queue=%llu dst=0x%016llx\n",
                process->pid, (unsigned long long)queue_id,
                (unsigned long long)user_dst);
-    thread->wait_queue_id = queue_id;
-    thread->wait_user_dst = user_dst;
-    thread->state = THREAD_BLOCKED;
-    process->state = PROCESS_BLOCKED;
-    per_cpu_request_reschedule();
     return 0;
 }
 

@@ -249,12 +249,15 @@ void usb_hub_detach(usb_device_t* hub) {
 }
 
 void usb_hub_poll(void) {
+    if (g_hub_count <= 0) return;
     uint64_t now = apic_get_ticks();
     bool status_change = false;
+    bool all_have_intr = true;
     for (int i = 0; i < g_hub_count; i++) {
         hub_state_t* state = &g_hubs[i];
-        if (!state->device || !state->status_endpoint ||
-            !state->device->hci || !state->device->hci->intr_in) {
+        if (!state->device || !state->device->hci) continue;
+        if (!state->status_endpoint || !state->device->hci->intr_in) {
+            all_have_intr = false;
             continue;
         }
         uint8_t bitmap[8];
@@ -264,7 +267,8 @@ void usb_hub_poll(void) {
             bitmap, state->status_endpoint->max_packet);
         if (length > 0) status_change = true;
     }
-    if (!status_change && now - g_last_poll_tick < 50) return;
+    uint64_t poll_interval = all_have_intr ? 500ULL : 50ULL;
+    if (!status_change && now - g_last_poll_tick < poll_interval) return;
     g_last_poll_tick = now;
 
     for (int i = 0; i < g_hub_count; i++) {

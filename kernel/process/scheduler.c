@@ -257,10 +257,10 @@ static void switch_to_locked(per_cpu_t* cpu, thread_t* previous, thread_t* next)
                 if (previous->process) previous->process->state = PROCESS_READY;
             }
             fpu_save(previous->fpu_state);
-            /* Defer releasing previous->running_cpu until RSP switches to next's stack */
-            cpu->prev_release_ptr = &previous->running_cpu;
+            /* Defer releasing previous->running_cpu until RSP is on next's stack */
+            cpu->prev_switch_thread = previous;
         } else {
-            cpu->prev_release_ptr = NULL;
+            cpu->prev_switch_thread = NULL;
         }
 
         if (g_boot_switch_logs < 6 && cpu->cpu_id == 0) {
@@ -294,7 +294,7 @@ static void switch_to_locked(per_cpu_t* cpu, thread_t* previous, thread_t* next)
 
         fpu_restore(next->fpu_state);
     } else {
-        cpu->prev_release_ptr = NULL;
+        cpu->prev_switch_thread = NULL;
     }
 
     next->running_cpu = (int32_t)cpu->cpu_id;
@@ -394,7 +394,64 @@ void scheduler_idle_entry(void) {
     }
 }
 
+void scheduler_finish_switch(thread_t* prev) {
+    if (!prev) return;
+    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    int32_t my_cpu = (int32_t)this_cpu_id();
+    if (prev->running_cpu == my_cpu) {
+        prev->running_cpu = -1;
+    }
+    if (!prev->is_idle && prev->state == THREAD_READY && prev->running_cpu == -1) {
+        send_resched_ipi_if_idle_locked(prev->pinned_cpu);
+    }
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+}
+
+uint32_t scheduler_terminate_process_threads(process_t* proc,
+                                             thread_t* caller_thread,
+                                             uint64_t reap_delay_ticks) {
+    if (!proc) return 0;
+    uint32_t killed_subs = 0;
+    uint32_t my_cpu = this_cpu_id();
+    uint32_t total_cpus = smp_get_cpu_count();
+
+    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    proc->state = PROCESS_ZOMBIE;
+    proc->zombie_reap_tick = g_tick_count_100hz + reap_delay_ticks;
+    proc->alive_thread_count = 0;
+
+    for (thread_t* t = proc->threads_head; t; t = t->proc_next) {
+        if (t != caller_thread && t != proc->main_thread && t->state != THREAD_ZOMBIE) {
+            killed_subs++;
+        }
+        t->state = THREAD_ZOMBIE;
+        t->wake_tick = 0;
+        t->wake_ns = 0;
+        t->wait_queue_id = 0;
+        t->wait_user_dst = 0;
+        t->wait_win_id = -1;
+        t->futex_phys = 0;
+        t->join_target_tid = 0;
+
+        int32_t rcpu = t->running_cpu;
+        if (rcpu >= 0 && (uint32_t)rcpu != my_cpu &&
+            (uint32_t)rcpu < total_cpus && (uint32_t)rcpu < SMP_MAX_CPUS &&
+            g_per_cpus[rcpu].online) {
+            __atomic_store_n(&g_per_cpus[rcpu].need_resched, 1ULL, __ATOMIC_RELEASE);
+            if (g_scheduler_ready) {
+                g_per_cpus[rcpu].resched_ipi_pending = 1;
+                lapic_send_ipi(g_per_cpus[rcpu].lapic_id, VEC_IPI_RESCHED);
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+    return killed_subs;
+}
+
 static bool all_proc_threads_reapable_locked(process_t* p) {
+    if (!__atomic_load_n(&p->zombie_committed, __ATOMIC_ACQUIRE)) {
+        return false;
+    }
     for (thread_t* t = p->threads_head; t; t = t->proc_next) {
         if (t->state != THREAD_ZOMBIE || t->running_cpu != -1) {
             return false;
@@ -453,7 +510,8 @@ void scheduler_reap_zombies(void) {
         t = nxt;
     }
 
-    /* 2. Reap fully exited zombie processes */
+    /* 2. Reap fully exited zombie processes (lock order: g_sched_lock -> g_proc_lock) */
+    uint64_t pflags = process_lock_list();
     process_t* p = process_head();
     while (p) {
         process_t* next_p = p->next;
@@ -472,12 +530,13 @@ void scheduler_reap_zombies(void) {
             for (thread_t* pt = p->threads_head; pt; pt = pt->proc_next) {
                 unlink_thread_global_locked(pt);
             }
-            process_unlink(p);
+            process_unlink_locked(p);
             p->next = reap_procs;
             reap_procs = p;
         }
         p = next_p;
     }
+    process_unlock_list(pflags);
 
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
@@ -485,6 +544,10 @@ void scheduler_reap_zombies(void) {
     while (reap_subthreads) {
         thread_t* st = reap_subthreads;
         reap_subthreads = st->next;
+        uint32_t owner_pid = st->process ? st->process->pid : 0;
+        if (st->tid != 0 && st->tid != (uint64_t)owner_pid) {
+            process_free_task_id(st->tid);
+        }
         if (st->kernel_stack_phys) {
             pmm_free_pages(st->kernel_stack_phys, st->kernel_stack_pages);
         }
@@ -502,6 +565,9 @@ void scheduler_reap_zombies(void) {
         thread_t* pt = rp->threads_head;
         while (pt) {
             thread_t* next_pt = pt->proc_next;
+            if (pt->tid != 0 && pt->tid != (uint64_t)rp->pid) {
+                process_free_task_id(pt->tid);
+            }
             if (pt->kernel_stack_phys) {
                 pmm_free_pages(pt->kernel_stack_phys, pt->kernel_stack_pages);
             }
@@ -528,7 +594,11 @@ void scheduler_reap_zombies(void) {
         }
         rp->regions = NULL;
 
+        uint32_t freed_pid = rp->pid;
         kfree(rp);
+        if (freed_pid != 0) {
+            process_free_task_id(freed_pid);
+        }
     }
 }
 
@@ -635,6 +705,7 @@ trap_frame_t* scheduler_handle_irq(trap_frame_t* frame) {
             current->resume_frame = frame;
         }
         thread_t* next = choose_next_locked(cpu->cpu_id, current, true);
+        if (!next) next = (thread_t*)cpu->idle_thread;
         if (!next) {
             spin_unlock_irqrestore(&g_sched_lock, flags);
             return frame;
@@ -723,6 +794,21 @@ trap_frame_t* scheduler_handle_ipi_resched(trap_frame_t* frame) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     cpu->resched_ipi_pending = 0;
 
+    /* Immediately vacate CPU if current thread exited or was killed remotely */
+    if (current->state != THREAD_RUNNING) {
+        if (current->state != THREAD_ZOMBIE) {
+            current->resume_frame = frame;
+        }
+        thread_t* next = choose_next_locked(cpu->cpu_id, current, true);
+        if (!next) next = (thread_t*)cpu->idle_thread;
+        if (next && next != current) {
+            switch_to_locked(cpu, current, next);
+            trap_frame_t* nf = next->resume_frame;
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return nf;
+        }
+    }
+
     if (cpu->cpu_id == 0 && !current->is_compositor && g_compositor_thread &&
         g_compositor_thread->state == THREAD_READY &&
         g_compositor_thread->running_cpu == -1) {
@@ -796,10 +882,16 @@ void scheduler_request_reschedule(void) {
 void scheduler_mark_current_ready(void) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     thread_t* cur = (thread_t*)this_cpu()->current_thread;
-    if (cur && cur->state == THREAD_RUNNING) {
-        cur->state = THREAD_READY;
-        if (cur->process && cur->process->state != PROCESS_ZOMBIE) {
-            cur->process->state = PROCESS_READY;
+    if (cur) {
+        if (cur->state == THREAD_ZOMBIE ||
+            (cur->process && cur->process->state == PROCESS_ZOMBIE)) {
+            cur->state = THREAD_ZOMBIE;
+            per_cpu_request_reschedule();
+        } else if (cur->state == THREAD_RUNNING) {
+            cur->state = THREAD_READY;
+            if (cur->process && cur->process->state != PROCESS_ZOMBIE) {
+                cur->process->state = PROCESS_READY;
+            }
         }
     }
     spin_unlock_irqrestore(&g_sched_lock, flags);
@@ -809,6 +901,13 @@ void scheduler_block_current(uint64_t wake_tick) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     thread_t* cur = (thread_t*)this_cpu()->current_thread;
     if (cur) {
+        if (cur->state == THREAD_ZOMBIE ||
+            (cur->process && cur->process->state == PROCESS_ZOMBIE)) {
+            cur->state = THREAD_ZOMBIE;
+            per_cpu_request_reschedule();
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return;
+        }
         cur->wake_tick = wake_tick;
         cur->wake_ns = 0;
         cur->state = THREAD_BLOCKED;
@@ -825,6 +924,13 @@ void scheduler_block_current_ns(uint64_t wake_ns) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     thread_t* cur = (thread_t*)this_cpu()->current_thread;
     if (cur) {
+        if (cur->state == THREAD_ZOMBIE ||
+            (cur->process && cur->process->state == PROCESS_ZOMBIE)) {
+            cur->state = THREAD_ZOMBIE;
+            per_cpu_request_reschedule();
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return;
+        }
         cur->wake_tick = 0;
         cur->wake_ns = wake_ns;
         cur->state = THREAD_BLOCKED;
@@ -841,6 +947,13 @@ void scheduler_block_on_window(int32_t win_id, uint64_t timeout_ticks) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     thread_t* cur = (thread_t*)this_cpu()->current_thread;
     if (cur) {
+        if (cur->state == THREAD_ZOMBIE ||
+            (cur->process && cur->process->state == PROCESS_ZOMBIE)) {
+            cur->state = THREAD_ZOMBIE;
+            per_cpu_request_reschedule();
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return;
+        }
         cur->wait_win_id = win_id;
         cur->wake_tick = timeout_ticks ? (g_tick_count_100hz + timeout_ticks) : 0;
         cur->wake_ns = 0;
@@ -854,10 +967,41 @@ void scheduler_block_on_window(int32_t win_id, uint64_t timeout_ticks) {
     spin_unlock_irqrestore(&g_sched_lock, flags);
 }
 
+bool scheduler_block_ipc(thread_t* thread, uint64_t queue_id, uint64_t user_dst) {
+    if (!thread) return false;
+    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    if (thread->state == THREAD_ZOMBIE ||
+        (thread->process && thread->process->state == PROCESS_ZOMBIE)) {
+        thread->state = THREAD_ZOMBIE;
+        per_cpu_request_reschedule();
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return false;
+    }
+    thread->wait_queue_id = queue_id;
+    thread->wait_user_dst = user_dst;
+    thread->wake_tick = 0;
+    thread->wake_ns = 0;
+    thread->state = THREAD_BLOCKED;
+    if (thread->process && thread->process->alive_thread_count <= 1 &&
+        thread->process->state != PROCESS_ZOMBIE) {
+        thread->process->state = PROCESS_BLOCKED;
+    }
+    per_cpu_request_reschedule();
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+    return true;
+}
+
 void scheduler_block_on_join(uint64_t target_tid) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
     thread_t* cur = (thread_t*)this_cpu()->current_thread;
     if (cur) {
+        if (cur->state == THREAD_ZOMBIE ||
+            (cur->process && cur->process->state == PROCESS_ZOMBIE)) {
+            cur->state = THREAD_ZOMBIE;
+            per_cpu_request_reschedule();
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return;
+        }
         cur->join_target_tid = target_tid;
         cur->wake_tick = 0;
         cur->wake_ns = 0;
@@ -869,6 +1013,16 @@ void scheduler_block_on_join(uint64_t target_tid) {
 
 void scheduler_wake_joiners(uint64_t exited_tid) {
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    thread_t* self = (thread_t*)this_cpu()->current_thread;
+    if (self && self->tid == exited_tid) {
+        self->state = THREAD_ZOMBIE;
+        self->wake_tick = 0;
+        self->wake_ns = 0;
+        self->wait_queue_id = 0;
+        self->wait_win_id = -1;
+        self->futex_phys = 0;
+        self->join_target_tid = 0;
+    }
     for (thread_t* t = g_thread_list; t; t = t->next) {
         if (t->state == THREAD_BLOCKED && t->join_target_tid == exited_tid) {
             t->join_target_tid = 0;
@@ -892,17 +1046,23 @@ int scheduler_futex_wait(process_t* proc, uint64_t uaddr, uint32_t expected, uin
     if (!phys) return -NEKO_EFAULT;
 
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    thread_t* cur = (thread_t*)this_cpu()->current_thread;
+    if (!cur) {
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return -NEKO_EINVAL;
+    }
+    if (cur->state == THREAD_ZOMBIE || proc->state == PROCESS_ZOMBIE) {
+        cur->state = THREAD_ZOMBIE;
+        per_cpu_request_reschedule();
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return -NEKO_ESRCH;
+    }
+
     volatile uint32_t* kptr = (volatile uint32_t*)phys_to_virt(phys);
     uint32_t cur_val = __atomic_load_n(kptr, __ATOMIC_ACQUIRE);
     if (cur_val != expected) {
         spin_unlock_irqrestore(&g_sched_lock, flags);
         return -NEKO_EAGAIN;
-    }
-
-    thread_t* cur = (thread_t*)this_cpu()->current_thread;
-    if (!cur) {
-        spin_unlock_irqrestore(&g_sched_lock, flags);
-        return -NEKO_EINVAL;
     }
 
     cur->futex_phys = phys;

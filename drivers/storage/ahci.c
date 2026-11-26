@@ -91,6 +91,7 @@ typedef struct ahci_port {
     uint32_t sector_size;
     bool initialized;
     char model[48];
+    char serial[24];
     dma_buffer_t dma;
     ahci_port_dma_t* memory;
 } ahci_port_t;
@@ -265,17 +266,29 @@ static uint16_t identify_word(const uint16_t* identify, int index) {
     return identify[index];
 }
 
-static void identify_string(char* output, unsigned int capacity,
-                            const uint16_t* identify) {
+static void identify_string_words(char* output, unsigned int capacity,
+                                  const uint16_t* identify, int first,
+                                  int count) {
     unsigned int out = 0;
-    for (int index = 27; index < 47 && out + 1 < capacity; index++) {
+    for (int index = first; index < first + count && out + 1 < capacity; index++) {
         char high = (char)(identify[index] >> 8);
         char low = (char)identify[index];
         if (high && out + 1 < capacity) output[out++] = high;
         if (low && out + 1 < capacity) output[out++] = low;
     }
+    unsigned int start = 0;
+    while (start < out && output[start] == ' ') start++;
+    if (start > 0) {
+        memmove(output, output + start, out - start);
+        out -= start;
+    }
     while (out && output[out - 1] == ' ') out--;
     output[out] = '\0';
+}
+
+static void identify_string(char* output, unsigned int capacity,
+                            const uint16_t* identify) {
+    identify_string_words(output, capacity, identify, 27, 20);
 }
 
 static uint32_t be32(const uint8_t* data) {
@@ -515,6 +528,7 @@ static int ahci_probe_port(ahci_port_t* port) {
             return -1;
         }
         identify_string(port->model, sizeof(port->model), identify);
+        identify_string_words(port->serial, sizeof(port->serial), identify, 10, 10);
         port->sector_size = 512;
         port->sectors = ((uint64_t)identify_word(identify, 103) << 48) |
                         ((uint64_t)identify_word(identify, 102) << 32) |
@@ -545,6 +559,7 @@ static int ahci_probe_port(ahci_port_t* port) {
     if (!block) return -1;
     if (port->packet) block_set_scsi_cmd(block, ahci_atapi_scsi_cmd);
     memcpy(block->model, port->model, sizeof(block->model));
+    memcpy(block->serial, port->serial, sizeof(block->serial));
     log_printf("[AHCI] Controller %u port %u %s: %s, %llu sectors\n",
                port->controller->index, port->index,
                port->packet ? "ATAPI" : "SATA", port->model,

@@ -35,6 +35,7 @@ typedef struct blkdev {
     uint32_t media_generation;
     char name[32];
     char model[48];
+    char serial[24];
     void* priv;
 
     int (*read_sectors)(struct blkdev* dev, uint64_t lba, uint32_t count,

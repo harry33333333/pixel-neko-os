@@ -25,15 +25,21 @@ void storage_init(void) {
      */
     ahci_init();
     boot_screen_tick();
-    part_scan_all();
-    boot_screen_tick();
 
-    if (!storage_has_supported_partition() ||
-        pci_find_class(0x01, 0x01) != NULL) {
+    if (pci_find_class(0x01, 0x01) != NULL) {
         ata_init();
         boot_screen_tick();
         part_scan_all();
         boot_screen_tick();
+    } else {
+        part_scan_all();
+        boot_screen_tick();
+        if (!storage_has_supported_partition()) {
+            ata_init();
+            boot_screen_tick();
+            part_scan_all();
+            boot_screen_tick();
+        }
     }
     log_printf("[STOR] Block devices ready: %d, partitions: %d\n",
                blkdev_count(), g_partition_count);

@@ -10,6 +10,7 @@ global arch_restore_trap_frame
 extern syscall_dispatcher
 extern syscall_reschedule
 extern syscall_bad_return
+extern scheduler_finish_switch
 extern lapic_send_nmi_self
 extern per_cpu_nmi_test_pending
 
@@ -173,12 +174,18 @@ arch_enter_thread:
 arch_restore_trap_frame:
     mov qword [gs:24], 0            ; per_cpu.switch_gs = 0
 
-    ; Release previous thread's running_cpu now that RSP is on the next thread's stack
-    mov rax, [gs:160]
-    test rax, rax
+    ; Finalize previous thread switch now that RSP is safely on next thread's stack
+    mov rdi, [gs:160]
+    test rdi, rdi
     jz .no_prev_release
     mov qword [gs:160], 0
-    mov dword [rax], -1
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    cld
+    call scheduler_finish_switch
+    mov rsp, rbp
+    pop rbp
 .no_prev_release:
 
     test byte [rsp + 18*8], 3       ; frame->cs

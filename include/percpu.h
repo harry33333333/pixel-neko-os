@@ -54,8 +54,8 @@ typedef struct per_cpu {
     volatile uint64_t ticks_kernel; /* +144 */
     volatile uint64_t ticks_user;   /* +152 */
 
-    /* Deferred running_cpu release pointer executed after RSP switches to next thread (+160) */
-    volatile int32_t* prev_release_ptr; /* +160 */
+    /* Deferred previous-thread pointer finalized after RSP switches to next thread (+160) */
+    void* prev_switch_thread;          /* +160 */
 
     uint64_t _reserved[3];          /* pad to 192 bytes (3 cache lines) */
 } __attribute__((aligned(64))) per_cpu_t;

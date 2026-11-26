@@ -21,7 +21,7 @@ fi
 
 BUILD_ID=$(grep "OS_BUILD" include/version.h | head -1 | cut -d '"' -f 2)
 if [ -z "$BUILD_ID" ]; then
-    BUILD_ID="26A350d"
+    BUILD_ID="26A351a"
 fi
 
 ISO_NAME="pixel-neko-os_${BUILD_ID}.iso"
