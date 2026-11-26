@@ -559,7 +559,7 @@ static int ahci_probe_port(ahci_port_t* port) {
     if (!block) return -1;
     if (port->packet) block_set_scsi_cmd(block, ahci_atapi_scsi_cmd);
     memcpy(block->model, port->model, sizeof(block->model));
-    memcpy(block->serial, port->serial, sizeof(block->serial));
+    block_set_serial(block, port->serial);
     log_printf("[AHCI] Controller %u port %u %s: %s, %llu sectors\n",
                port->controller->index, port->index,
                port->packet ? "ATAPI" : "SATA", port->model,

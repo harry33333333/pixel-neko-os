@@ -5,6 +5,7 @@
 
 blkdev_t g_blkdevs[MAX_BLKDEV];
 static blkdev_scsi_cmd_fn g_blkdev_scsi_cmds[MAX_BLKDEV];
+static char g_blkdev_serials[MAX_BLKDEV][24];
 static int g_block_count;
 static kmutex_t g_blk_io_mutex = KMUTEX_INIT;
 
@@ -23,6 +24,7 @@ void blkdev_init(void) {
     kmutex_init(&g_blk_io_mutex);
     memset(g_blkdevs, 0, sizeof(g_blkdevs));
     memset(g_blkdev_scsi_cmds, 0, sizeof(g_blkdev_scsi_cmds));
+    memset(g_blkdev_serials, 0, sizeof(g_blkdev_serials));
     g_block_count = 0;
 }
 
@@ -50,6 +52,7 @@ blkdev_t* block_register(const char* name, blk_type_t type, int unit,
     blkdev_t* dev = &g_blkdevs[slot];
     memset(dev, 0, sizeof(*dev));
     g_blkdev_scsi_cmds[slot] = NULL;
+    g_blkdev_serials[slot][0] = '\0';
     dev->id = slot;
     dev->type = type;
     dev->unit = unit;
@@ -77,6 +80,7 @@ void block_unregister(blkdev_t* dev) {
     }
     int slot = (int)(dev - g_blkdevs);
     g_blkdev_scsi_cmds[slot] = NULL;
+    g_blkdev_serials[slot][0] = '\0';
     memset(dev, 0, sizeof(*dev));
 }
 
@@ -177,4 +181,16 @@ int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
     int rc = g_blkdev_scsi_cmds[slot](dev, cdb, cdb_len, buffer, buffer_len);
     kmutex_unlock(&g_blk_io_mutex);
     return rc;
+}
+
+void block_set_serial(blkdev_t* dev, const char* serial) {
+    if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) return;
+    int slot = (int)(dev - g_blkdevs);
+    block_copy_name(g_blkdev_serials[slot], sizeof(g_blkdev_serials[slot]), serial);
+}
+
+const char* block_get_serial(const blkdev_t* dev) {
+    if (!dev || dev < g_blkdevs || dev >= g_blkdevs + g_block_count) return "";
+    int slot = (int)(dev - g_blkdevs);
+    return g_blkdev_serials[slot];
 }

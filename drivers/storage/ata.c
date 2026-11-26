@@ -572,8 +572,9 @@ static blkdev_t* ata_find_ahci_duplicate(ata_drive_t* drive) {
         if (any_nonzero) {
             return ahci;
         }
-        if (drive->serial[0] && ahci->serial[0] &&
-            strcmp(drive->serial, ahci->serial) == 0) {
+        const char* ahci_serial = block_get_serial(ahci);
+        if (drive->serial[0] && ahci_serial && ahci_serial[0] &&
+            strcmp(drive->serial, ahci_serial) == 0) {
             return ahci;
         }
     }
@@ -613,7 +614,7 @@ static void probe_channel(uint16_t base, uint16_t control, uint8_t channel) {
         if (block) {
             if (drive->packet) block_set_scsi_cmd(block, ata_atapi_scsi_cmd);
             memcpy(block->model, drive->model, sizeof(block->model));
-            memcpy(block->serial, drive->serial, sizeof(block->serial));
+            block_set_serial(block, drive->serial);
             log_printf("[ATA ] %s %u:%u %s sectors=%llu\n",
                        drive->packet ? "ATAPI" : "ATA", channel, slave,
                        drive->model, (unsigned long long)drive->sectors);

@@ -35,7 +35,6 @@ typedef struct blkdev {
     uint32_t media_generation;
     char name[32];
     char model[48];
-    char serial[24];
     void* priv;
 
     int (*read_sectors)(struct blkdev* dev, uint64_t lba, uint32_t count,
@@ -77,6 +76,8 @@ void block_set_scsi_cmd(blkdev_t* dev, blkdev_scsi_cmd_fn fn);
 int blkdev_has_scsi_cmd(const blkdev_t* dev);
 int blkdev_scsi_cmd(blkdev_t* dev, const uint8_t* cdb, uint8_t cdb_len,
                     void* buffer, uint32_t buffer_len);
+void block_set_serial(blkdev_t* dev, const char* serial);
+const char* block_get_serial(const blkdev_t* dev);
 blkdev_t* blkdev_find_type(blk_type_t type, int unit);
 
 #endif
