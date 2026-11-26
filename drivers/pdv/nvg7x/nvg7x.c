@@ -603,6 +603,20 @@ static void nvidia_restore_mode_state(const nvidia_mode_state_t* state) {
     nvidia_disable_attribute_palette();
 }
 
+static void nvidia_load_linear_palette(void) {
+    if (!g_regs) return;
+    volatile unsigned char* pdio =
+        g_regs + NV_PRAMDAC_BASE + (unsigned int)g_head * NV_HEAD_STRIDE + 0x00001000U;
+    pdv_mmio_write8(pdio + 0x03C6U, 0xFFU);
+    pdv_mmio_write8(pdio + 0x03C8U, 0x00U);
+    for (unsigned int i = 0; i < 256U; i++) {
+        unsigned char c = (unsigned char)i;
+        pdv_mmio_write8(pdio + 0x03C9U, c);
+        pdv_mmio_write8(pdio + 0x03C9U, c);
+        pdv_mmio_write8(pdio + 0x03C9U, c);
+    }
+}
+
 static int nvidia_calc_vpll(uint32_t target_khz, uint32_t ref_khz,
                             uint32_t* out_pll) {
     if (!target_khz || !ref_khz || !out_pll || target_khz > 400000U) {
@@ -814,7 +828,7 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
     nv_vga_write(0x1c, (unsigned char)(nv_vga_read(0x1c) & ~0x20U));
     nv_vga_write(0x20, (unsigned char)0x80U);
     nv_vga_write(0x25, (unsigned char)screen_value);
-    nv_vga_write(0x28, (unsigned char)pixel_mode);
+    nv_vga_write(0x28, (unsigned char)((nv_vga_read(0x28) & 0x80U) | pixel_mode));
     nv_vga_write(0x2d, (unsigned char)horiz_value);
     nv_vga_write(0x39, 0xFFU);
     nv_vga_write(0x41, (unsigned char)extra_value);
@@ -873,6 +887,7 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
     }
     unsigned int general = bpp == 16 ? 0x00101100U : 0x00100100U;
     nvidia_ramdac_write(NV_RAMDAC_GENERAL_REG, general | 0x30U);
+    nvidia_load_linear_palette();
     nvidia_write_graphics(0, 0x00U);
     nvidia_write_graphics(1, 0x00U);
     nvidia_write_graphics(2, 0x00U);
@@ -941,8 +956,8 @@ static int nvidia_g7x_set_mode_ex(int w, int h, int bpp, int refresh_hz,
     g_cur_bpp = bpp;
     g_cur_pitch = pitch;
     g_cur_refresh_hz = timing.refresh_hz ? (int)timing.refresh_hz : refresh_hz;
-    if (g_vblank_cb) {
-        nvidia_pcrtc_write(NV_PCRTC_INTR_0, 1U);
+    if (g_vblank_cb && pdv_mmio_read32(g_regs + 0x00000140U) != 0U) {
+        nvidia_pcrtc_write(NV_PCRTC_INTR_0, 0xFFFFFFFFU);
         nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 1U);
     }
     g_status = g_is_nv4x ? "NV4x CRTC/VPLL hardware modeset active"
@@ -961,10 +976,33 @@ static int nvidia_g7x_get_current_refresh_hz(void) {
 static void nvidia_g7x_irq_handler(void* ctx) {
     (void)ctx;
     if (!g_active || !g_regs || g_is_pascal_nvdisplay) return;
+    uint32_t pmc_intr = pdv_mmio_read32(g_regs + 0x00000100U);
+    if (pmc_intr == 0U) return;
+
     uint32_t intr = nvidia_pcrtc_read(NV_PCRTC_INTR_0);
-    if (intr & 1U) {
-        nvidia_pcrtc_write(NV_PCRTC_INTR_0, 1U);
-        if (g_vblank_cb) g_vblank_cb();
+    if (intr != 0U) {
+        nvidia_pcrtc_write(NV_PCRTC_INTR_0, intr);
+    }
+
+    unsigned int other_head = g_head ? 0U : 1U;
+    volatile unsigned char* other_pcrtc =
+        g_regs + NV_PCRTC_BASE + other_head * NV_HEAD_STRIDE;
+    uint32_t other_intr = pdv_mmio_read32(other_pcrtc + NV_PCRTC_INTR_0);
+    if (other_intr != 0U) {
+        pdv_mmio_write32(other_pcrtc + NV_PCRTC_INTR_EN_0, 0U);
+        pdv_mmio_write32(other_pcrtc + NV_PCRTC_INTR_0, other_intr);
+    }
+
+    /* Safety circuit-breaker: disarm INTA if any unmasked engine keeps PMC_INTR_0 asserted */
+    if (pdv_mmio_read32(g_regs + 0x00000100U) != 0U) {
+        pdv_mmio_write32(g_regs + 0x00000140U, 0U);
+        nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 0U);
+        g_vblank_cb = 0;
+        return;
+    }
+
+    if ((intr & 1U) && g_vblank_cb) {
+        g_vblank_cb();
     }
 }
 
@@ -994,12 +1032,27 @@ static int nvidia_g7x_enable_vblank_irq(void (*cb)(void)) {
             }
         }
         if (g_vblank_irq_registered) {
-            nvidia_pcrtc_write(NV_PCRTC_INTR_0, 1U);
+            pdv_mmio_write32(g_regs + 0x00000140U, 0U); /* PMC_INTR_EN_0 = 0 */
+            pdv_mmio_write32(g_regs + 0x00001140U, 0U); /* PBUS_INTR_EN = 0 */
+            pdv_mmio_write32(g_regs + 0x00002140U, 0U); /* PFIFO_INTR_EN_0 = 0 */
+            pdv_mmio_write32(g_regs + 0x00009140U, 0U); /* PTIMER_INTR_EN_0 = 0 */
+            pdv_mmio_write32(g_regs + 0x00400140U, 0U); /* PGRAPH_INTR_EN = 0 */
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_PCRTC_INTR_EN_0, 0U);
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE + NV_PCRTC_INTR_EN_0, 0U);
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_PCRTC_INTR_0, 0xFFFFFFFFU);
+            pdv_mmio_write32(g_regs + NV_PCRTC_BASE + NV_HEAD_STRIDE + NV_PCRTC_INTR_0, 0xFFFFFFFFU);
+            uint32_t pmc_pending = pdv_mmio_read32(g_regs + 0x00000100U);
+            if (pmc_pending != 0U) {
+                klog_info("[NV  ] vblank IRQ suppressed (PMC_INTR_0=0x%08x)", pmc_pending);
+                g_vblank_cb = 0;
+                return 0;
+            }
             nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 1U);
             pdv_mmio_write32(g_regs + 0x00000140U, 1U); /* PMC_INTR_EN_0 */
             return 1;
         }
     } else {
+        pdv_mmio_write32(g_regs + 0x00000140U, 0U);
         nvidia_pcrtc_write(NV_PCRTC_INTR_EN_0, 0U);
     }
     return 0;
